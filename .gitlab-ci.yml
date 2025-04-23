@@ -16,7 +16,7 @@ lint:
   image: node:latest
   script:
     - npm install
-    - cd website && npm install && cd ..
+    - cd website && npm install --legacy-peer-deps && cd ..
     - npx prettier --check "**/*.{js,jsx,ts,tsx,json,css,html,yaml,markdown,scss}"
   artifacts:
     paths:
@@ -34,7 +34,7 @@ dependency-scan:
   script:
     - npm install -g npm-audit-resolver
     - npm install
-    - cd website && npm install && cd ..
+    - cd website && npm install --legacy-peer-deps && cd ..
     - npm audit --production
     - cd website && npm audit --production
   allow_failure: true
