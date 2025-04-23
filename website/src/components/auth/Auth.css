@@ -1,0 +1,177 @@
+.auth-wrapper {
+  position: relative;
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: var(--background-color);
+}
+
+.auth-wrapper.loading {
+  pointer-events: none;
+}
+
+.auth-loading {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: var(--card-background);
+  opacity: 0.8;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid transparent;
+  border-radius: 50%;
+  border-top-color: var(--primary-color);
+  border-left-color: var(--primary-color);
+  animation: spin 1s linear infinite;
+  margin-bottom: 10px;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.auth-loading p {
+  color: var(--text-secondary);
+  font-size: 16px;
+}
+
+.auth-container {
+  max-width: 400px;
+  margin: 40px auto;
+  padding: 3em;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px var(--shadow-color);
+  background-color: var(--card-background);
+}
+
+.auth-container h2 {
+  text-align: center;
+  margin-bottom: 24px;
+  color: var(--text-color);
+}
+
+.form-group {
+  margin-bottom: 0.5em;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.form-group input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 16px;
+  transition: border-color 0.3s;
+  background-color: var(--card-background);
+  color: var(--text-color);
+}
+
+.form-group input:focus {
+  border-color: var(--primary-color);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-color);
+}
+
+.auth-button {
+  width: 100%;
+  padding: 12px;
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.auth-button:hover {
+  background-color: var(--primary-hover);
+}
+
+.error-message {
+  background-color: #ffebee; /* Light red background for light theme */
+  color: var(--error-color);
+  padding: 10px;
+  border-radius: 4px;
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+
+[data-theme="dark"] .error-message {
+  background-color: #311b1b; /* Dark red background for dark theme */
+}
+
+.auth-switch {
+  margin-top: 20px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.switch-button {
+  background: none;
+  border: none;
+  color: var(--primary-color);
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0;
+  font-size: inherit;
+}
+
+.switch-button:hover {
+  text-decoration: underline;
+}
+
+.oauth-section {
+  margin-top: 30px;
+  text-align: center;
+  border-top: 1px solid var(--border-color);
+  padding-top: 20px;
+}
+
+.oauth-section p {
+  margin-bottom: 15px;
+  color: var(--text-secondary);
+}
+
+.oauth-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 20px;
+  background-color: var(--card-background);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.oauth-button:hover {
+  background-color: var(--hover-color);
+}

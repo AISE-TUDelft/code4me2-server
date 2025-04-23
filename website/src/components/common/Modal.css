@@ -1,0 +1,172 @@
+/* Modal.css - Styles for the modal component */
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-container {
+  background-color: var(--card-background);
+  border-radius: 8px;
+  width: 90%;
+  max-width: 500px;
+  box-shadow: 0 5px 15px var(--shadow-color);
+  overflow: hidden;
+  animation: modal-appear 0.3s ease-out;
+}
+
+@keyframes modal-appear {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.modal-header {
+  padding: 15px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header.error {
+  background-color: #ffebee; /* Light red background for light theme */
+  color: var(--error-color);
+}
+
+[data-theme="dark"] .modal-header.error {
+  background-color: #311b1b; /* Dark red background for dark theme */
+}
+
+.modal-header.success {
+  background-color: #e8f5e9; /* Light green background for light theme */
+  color: var(--success-color);
+}
+
+[data-theme="dark"] .modal-header.success {
+  background-color: #1b2e1b; /* Dark green background for dark theme */
+}
+
+.modal-header.info {
+  background-color: #e3f2fd; /* Light blue background for light theme */
+  color: var(--info-color);
+}
+
+[data-theme="dark"] .modal-header.info {
+  background-color: #1a2a3a; /* Dark blue background for dark theme */
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.modal-close:hover {
+  opacity: 1;
+}
+
+.modal-body {
+  padding: 20px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.modal-body p {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--text-color);
+}
+
+.modal-footer {
+  padding: 15px 20px;
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border-color);
+}
+
+.modal-button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background-color 0.3s;
+}
+
+.modal-button.error {
+  background-color: var(--error-color);
+  color: white;
+}
+
+.modal-button.error:hover {
+  opacity: 0.9;
+}
+
+.modal-button.success {
+  background-color: var(--success-color);
+  color: white;
+}
+
+.modal-button.success:hover {
+  opacity: 0.9;
+}
+
+.modal-button.info {
+  background-color: var(--info-color);
+  color: white;
+}
+
+.modal-button.info:hover {
+  opacity: 0.9;
+}
+
+.modal-button.secondary {
+  background-color: var(--secondary-color);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  margin-right: 10px;
+}
+
+.modal-button.secondary:hover {
+  background-color: var(--hover-color);
+}
+
+/* Password form styles */
+.password-form {
+  margin-top: 20px;
+}
+
+.modal-body .error-message {
+  margin: 15px 0;
+  padding: 10px;
+  background-color: #ffebee; /* Light red background for light theme */
+  color: var(--error-color);
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+[data-theme="dark"] .modal-body .error-message {
+  background-color: #311b1b; /* Dark red background for dark theme */
+}
