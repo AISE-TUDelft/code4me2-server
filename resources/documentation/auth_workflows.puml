@@ -1,0 +1,86 @@
+@startuml Authentication Workflows
+
+' Define participants
+actor User
+participant "Login/Signup UI" as UI
+participant "Auth Component" as Auth
+participant "API Utils" as API
+participant "Auth Utils" as AuthUtils
+participant "Backend Server" as Server
+participant "Google OAuth" as Google
+
+title Authentication Workflows
+
+' Regular Login Flow
+group Regular Login
+    User -> UI: Enter email/password
+    UI -> Auth: handleLogin(userData)
+    Auth -> API: authenticateUser(credentials)
+    API -> Server: POST /user/authenticate
+    Server --> API: Return user data & session token
+    API --> Auth: Return authentication response
+    Auth --> UI: Update UI with authenticated state
+    UI --> User: Show authenticated UI
+end
+
+' Google OAuth Login Flow (Existing User)
+group Google OAuth Login (Existing User)
+    User -> UI: Click Google Login
+    UI -> Google: Initiate OAuth flow
+    Google --> UI: Return credential response
+    UI -> Auth: handleGoogleUser(googleUser)
+    Auth -> AuthUtils: handleGoogleAuth(googleUser)
+    AuthUtils -> AuthUtils: initGoogleOAuth(credentialResponse)
+    AuthUtils -> API: checkUserExists(email)
+    API -> Server: POST /user/exists
+    Server --> API: User exists = true
+    API --> AuthUtils: User exists
+    AuthUtils -> API: authenticateWithOAuth(provider, token)
+    API -> Server: POST /user/authenticate
+    Server --> API: Return user data & session token
+    API --> AuthUtils: Return authentication response
+    AuthUtils --> Auth: Call onExistingUser callback
+    Auth -> Auth: handleLogin(user)
+    Auth --> UI: Update UI with authenticated state
+    UI --> User: Show authenticated UI
+end
+
+' Google OAuth Signup Flow (New User)
+group Google OAuth Signup (New User)
+    User -> UI: Click Google Login
+    UI -> Google: Initiate OAuth flow
+    Google --> UI: Return credential response
+    UI -> Auth: handleGoogleUser(googleUser)
+    Auth -> AuthUtils: handleGoogleAuth(googleUser)
+    AuthUtils -> AuthUtils: initGoogleOAuth(credentialResponse)
+    AuthUtils -> API: checkUserExists(email)
+    API -> Server: POST /user/exists
+    Server --> API: User exists = false
+    API --> AuthUtils: User does not exist
+    AuthUtils --> Auth: Call onNewUser callback
+    Auth -> Auth: Show password creation modal
+    User -> Auth: Enter password
+    Auth -> Auth: handlePasswordSubmit(password)
+    Auth -> AuthUtils: createUser(userData)
+    AuthUtils -> API: POST /user/new
+    API -> Server: Create new user with Google credential
+    Server --> API: Return user data & session token
+    API --> AuthUtils: Return user creation response
+    AuthUtils --> Auth: Return user data
+    Auth --> UI: Update UI with authenticated state
+    UI --> User: Show authenticated UI
+end
+
+' Regular Signup Flow
+group Regular Signup
+    User -> UI: Enter name, email, password
+    UI -> Auth: handleSignup(userData)
+    Auth -> API: createUser(userData)
+    API -> Server: POST /user/new
+    Server --> API: Return user data & session token
+    API --> Auth: Return user creation response
+    Auth --> UI: Update UI with authenticated state
+    UI --> User: Show authenticated UI
+end
+
+@enduml

@@ -1,0 +1,40 @@
+# GitLab CI/CD Configuration
+stages:
+  - lint
+  #  - test # TODO: Uncomment this line when we have tests
+  - security
+
+# Cache node_modules for faster builds
+cache:
+  paths:
+    - node_modules/
+    - website/node_modules/
+
+# Code style check job
+lint:
+  stage: lint
+  image: node:latest
+  script:
+    - npm install
+    - cd website && npm install --legacy-peer-deps && cd ..
+    - npx prettier --check "**/*.{js,jsx,ts,tsx,json,css,html,yaml,markdown,scss}"
+  artifacts:
+    paths:
+      - prettier-report.json
+    when: on_failure
+
+# TODO: add linter check using Black for Python files
+
+# TODO: add coverage checks for python files and potential tests for the website
+
+# Dependency security check
+dependency-scan:
+  stage: security
+  image: node:latest
+  script:
+    - npm install -g npm-audit-resolver
+    - npm install
+    - cd website && npm install --legacy-peer-deps && cd ..
+    - npm audit --production || true
+    - cd website && npm audit --production || true
+  allow_failure: true
