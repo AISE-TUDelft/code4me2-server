@@ -35,9 +35,16 @@ const PasswordCreationModal = ({ isOpen, onClose, googleUser, onSubmit }) => {
       setIsSubmitting(false);
       return;
     }
-
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters long");
+    // Check if password is strong enough
+    const isStrongPassword = (password) => {
+      const strongPasswordPattern =
+        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d]{8,}$/;
+      return strongPasswordPattern.test(password);
+    };
+    if (!isStrongPassword(password)) {
+      setError(
+        "Password must contain at least 8 characters, including uppercase, lowercase letters and numbers",
+      );
       setIsSubmitting(false);
       return;
     }
@@ -82,7 +89,7 @@ const PasswordCreationModal = ({ isOpen, onClose, googleUser, onSubmit }) => {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Create a password"
                 required
-                disabled={isSubmitting}
+                // disabled={isSubmitting}
               />
             </div>
 

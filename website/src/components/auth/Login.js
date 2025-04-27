@@ -77,7 +77,7 @@ const Login = ({ onSwitchToSignup, onLogin, onGoogleAuth }) => {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="Enter your email"
-            required
+            // required
             disabled={isSubmitting}
           />
         </div>
@@ -90,7 +90,7 @@ const Login = ({ onSwitchToSignup, onLogin, onGoogleAuth }) => {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Enter your password"
-            required
+            // required
             disabled={isSubmitting}
           />
         </div>

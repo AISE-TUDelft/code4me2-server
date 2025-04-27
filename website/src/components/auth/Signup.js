@@ -48,6 +48,31 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
       return;
     }
 
+    // Check if email is valid
+    const isValidEmail = (email) => {
+      const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      return emailPattern.test(email);
+    };
+    if (!isValidEmail(email)) {
+      setError("Please enter a valid email address");
+      setIsSubmitting(false);
+      return;
+    }
+
+    // Check if password is strong enough
+    const isStrongPassword = (password) => {
+      const strongPasswordPattern =
+        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d]{8,}$/;
+      return strongPasswordPattern.test(password);
+    };
+    if (!isStrongPassword(password)) {
+      setError(
+        "Password must contain at least 8 characters, including uppercase, lowercase letters and numbers",
+      );
+      setIsSubmitting(false);
+      return;
+    }
+
     try {
       console.log("Signup attempt with:", { name, email });
 
@@ -103,7 +128,7 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Enter your full name"
-            required
+            // required
             disabled={isSubmitting}
           />
         </div>
@@ -116,7 +141,7 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="Enter your email"
-            required
+            // required
             disabled={isSubmitting}
           />
         </div>
@@ -129,7 +154,7 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Create a password"
-            required
+            // required
             disabled={isSubmitting}
           />
         </div>
@@ -142,7 +167,7 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             placeholder="Confirm your password"
-            required
+            // required
             disabled={isSubmitting}
           />
         </div>

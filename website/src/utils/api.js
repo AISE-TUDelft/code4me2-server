@@ -127,7 +127,7 @@ export const authenticateWithOAuth = async (oauthData) => {
  *
  * @returns {string} - A session token
  */
-const generateSessionToken = () => {
+export const generateSessionToken = () => {
   return (
     Math.random().toString(36).substring(2, 15) +
     Math.random().toString(36).substring(2, 15)
