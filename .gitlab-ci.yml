@@ -45,7 +45,7 @@ coverage:
     - pytest --cov=./backend --cov-report=xml
   artifacts:
     paths:
-      - artifacts/coverage.xml
+      - artifacts/test-report.xml
     when: always
   allow_failure: true
 # Dependency security check
@@ -59,3 +59,8 @@ dependency-scan:
     - npm audit --production || true
     - cd website && npm audit --production || true
   allow_failure: true
+  artifacts:
+    paths:
+      - security-report.txt
+      - website-security-report.txt
+    when: always
