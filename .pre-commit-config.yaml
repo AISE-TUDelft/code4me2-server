@@ -12,7 +12,7 @@ repos:
 
       - id: black
         name: Run black
-        entry: black --write --diff --color
+        entry: black --color
         language: python
         files: \.py$
         exclude: ^\.venv/
