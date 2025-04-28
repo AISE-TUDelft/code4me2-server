@@ -23,7 +23,7 @@ export const checkUserExists = async (email) => {
       exists: false,
     };
   } catch (error) {
-    console.error("Error checking if user exists:", error);
+    console.error("ErrorResponse checking if user exists:", error);
     return {
       ok: false,
       error: "An unexpected error occurred. Please try again.",
@@ -157,7 +157,7 @@ export const getVisualizationData = async () => {
       },
     };
   } catch (error) {
-    console.error("Error fetching visualization data:", error);
+    console.error("ErrorResponse fetching visualization data:", error);
     return {
       ok: false,
       error: "Failed to load visualization data",

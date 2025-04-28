@@ -18,7 +18,7 @@ function App() {
       try {
         setUser(JSON.parse(storedUser));
       } catch (error) {
-        console.error("Error parsing stored user:", error);
+        console.error("ErrorResponse parsing stored user:", error);
         localStorage.removeItem("user");
       }
     }

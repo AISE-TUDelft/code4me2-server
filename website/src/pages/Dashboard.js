@@ -21,7 +21,7 @@ const Dashboard = ({ user, onLogout }) => {
           setError(response.error || "Failed to load visualization data");
         }
       } catch (err) {
-        console.error("Error fetching visualization data:", err);
+        console.error("ErrorResponse fetching visualization data:", err);
         setError("An unexpected error occurred. Please try again.");
       } finally {
         setIsLoading(false);

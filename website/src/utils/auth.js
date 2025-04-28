@@ -69,7 +69,7 @@ export const createUser = async (userData) => {
       sessionToken,
     };
   } catch (error) {
-    console.error("Error creating user:", error);
+    console.error("ErrorResponse creating user:", error);
     return {
       ok: false,
       error: "An unexpected error occurred. Please try again.",
@@ -102,7 +102,7 @@ export const initGoogleOAuth = async (credentialResponse) => {
 
     return googleUser;
   } catch (error) {
-    console.error("Error processing Google credential:", error);
+    console.error("ErrorResponse processing Google credential:", error);
     throw new Error("Failed to process Google authentication");
   }
 };
@@ -166,7 +166,7 @@ export const handleGoogleAuth = async (
       );
     }
   } catch (error) {
-    console.error("Error in Google auth flow:", error);
+    console.error("ErrorResponse in Google auth flow:", error);
     throw error;
   }
 };

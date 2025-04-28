@@ -187,6 +187,6 @@ In all authentication flows, the following data is typically exchanged:
 1. **User Credentials**: Email, password, or OAuth tokens
 2. **User Information**: Name, email, and other profile data
 3. **Session Tokens**: Used for maintaining authenticated state
-4. **Error Messages**: When authentication fails
+4. **ErrorResponse Messages**: When authentication fails
 
 The system is designed to handle these flows securely and provide a seamless user experience.
