@@ -61,6 +61,6 @@ dependency-scan:
   allow_failure: true
   artifacts:
     paths:
-      - security-report.txt
-      - website-security-report.txt
+      - artifacts/security-report.txt
+      - artifacts/website-security-report.txt
     when: always
