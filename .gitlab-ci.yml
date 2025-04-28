@@ -1,7 +1,8 @@
 # GitLab CI/CD Configuration
 stages:
   - lint
-  #  - test # TODO: Uncomment this line when we have tests
+  - black
+  - test
   - security
 
 # Cache node_modules for faster builds
@@ -23,10 +24,29 @@ lint:
       - prettier-report.json
     when: on_failure
 
-# TODO: add linter check using Black for Python files
+# Python code style check job
+black:
+  stage: black
+  image: python:3.11-slim
+  script:
+    - pip install -r requirements.txt
+    - black --check "./backend/**/*.py"
+  artifacts:
+    paths:
+      - black-report.json
+    when: on_failure
 
-# TODO: add coverage checks for python files and potential tests for the website
-
+# Add coverage checks for python files
+coverage:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - pip install -r requirements.txt
+    - pytest --cov=./backend --cov-report=xml
+  artifacts:
+    paths:
+      - coverage.xml
+    when: always
 # Dependency security check
 dependency-scan:
   stage: security

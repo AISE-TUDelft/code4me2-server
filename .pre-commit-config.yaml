@@ -3,9 +3,18 @@ repos:
     hooks:
       - id: prettier
         name: Run prettier
-        entry: npx prettier --write --ignore-unknown
+        entry: >
+          sh -c "npx prettier --write --ignore-unknown \"$@\" && \
+           git add . && \
+           git commit -m 'chore: auto-commit prettier changes' || true"
         language: system
         files: \.(js|jsx|ts|tsx|json|css|html|yaml|yml|md|scss)$
         exclude: node_modules/
         args: [--]
         pass_filenames: true
+
+      - id: black
+        name: Run black
+        entry: black "./backend/**/*.py" --diff --color
+        language: python
+        files: \.py$
