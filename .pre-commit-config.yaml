@@ -16,5 +16,4 @@ repos:
         language: python
         files: \.py$
         exclude: ^\.venv/
-        args: [--]
         pass_filenames: true
