@@ -21,7 +21,7 @@ lint:
     - npx prettier --check "**/*.{js,jsx,ts,tsx,json,css,html,yaml,markdown,scss}"
   artifacts:
     paths:
-      - artifacts/prettier-report.json
+      - prettier-report.json
     when: always
 
 # Python code style check job
@@ -33,7 +33,7 @@ black:
     - black --check **/*.py
   artifacts:
     paths:
-      - artifacts/black-report.json
+      - black-report.json
     when: always
 
 # Add coverage checks for python files
@@ -45,7 +45,7 @@ coverage:
     - pytest --cov=./backend --cov-report=xml
   artifacts:
     paths:
-      - artifacts/test-report.xml
+      - test-report.xml
     when: always
   allow_failure: true
 # Dependency security check
@@ -61,6 +61,6 @@ dependency-scan:
   allow_failure: true
   artifacts:
     paths:
-      - artifacts/security-report.txt
-      - artifacts/website-security-report.txt
+      - security-report.txt
+      - website-security-report.txt
     when: always
