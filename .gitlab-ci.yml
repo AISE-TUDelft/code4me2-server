@@ -30,7 +30,7 @@ black:
   image: python:3.11-slim
   script:
     - pip install -r requirements.txt
-    - black --check "./backend/**/*.py"
+    - black --check "**/*.py"
   artifacts:
     paths:
       - black-report.json
