@@ -1,12 +1,11 @@
-version: '3.9'
+version: "3.9"
 
 services:
-
   db:
     image: postgres:16
     container_name: postgres
     ports:
-#      load the port from the .env file
+      #      load the port from the .env file
       - ${DB_PORT}:5432
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -31,15 +30,20 @@ services:
 
   backend:
     build: .
-    container_name: fastapi_app
-    command: ["/bin/bash", "-c", "source activate myenv && uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"]
-#    deploy:
-#      resources:
-#        reservations:
-#          devices:
-#            - driver: nvidia
-#              count: 1
-#              capabilities: [ gpu ]
+    container_name: backend
+    command:
+      [
+        "/bin/bash",
+        "-c",
+        "source activate myenv && uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload",
+      ]
+    #    deploy:
+    #      resources:
+    #        reservations:
+    #          devices:
+    #            - driver: nvidia
+    #              count: 1
+    #              capabilities: [ gpu ]
     expose:
       - 8000
     environment:
@@ -48,8 +52,7 @@ services:
       - db
     # For development purposes only
     volumes:
-        - .:/app
-
+      - .:/app
 
   nginx:
     image: nginx:1.25
