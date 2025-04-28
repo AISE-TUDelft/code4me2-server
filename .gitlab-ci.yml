@@ -2,7 +2,7 @@
 stages:
   - lint
   - black
-  #  - test # Uncomment if you want to run tests
+  #  - test Uncomment if you want to run tests
   - security
 
 # Cache node_modules for faster builds
@@ -37,17 +37,17 @@ black:
     when: always
 
 # Add coverage checks for python files
-coverage:
-  stage: test
-  image: python:3.11-slim
-  script:
-    - pip install -r requirements.txt
-    - pytest --cov=./backend --cov-report=xml
-  artifacts:
-    paths:
-      - test-report.xml
-    when: always
-  allow_failure: true
+#coverage:
+#  stage: test
+#  image: python:3.11-slim
+#  script:
+#    - pip install -r requirements.txt
+#    - pytest --cov=./backend --cov-report=xml
+#  artifacts:
+#    paths:
+#      - test-report.xml
+#    when: always
+#  allow_failure: true
 # Dependency security check
 dependency-scan:
   stage: security
