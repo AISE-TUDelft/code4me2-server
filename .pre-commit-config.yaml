@@ -3,10 +3,7 @@ repos:
     hooks:
       - id: prettier
         name: Run prettier
-        entry: >
-          sh -c "npx prettier --write --ignore-unknown \"$@\" && \
-           git add . && \
-           git commit -m 'chore: auto-commit prettier changes' || true"
+        entry: npx prettier --write --ignore-unknown
         language: system
         files: \.(js|jsx|ts|tsx|json|css|html|yaml|yml|md|scss)$
         exclude: node_modules/

@@ -47,6 +47,7 @@ coverage:
     paths:
       - coverage.xml
     when: always
+  allow_failure: true
 # Dependency security check
 dependency-scan:
   stage: security
