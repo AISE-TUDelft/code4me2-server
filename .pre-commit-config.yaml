@@ -14,6 +14,6 @@ repos:
         name: Run black
         entry: black --color
         language: python
-        files: \.py$
+        files: ^(backend)/.*\.py$
         exclude: ^\.venv/
         pass_filenames: true
