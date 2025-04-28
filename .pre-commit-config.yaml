@@ -12,6 +12,6 @@ repos:
 
       - id: black
         name: Run black
-        entry: black "./backend/**/*.py" --diff --color
+        entry: black --diff --color
         language: python
-        files: \.py$
+        files: ^backend/.*\.py$
