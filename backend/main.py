@@ -10,7 +10,8 @@ app = FastAPI(
 )
 
 app.include_router(
-    auth_router
+    auth_router,
+    prefix = "/api"
 )
 
 @app.get("/")
