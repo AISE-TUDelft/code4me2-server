@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from backend.models.Bodies import User
+from src.backend.models.Bodies import User
 
 
 class UserExistsPostResponse(BaseModel):

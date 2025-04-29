@@ -2,8 +2,8 @@ from typing import Union, Optional
 
 from fastapi import APIRouter
 
-from backend.models.Bodies import NewUser
-from backend.models.Responses import UserNewPostResponse, ErrorResponse
+from src.backend.models.Bodies import NewUser
+from src.backend.models.Responses import UserNewPostResponse, ErrorResponse
 
 router = APIRouter()
 
@@ -28,7 +28,6 @@ def create_user(body: NewUser) -> Optional[Union[UserNewPostResponse, ErrorRespo
     3. The user should be sent a success message
     4. If the user already exists, then a 409 error should be returned
     """
-    print("Create is called")
     pass
 
 
