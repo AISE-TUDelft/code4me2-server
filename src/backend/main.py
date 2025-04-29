@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from utils.Config import Config
 from .routers import router
 
 app = FastAPI(
@@ -7,10 +8,6 @@ app = FastAPI(
     description="The complete API for Code4Me V2",
     version="1.0.0",
 )
+# app.config = Config()
 
 app.include_router(router, prefix="/api")
-
-
-@app.get("/")
-async def read_root():
-    return {"Hello": "World"}

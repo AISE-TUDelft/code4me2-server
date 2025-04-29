@@ -2,8 +2,8 @@ from typing import Union, Optional
 
 from fastapi import APIRouter
 
-from backend.models.bodies import NewUser
-from backend.models.responses import UserNewPostResponse, ErrorResponse
+from backend.models.Bodies import NewUser
+from backend.models.Responses import UserNewPostResponse, ErrorResponse
 
 router = APIRouter()
 

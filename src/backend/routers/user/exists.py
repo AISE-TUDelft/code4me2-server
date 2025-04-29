@@ -2,8 +2,8 @@ from typing import Union
 
 from fastapi import APIRouter
 
-from backend.models.requests import UserExistsPostRequest
-from backend.models.responses import UserExistsPostResponse, ErrorResponse
+from backend.models.Requests import UserExistsPostRequest
+from backend.models.Responses import UserExistsPostResponse, ErrorResponse
 
 router = APIRouter()
 

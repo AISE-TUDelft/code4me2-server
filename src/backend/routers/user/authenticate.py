@@ -2,8 +2,8 @@ from typing import Union
 
 from fastapi import APIRouter
 
-from backend.models.requests import EmailPasswordAuth, OAuthAuth
-from backend.models.responses import UserAuthenticatePostResponse, ErrorResponse
+from backend.models.Requests import EmailPasswordAuth, OAuthAuth
+from backend.models.Responses import UserAuthenticatePostResponse, ErrorResponse
 
 router = APIRouter()
 
