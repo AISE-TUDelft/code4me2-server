@@ -30,7 +30,7 @@ black:
   image: python:3.11-slim
   script:
     - pip install black>=23.9.1
-    - black --check **/*.py
+    - black --check -- **/*.py
   artifacts:
     paths:
       - black-report.json
