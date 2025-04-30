@@ -17,18 +17,18 @@ class NewUser(BaseModel):
     name: str = Field(..., description="User's full name")
     password: SecretStr = Field(..., description="User's password (will be hashed)")
     googleId: Optional[str] = Field(
-        None, description='Google ID for users signing up with Google (optional)'
+        None, description="Google ID for users signing up with Google (optional)"
     )
     googleCredential: Optional[str] = Field(
-        None, description='Google JWT credential for authentication (optional)'
+        None, description="Google JWT credential for authentication (optional)"
     )
 
 
 class User(BaseModel):
-    id: Optional[UUID] = Field(None, description='Unique identifier for the user')
+    id: Optional[UUID] = Field(None, description="Unique identifier for the user")
     email: Optional[EmailStr] = Field(None, description="User's email address")
     name: Optional[str] = Field(None, description="User's full name")
-    createdAt: Optional[datetime] = Field(None, description='When the user was created')
+    createdAt: Optional[datetime] = Field(None, description="When the user was created")
     verified: Optional[bool] = Field(
         None, description="Whether the user's email has been verified"
     )
@@ -38,28 +38,29 @@ class EmailPasswordAuth(BaseModel):
     email: EmailStr = Field(..., description="User's email address")
     password: SecretStr = Field(..., description="User's password")
 
+
 class Error(BaseModel):
-    error: Optional[str] = Field(None, description='Error message')
+    error: Optional[str] = Field(None, description="Error message")
 
 
 class UserExistsPostRequest(BaseModel):
-    email: EmailStr = Field(..., description='Email address to check')
+    email: EmailStr = Field(..., description="Email address to check")
 
 
 class UserExistsPostResponse(BaseModel):
-    exists: Optional[bool] = Field(None, description='Whether the user exists')
+    exists: Optional[bool] = Field(None, description="Whether the user exists")
 
 
 class UserNewPostResponse(BaseModel):
     message: Optional[str] = Field(
         None,
-        example='User created successfully. Please check your email for verification.',
+        example="User created successfully. Please check your email for verification.",
     )
-    userId: Optional[UUID] = Field(None, example='123e4567-e89b-12d3-a456-426614174000')
+    userId: Optional[UUID] = Field(None, example="123e4567-e89b-12d3-a456-426614174000")
 
 
 class UserAuthenticatePostResponse(BaseModel):
     sessionToken: Optional[str] = Field(
-        None, description='Session token for authentication'
+        None, description="Session token for authentication"
     )
     user: Optional[User] = None

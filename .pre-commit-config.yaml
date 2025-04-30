@@ -9,3 +9,11 @@ repos:
         exclude: node_modules/
         args: [--]
         pass_filenames: true
+
+      - id: black
+        name: Run black
+        entry: black --color
+        language: python
+        files: .py$
+        exclude: ^\.venv/
+        pass_filenames: true

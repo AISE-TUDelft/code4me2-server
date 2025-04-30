@@ -20,16 +20,17 @@ from ..models.auth_models import (
 
 auth_router = APIRouter()
 
+
 @auth_router.post(
-    '/user/authenticate',
+    "/user/authenticate",
     response_model=UserAuthenticatePostResponse,
     responses={
-        '400': {'model': Error},
-        '401': {'model': Error},
-        '429': {'model': Error},
-        '500': {'model': Error},
+        "400": {"model": Error},
+        "401": {"model": Error},
+        "429": {"model": Error},
+        "500": {"model": Error},
     },
-    tags=['User'],
+    tags=["User"],
 )
 def authenticate_user(
     body: EmailPasswordAuth,
@@ -49,14 +50,14 @@ def authenticate_user(
 
 
 @auth_router.post(
-    '/user/exists',
+    "/user/exists",
     response_model=UserExistsPostResponse,
     responses={
-        '400': {'model': Error},
-        '429': {'model': Error},
-        '500': {'model': Error},
+        "400": {"model": Error},
+        "429": {"model": Error},
+        "500": {"model": Error},
     },
-    tags=['User'],
+    tags=["User"],
 )
 def check_user_exists(
     body: UserExistsPostRequest,
@@ -68,16 +69,16 @@ def check_user_exists(
 
 
 @auth_router.post(
-    '/user/new',
+    "/user/new",
     response_model=None,
     responses={
-        '201': {'model': UserNewPostResponse},
-        '400': {'model': Error},
-        '409': {'model': Error},
-        '429': {'model': Error},
-        '500': {'model': Error},
+        "201": {"model": UserNewPostResponse},
+        "400": {"model": Error},
+        "409": {"model": Error},
+        "429": {"model": Error},
+        "500": {"model": Error},
     },
-    tags=['User'],
+    tags=["User"],
 )
 def create_user(body: NewUser) -> Optional[Union[UserNewPostResponse, Error]]:
     """
