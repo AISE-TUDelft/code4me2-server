@@ -26,7 +26,7 @@ services:
       [
         "/bin/bash",
         "-c",
-        "source activate myenv && uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload",
+        "source activate myenv && uvicorn src.backend.main:app --host 0.0.0.0 --port 8000 --reload",
       ]
     expose:
       - 8000
@@ -34,7 +34,7 @@ services:
       - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
     depends_on:
       db:
-        condition: service_healthy  # Wait for the database to be healthy
+        condition: service_healthy # Wait for the database to be healthy
     volumes:
       - .:/app
 
