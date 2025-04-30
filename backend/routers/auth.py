@@ -4,9 +4,18 @@
 
 from __future__ import annotations
 
-from typing import Optional, Union
+from fastapi import APIRouter, Depends, HTTPException
 
-from fastapi import APIRouter
+from datetime import datetime
+import uuid
+
+#potential vulnerability?
+from backend.database import crud, db_schemas
+from backend.database import get_db
+
+from sqlalchemy.orm import Session
+
+
 
 from ..models.auth_models import (
     EmailPasswordAuth,
@@ -32,8 +41,9 @@ auth_router = APIRouter()
     tags=['User'],
 )
 def authenticate_user(
-    body: EmailPasswordAuth,
-) -> Union[UserAuthenticatePostResponse, Error]:
+        body: EmailPasswordAuth,
+        db: Session = Depends(get_db)
+):
     """
     Authenticate a user
     Note: There are some nuances to how this should be handled.
@@ -45,8 +55,31 @@ def authenticate_user(
     2. The filed can also simply represent a password for a user.
     3. The authentication should either return a UserAuthenticationPostResponse or an Error
     """
-    pass
 
+    # Get user by email
+    user = crud.get_user_by_email(db, body.email)
+    if not user:
+        return Error(error="Invalid email or password")
+
+    # Verify password
+    if not crud.verify_password(db, body.email, body.password.get_secret_value()):
+        return Error(error="Invalid email or password")
+
+    # Check if user is verified after adding verification process
+    #if not user.verified:
+    #    return Error(error="Please verify your email before logging in")
+
+    # Generate session token - in this case, we just use the user's token (can be changed later)
+    return UserAuthenticatePostResponse(
+        sessionToken=str(user.token),
+        user={
+            "id": user.token,  # Use token as ID
+            "email": user.email,
+            "name": user.name,
+            "createdAt": user.joined_at,
+            "verified": user.verified
+        }
+    )
 
 @auth_router.post(
     '/user/exists',
@@ -59,12 +92,13 @@ def authenticate_user(
     tags=['User'],
 )
 def check_user_exists(
-    body: UserExistsPostRequest,
-) -> Union[UserExistsPostResponse, Error]:
-    """
-    Check if a user exists -> pretty straightforward
-    """
-    pass
+        body: UserExistsPostRequest,
+        db: Session = Depends(get_db)
+):
+    user = crud.get_user_by_email(db, body.email)
+    return UserExistsPostResponse(exists=user is not None)
+
+
 
 
 @auth_router.post(
@@ -79,12 +113,29 @@ def check_user_exists(
     },
     tags=['User'],
 )
-def create_user(body: NewUser) -> Optional[Union[UserNewPostResponse, Error]]:
-    """
-    Create a new user -> also pretty straightforward
-    1. The user should be created in the database if it does not exist
-    2. The user should be sent a verification email
-    3. The user should be sent a success message
-    4. If the user already exists, then a 409 error should be returned
-    """
-    pass
+def create_user(body: NewUser, db: Session = Depends(get_db)):
+    # Check if user already exists
+    existing_user = crud.get_user_by_email(db, body.email)
+    if existing_user:
+        return Error(error="User already exists with this email")
+
+    # Create user object
+    user_create = db_schemas.UserCreate(
+        token=str(uuid.uuid4()),
+        joined_at=datetime.now().isoformat(),
+        email=body.email,
+        name=body.name,
+        password=body.password.get_secret_value(),
+        is_google_signup=body.googleId is not None,
+        verified=True  # Require email verification
+    )
+
+    # Create user in database
+    user = crud.create_auth_user(db, user_create)
+
+    #TODO: Send verification email
+
+    return UserNewPostResponse(
+        message="User created successfully. Please check your email for verification.",
+        userId=user.token
+    )
