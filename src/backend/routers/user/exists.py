@@ -24,6 +24,8 @@ def check_user_exists(
     """
     Check if a user exists
     """
+    # user = crud.get_user_by_email(db, body.email)
+    # return UserExistsPostResponse(exists=user is not None)
     print("Exist is called")
     pass
 

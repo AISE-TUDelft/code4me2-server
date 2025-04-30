@@ -33,6 +33,30 @@ def authenticate_user(
     2. The filed can also simply represent a password for a user.
     3. The authentication should either return a UserAuthenticationPostResponse or an ErrorResponse
     """
+    # Get user by email
+    # user = crud.get_user_by_email(db, body.email)
+    # if not user:
+    #     return Error(error="Invalid email or password")
+    #
+    # # Verify password
+    # if not crud.verify_password(db, body.email, body.password.get_secret_value()):
+    #     return Error(error="Invalid email or password")
+    #
+    # # Check if user is verified after adding verification process
+    # # if not user.verified:
+    # #    return Error(error="Please verify your email before logging in")
+    #
+    # # Generate session token - in this case, we just use the user's token (can be changed later)
+    # return UserAuthenticatePostResponse(
+    #     sessionToken=str(user.token),
+    #     user={
+    #         "id": user.token,  # Use token as ID
+    #         "email": user.email,
+    #         "name": user.name,
+    #         "createdAt": user.joined_at,
+    #         "verified": user.verified
+    #     }
+    # )
     print("Authenticate is called")
     pass
 

@@ -28,6 +28,31 @@ def create_user(body: NewUser) -> Optional[Union[UserNewPostResponse, ErrorRespo
     3. The user should be sent a success message
     4. If the user already exists, then a 409 error should be returned
     """
+    # Check if user already exists
+    # existing_user = crud.get_user_by_email(db, body.email)
+    # if existing_user:
+    #     return Error(error="User already exists with this email")
+    #
+    # # Create user object
+    # user_create = db_schemas.UserCreate(
+    #     token=str(uuid.uuid4()),
+    #     joined_at=datetime.now().isoformat(),
+    #     email=body.email,
+    #     name=body.name,
+    #     password=body.password.get_secret_value(),
+    #     is_google_signup=body.googleId is not None,
+    #     verified=True  # Require email verification
+    # )
+    #
+    # # Create user in database
+    # user = crud.create_auth_user(db, user_create)
+    #
+    # # TODO: Send verification email
+    #
+    # return UserNewPostResponse(
+    #     message="User created successfully. Please check your email for verification.",
+    #     userId=user.token
+    # )
     pass
 
 
