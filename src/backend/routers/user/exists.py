@@ -2,8 +2,12 @@ from typing import Union
 
 from fastapi import APIRouter
 
-from src.backend.models.Requests import UserExistsPostRequest
-from src.backend.models.Responses import UserExistsPostResponse, ErrorResponse
+from backend.models.Requests import UserExistsPostRequest
+from backend.models.Responses import (
+    UserExistsPostResponse,
+    ErrorResponse,
+    JsonResponseWithStatus,
+)
 
 router = APIRouter()
 
@@ -20,7 +24,7 @@ router = APIRouter()
 )
 def check_user_exists(
     body: UserExistsPostRequest,
-) -> Union[UserExistsPostResponse, ErrorResponse]:
+) -> JsonResponseWithStatus:
     """
     Check if a user exists
     """

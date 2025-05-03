@@ -3,31 +3,39 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from src.backend.models.Bodies import User
+from base_models import UserBase
+from fastapi.responses import JSONResponse
 
 
 class UserExistsPostResponse(BaseModel):
-    exists: Optional[bool] = Field(None, description="Whether the user exists")
+    exists: bool = Field(..., description="Whether the user exists")
 
 
-class UserNewPostResponse(BaseModel):
-    message: Optional[str] = Field(
-        None,
+class CreateUserPostResponse(BaseModel):
+    message: str = Field(
+        ...,
         example="User created successfully. Please check your email for verification.",
     )
-    userId: Optional[UUID] = Field(None, example="123e4567-e89b-12d3-a456-426614174000")
-    sessionToken: Optional[str] = Field(
+    user_token: str = Field(..., description="user token for authentication")
+    session_token: Optional[str] = Field(
         None, description="Session token for authentication"
     )
 
 
 class UserAuthenticatePostResponse(BaseModel):
-    token: Optional[str] = Field(None, description="JWT token for authentication")
-    sessionToken: Optional[str] = Field(
+    user_token: str = Field(..., description="user token for authentication")
+    session_token: Optional[str] = Field(
         None, description="Session token for authentication"
     )
-    user: Optional[User] = None
+    user: UserBase = Field(..., description="User details")  # Uncomment if needed
 
 
 class ErrorResponse(BaseModel):
-    error: Optional[str] = Field(None, description="ErrorResponse message")
+    error_message: str
+
+
+class JsonResponseWithStatus(JSONResponse):
+    def __init__(self, content: BaseModel, status_code: int):
+        # Convert the Pydantic model to a dict
+        content_dict = content.dict() if isinstance(content, BaseModel) else content
+        super().__init__(content=content_dict, status_code=status_code)

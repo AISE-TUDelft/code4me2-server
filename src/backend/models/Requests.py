@@ -2,7 +2,7 @@ from typing import Union
 
 from pydantic import BaseModel, EmailStr, Field
 
-from src.backend.models.Bodies import EmailPasswordAuth, OAuthAuth
+from backend.models.Bodies import EmailPasswordAuth, OAuthAuth
 
 
 class UserAuthenticatePostRequest(BaseModel):

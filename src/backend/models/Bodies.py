@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, EmailStr, SecretStr, Field
 
 
-class NewUser(BaseModel):
+class CreateUser(BaseModel):
     email: EmailStr = Field(..., description="User's email address")
     name: str = Field(..., description="User's full name")
     password: SecretStr = Field(..., description="User's password (will be hashed)")
@@ -15,16 +15,6 @@ class NewUser(BaseModel):
     )
     googleCredential: Optional[str] = Field(
         None, description="Google JWT credential for authentication (optional)"
-    )
-
-
-class User(BaseModel):
-    id: Optional[UUID] = Field(None, description="Unique identifier for the user")
-    email: Optional[EmailStr] = Field(None, description="User's email address")
-    name: Optional[str] = Field(None, description="User's full name")
-    createdAt: Optional[datetime] = Field(None, description="When the user was created")
-    verified: Optional[bool] = Field(
-        None, description="Whether the user's email has been verified"
     )
 
 

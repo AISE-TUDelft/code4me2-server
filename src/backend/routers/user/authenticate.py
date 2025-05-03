@@ -2,8 +2,12 @@ from typing import Union
 
 from fastapi import APIRouter
 
-from src.backend.models.Requests import EmailPasswordAuth, OAuthAuth
-from src.backend.models.Responses import UserAuthenticatePostResponse, ErrorResponse
+from backend.models.Requests import EmailPasswordAuth, OAuthAuth
+from backend.models.Responses import (
+    UserAuthenticatePostResponse,
+    ErrorResponse,
+    JsonResponseWithStatus,
+)
 
 router = APIRouter()
 
@@ -20,18 +24,18 @@ router = APIRouter()
     tags=["Authentication"],
 )
 def authenticate_user(
-    body: Union[EmailPasswordAuth, OAuthAuth],
-) -> Union[UserAuthenticatePostResponse, ErrorResponse]:
+    user_to_authenticate: Union[EmailPasswordAuth, OAuthAuth],
+) -> JsonResponseWithStatus:
     """
     Authenticate a user
     Note: There are some nuances to how this should be handled.
-    1. There is a possibility that the password field is JWT token for OAuth providers (this should be checked for)
-    1.1. Authentication should first check if the password is a JWT token
+    1. There is a possibility that the token field is JWT token for OAuth providers (this should be checked for)
+    1.1. Authentication should first check if the token is a JWT token
     1.2. If it is a JWT token, then the validity of the token should be checked
     1.3. If the token is valid, then the user should be authenticated using the token and allocated a session
     1.4. The provider is always Google
     2. The filed can also simply represent a password for a user.
-    3. The authentication should either return a UserAuthenticationPostResponse or an ErrorResponse
+    3. The authentication should either return a UserAuthenticationPostResponse or anJsonErrorResponse
     """
     print("Authenticate is called")
     pass
