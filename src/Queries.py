@@ -1,6 +1,10 @@
+from enum import Enum
+
 from pydantic import BaseModel, EmailStr, SecretStr, Field
 
-from backend.models.Bodies import Provider
+
+class Provider(Enum):
+    google = "google"
 
 
 class QueryBase(BaseModel):
@@ -18,3 +22,13 @@ class CreateUserAuth(CreateUser):
     provider: Provider = Field(
         ..., description="OAuth provider (Google, Microsoft, etc.)"
     )
+
+
+class AuthenticateUserEmailPassword(BaseModel):
+    email: EmailStr = Field(..., description="User's email address")
+    password: SecretStr = Field(..., description="User's password")
+
+
+class AuthenticateUserOAuth(BaseModel):
+    provider: Provider = Field(..., description="OAuth provider")
+    token: str = Field(..., description="OAuth token in JWT format")

@@ -1,5 +1,3 @@
-import hashlib
-import re
 import uuid
 from datetime import datetime
 from typing import Type, Optional, Union
@@ -8,22 +6,7 @@ from sqlalchemy.orm import Session
 
 import Queries as Queries
 from database import db_schemas
-
-
-# helper functions
-def is_valid_uuid(uuid: str) -> bool:
-    if not uuid:
-        return False
-    uuid = str(uuid)
-    uuidv4_pattern = re.compile(
-        r"\b[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-4[0-9a-fA-F]{3}\-[89aAbB][0-9a-fA-F]{3}\-[0-9a-fA-F]{12}\b"
-    )
-    return bool(uuidv4_pattern.fullmatch(uuid))
-
-
-# Helper function to hash passwords
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+from utils import hash_password
 
 
 # READ operation
@@ -46,7 +29,7 @@ def create_user(
     db_user = db_schemas.User(
         token=user.token if is_oauth else str(uuid.uuid4()),
         joined_at=datetime.now().isoformat(),
-        email=user.email,
+        email=str(user.email),
         name=user.name,
         password_hash=hash_password(user.password.get_secret_value()),
         is_oauth_signup=is_oauth,
@@ -58,14 +41,6 @@ def create_user(
     db.refresh(db_user)
     return db_user
 
-    # # Verify user's password
-    # def verify_password(db: Session, email: str, password: str) -> bool:
-    #     user = self.get_user_by_email(email)
-    #     if not user:
-    #         return False
-    #
-    #     hashed_password = hash_password(password)
-    #     return user.password_hash == hashed_password
     #
     #
     # # Set user verification status
@@ -84,9 +59,11 @@ def create_user(
     #     return db.query(db_schemas.User).all()
     #
     #
-    # def get_user_by_token(db: Session, token: str) -> db_schemas.User:
-    #     assert is_valid_uuid(token)
-    #     return db.query(db_schemas.User).filter(db_schemas.User.token == token).first()
+
+
+def get_user_by_token(db: Session, token: str) -> Optional[db_schemas.User]:
+    return db.query(db_schemas.User).filter(db_schemas.User.token == token).first()
+
     #
     #
     # # Query Table

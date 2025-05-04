@@ -1,19 +1,21 @@
 from datetime import datetime
-from enum import Enum
-from typing import Optional
-from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, SecretStr, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class UserBase(BaseModel):
-    id: Optional[UUID] = Field(None, description="Unique identifier for the user")
-    email: Optional[EmailStr] = Field(None, description="User's email address")
-    name: Optional[str] = Field(None, description="User's full name")
-    createdAt: Optional[datetime] = Field(None, description="When the user was created")
-    verified: Optional[bool] = Field(
-        None, description="Whether the user's email has been verified"
+    token: str = Field(..., description="Unique token for the user")
+    email: EmailStr = Field(..., description="User's email address")
+    name: str = Field(..., description="User's full name")
+    joined_at: datetime = Field(..., description="When the user was created")
+    verified: bool = Field(
+        ..., description="Whether the user's email has been verified"
     )
+
+    model_config = {
+        "from_attributes": True,  # enables reading from ORM objects
+        "extra": "ignore",  # Disallow extra fields
+    }
 
 
 # Query

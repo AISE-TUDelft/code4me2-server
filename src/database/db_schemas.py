@@ -1,4 +1,3 @@
-from .db import Base
 from sqlalchemy import (
     Column,
     Integer,
@@ -8,7 +7,6 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
     Float,
-    create_engine,
     UniqueConstraint,
     Index,
     ARRAY,
@@ -17,8 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
-from sqlalchemy.sql import func
-import uuid
+from .db import Base
 
 
 class User(Base):
