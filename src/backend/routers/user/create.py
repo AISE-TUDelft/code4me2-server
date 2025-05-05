@@ -1,0 +1,82 @@
+import logging
+from typing import Union
+
+from fastapi import APIRouter
+from fastapi import Depends
+from sqlalchemy.orm import Session
+
+import Queries as Queries
+import database.crud as crud
+from App import App
+from backend.models.Responses import (
+    CreateUserPostResponse,
+    ErrorResponse,
+    JsonResponseWithStatus,
+)
+from backend.utils import verify_jwt_token
+
+router = APIRouter()
+
+
+@router.post(
+    "/",
+    response_model=CreateUserPostResponse,
+    responses={
+        "201": {"model": CreateUserPostResponse},
+        "409": {"model": ErrorResponse},
+        "422": {"model": ErrorResponse},
+        "429": {"model": ErrorResponse},
+        "500": {"model": ErrorResponse},
+    },
+    tags=["Create User"],
+)
+def create_user(
+    user_to_create: Union[Queries.CreateUser, Queries.CreateUserAuth],
+    db_session: Session = Depends(App.get_db_session),
+) -> JsonResponseWithStatus:
+    """
+    Create a new user
+    1. The user should be created in the database if it does not exist
+    2. The user should be sent a verification email
+    3. The user should be sent a success message
+    4. If the user already exists, then a 409 error should be returned
+    """
+    # Check if user already exists
+    logging.log(logging.INFO, f"Creating user {user_to_create}")
+    existing_user = crud.get_user_by_email(db_session, str(user_to_create.email))
+    if existing_user:
+        return JsonResponseWithStatus(
+            status_code=409,
+            content=ErrorResponse(message="User already exists with this email!"),
+        )
+    if isinstance(user_to_create, Queries.CreateUserAuth):
+        verification_result = verify_jwt_token(user_to_create.token)
+        if (
+            verification_result is None
+            or verification_result["email"] != user_to_create.email
+        ):
+            return JsonResponseWithStatus(
+                status_code=422,
+                content=ErrorResponse(message="Invalid or expired token!"),
+            )
+
+    user = crud.create_user(db_session, user_to_create)
+
+    # TODO: Send verification email
+
+    return JsonResponseWithStatus(
+        status_code=201,
+        content=CreateUserPostResponse(
+            message="User created successfully. Please check your email for verification.",
+            user_id=user.user_id,
+            session_id=None,
+        ),
+    )
+
+
+def __init__():
+    """
+    This function is called when the module is imported.
+    It is used to initialize the module and import the router.
+    """
+    pass

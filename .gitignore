@@ -3,3 +3,5 @@ node_modules
 .venv
 .idea
 secrets
+**/__pycache__/
+.hypothesis
