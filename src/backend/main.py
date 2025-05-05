@@ -4,7 +4,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from App import App
 from Code4meV2Config import Code4meV2Config
 from backend.routers import router
+import uvicorn
+from dotenv import load_dotenv
 
+load_dotenv()
 app = FastAPI(
     title="Code4Me V2 API",
     description="The complete API for Code4Me V2",
@@ -15,13 +18,16 @@ config = Code4meV2Config()
 App.setup(config)
 
 # Configure CORS
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=[config.react_app_url],  # Allow specific origin
-#     allow_credentials=True,
-#     allow_methods=["*"],  # Allow all HTTP methods
-#     allow_headers=["*"],  # Allow all headers
-# )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "*",
+        # f"{config.website_host}:{config.website_port}"
+    ],  # Allow specific origin
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
+)
 
 # TODO: Add rate limiting middleware
 # class SimpleRateLimiter(BaseHTTPMiddleware):
@@ -38,3 +44,8 @@ App.setup(config)
 # app = FastAPI()
 # app.add_middleware(SimpleRateLimiter)
 app.include_router(router, prefix="/api")
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "backend.main:app", host="0.0.0.0", port=config.backend_port, reload=True
+    )

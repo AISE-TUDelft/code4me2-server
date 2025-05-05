@@ -17,7 +17,6 @@ export const hashPassword = (password) => {
  */
 export const createUser = async (userData) => {
   const { name, email, password, googleCredential } = userData;
-
   try {
     // Prepare the request body
     const requestBody = {
@@ -33,7 +32,7 @@ export const createUser = async (userData) => {
     }
 
     const response = await fetch(
-      process.env.REACT_APP_API_URL + "/user/create/",
+      `${process.env["REACT_APP_BACKEND_HOST"]}:${process.env["REACT_APP_BACKEND_PORT"]}/api/user/create/`,
       {
         method: "POST",
         headers: {
@@ -83,7 +82,7 @@ export const authenticateUser = async (credentials) => {
     console.log("Authenticating user:", email);
 
     const response = await fetch(
-      process.env.REACT_APP_API_URL + "/user/authenticate/",
+      `${process.env["REACT_APP_BACKEND_HOST"]}:${process.env["REACT_APP_BACKEND_PORT"]}/api/user/authenticate/`,
       {
         method: "POST", // or "GET", "PUT", etc., depending on your API
         headers: {
@@ -128,9 +127,8 @@ export const authenticateWithOAuth = async (oauthData) => {
 
   try {
     console.log(`Authenticating user with ${provider} OAuth`);
-
     const response = await fetch(
-      process.env.REACT_APP_API_URL + "/user/authenticate/",
+      `${process.env["REACT_APP_BACKEND_HOST"]}:${process.env["REACT_APP_BACKEND_PORT"]}/api/user/authenticate/`,
       {
         method: "POST", // or "GET", "PUT", etc., depending on your API
         headers: {

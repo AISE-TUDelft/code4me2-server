@@ -27,15 +27,12 @@ class Code4meV2Config(BaseSettings):
     pgadmin_port: int = Field(alias="PGADMIN_PORT", frozen=True)
     pgadmin_user: str = Field(alias="PGADMIN_DEFAULT_EMAIL", frozen=True)
     pgadmin_password: str = Field(alias="PGADMIN_DEFAULT_PASSWORD", frozen=True)
+    # Extra configs added for frontend support
+    website_host: str = Field(alias="WEBSITE_HOST", frozen=True)
+    website_port: int = Field(alias="WEBSITE_PORT", frozen=True)
 
-    # New fields added
-    jwt_secret: str = Field(alias="JWT_SECRET", frozen=True)
-    jwt_algorithm: str = Field(alias="JWT_ALGORITHM", frozen=True)
-    access_token_expire_minutes: int = Field(
-        alias="ACCESS_TOKEN_EXPIRE_MINUTES", frozen=True
-    )
-    react_app_url: str = Field(alias="REACT_APP_URL", frozen=True)
-    react_app_api_url: str = Field(alias="REACT_APP_API_URL", frozen=True)
+    backend_host: str = Field(alias="REACT_APP_BACKEND_HOST", frozen=True)
+    backend_port: int = Field(alias="REACT_APP_BACKEND_PORT", frozen=True)
     react_app_google_client_id: str = Field(
         alias="REACT_APP_GOOGLE_CLIENT_ID", frozen=True
     )

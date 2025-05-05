@@ -17,7 +17,7 @@ class App:
         """
         Sets up the database engine and session factory.
         """
-        database_url = f"postgresql://{config.db_user}:{config.db_password}@{config.db_host}:{config.db_port}/{config.db_name}"
+        database_url = f"postgresql://{config.db_user}:{config.db_password}@{config.db_host}:{str(config.db_port)}/{config.db_name}"
         engine = create_engine(database_url)
         App.__db_session_factory = scoped_session(
             sessionmaker(autocommit=False, autoflush=False, bind=engine)
