@@ -1,7 +1,6 @@
 import logging
 from typing import Union
 
-import jwt
 from fastapi import APIRouter
 from fastapi import Depends
 from jwt import ExpiredSignatureError, InvalidTokenError
@@ -17,6 +16,7 @@ from backend.models.Responses import (
 from backend.models.Responses import (
     UserAuthenticatePostResponse,
 )
+from backend.utils import verify_jwt_token
 from base_models import UserBase
 from utils import hash_password
 
@@ -55,36 +55,39 @@ def authenticate_user(
     if isinstance(user_to_authenticate, AuthenticateUserOAuth):
         # OAuth Authentication
         try:
-            decoded_token = jwt.decode(
-                user_to_authenticate.token,
-                key=App.get_config().jwt_secret,
-                algorithms=[App.get_config().jwt_algorithm],
+            verification_result = verify_jwt_token(user_to_authenticate.token)
+            if verification_result is None:
+                return JsonResponseWithStatus(
+                    status_code=422,
+                    content=ErrorResponse(message="Invalid or expired token!"),
+                )
+            found_user = crud.get_user_by_email(
+                db_session, verification_result["email"]
             )
-            logging.log(logging.INFO, f"Decoded JWT: {decoded_token}")
-            found_user = crud.get_user_by_token(db_session, user_to_authenticate.token)
             if not found_user:
                 return JsonResponseWithStatus(
                     status_code=401,
                     content=ErrorResponse(message="Invalid token"),
                 )
-            return JsonResponseWithStatus(
-                status_code=200,
-                content=UserAuthenticatePostResponse(
-                    message="User authenticated successfully via OAuth",
-                    user_token=user_to_authenticate.token,
-                    session_token=None,
-                    user=UserBase.model_validate(found_user),
-                ),
-            )
+            else:
+                return JsonResponseWithStatus(
+                    status_code=200,
+                    content=UserAuthenticatePostResponse(
+                        message="User authenticated successfully via OAuth",
+                        user_id=found_user.user_id,
+                        session_id=None,
+                        user=UserBase.model_validate(found_user),
+                    ),
+                )
         except ExpiredSignatureError:
             logging.log(logging.INFO, f"Expired JWT: {user_to_authenticate.token}")
             return JsonResponseWithStatus(
-                status_code=401, content=ErrorResponse("Token has expired")
+                status_code=401, content=ErrorResponse(message="Token has expired")
             )
         except InvalidTokenError:
             logging.log(logging.INFO, f"Invalid JWT: {user_to_authenticate.token}")
             return JsonResponseWithStatus(
-                status_code=401, content=ErrorResponse("Invalid token")
+                status_code=401, content=ErrorResponse(message="Invalid token")
             )
 
     else:
@@ -102,8 +105,8 @@ def authenticate_user(
                 status_code=200,
                 content=UserAuthenticatePostResponse(
                     message="User authenticated successfully via email and password",
-                    user_token=found_user.token,
-                    session_token=None,
+                    user_id=found_user.user_id,
+                    session_id=None,
                     user=UserBase.model_validate(found_user),
                 ),
             )

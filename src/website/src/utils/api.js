@@ -1,29 +1,68 @@
+import CryptoJS from "crypto-js";
+
 /**
- * Check if a user exists with the given email
+ * Hash a password with a salt
  *
- * @param {string} email - The email to check
+ * @param {string} password - The password to hash
+ * @returns {string} - The hashed password
+ */
+export const hashPassword = (password) => {
+  return CryptoJS.SHA256(password).toString(CryptoJS.enc.Hex);
+};
+/**
+ * Make an API request to create a new user
+ *
+ * @param {Object} userData - User data including name, email, password, and optional googleCredential
  * @returns {Promise} - Promise that resolves with the API response
  */
-export const checkUserExists = async (email) => {
+export const createUser = async (userData) => {
+  const { name, email, password, googleCredential } = userData;
+
   try {
-    console.log("Checking if user exists:", email);
+    // Prepare the request body
+    const requestBody = {
+      name,
+      email,
+      password,
+    };
 
-    // TODO: remove this and replace with actual API call
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    if (email === "exists@example.com" || email === "google.user@example.com") {
-      return {
-        ok: true,
-        exists: true,
-      };
+    // If we have a Google credential, include it in the request
+    if (googleCredential) {
+      requestBody.token = googleCredential;
+      requestBody.provider = "google";
     }
 
-    return {
-      ok: true,
-      exists: false,
-    };
+    const response = await fetch(
+      process.env.REACT_APP_API_URL + "/user/create/",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      },
+    );
+    const responseBody = await response.json();
+    if (!response.ok) {
+      return {
+        ok: false,
+        error:
+          response["status"] +
+          ": " +
+          response["statusText"] +
+          " => " +
+          responseBody["message"],
+      };
+    } else {
+      return {
+        ok: true,
+        message: responseBody["message"],
+        userToken: responseBody["user_token"],
+        sessionToken: responseBody["session_token"],
+      };
+    }
   } catch (error) {
-    console.error("ErrorResponse checking if user exists:", error);
+    console.error("Error creating user:", error);
     return {
       ok: false,
       error: "An unexpected error occurred. Please try again.",
@@ -43,32 +82,32 @@ export const authenticateUser = async (credentials) => {
   try {
     console.log("Authenticating user:", email);
 
-    // TODO: remove this and replace with actual API call
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    const response = await fetch(
+      process.env.REACT_APP_API_URL + "/user/authenticate/",
+      {
+        method: "POST", // or "GET", "PUT", etc., depending on your API
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: email, password: password }),
+      },
+    );
+    const responseBody = await response.json();
 
-    if (email === "error@example.com") {
+    if (!response.ok) {
       return {
         ok: false,
-        error: "Invalid email or password",
+        error: responseBody["message"],
       };
-    } else if (email === "unverified@example.com") {
+    } else {
       return {
-        ok: false,
-        error: "Please verify your email before logging in",
+        ok: true,
+        message: responseBody["message"],
+        user: responseBody["user"],
+        userToken: responseBody["user_token"],
+        sessionToken: responseBody["session_token"],
       };
     }
-
-    // Generate a mock session token, TODO; remove this and replace with actual token generation
-    const sessionToken = generateSessionToken();
-
-    return {
-      ok: true,
-      user: {
-        name: email.split("@")[0],
-        email,
-      },
-      sessionToken,
-    };
   } catch (error) {
     console.error("Authentication error:", error);
     return {
@@ -90,29 +129,32 @@ export const authenticateWithOAuth = async (oauthData) => {
   try {
     console.log(`Authenticating user with ${provider} OAuth`);
 
-    // TODO: remove this and replace with actual API call
-    await new Promise((resolve) => setTimeout(resolve, 800));
-
-    // In the filan implementatino, this would validate the token with the provider
-    // and retrieve the user information from the database
-    // For now, we'll simulate a successful authentication
-    // TODO: remove this and replace with actual token validation
-
-    // For now, we'll decode the token and use the information from it
-    const { jwtDecode } = await import("jwt-decode");
-    const decodedToken = jwtDecode(token);
-
-    // Generate a mock session token
-    const sessionToken = generateSessionToken();
-
-    return {
-      ok: true,
-      user: {
-        name: decodedToken.name || "OAuth User",
-        email: decodedToken.email || "oauth.user@example.com",
+    const response = await fetch(
+      process.env.REACT_APP_API_URL + "/user/authenticate/",
+      {
+        method: "POST", // or "GET", "PUT", etc., depending on your API
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ token: token, provider: provider }),
       },
-      sessionToken,
-    };
+    );
+    const responseBody = await response.json();
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: responseBody["message"],
+      };
+    } else {
+      return {
+        ok: true,
+        message: responseBody["message"],
+        user: response["user"],
+        userToken: response["user_token"],
+        sessionToken: response["session_token"],
+      };
+    }
   } catch (error) {
     console.error(`${provider} OAuth authentication error:`, error);
     return {
@@ -157,7 +199,7 @@ export const getVisualizationData = async () => {
       },
     };
   } catch (error) {
-    console.error("ErrorResponse fetching visualization data:", error);
+    console.error("Error fetching visualization data:", error);
     return {
       ok: false,
       error: "Failed to load visualization data",

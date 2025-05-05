@@ -1,4 +1,5 @@
 from typing import Optional
+from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -16,16 +17,14 @@ class UserExistsPostResponse(MessageResponse):
 
 
 class CreateUserPostResponse(MessageResponse):
-    user_token: str = Field(..., description="user token for authentication")
-    session_token: Optional[str] = Field(
-        None, description="Session token for authentication"
-    )
+    user_id: UUID = Field(..., description="Created user id")
+    session_id: Optional[UUID] = Field(None, description="Created session id")
 
 
 class UserAuthenticatePostResponse(MessageResponse):
-    user_token: str = Field(..., description="user token for authentication")
-    session_token: Optional[str] = Field(
-        None, description="Session token for authentication"
+    user_id: UUID = Field(..., description="User id for authentication")
+    session_id: Optional[UUID] = Field(
+        None, description="Session id for authentication"
     )
     user: UserBase = Field(..., description="User details")  # Uncomment if needed
 

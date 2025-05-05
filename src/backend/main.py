@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from App import App
 from Code4meV2Config import Code4meV2Config
@@ -9,7 +10,18 @@ app = FastAPI(
     description="The complete API for Code4Me V2",
     version="1.0.0",
 )
-App.setup(Code4meV2Config())
+
+config = Code4meV2Config()
+App.setup(config)
+
+# Configure CORS
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=[config.react_app_url],  # Allow specific origin
+#     allow_credentials=True,
+#     allow_methods=["*"],  # Allow all HTTP methods
+#     allow_headers=["*"],  # Allow all headers
+# )
 
 # TODO: Add rate limiting middleware
 # class SimpleRateLimiter(BaseHTTPMiddleware):

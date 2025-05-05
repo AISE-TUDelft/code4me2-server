@@ -3,7 +3,7 @@ BEGIN TRANSACTION;
 
 CREATE TABLE IF NOT EXISTS public."user"
 (
-    token VARCHAR NOT NULL PRIMARY KEY,
+    user_id uuid NOT NULL PRIMARY KEY,
     joined_at timestamp with time zone NOT NULL,
     email VARCHAR UNIQUE NOT NULL,
     name VARCHAR NOT NULL,
@@ -18,13 +18,13 @@ CREATE INDEX IF NOT EXISTS idx_user_email ON public."user" (email);
 CREATE TABLE IF NOT EXISTS public.query
 (
     query_id uuid NOT NULL PRIMARY KEY,
-    user_token VARCHAR,
+    user_id uuid,
     telemetry_id uuid,
     context_id uuid,
     total_serving_time integer,
     "timestamp" timestamp with time zone,
     server_version_id BIGINT,
-    CONSTRAINT unique_user_query UNIQUE (user_token, query_id)
+    CONSTRAINT unique_user_query UNIQUE (user_id, query_id)
 );
 
 CREATE TABLE IF NOT EXISTS public.model_name
@@ -95,8 +95,8 @@ CREATE TABLE IF NOT EXISTS public.telemetry
 
 -- Foreign Key Constraints
 ALTER TABLE public.query
-    ADD CONSTRAINT user_fk FOREIGN KEY (user_token)
-    REFERENCES public."user" (token)
+    ADD CONSTRAINT user_fk FOREIGN KEY (user_id)
+    REFERENCES public."user" (user_id)
     ON UPDATE NO ACTION
     ON DELETE NO ACTION;
 
@@ -149,7 +149,7 @@ ALTER TABLE public.context
     ON DELETE NO ACTION;
 
 -- Indexes on Foreign Keys
-CREATE INDEX idx_query_user_token ON public.query (user_token);
+CREATE INDEX idx_query_user_id ON public.query (user_id);
 CREATE INDEX idx_query_language_id ON public.context (language_id);
 CREATE INDEX idx_query_trigger_type_id ON public.context (trigger_type_id);
 CREATE INDEX idx_query_version_id ON public.context (version_id);
@@ -165,7 +165,7 @@ CREATE INDEX idx_language_id ON public.programming_language (language_id);
 
 -- Indexes on FKs that will speed up the serving process
 CREATE INDEX idx_query_query_id ON public.query (query_id);
-CREATE INDEX idx_user_token ON public."user" (token);
+CREATE INDEX idx_user_id ON public."user" (user_id);
 
 -- Indexes that will speed up analysis
 CREATE INDEX idx_query_id_model_id ON public.had_generation (query_id, model_id);

@@ -21,7 +21,7 @@ from .db import Base
 class User(Base):
     __tablename__ = "user"
     __table_args__ = {"extend_existing": True}
-    token = Column(String, unique=True, primary_key=True, nullable=False)
+    user_id = Column(UUID, unique=True, primary_key=True, nullable=False)
     joined_at = Column(DateTime(timezone=True), nullable=False)
     email = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
@@ -36,7 +36,7 @@ class User(Base):
 class Query(Base):
     __tablename__ = "query"
     query_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("user.token"), index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.user_id"), index=True)
     telemetry_id = Column(UUID(as_uuid=True), ForeignKey("telemetry.telemetry_id"))
     context_id = Column(UUID(as_uuid=True), ForeignKey("context.context_id"))
     total_serving_time = Column(Integer)

@@ -59,7 +59,7 @@ const Login = ({ onSwitchToSignup, onLogin, onGoogleAuth }) => {
       <h2>Login</h2>
       {error && <div className="error-message">{error}</div>}
 
-      {/* Success/ErrorResponse Modal */}
+      {/* Success/Error Modal */}
       <Modal
         isOpen={modal.isOpen}
         onClose={closeModal}

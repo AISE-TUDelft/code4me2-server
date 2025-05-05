@@ -7,7 +7,7 @@ class Code4meV2Config(BaseSettings):
     Simplified configuration for database connection
     """
 
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     survey_link: str = Field(alias="SURVEY_LINK", frozen=True)
     session_length: int = Field(alias="SESSION_LENGTH", frozen=True)
@@ -34,6 +34,7 @@ class Code4meV2Config(BaseSettings):
     access_token_expire_minutes: int = Field(
         alias="ACCESS_TOKEN_EXPIRE_MINUTES", frozen=True
     )
+    react_app_url: str = Field(alias="REACT_APP_URL", frozen=True)
     react_app_api_url: str = Field(alias="REACT_APP_API_URL", frozen=True)
     react_app_google_client_id: str = Field(
         alias="REACT_APP_GOOGLE_CLIENT_ID", frozen=True

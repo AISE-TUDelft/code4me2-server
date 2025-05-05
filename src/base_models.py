@@ -1,10 +1,11 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field
 
 
 class UserBase(BaseModel):
-    token: str = Field(..., description="Unique token for the user")
+    user_id: UUID = Field(..., description="Unique id for the user")
     email: EmailStr = Field(..., description="User's email address")
     name: str = Field(..., description="User's full name")
     joined_at: datetime = Field(..., description="When the user was created")
@@ -20,13 +21,13 @@ class UserBase(BaseModel):
 
 # Query
 class QueryBase(BaseModel):
-    query_id: str
-    user_id: str
-    telemetry_id: str
-    context_id: str
+    query_id: UUID
+    user_id: UUID
+    telemetry_id: UUID
+    context_id: UUID
     total_serving_time: int
     timestamp: str
-    server_version_id: int
+    server_version_id: UUID
 
 
 # Model Name

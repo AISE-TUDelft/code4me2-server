@@ -13,6 +13,7 @@ from backend.models.Responses import (
     ErrorResponse,
     JsonResponseWithStatus,
 )
+from backend.utils import verify_jwt_token
 
 router = APIRouter()
 
@@ -48,8 +49,17 @@ def create_user(
             status_code=409,
             content=ErrorResponse(message="User already exists with this email!"),
         )
+    if isinstance(user_to_create, Queries.CreateUserAuth):
+        verification_result = verify_jwt_token(user_to_create.token)
+        if (
+            verification_result is None
+            or verification_result["email"] != user_to_create.email
+        ):
+            return JsonResponseWithStatus(
+                status_code=422,
+                content=ErrorResponse(message="Invalid or expired token!"),
+            )
 
-    # Create user in database
     user = crud.create_user(db_session, user_to_create)
 
     # TODO: Send verification email
@@ -58,7 +68,8 @@ def create_user(
         status_code=201,
         content=CreateUserPostResponse(
             message="User created successfully. Please check your email for verification.",
-            user_token=user.token,
+            user_id=user.user_id,
+            session_id=None,
         ),
     )
 

@@ -24,15 +24,14 @@ def get_user_by_email(db: Session, email: str) -> Optional[Type[db_schemas.User]
 def create_user(
     db: Session, user: Union[Queries.CreateUser, Queries.CreateUserAuth]
 ) -> db_schemas.User:
-    is_oauth = isinstance(user, Queries.CreateUserAuth)
     # Create user object
     db_user = db_schemas.User(
-        token=user.token if is_oauth else str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
         joined_at=datetime.now().isoformat(),
         email=str(user.email),
         name=user.name,
         password_hash=hash_password(user.password.get_secret_value()),
-        is_oauth_signup=is_oauth,
+        is_oauth_signup=isinstance(user, Queries.CreateUserAuth),
         verified=False,
     )
 
@@ -61,8 +60,8 @@ def create_user(
     #
 
 
-def get_user_by_token(db: Session, token: str) -> Optional[db_schemas.User]:
-    return db.query(db_schemas.User).filter(db_schemas.User.token == token).first()
+def get_user_by_id(db: Session, user_id: str) -> Optional[db_schemas.User]:
+    return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
 
     #
     #
