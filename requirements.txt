@@ -17,6 +17,7 @@ hypothesis~=6.70.0
 # Core Backend
 # -----------------------
 fastapi~=0.115.0
+uvicorn~=0.34.0
 starlette~=0.46.0
 httpx~=0.25.0
 pydantic~=2.11.3
