@@ -50,9 +50,9 @@ coverage:
       coverage_report:
         coverage_format: cobertura
         path: coverage.xml
-      paths:
-        - test-report.xml
-        - coverage.xml
+    paths:
+      - test-report.xml
+      - coverage.xml
     when: always
   allow_failure: true
 # Dependency security check
