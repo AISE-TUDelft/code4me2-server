@@ -8,6 +8,7 @@ const Dashboard = ({ user, onLogout }) => {
   const [visualizationData, setVisualizationData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  console.log(user);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -21,7 +22,7 @@ const Dashboard = ({ user, onLogout }) => {
           setError(response.error || "Failed to load visualization data");
         }
       } catch (err) {
-        console.error("ErrorResponse fetching visualization data:", err);
+        console.error("Error fetching visualization data:", err);
         setError("An unexpected error occurred. Please try again.");
       } finally {
         setIsLoading(false);
@@ -37,7 +38,11 @@ const Dashboard = ({ user, onLogout }) => {
         <h1>Visualization Dashboard</h1>
         <div className="user-info">
           <ThemeToggle />
-          <span>Welcome, {user?.name || user?.email || "User"}</span>
+          <span>
+            {user
+              ? `Welcome, ${user.name || user.email || "User"}`
+              : "Loading user..."}
+          </span>
           <button onClick={onLogout} className="logout-button">
             Logout
           </button>

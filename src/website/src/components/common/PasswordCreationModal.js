@@ -73,7 +73,7 @@ const PasswordCreationModal = ({ isOpen, onClose, googleUser, onSubmit }) => {
         </div>
         <div className="modal-body">
           <p>
-            Welcome, {googleUser?.name || "User"}! To complete your account
+            Welcome, {googleUser.name || "User"}! To complete your account
             setup, please create a password for your account.
           </p>
 

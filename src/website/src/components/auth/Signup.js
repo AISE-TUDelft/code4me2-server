@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import { GoogleLogin } from "@react-oauth/google";
 import "./Auth.css";
 import Modal from "../common/Modal";
-import { createUser, initGoogleOAuth } from "../../utils/auth";
+import { initGoogleOAuth } from "../../utils/auth";
+import { createUser } from "../../utils/api";
 
 const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
   const [name, setName] = useState("");
@@ -76,7 +77,7 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
     try {
       console.log("Signup attempt with:", { name, email });
 
-      // Call the createUser function from auth.js
+      // Call the createUser function from api.js
       const response = await createUser({ name, email, password });
 
       if (response.ok) {
@@ -110,7 +111,7 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
       <h2>Sign Up</h2>
       {error && <div className="error-message">{error}</div>}
 
-      {/* Success/ErrorResponse Modal */}
+      {/* Success/Error Modal */}
       <Modal
         isOpen={modal.isOpen}
         onClose={closeModal}

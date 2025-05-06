@@ -7,7 +7,7 @@ from hypothesis import given, settings, Verbosity
 from hypothesis.strategies import text, none, emails, one_of
 from fastapi.testclient import TestClient
 from src.backend.main import app
-from src.backend.models.Bodies import NewUser
+from src.backend.models.Bodies import CreateUser
 from pydantic import SecretStr
 
 
@@ -36,8 +36,8 @@ class TestCreate:
     def test_create_simple_user(
         self, client, email, name, password, googleId, googleCredential
     ):
-        # Create a NewUser instance with generated values
-        user = NewUser(
+        # Create a CreateUser instance with generated values
+        user = CreateUser(
             email=email,
             name=name,
             password=password,

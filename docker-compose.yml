@@ -1,50 +1,46 @@
 version: "3.9"
 
 services:
-
-  backend-test:
-    build: .
-    container_name: backend-test
-    command: [ "/bin/bash", "-c", "source activate myenv && pip install pytest pytest-cov && python -m pytest tests/test_user_crud.py -v" ]
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/code4meV2
-      - TEST_DATABASE_URL=postgresql://postgres:postgres@test_db:5432/test_db
-    volumes:
-      - .:/app
-
-  test_db:
-    image: postgres:16
-    container_name: postgres_test
-    ports:
-      - "5433:5432"  # Different port to avoid conflicts
-    environment:
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_USER=postgres
-      - POSTGRES_DB=test_db
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-
   db:
     image: postgres:16
     container_name: postgres
     ports:
       - ${DB_PORT}:5432
+    expose:
+      - 5432
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./src/backend/database:/docker-entrypoint-initdb.d
+      - ./src/database:/docker-entrypoint-initdb.d
     environment:
       - POSTGRES_PASSWORD=${DB_PASSWORD}
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_DB=${DB_NAME}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      start_interval: 0s
+      interval: 60s
       timeout: 5s
       retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:8.11
+    container_name: pgadmin
+    ports:
+      - ${PGADMIN_PORT}:80
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:80"]
+      start_interval: 0s
+      interval: 60s
+      timeout: 5s
+      retries: 3
 
   backend:
     build: .
@@ -53,30 +49,33 @@ services:
       [
         "/bin/bash",
         "-c",
-        "source activate myenv && uvicorn src.backend.main:app --host 0.0.0.0 --port 8000 --reload",
+        "source activate myenv && python /app/src/backend/main.py",
       ]
     expose:
-      - 8000
-    environment:
-      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
-    depends_on:
-      db:
-        condition: service_healthy  # Wait for the database to be healthy
+      - ${REACT_APP_BACKEND_PORT}
     volumes:
       - .:/app
-
-  pgadmin:
-    image: dpage/pgadmin4:8.11
-    container_name: pgadmin
-    ports:
-      - ${PGADMIN_PORT}:80
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      - DB_HOST=db
+      - DB_PORT=5432
+      - WEBSITE_HOST=website
+      - WEBSITE_PORT=3000
+      - PYTHONPATH=/app/src
     depends_on:
-      - db
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--spider",
+          "http://localhost:${REACT_APP_BACKEND_PORT}/docs",
+        ]
+      start_interval: 0s
+      interval: 60s
+      timeout: 5s
+      retries: 3
 
   website:
     image: node:18
@@ -86,9 +85,17 @@ services:
     expose:
       - 3000
     volumes:
-      - ./src/website:/website # Mount the website folder to the container
+      - ./src/website:/website
     depends_on:
-      - db
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3000"]
+      start_interval: 0s
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
   nginx:
     image: nginx:1.25
     container_name: nginx
@@ -98,8 +105,14 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
     depends_on:
-      - backend
-      - website
+      website:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      start_interval: 0s
+      interval: 60s
+      timeout: 5s
+      retries: 3
 
 volumes:
   postgres_data:

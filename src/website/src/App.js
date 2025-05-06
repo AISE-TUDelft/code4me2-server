@@ -4,7 +4,6 @@ import Dashboard from "./pages/Dashboard";
 import "./App.css";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { ThemeProvider } from "./context/ThemeContext";
-
 function App() {
   // we manage the state for the uer but setting it to null by default
   const [user, setUser] = useState(null);
@@ -18,7 +17,7 @@ function App() {
       try {
         setUser(JSON.parse(storedUser));
       } catch (error) {
-        console.error("ErrorResponse parsing stored user:", error);
+        console.error("Error parsing stored user:", error);
         localStorage.removeItem("user");
       }
     }
@@ -26,7 +25,7 @@ function App() {
 
   // handleAuthenticated function to set the user state
   const handleAuthenticated = (userData) => {
-    setUser(userData);
+    setUser(userData.user);
     localStorage.setItem("user", JSON.stringify(userData));
   };
 

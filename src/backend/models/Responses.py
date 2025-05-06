@@ -1,33 +1,39 @@
 from typing import Optional
 from uuid import UUID
 
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from src.backend.models.Bodies import User
+from base_models import UserBase
 
 
-class UserExistsPostResponse(BaseModel):
-    exists: Optional[bool] = Field(None, description="Whether the user exists")
+class MessageResponse(BaseModel):
+    message: str = Field(..., description="Response message")
 
 
-class UserNewPostResponse(BaseModel):
-    message: Optional[str] = Field(
-        None,
-        example="User created successfully. Please check your email for verification.",
+class UserExistsPostResponse(MessageResponse):
+    exists: bool = Field(..., description="Whether the user exists")
+
+
+class CreateUserPostResponse(MessageResponse):
+    user_id: UUID = Field(..., description="Created user id")
+    session_id: Optional[UUID] = Field(None, description="Created session id")
+
+
+class UserAuthenticatePostResponse(MessageResponse):
+    user_id: UUID = Field(..., description="User id for authentication")
+    session_id: Optional[UUID] = Field(
+        None, description="Session id for authentication"
     )
-    userId: Optional[UUID] = Field(None, example="123e4567-e89b-12d3-a456-426614174000")
-    sessionToken: Optional[str] = Field(
-        None, description="Session token for authentication"
-    )
+    user: UserBase = Field(..., description="User details")  # Uncomment if needed
 
 
-class UserAuthenticatePostResponse(BaseModel):
-    token: Optional[str] = Field(None, description="JWT token for authentication")
-    sessionToken: Optional[str] = Field(
-        None, description="Session token for authentication"
-    )
-    user: Optional[User] = None
+class ErrorResponse(MessageResponse):
+    pass
 
 
-class ErrorResponse(BaseModel):
-    error: Optional[str] = Field(None, description="ErrorResponse message")
+class JsonResponseWithStatus(JSONResponse):
+    def __init__(self, content: BaseModel, status_code: int):
+        # Convert the Pydantic model to a dict
+        super().__init__(content=jsonable_encoder(content), status_code=status_code)

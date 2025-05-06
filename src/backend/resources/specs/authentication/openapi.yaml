@@ -230,7 +230,7 @@ components:
       properties:
         error:
           type: string
-          description: ErrorResponse message
+          description: Error message
 
   responses:
     BadRequest:

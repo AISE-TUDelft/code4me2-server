@@ -3,8 +3,9 @@ import Login from "./Login";
 import Signup from "./Signup";
 import PasswordCreationModal from "../common/PasswordCreationModal";
 import ThemeToggle from "../common/ThemeToggle";
-import { handleGoogleAuth, createUser } from "../../utils/auth";
+import { handleGoogleAuth } from "../../utils/auth";
 import "./Auth.css";
+import { createUser } from "../../utils/api";
 
 const Auth = ({ onAuthenticated }) => {
   const [isLogin, setIsLogin] = useState(true);
