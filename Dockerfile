@@ -39,6 +39,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN /bin/bash -c "source activate myenv && pip install --no-cache-dir -r requirements.txt"
 
+RUN pip install pytest pytest-cov
+
 # ensure that uvicorn is installed
 RUN /bin/bash -c "source activate myenv && pip install uvicorn"
 
@@ -50,4 +52,4 @@ EXPOSE 8000
 
 # Run the application using Uvicorn
 #CMD ["/bin/bash", "-c", "source activate myenv && uvicorn main:app --host 0.0.0.0 --port 8000"]
-CMD ["/bin/bash", "-c", "source activate myenv && uvicorn backend.main:app --host 0.0.0.0 --port 8000"]
+CMD ["/bin/bash", "-c", "source activate myenv && uvicorn src.backend.main:app --host 0.0.0.0 --port 8000"]

@@ -14,3 +14,8 @@ class CodeConfig(BaseSettings):
         default="postgresql://postgres:postgres@localhost:5432/code4meV2",
         alias="DATABASE_URL",
     )
+
+    test_database_url: str = Field(
+        default="postgresql://postgres:postgres@test_db:5432/code4meV2_test",
+        alias="TEST_DATABASE_URL",
+    )

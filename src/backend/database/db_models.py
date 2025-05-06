@@ -33,7 +33,7 @@ class User(Base):
     verified = Column(Boolean, default=False)
 
     # New field for future designs
-    # queries = relationship('Query', back_populates='user')
+    queries = relationship('Query', back_populates='user')
 
 
 class Query(Base):

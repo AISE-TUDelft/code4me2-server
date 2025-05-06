@@ -1,5 +1,8 @@
-BEGIN TRANSACTION;
+CREATE DATABASE code4meV2_test;
+\c code4meV2_test;
 
+-- Apply the same schema as the main database
+BEGIN TRANSACTION;
 
 CREATE TABLE IF NOT EXISTS public."user"
 (
@@ -11,9 +14,6 @@ CREATE TABLE IF NOT EXISTS public."user"
     is_google_signup BOOLEAN DEFAULT FALSE,
     verified BOOLEAN DEFAULT FALSE
 );
-
--- Add index on email if it's not there already
---CREATE INDEX IF NOT EXISTS idx_user_email ON public."user" (email);
 
 CREATE TABLE IF NOT EXISTS public.query
 (
@@ -201,6 +201,5 @@ INSERT INTO public.trigger_type (trigger_type_name) VALUES ('man'), ('auto'), ('
 -- we can later add the actual plugin versions
 INSERT INTO public.plugin_version (version_name, ide_type, description) VALUES ('0.0.1j', 'JetBrains', 'the mvp version of the plugin'),
                                                                                ('0.0.1v', 'VSCode', 'the mvp version of the plugin');
-
 
 COMMIT;
