@@ -34,8 +34,7 @@ class QueryBase(BaseModel):
 class ModelNameBase(BaseModel):
     model_name: str
 
-    class Config:
-        protected_namespaces = ()
+    model_config = {"protected_namespaces": ()}
 
 
 # Plugin Version

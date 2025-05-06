@@ -1,11 +1,11 @@
+import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from App import App
 from Code4meV2Config import Code4meV2Config
 from backend.routers import router
-import uvicorn
-from dotenv import load_dotenv
 
 load_dotenv()
 app = FastAPI(

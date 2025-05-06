@@ -2,7 +2,8 @@
 stages:
   - lint
   - black
-  #  - test Uncomment if you want to run tests. make sure to also uncomment the test stage in the pipeline
+  #  - Uncomment if you want to run tests. make sure to also uncomment the test stage in the pipeline
+  - test
   - security
 
 # Cache node_modules for faster builds
@@ -37,17 +38,17 @@ black:
     when: always
 
 ## Test coverage checks for python files
-#coverage:
-#  stage: test
-#  image: python:3.11-slim
-#  script:
-#    - pip install -r requirements.txt
-#    - pytest --cov=./backend --cov-report=xml
-#  artifacts:
-#    paths:
-#      - test-report.xml
-#    when: always
-#  allow_failure: true
+coverage:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - pip install -r requirements.txt
+    - pytest tests --cov=./src/backend --cov-report=xml
+  artifacts:
+    paths:
+      - test-report.xml
+    when: always
+  allow_failure: true
 # Dependency security check
 dependency-scan:
   stage: security

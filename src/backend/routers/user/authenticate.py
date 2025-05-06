@@ -3,32 +3,34 @@ from typing import Union
 
 from fastapi import APIRouter
 from fastapi import Depends
-from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlalchemy.orm import Session
 
 import database.crud as crud
 from App import App
 from Queries import AuthenticateUserEmailPassword, AuthenticateUserOAuth
 from backend.models.Responses import (
-    ErrorResponse,
-    JsonResponseWithStatus,
+    AuthenticateUserPostResponse,
 )
 from backend.models.Responses import (
-    UserAuthenticatePostResponse,
+    ErrorResponse,
+    JsonResponseWithStatus,
+    AuthenticateUserNormalPostResponse,
+    AuthenticateUserOAuthPostResponse,
+    InvalidOrExpiredToken,
+    InvalidEmailOrPassword,
 )
 from backend.utils import verify_jwt_token
 from base_models import UserBase
-from utils import hash_password
 
 router = APIRouter()
 
 
 @router.post(
     "/",
-    response_model=UserAuthenticatePostResponse,
+    response_model=AuthenticateUserPostResponse,
     responses={
-        "200": {"model": UserAuthenticatePostResponse},
-        "401": {"model": ErrorResponse},
+        "200": {"model": AuthenticateUserPostResponse},
+        "401": {"model": Union[InvalidOrExpiredToken, InvalidEmailOrPassword]},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": ErrorResponse},
@@ -54,57 +56,44 @@ def authenticate_user(
     logging.log(logging.INFO, f"Authenticating user {user_to_authenticate}")
     if isinstance(user_to_authenticate, AuthenticateUserOAuth):
         # OAuth Authentication
-        try:
-            verification_result = verify_jwt_token(user_to_authenticate.token)
-            if verification_result is None:
-                return JsonResponseWithStatus(
-                    status_code=422,
-                    content=ErrorResponse(message="Invalid or expired token!"),
-                )
-            found_user = crud.get_user_by_email(
-                db_session, verification_result["email"]
-            )
-            if not found_user:
-                return JsonResponseWithStatus(
-                    status_code=401,
-                    content=ErrorResponse(message="Invalid token"),
-                )
-            else:
-                return JsonResponseWithStatus(
-                    status_code=200,
-                    content=UserAuthenticatePostResponse(
-                        message="User authenticated successfully via OAuth",
-                        user_id=found_user.user_id,
-                        session_id=None,
-                        user=UserBase.model_validate(found_user),
-                    ),
-                )
-        except ExpiredSignatureError:
-            logging.log(logging.INFO, f"Expired JWT: {user_to_authenticate.token}")
-            return JsonResponseWithStatus(
-                status_code=401, content=ErrorResponse(message="Token has expired")
-            )
-        except InvalidTokenError:
-            logging.log(logging.INFO, f"Invalid JWT: {user_to_authenticate.token}")
-            return JsonResponseWithStatus(
-                status_code=401, content=ErrorResponse(message="Invalid token")
-            )
-
-    else:
-        # Email/Password Authentication
-        found_user = crud.get_user_by_email(db_session, str(user_to_authenticate.email))
-        if not found_user or found_user.password_hash != hash_password(
-            user_to_authenticate.password.get_secret_value()
-        ):
+        verification_result = verify_jwt_token(user_to_authenticate.token)
+        if verification_result is None:
             return JsonResponseWithStatus(
                 status_code=401,
-                content=ErrorResponse(message="Invalid email or password"),
+                content=InvalidOrExpiredToken(),
+            )
+        found_user = crud.get_user_by_email(db_session, verification_result["email"])
+        if not found_user:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredToken(),
             )
         else:
             return JsonResponseWithStatus(
                 status_code=200,
-                content=UserAuthenticatePostResponse(
-                    message="User authenticated successfully via email and password",
+                content=AuthenticateUserOAuthPostResponse(
+                    user_id=found_user.user_id,
+                    session_id=None,
+                    user=UserBase.model_validate(found_user),
+                ),
+            )
+
+    else:
+        # Email/Password Authentication
+        found_user = crud.get_user_by_email_password(
+            db_session,
+            str(user_to_authenticate.email),
+            user_to_authenticate.password.get_secret_value(),
+        )
+        if not found_user:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidEmailOrPassword(),
+            )
+        else:
+            return JsonResponseWithStatus(
+                status_code=200,
+                content=AuthenticateUserNormalPostResponse(
                     user_id=found_user.user_id,
                     session_id=None,
                     user=UserBase.model_validate(found_user),
