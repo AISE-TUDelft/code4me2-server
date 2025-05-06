@@ -2,10 +2,10 @@ version: "3.9"
 
 services:
 
-  backend-test:
+  db_tests:
     build: .
-    container_name: backend-test
-    command: [ "/bin/bash", "-c", "source activate myenv && pip install pytest pytest-cov && python -m pytest tests/database/test_user_crud.py -v" ]
+    container_name: db_tests
+    command: [ "/bin/bash", "-c", "source activate myenv && pip install pytest pytest-cov && python -m pytest tests/database_tests/test_user_crud.py -v" ]
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/code4meV2
       - TEST_DATABASE_URL=postgresql://postgres:postgres@test_db:5432/test_db
