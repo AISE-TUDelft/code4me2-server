@@ -43,7 +43,7 @@ coverage:
   image: python:3.11-slim
   script:
     - pip install -r requirements.txt
-    - pytest tests --cov=./src/backend --cov-report=xml
+    - pytest tests --cov=./src/backend --cov-report=xml --junitxml=test-report.xml
   artifacts:
     paths:
       - test-report.xml
