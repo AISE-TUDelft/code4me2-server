@@ -45,8 +45,14 @@ coverage:
     - pip install -r requirements.txt
     - pytest tests --cov=./src/backend --cov-report=xml --junitxml=test-report.xml
   artifacts:
-    paths:
-      - test-report.xml
+    reports:
+      junit: test-report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+      paths:
+        - test-report.xml
+        - coverage.xml
     when: always
   allow_failure: true
 # Dependency security check
