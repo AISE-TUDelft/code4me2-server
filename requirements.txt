@@ -31,8 +31,7 @@ python-dotenv~=1.0.1
 # -----------------------
 SQLAlchemy~=2.0.30
 psycopg_binary~=3.2.1
-# psycopg2-binary~=2.9.9  # Optional: Use only one PostgreSQL driver
-
+psycopg2-binary~=2.9.9
 # -----------------------
 # Auth & Security
 # -----------------------
