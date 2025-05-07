@@ -25,7 +25,6 @@ from Queries import (
 router = APIRouter()
 
 
-
 @router.post(
     "/",
     response_model=CompletionResponse,
@@ -38,8 +37,8 @@ router = APIRouter()
     },
 )
 def request_completion(
-        completion_request: CompletionRequest,
-        db_session: Session = Depends(App.get_db_session),
+    completion_request: CompletionRequest,
+    db_session: Session = Depends(App.get_db_session),
 ) -> JsonResponseWithStatus:
     """
     Request code completions based on provided context.
@@ -51,8 +50,7 @@ def request_completion(
         user = crud.get_user_by_id(db_session, str(completion_request.user_id))
         if not user:
             return JsonResponseWithStatus(
-                status_code=404,
-                content=ErrorResponse(message="User not found")
+                status_code=404, content=ErrorResponse(message="User not found")
             )
 
         # Create context
@@ -63,7 +61,7 @@ def request_completion(
             suffix=completion_request.suffix,
             language_id=completion_request.language_id,
             trigger_type_id=completion_request.trigger_type_id,
-            version_id=completion_request.version_id
+            version_id=completion_request.version_id,
         )
         crud.add_context(db_session, context_create)
 
@@ -74,7 +72,7 @@ def request_completion(
             time_since_last_completion=completion_request.time_since_last_completion,
             typing_speed=completion_request.typing_speed,
             document_char_length=completion_request.document_char_length,
-            relative_document_position=completion_request.relative_document_position
+            relative_document_position=completion_request.relative_document_position,
         )
         crud.add_telemetry(db_session, telemetry_create)
 
@@ -108,7 +106,7 @@ def request_completion(
                 shown_at=[current_time],
                 was_accepted=False,
                 confidence=confidence,
-                logprobs=logprobs
+                logprobs=logprobs,
             )
             crud.add_generation(db_session, generation_create)
 
@@ -118,7 +116,7 @@ def request_completion(
                     model_id=model_id,
                     model_name=model.model_name,
                     completion=completion_text,
-                    confidence=confidence
+                    confidence=confidence,
                 )
             )
 
@@ -134,7 +132,7 @@ def request_completion(
             context_id=context_id,
             timestamp=current_time,
             total_serving_time=total_serving_time,
-            server_version_id=App.get_config().server_version_id
+            server_version_id=App.get_config().server_version_id,
         )
         crud.add_query(db_session, query_create)
 
@@ -143,11 +141,8 @@ def request_completion(
             status_code=200,
             content=CompletionResponse(
                 message="Completions generated successfully",
-                data=CompletionResponseData(
-                    query_id=query_id,
-                    completions=completions
-                )
-            )
+                data=CompletionResponseData(query_id=query_id, completions=completions),
+            ),
         )
 
     except Exception as e:
@@ -155,5 +150,5 @@ def request_completion(
         db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,
-            content=ErrorResponse(message=f"Failed to generate completions: {str(e)}")
+            content=ErrorResponse(message=f"Failed to generate completions: {str(e)}"),
         )

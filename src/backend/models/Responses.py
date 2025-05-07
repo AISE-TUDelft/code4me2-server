@@ -40,7 +40,7 @@ class JsonResponseWithStatus(JSONResponse):
 
 
 # New response models for completions
-#TODO Decide to remain here or in elsewhere
+# TODO Decide to remain here or in elsewhere
 class CompletionItem(BaseModel):
     model_id: int = Field(..., description="Model ID")
     model_name: str = Field(..., description="Model name")

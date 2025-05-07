@@ -27,8 +27,8 @@ router = APIRouter()
     },
 )
 def get_completions_by_query(
-        query_id: UUID,
-        db_session: Session = Depends(App.get_db_session),
+    query_id: UUID,
+    db_session: Session = Depends(App.get_db_session),
 ) -> JsonResponseWithStatus:
     """
     Get completions for a specific query ID.
@@ -40,8 +40,7 @@ def get_completions_by_query(
         query = crud.get_query_by_id(db_session, str(query_id))
         if not query:
             return JsonResponseWithStatus(
-                status_code=404,
-                content=ErrorResponse(message="Query not found")
+                status_code=404, content=ErrorResponse(message="Query not found")
             )
 
         # Get all generations for this query
@@ -49,7 +48,7 @@ def get_completions_by_query(
         if not generations:
             return JsonResponseWithStatus(
                 status_code=404,
-                content=ErrorResponse(message="No completions found for this query")
+                content=ErrorResponse(message="No completions found for this query"),
             )
 
         # Build response
@@ -62,7 +61,7 @@ def get_completions_by_query(
                     model_id=generation.model_id,
                     model_name=model.model_name if model else "Unknown Model",
                     completion=generation.completion,
-                    confidence=generation.confidence
+                    confidence=generation.confidence,
                 )
             )
 
@@ -70,16 +69,13 @@ def get_completions_by_query(
             status_code=200,
             content=CompletionResponse(
                 message="Completions retrieved successfully",
-                data=CompletionResponseData(
-                    query_id=query_id,
-                    completions=completions
-                )
-            )
+                data=CompletionResponseData(query_id=query_id, completions=completions),
+            ),
         )
 
     except Exception as e:
         logging.error(f"Error retrieving completions: {str(e)}")
         return JsonResponseWithStatus(
             status_code=500,
-            content=ErrorResponse(message=f"Failed to retrieve completions: {str(e)}")
+            content=ErrorResponse(message=f"Failed to retrieve completions: {str(e)}"),
         )

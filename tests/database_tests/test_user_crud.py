@@ -1,6 +1,7 @@
 """
 Tests for user CRUD operations in the database module.
 """
+
 import os
 import pytest
 from sqlalchemy import create_engine
@@ -16,7 +17,9 @@ from src.utils import hash_password
 
 
 # Get test database URL from environment or use default for Docker
-TEST_DB_URL = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@test_db:5432/test_db")
+TEST_DB_URL = os.getenv(
+    "TEST_DATABASE_URL", "postgresql://postgres:postgres@test_db:5432/test_db"
+)
 
 
 @pytest.fixture(scope="function")
@@ -57,9 +60,7 @@ def test_create_and_get_user_by_email(db_session):
     # Create test user data using CreateUser
     user_email = "test@example.com"
     user_data = CreateUser(
-        email=user_email,
-        name="Test User",
-        password="securepassword123"
+        email=user_email, name="Test User", password="securepassword123"
     )
 
     # Create user in the database
@@ -90,7 +91,7 @@ def test_create_user_with_oauth(db_session):
         name="OAuth User",
         password="securepassword456",
         token="mock_oauth_token",
-        provider=Provider.google
+        provider=Provider.google,
     )
 
     # Create user in the database
@@ -111,9 +112,7 @@ def test_get_user_by_id(db_session):
     # Create test user data
     user_email = "id_test@example.com"
     user_data = CreateUser(
-        email=user_email,
-        name="ID Test User",
-        password="secureidpassword"
+        email=user_email, name="ID Test User", password="secureidpassword"
     )
 
     # Create user in the database
@@ -149,11 +148,7 @@ def test_password_hashing(db_session):
     # Create test user data
     user_email = "hash_test@example.com"
     password = "SecurePassword123"
-    user_data = CreateUser(
-        email=user_email,
-        name="Hash Test User",
-        password=password
-    )
+    user_data = CreateUser(email=user_email, name="Hash Test User", password=password)
 
     # Create user in the database
     created_user = crud.create_user(db_session, user_data)
@@ -171,15 +166,15 @@ def test_create_multiple_users(db_session):
     # Create test user data for multiple users
     users_data = [
         CreateUser(
-            email=f"user{i}@example.com",
-            name=f"Test User {i}",
-            password=f"password{i}"
+            email=f"user{i}@example.com", name=f"Test User {i}", password=f"password{i}"
         )
         for i in range(1, 4)  # Create 3 users
     ]
 
     # Create users in the database
-    created_users = [crud.create_user(db_session, user_data) for user_data in users_data]
+    created_users = [
+        crud.create_user(db_session, user_data) for user_data in users_data
+    ]
 
     # Verify all users were created
     assert len(created_users) == 3
@@ -217,11 +212,13 @@ from src.Queries import (
     TelemetryCreate,
     QueryCreate,
     GenerationCreate,
-    GroundTruthCreate
+    GroundTruthCreate,
 )
 
 # Get test database URL from environment or use default for Docker
-TEST_DB_URL = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@test_db:5432/test_db")
+TEST_DB_URL = os.getenv(
+    "TEST_DATABASE_URL", "postgresql://postgres:postgres@test_db:5432/test_db"
+)
 
 
 @pytest.fixture(scope="function")
@@ -256,7 +253,7 @@ def setup_reference_data(db_session):
     if db_session.query(db_schemas.ModelName).count() == 0:
         models = [
             db_schemas.ModelName(model_id=1, model_name="deepseek-1.3b"),
-            db_schemas.ModelName(model_id=2, model_name="starcoder2-3b")
+            db_schemas.ModelName(model_id=2, model_name="starcoder2-3b"),
         ]
         db_session.add_all(models)
 
@@ -264,7 +261,7 @@ def setup_reference_data(db_session):
     if db_session.query(db_schemas.ProgrammingLanguage).count() == 0:
         languages = [
             db_schemas.ProgrammingLanguage(language_id=1, language_name="python"),
-            db_schemas.ProgrammingLanguage(language_id=2, language_name="javascript")
+            db_schemas.ProgrammingLanguage(language_id=2, language_name="javascript"),
         ]
         db_session.add_all(languages)
 
@@ -273,14 +270,19 @@ def setup_reference_data(db_session):
         trigger_types = [
             db_schemas.TriggerType(trigger_type_id=1, trigger_type_name="manual"),
             db_schemas.TriggerType(trigger_type_id=2, trigger_type_name="auto"),
-            db_schemas.TriggerType(trigger_type_id=3, trigger_type_name="idle")
+            db_schemas.TriggerType(trigger_type_id=3, trigger_type_name="idle"),
         ]
         db_session.add_all(trigger_types)
 
     # Add plugin versions if they don't exist
     if db_session.query(db_schemas.PluginVersion).count() == 0:
         versions = [
-            db_schemas.PluginVersion(version_id=1, version_name="0.0.1v", ide_type="VSCode", description="Test version")
+            db_schemas.PluginVersion(
+                version_id=1,
+                version_name="0.0.1v",
+                ide_type="VSCode",
+                description="Test version",
+            )
         ]
         db_session.add_all(versions)
 
@@ -298,7 +300,7 @@ def test_user(db_session):
         password_hash="hashed_password",
         joined_at=datetime.now(),
         verified=True,
-        is_oauth_signup=False
+        is_oauth_signup=False,
     )
     db_session.add(user)
     db_session.commit()
@@ -316,7 +318,7 @@ def test_add_context(db_session, setup_reference_data):
         suffix="    pass",
         language_id=1,  # Python
         trigger_type_id=1,  # Manual
-        version_id=1  # VSCode
+        version_id=1,  # VSCode
     )
 
     # Create context in the database
@@ -341,7 +343,7 @@ def test_add_telemetry(db_session):
         time_since_last_completion=5000,
         typing_speed=300,
         document_char_length=500,
-        relative_document_position=0.7
+        relative_document_position=0.7,
     )
 
     # Create telemetry in the database
@@ -366,7 +368,7 @@ def test_add_query(db_session, test_user, setup_reference_data):
         suffix="    return True",
         language_id=1,
         trigger_type_id=1,
-        version_id=1
+        version_id=1,
     )
     context = crud.add_context(db_session, context_data)
 
@@ -376,7 +378,7 @@ def test_add_query(db_session, test_user, setup_reference_data):
         time_since_last_completion=3000,
         typing_speed=250,
         document_char_length=400,
-        relative_document_position=0.5
+        relative_document_position=0.5,
     )
     telemetry = crud.add_telemetry(db_session, telemetry_data)
 
@@ -390,7 +392,7 @@ def test_add_query(db_session, test_user, setup_reference_data):
         context_id=context_id,
         timestamp=current_time,
         total_serving_time=150,
-        server_version_id=1
+        server_version_id=1,
     )
 
     # Create query in the database
@@ -410,34 +412,43 @@ def test_add_generation(db_session, test_user, setup_reference_data):
     """Test creating a generation record"""
     # First create context, telemetry, and query
     context_id = uuid.uuid4()
-    context = crud.add_context(db_session, ContextCreate(
-        context_id=context_id,
-        prefix="def generate_test():",
-        suffix="    pass",
-        language_id=1,
-        trigger_type_id=1,
-        version_id=1
-    ))
+    context = crud.add_context(
+        db_session,
+        ContextCreate(
+            context_id=context_id,
+            prefix="def generate_test():",
+            suffix="    pass",
+            language_id=1,
+            trigger_type_id=1,
+            version_id=1,
+        ),
+    )
 
     telemetry_id = uuid.uuid4()
-    telemetry = crud.add_telemetry(db_session, TelemetryCreate(
-        telemetry_id=telemetry_id,
-        time_since_last_completion=2000,
-        typing_speed=200,
-        document_char_length=300,
-        relative_document_position=0.3
-    ))
+    telemetry = crud.add_telemetry(
+        db_session,
+        TelemetryCreate(
+            telemetry_id=telemetry_id,
+            time_since_last_completion=2000,
+            typing_speed=200,
+            document_char_length=300,
+            relative_document_position=0.3,
+        ),
+    )
 
     query_id = uuid.uuid4()
-    query = crud.add_query(db_session, QueryCreate(
-        query_id=query_id,
-        user_id=test_user.user_id,
-        telemetry_id=telemetry_id,
-        context_id=context_id,
-        timestamp=datetime.now().isoformat(),
-        total_serving_time=100,
-        server_version_id=1
-    ))
+    query = crud.add_query(
+        db_session,
+        QueryCreate(
+            query_id=query_id,
+            user_id=test_user.user_id,
+            telemetry_id=telemetry_id,
+            context_id=context_id,
+            timestamp=datetime.now().isoformat(),
+            total_serving_time=100,
+            server_version_id=1,
+        ),
+    )
 
     # Create generation data
     current_time = datetime.now().isoformat()
@@ -449,7 +460,7 @@ def test_add_generation(db_session, test_user, setup_reference_data):
         shown_at=[current_time],
         was_accepted=False,
         confidence=0.85,
-        logprobs=[-0.05, -0.1, -0.15]
+        logprobs=[-0.05, -0.1, -0.15],
     )
 
     # Create generation in the database
@@ -459,7 +470,10 @@ def test_add_generation(db_session, test_user, setup_reference_data):
     assert created_generation is not None
     assert str(created_generation.query_id) == str(query_id)
     assert created_generation.model_id == 1
-    assert created_generation.completion == "def generate_test():\n    return 'Test passed!'"
+    assert (
+        created_generation.completion
+        == "def generate_test():\n    return 'Test passed!'"
+    )
     assert created_generation.generation_time == 50
     assert len(created_generation.shown_at) == 1
     assert created_generation.was_accepted is False
@@ -471,52 +485,61 @@ def test_update_generation_acceptance(db_session, test_user, setup_reference_dat
     """Test updating a generation's acceptance status"""
     # First create all necessary records
     context_id = uuid.uuid4()
-    context = crud.add_context(db_session, ContextCreate(
-        context_id=context_id,
-        prefix="def update_test():",
-        suffix="    pass",
-        language_id=1,
-        trigger_type_id=1,
-        version_id=1
-    ))
+    context = crud.add_context(
+        db_session,
+        ContextCreate(
+            context_id=context_id,
+            prefix="def update_test():",
+            suffix="    pass",
+            language_id=1,
+            trigger_type_id=1,
+            version_id=1,
+        ),
+    )
 
     telemetry_id = uuid.uuid4()
-    telemetry = crud.add_telemetry(db_session, TelemetryCreate(
-        telemetry_id=telemetry_id,
-        time_since_last_completion=1500,
-        typing_speed=180,
-        document_char_length=250,
-        relative_document_position=0.4
-    ))
+    telemetry = crud.add_telemetry(
+        db_session,
+        TelemetryCreate(
+            telemetry_id=telemetry_id,
+            time_since_last_completion=1500,
+            typing_speed=180,
+            document_char_length=250,
+            relative_document_position=0.4,
+        ),
+    )
 
     query_id = uuid.uuid4()
-    query = crud.add_query(db_session, QueryCreate(
-        query_id=query_id,
-        user_id=test_user.user_id,
-        telemetry_id=telemetry_id,
-        context_id=context_id,
-        timestamp=datetime.now().isoformat(),
-        total_serving_time=120,
-        server_version_id=1
-    ))
+    query = crud.add_query(
+        db_session,
+        QueryCreate(
+            query_id=query_id,
+            user_id=test_user.user_id,
+            telemetry_id=telemetry_id,
+            context_id=context_id,
+            timestamp=datetime.now().isoformat(),
+            total_serving_time=120,
+            server_version_id=1,
+        ),
+    )
 
-    generation = crud.add_generation(db_session, GenerationCreate(
-        query_id=query_id,
-        model_id=1,
-        completion="def update_test():\n    return 'Update successful!'",
-        generation_time=60,
-        shown_at=[datetime.now().isoformat()],
-        was_accepted=False,
-        confidence=0.9,
-        logprobs=[-0.02, -0.05, -0.1]
-    ))
+    generation = crud.add_generation(
+        db_session,
+        GenerationCreate(
+            query_id=query_id,
+            model_id=1,
+            completion="def update_test():\n    return 'Update successful!'",
+            generation_time=60,
+            shown_at=[datetime.now().isoformat()],
+            was_accepted=False,
+            confidence=0.9,
+            logprobs=[-0.02, -0.05, -0.1],
+        ),
+    )
 
     # Update the generation's acceptance status
     updated_generation = crud.update_generation_acceptance(
-        db_session,
-        str(query_id),
-        1,  # model_id
-        True  # was_accepted
+        db_session, str(query_id), 1, True  # model_id  # was_accepted
     )
 
     # Verify the update was successful
@@ -528,41 +551,50 @@ def test_add_ground_truth(db_session, test_user, setup_reference_data):
     """Test creating a ground truth record"""
     # First create necessary records
     context_id = uuid.uuid4()
-    context = crud.add_context(db_session, ContextCreate(
-        context_id=context_id,
-        prefix="def ground_truth_test():",
-        suffix="    pass",
-        language_id=1,
-        trigger_type_id=1,
-        version_id=1
-    ))
+    context = crud.add_context(
+        db_session,
+        ContextCreate(
+            context_id=context_id,
+            prefix="def ground_truth_test():",
+            suffix="    pass",
+            language_id=1,
+            trigger_type_id=1,
+            version_id=1,
+        ),
+    )
 
     telemetry_id = uuid.uuid4()
-    telemetry = crud.add_telemetry(db_session, TelemetryCreate(
-        telemetry_id=telemetry_id,
-        time_since_last_completion=2200,
-        typing_speed=220,
-        document_char_length=320,
-        relative_document_position=0.6
-    ))
+    telemetry = crud.add_telemetry(
+        db_session,
+        TelemetryCreate(
+            telemetry_id=telemetry_id,
+            time_since_last_completion=2200,
+            typing_speed=220,
+            document_char_length=320,
+            relative_document_position=0.6,
+        ),
+    )
 
     query_id = uuid.uuid4()
-    query = crud.add_query(db_session, QueryCreate(
-        query_id=query_id,
-        user_id=test_user.user_id,
-        telemetry_id=telemetry_id,
-        context_id=context_id,
-        timestamp=datetime.now().isoformat(),
-        total_serving_time=110,
-        server_version_id=1
-    ))
+    query = crud.add_query(
+        db_session,
+        QueryCreate(
+            query_id=query_id,
+            user_id=test_user.user_id,
+            telemetry_id=telemetry_id,
+            context_id=context_id,
+            timestamp=datetime.now().isoformat(),
+            total_serving_time=110,
+            server_version_id=1,
+        ),
+    )
 
     # Create ground truth data
     current_time = datetime.now().isoformat()
     ground_truth_data = GroundTruthCreate(
         query_id=query_id,
         truth_timestamp=current_time,
-        ground_truth="def ground_truth_test():\n    print('This is the actual code the user wrote')\n    return True"
+        ground_truth="def ground_truth_test():\n    print('This is the actual code the user wrote')\n    return True",
     )
 
     # Create ground truth in the database
@@ -571,41 +603,53 @@ def test_add_ground_truth(db_session, test_user, setup_reference_data):
     # Verify the ground truth was created correctly
     assert created_ground_truth is not None
     assert str(created_ground_truth.query_id) == str(query_id)
-    assert created_ground_truth.ground_truth == "def ground_truth_test():\n    print('This is the actual code the user wrote')\n    return True"
+    assert (
+        created_ground_truth.ground_truth
+        == "def ground_truth_test():\n    print('This is the actual code the user wrote')\n    return True"
+    )
 
 
 def test_get_query_by_id(db_session, test_user, setup_reference_data):
     """Test retrieving a query by ID"""
     # First create necessary records
     context_id = uuid.uuid4()
-    context = crud.add_context(db_session, ContextCreate(
-        context_id=context_id,
-        prefix="def get_query_test():",
-        suffix="    pass",
-        language_id=1,
-        trigger_type_id=1,
-        version_id=1
-    ))
+    context = crud.add_context(
+        db_session,
+        ContextCreate(
+            context_id=context_id,
+            prefix="def get_query_test():",
+            suffix="    pass",
+            language_id=1,
+            trigger_type_id=1,
+            version_id=1,
+        ),
+    )
 
     telemetry_id = uuid.uuid4()
-    telemetry = crud.add_telemetry(db_session, TelemetryCreate(
-        telemetry_id=telemetry_id,
-        time_since_last_completion=1800,
-        typing_speed=190,
-        document_char_length=280,
-        relative_document_position=0.45
-    ))
+    telemetry = crud.add_telemetry(
+        db_session,
+        TelemetryCreate(
+            telemetry_id=telemetry_id,
+            time_since_last_completion=1800,
+            typing_speed=190,
+            document_char_length=280,
+            relative_document_position=0.45,
+        ),
+    )
 
     query_id = uuid.uuid4()
-    query = crud.add_query(db_session, QueryCreate(
-        query_id=query_id,
-        user_id=test_user.user_id,
-        telemetry_id=telemetry_id,
-        context_id=context_id,
-        timestamp=datetime.now().isoformat(),
-        total_serving_time=130,
-        server_version_id=1
-    ))
+    query = crud.add_query(
+        db_session,
+        QueryCreate(
+            query_id=query_id,
+            user_id=test_user.user_id,
+            telemetry_id=telemetry_id,
+            context_id=context_id,
+            timestamp=datetime.now().isoformat(),
+            total_serving_time=130,
+            server_version_id=1,
+        ),
+    )
 
     # Get the query by ID
     retrieved_query = crud.get_query_by_id(db_session, str(query_id))
@@ -634,57 +678,72 @@ def test_get_generations_by_query_id(db_session, test_user, setup_reference_data
     """Test retrieving all generations for a query"""
     # First create necessary records
     context_id = uuid.uuid4()
-    context = crud.add_context(db_session, ContextCreate(
-        context_id=context_id,
-        prefix="def get_generations_test():",
-        suffix="    pass",
-        language_id=1,
-        trigger_type_id=1,
-        version_id=1
-    ))
+    context = crud.add_context(
+        db_session,
+        ContextCreate(
+            context_id=context_id,
+            prefix="def get_generations_test():",
+            suffix="    pass",
+            language_id=1,
+            trigger_type_id=1,
+            version_id=1,
+        ),
+    )
 
     telemetry_id = uuid.uuid4()
-    telemetry = crud.add_telemetry(db_session, TelemetryCreate(
-        telemetry_id=telemetry_id,
-        time_since_last_completion=1600,
-        typing_speed=185,
-        document_char_length=270,
-        relative_document_position=0.48
-    ))
+    telemetry = crud.add_telemetry(
+        db_session,
+        TelemetryCreate(
+            telemetry_id=telemetry_id,
+            time_since_last_completion=1600,
+            typing_speed=185,
+            document_char_length=270,
+            relative_document_position=0.48,
+        ),
+    )
 
     query_id = uuid.uuid4()
-    query = crud.add_query(db_session, QueryCreate(
-        query_id=query_id,
-        user_id=test_user.user_id,
-        telemetry_id=telemetry_id,
-        context_id=context_id,
-        timestamp=datetime.now().isoformat(),
-        total_serving_time=125,
-        server_version_id=1
-    ))
+    query = crud.add_query(
+        db_session,
+        QueryCreate(
+            query_id=query_id,
+            user_id=test_user.user_id,
+            telemetry_id=telemetry_id,
+            context_id=context_id,
+            timestamp=datetime.now().isoformat(),
+            total_serving_time=125,
+            server_version_id=1,
+        ),
+    )
 
     # Create two generations for the same query
-    generation1 = crud.add_generation(db_session, GenerationCreate(
-        query_id=query_id,
-        model_id=1,  # deepseek-1.3b
-        completion="def get_generations_test():\n    return 'Model 1'",
-        generation_time=55,
-        shown_at=[datetime.now().isoformat()],
-        was_accepted=False,
-        confidence=0.88,
-        logprobs=[-0.03, -0.06, -0.09]
-    ))
+    generation1 = crud.add_generation(
+        db_session,
+        GenerationCreate(
+            query_id=query_id,
+            model_id=1,  # deepseek-1.3b
+            completion="def get_generations_test():\n    return 'Model 1'",
+            generation_time=55,
+            shown_at=[datetime.now().isoformat()],
+            was_accepted=False,
+            confidence=0.88,
+            logprobs=[-0.03, -0.06, -0.09],
+        ),
+    )
 
-    generation2 = crud.add_generation(db_session, GenerationCreate(
-        query_id=query_id,
-        model_id=2,  # starcoder2-3b
-        completion="def get_generations_test():\n    return 'Model 2'",
-        generation_time=65,
-        shown_at=[datetime.now().isoformat()],
-        was_accepted=False,
-        confidence=0.92,
-        logprobs=[-0.02, -0.04, -0.08]
-    ))
+    generation2 = crud.add_generation(
+        db_session,
+        GenerationCreate(
+            query_id=query_id,
+            model_id=2,  # starcoder2-3b
+            completion="def get_generations_test():\n    return 'Model 2'",
+            generation_time=65,
+            shown_at=[datetime.now().isoformat()],
+            was_accepted=False,
+            confidence=0.92,
+            logprobs=[-0.02, -0.04, -0.08],
+        ),
+    )
 
     # Get generations by query ID
     retrieved_generations = crud.get_generations_by_query_id(db_session, str(query_id))
@@ -699,67 +758,82 @@ def test_get_generations_by_query_id(db_session, test_user, setup_reference_data
     assert 2 in model_ids
 
 
-def test_get_generations_by_query_and_model_id(db_session, test_user, setup_reference_data):
+def test_get_generations_by_query_and_model_id(
+    db_session, test_user, setup_reference_data
+):
     """Test retrieving a specific generation by query ID and model ID"""
     # First create necessary records
     context_id = uuid.uuid4()
-    context = crud.add_context(db_session, ContextCreate(
-        context_id=context_id,
-        prefix="def get_specific_generation():",
-        suffix="    pass",
-        language_id=1,
-        trigger_type_id=1,
-        version_id=1
-    ))
+    context = crud.add_context(
+        db_session,
+        ContextCreate(
+            context_id=context_id,
+            prefix="def get_specific_generation():",
+            suffix="    pass",
+            language_id=1,
+            trigger_type_id=1,
+            version_id=1,
+        ),
+    )
 
     telemetry_id = uuid.uuid4()
-    telemetry = crud.add_telemetry(db_session, TelemetryCreate(
-        telemetry_id=telemetry_id,
-        time_since_last_completion=1700,
-        typing_speed=195,
-        document_char_length=290,
-        relative_document_position=0.52
-    ))
+    telemetry = crud.add_telemetry(
+        db_session,
+        TelemetryCreate(
+            telemetry_id=telemetry_id,
+            time_since_last_completion=1700,
+            typing_speed=195,
+            document_char_length=290,
+            relative_document_position=0.52,
+        ),
+    )
 
     query_id = uuid.uuid4()
-    query = crud.add_query(db_session, QueryCreate(
-        query_id=query_id,
-        user_id=test_user.user_id,
-        telemetry_id=telemetry_id,
-        context_id=context_id,
-        timestamp=datetime.now().isoformat(),
-        total_serving_time=115,
-        server_version_id=1
-    ))
+    query = crud.add_query(
+        db_session,
+        QueryCreate(
+            query_id=query_id,
+            user_id=test_user.user_id,
+            telemetry_id=telemetry_id,
+            context_id=context_id,
+            timestamp=datetime.now().isoformat(),
+            total_serving_time=115,
+            server_version_id=1,
+        ),
+    )
 
     # Create two generations for the same query
-    generation1 = crud.add_generation(db_session, GenerationCreate(
-        query_id=query_id,
-        model_id=1,  # deepseek-1.3b
-        completion="def get_specific_generation():\n    return 'Found Model 1'",
-        generation_time=58,
-        shown_at=[datetime.now().isoformat()],
-        was_accepted=False,
-        confidence=0.87,
-        logprobs=[-0.04, -0.07, -0.1]
-    ))
+    generation1 = crud.add_generation(
+        db_session,
+        GenerationCreate(
+            query_id=query_id,
+            model_id=1,  # deepseek-1.3b
+            completion="def get_specific_generation():\n    return 'Found Model 1'",
+            generation_time=58,
+            shown_at=[datetime.now().isoformat()],
+            was_accepted=False,
+            confidence=0.87,
+            logprobs=[-0.04, -0.07, -0.1],
+        ),
+    )
 
-    generation2 = crud.add_generation(db_session, GenerationCreate(
-        query_id=query_id,
-        model_id=2,  # starcoder2-3b
-        completion="def get_specific_generation():\n    return 'Found Model 2'",
-        generation_time=62,
-        shown_at=[datetime.now().isoformat()],
-        was_accepted=False,
-        confidence=0.91,
-        logprobs=[-0.03, -0.05, -0.09]
-    ))
+    generation2 = crud.add_generation(
+        db_session,
+        GenerationCreate(
+            query_id=query_id,
+            model_id=2,  # starcoder2-3b
+            completion="def get_specific_generation():\n    return 'Found Model 2'",
+            generation_time=62,
+            shown_at=[datetime.now().isoformat()],
+            was_accepted=False,
+            confidence=0.91,
+            logprobs=[-0.03, -0.05, -0.09],
+        ),
+    )
 
     # Get specific generation by query ID and model ID
     retrieved_generation = crud.get_generations_by_query_and_model_id(
-        db_session,
-        str(query_id),
-        2  # model_id for starcoder2-3b
+        db_session, str(query_id), 2  # model_id for starcoder2-3b
     )
 
     # Verify the retrieved generation

@@ -73,7 +73,7 @@ def add_context(db: Session, context: Queries.ContextCreate) -> db_schemas.Conte
         suffix=context.suffix,
         language_id=context.language_id,
         trigger_type_id=context.trigger_type_id,
-        version_id=context.version_id
+        version_id=context.version_id,
     )
     db.add(db_context)
     db.commit()
@@ -82,14 +82,16 @@ def add_context(db: Session, context: Queries.ContextCreate) -> db_schemas.Conte
 
 
 # Telemetry operations
-def add_telemetry(db: Session, telemetry: Queries.TelemetryCreate) -> db_schemas.Telemetry:
+def add_telemetry(
+    db: Session, telemetry: Queries.TelemetryCreate
+) -> db_schemas.Telemetry:
     """Create a new telemetry record"""
     db_telemetry = db_schemas.Telemetry(
         telemetry_id=str(telemetry.telemetry_id),
         time_since_last_completion=telemetry.time_since_last_completion,
         typing_speed=telemetry.typing_speed,
         document_char_length=telemetry.document_char_length,
-        relative_document_position=telemetry.relative_document_position
+        relative_document_position=telemetry.relative_document_position,
     )
     db.add(db_telemetry)
     db.commit()
@@ -107,7 +109,7 @@ def add_query(db: Session, query: Queries.QueryCreate) -> db_schemas.Query:
         context_id=str(query.context_id),
         timestamp=query.timestamp,
         total_serving_time=query.total_serving_time,
-        server_version_id=query.server_version_id
+        server_version_id=query.server_version_id,
     )
     db.add(db_query)
     db.commit()
@@ -117,11 +119,15 @@ def add_query(db: Session, query: Queries.QueryCreate) -> db_schemas.Query:
 
 def get_query_by_id(db: Session, query_id: str) -> Optional[Type[db_schemas.Query]]:
     """Get query by ID"""
-    return db.query(db_schemas.Query).filter(db_schemas.Query.query_id == query_id).first()
+    return (
+        db.query(db_schemas.Query).filter(db_schemas.Query.query_id == query_id).first()
+    )
 
 
 # Generation operations
-def add_generation(db: Session, generation: Queries.GenerationCreate) -> db_schemas.HadGeneration:
+def add_generation(
+    db: Session, generation: Queries.GenerationCreate
+) -> db_schemas.HadGeneration:
     """Create a new generation record"""
     db_generation = db_schemas.HadGeneration(
         query_id=str(generation.query_id),
@@ -131,7 +137,7 @@ def add_generation(db: Session, generation: Queries.GenerationCreate) -> db_sche
         shown_at=generation.shown_at,
         was_accepted=generation.was_accepted,
         confidence=generation.confidence,
-        logprobs=generation.logprobs
+        logprobs=generation.logprobs,
     )
     db.add(db_generation)
     db.commit()
@@ -139,7 +145,9 @@ def add_generation(db: Session, generation: Queries.GenerationCreate) -> db_sche
     return db_generation
 
 
-def update_generation_acceptance(db: Session, query_id: str, model_id: int, was_accepted: bool) -> Optional[Type[db_schemas.HadGeneration]]:
+def update_generation_acceptance(
+    db: Session, query_id: str, model_id: int, was_accepted: bool
+) -> Optional[Type[db_schemas.HadGeneration]]:
     """Update generation acceptance status"""
     db_generation = get_generations_by_query_and_model_id(db, query_id, model_id)
     if db_generation:
@@ -149,26 +157,40 @@ def update_generation_acceptance(db: Session, query_id: str, model_id: int, was_
     return db_generation
 
 
-def get_generations_by_query_id(db: Session, query_id: str) -> list[Type[db_schemas.HadGeneration]]:
+def get_generations_by_query_id(
+    db: Session, query_id: str
+) -> list[Type[db_schemas.HadGeneration]]:
     """Get all generations for a query"""
-    return db.query(db_schemas.HadGeneration).filter(db_schemas.HadGeneration.query_id == query_id).all()
+    return (
+        db.query(db_schemas.HadGeneration)
+        .filter(db_schemas.HadGeneration.query_id == query_id)
+        .all()
+    )
 
 
-def get_generations_by_query_and_model_id(db: Session, query_id: str, model_id: int) -> Optional[Type[db_schemas.HadGeneration]]:
+def get_generations_by_query_and_model_id(
+    db: Session, query_id: str, model_id: int
+) -> Optional[Type[db_schemas.HadGeneration]]:
     """Get generation by query ID and model ID"""
-    return db.query(db_schemas.HadGeneration).filter(
-        db_schemas.HadGeneration.query_id == query_id,
-        db_schemas.HadGeneration.model_id == model_id
-    ).first()
+    return (
+        db.query(db_schemas.HadGeneration)
+        .filter(
+            db_schemas.HadGeneration.query_id == query_id,
+            db_schemas.HadGeneration.model_id == model_id,
+        )
+        .first()
+    )
 
 
 # Ground truth operations
-def add_ground_truth(db: Session, ground_truth: Queries.GroundTruthCreate) -> db_schemas.GroundTruth:
+def add_ground_truth(
+    db: Session, ground_truth: Queries.GroundTruthCreate
+) -> db_schemas.GroundTruth:
     """Create a new ground truth record"""
     db_ground_truth = db_schemas.GroundTruth(
         query_id=str(ground_truth.query_id),
         truth_timestamp=ground_truth.truth_timestamp,
-        ground_truth=ground_truth.ground_truth
+        ground_truth=ground_truth.ground_truth,
     )
     db.add(db_ground_truth)
     db.commit()
@@ -178,22 +200,44 @@ def add_ground_truth(db: Session, ground_truth: Queries.GroundTruthCreate) -> db
 
 # Add these to your crud.py file
 
+
 def get_model_by_id(db: Session, model_id: int) -> Optional[db_schemas.ModelName]:
     """Get model by ID"""
-    return db.query(db_schemas.ModelName).filter(db_schemas.ModelName.model_id == model_id).first()
+    return (
+        db.query(db_schemas.ModelName)
+        .filter(db_schemas.ModelName.model_id == model_id)
+        .first()
+    )
 
-def get_generations_by_query_id(db: Session, query_id: str) -> list[db_schemas.HadGeneration]:
+
+def get_generations_by_query_id(
+    db: Session, query_id: str
+) -> list[db_schemas.HadGeneration]:
     """Get all generations for a query"""
-    return db.query(db_schemas.HadGeneration).filter(db_schemas.HadGeneration.query_id == query_id).all()
+    return (
+        db.query(db_schemas.HadGeneration)
+        .filter(db_schemas.HadGeneration.query_id == query_id)
+        .all()
+    )
 
-def get_generations_by_query_and_model_id(db: Session, query_id: str, model_id: int) -> Optional[db_schemas.HadGeneration]:
+
+def get_generations_by_query_and_model_id(
+    db: Session, query_id: str, model_id: int
+) -> Optional[db_schemas.HadGeneration]:
     """Get generation by query ID and model ID"""
-    return db.query(db_schemas.HadGeneration).filter(
-        db_schemas.HadGeneration.query_id == query_id,
-        db_schemas.HadGeneration.model_id == model_id
-    ).first()
+    return (
+        db.query(db_schemas.HadGeneration)
+        .filter(
+            db_schemas.HadGeneration.query_id == query_id,
+            db_schemas.HadGeneration.model_id == model_id,
+        )
+        .first()
+    )
 
-def update_generation_acceptance(db: Session, query_id: str, model_id: int, was_accepted: bool) -> db_schemas.HadGeneration:
+
+def update_generation_acceptance(
+    db: Session, query_id: str, model_id: int, was_accepted: bool
+) -> db_schemas.HadGeneration:
     """Update generation acceptance status"""
     generation = get_generations_by_query_and_model_id(db, query_id, model_id)
     if generation:
@@ -202,30 +246,20 @@ def update_generation_acceptance(db: Session, query_id: str, model_id: int, was_
         db.refresh(generation)
     return generation
 
-def add_ground_truth(db: Session, ground_truth_data: Queries.GroundTruthCreate) -> db_schemas.GroundTruth:
+
+def add_ground_truth(
+    db: Session, ground_truth_data: Queries.GroundTruthCreate
+) -> db_schemas.GroundTruth:
     """Create a ground truth record"""
     db_ground_truth = db_schemas.GroundTruth(
         query_id=str(ground_truth_data.query_id),
         truth_timestamp=ground_truth_data.truth_timestamp,
-        ground_truth=ground_truth_data.ground_truth
+        ground_truth=ground_truth_data.ground_truth,
     )
     db.add(db_ground_truth)
     db.commit()
     db.refresh(db_ground_truth)
     return db_ground_truth
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     #
     #
@@ -878,5 +912,3 @@ def add_ground_truth(db: Session, ground_truth_data: Queries.GroundTruthCreate) 
     #         print(f"Error while updating generation status: {e}")
     #         return False
     #     return False
-
-

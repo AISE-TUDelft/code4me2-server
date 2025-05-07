@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from datetime import datetime
 
+
 class Provider(Enum):
     google = "google"
 
@@ -37,7 +38,9 @@ class AuthenticateUserOAuth(BaseModel):
     provider: Provider = Field(..., description="OAuth provider")
     token: str = Field(..., description="OAuth token in JWT format")
 
+
 # New models for completions feature
+
 
 # ID might need to change to Email
 class CompletionRequest(QueryBase):
@@ -45,15 +48,21 @@ class CompletionRequest(QueryBase):
     prefix: str = Field(..., description="Code before the cursor position")
     suffix: str = Field(..., description="Code after the cursor position")
     language_id: int = Field(..., description="Programming language ID")
-    trigger_type_id: int = Field(..., description="Trigger type ID (manual, auto, idle)")
+    trigger_type_id: int = Field(
+        ..., description="Trigger type ID (manual, auto, idle)"
+    )
     version_id: int = Field(..., description="Plugin version ID")
     model_ids: List[int] = Field(..., description="Models to use for completion")
 
     # Telemetry data
-    time_since_last_completion: int = Field(0, description="Time since last completion (ms)")
+    time_since_last_completion: int = Field(
+        0, description="Time since last completion (ms)"
+    )
     typing_speed: int = Field(0, description="Typing speed (chars per minute)")
     document_char_length: int = Field(0, description="Document length in characters")
-    relative_document_position: float = Field(0.0, description="Cursor position as fraction of document")
+    relative_document_position: float = Field(
+        0.0, description="Cursor position as fraction of document"
+    )
 
 
 class CompletionItemCreate(BaseModel):
@@ -65,10 +74,14 @@ class CompletionItemCreate(BaseModel):
 
 class TelemetryCreate(BaseModel):
     telemetry_id: UUID = Field(..., description="Telemetry record ID")
-    time_since_last_completion: int = Field(..., description="Time since last completion (ms)")
+    time_since_last_completion: int = Field(
+        ..., description="Time since last completion (ms)"
+    )
     typing_speed: int = Field(..., description="Typing speed (chars per minute)")
     document_char_length: int = Field(..., description="Document length in characters")
-    relative_document_position: float = Field(..., description="Cursor position as fraction of document")
+    relative_document_position: float = Field(
+        ..., description="Cursor position as fraction of document"
+    )
 
 
 class ContextCreate(BaseModel):
