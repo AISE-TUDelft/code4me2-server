@@ -2,9 +2,9 @@ version: "3.9"
 
 services:
 
-  db_tests:
+  tests:
     build: .
-    container_name: db_tests
+    container_name: tests
     command: [ "/bin/bash", "-c", "source activate myenv && pip install pytest pytest-cov && python -m pytest tests/database_tests/test_user_crud.py -v"]
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/code4meV2
@@ -12,7 +12,6 @@ services:
       - PYTHONPATH=/app/src
     volumes:
       - .:/app
-
 
   test_db:
     image: postgres:16

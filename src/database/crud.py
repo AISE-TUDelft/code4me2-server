@@ -214,6 +214,7 @@ def get_generations_by_query_id(
     db: Session, query_id: str
 ) -> list[db_schemas.HadGeneration]:
     """Get all generations for a query"""
+    #assert is_valid_uuid(query_id)
     return (
         db.query(db_schemas.HadGeneration)
         .filter(db_schemas.HadGeneration.query_id == query_id)
@@ -357,17 +358,7 @@ def add_ground_truth(
     #     return db.query(db_schemas.HadGeneration).all()
     #
     #
-    # def get_generations_by_query_id(
-    #     db: Session, query_id: str
-    # ) -> list[Type[db_schemas.HadGeneration]]:
-    #     assert is_valid_uuid(query_id)
-    #     return (
-    #         db.query(db_schemas.HadGeneration)
-    #         .filter(db_schemas.HadGeneration.query_id == query_id)
-    #         .all()
-    #     )
-    #
-    #
+
     # def get_generations_by_query_and_model_id(
     #     db: Session, query_id: str, model_id: int
     # ) -> Type[db_schemas.HadGeneration]:
@@ -454,13 +445,6 @@ def add_ground_truth(
     # def get_all_db_schemas(self) -> list[Type[db_schemas.ModelName]]:
     #     return db.query(db_schemas.ModelName).all()
     #
-    #
-    # def get_model_by_id(db: Session, model_id: int) -> db_schemas.ModelName:
-    #     return (
-    #         db.query(db_schemas.ModelName)
-    #         .filter(db_schemas.ModelName.model_id == model_id)
-    #         .first()
-    #     )
     #
     #
     # def get_model_by_name(db: Session, model_name: str) -> db_schemas.ModelName:
@@ -839,42 +823,8 @@ def add_ground_truth(
     #     db.refresh(db_version)
     #     return db_version
     #
-    #
-    # def add_context(db: Session, context: db_schemas.ContextCreate) -> db_schemas.Context:
-    #     db_context = db_schemas.Context(**context.model_dump())
-    #     db.add(db_context)
-    #     db.commit()
-    #     db.refresh(db_context)
-    #     return db_context
-    #
-    #
-    # def add_query(db: Session, query: db_schemas.QueryCreate) -> db_schemas.Query:
-    #     db_query = db_schemas.Query(**query.model_dump())
-    #     db.add(db_query)
-    #     db.commit()
-    #     db.refresh(db_query)
-    #     return db_query
-    #
-    #
-    # def add_telemetry(
-    #     db: Session, telemetry: db_schemas.TelemetryCreate
-    # ) -> db_schemas.Telemetry:
-    #     db_telemetry = db_schemas.Telemetry(**telemetry.model_dump())
-    #     db.add(db_telemetry)
-    #     db.commit()
-    #     db.refresh(db_telemetry)
-    #     return db_telemetry
-    #
-    #
-    # def add_ground_truth(
-    #     db: Session, ground_truth: db_schemas.GroundTruthCreate
-    # ) -> db_schemas.GroundTruth:
-    #     db_ground_truth = db_schemas.GroundTruth(**ground_truth.model_dump())
-    #     db.add(db_ground_truth)
-    #     db.commit()
-    #     db.refresh(db_ground_truth)
-    #     return db_ground_truth
-    #
+
+
     #
     # def add_generation(
     #     db: Session, generation: db_schemas.HadGenerationCreate
