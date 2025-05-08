@@ -6,7 +6,7 @@ BEGIN TRANSACTION;
 
 CREATE TABLE IF NOT EXISTS public."user"
 (
-    token uuid NOT NULL PRIMARY KEY,
+    user_id uuid NOT NULL PRIMARY KEY,
     joined_at timestamp with time zone NOT NULL,
     email VARCHAR UNIQUE NOT NULL,
     name VARCHAR NOT NULL,
