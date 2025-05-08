@@ -69,6 +69,20 @@ services:
       timeout: 5s
       retries: 3
 
+  redis:
+    image: redis:7.0
+    container_name: redis
+    ports:
+      - ${REDIS_PORT}:6379
+    expose:
+      - 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      start_interval: 0s
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
   backend:
     build: .
     container_name: backend
@@ -83,6 +97,8 @@ services:
     volumes:
       - .:/app
     environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - DB_HOST=db
       - DB_PORT=5432
       - WEBSITE_HOST=website
@@ -90,6 +106,8 @@ services:
       - PYTHONPATH=/app/src
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test:

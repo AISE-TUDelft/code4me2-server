@@ -1,4 +1,5 @@
-from typing import Optional, List
+from abc import ABC
+from typing import Optional
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
@@ -8,29 +9,12 @@ from pydantic import BaseModel, Field
 from base_models import UserBase
 
 
-class MessageResponse(BaseModel):
+class MessageResponse(BaseModel, ABC):
     message: str = Field(..., description="Response message")
 
 
-class UserExistsPostResponse(MessageResponse):
-    exists: bool = Field(..., description="Whether the user exists")
-
-
-class CreateUserPostResponse(MessageResponse):
-    user_id: UUID = Field(..., description="Created user id")
-    session_id: Optional[UUID] = Field(None, description="Created session id")
-
-
-class UserAuthenticatePostResponse(MessageResponse):
-    user_id: UUID = Field(..., description="User id for authentication")
-    session_id: Optional[UUID] = Field(
-        None, description="Session id for authentication"
-    )
-    user: UserBase = Field(..., description="User details")  # Uncomment if needed
-
-
 class ErrorResponse(MessageResponse):
-    pass
+    message: str = Field(..., description="Error message")
 
 
 class JsonResponseWithStatus(JSONResponse):
@@ -39,28 +23,40 @@ class JsonResponseWithStatus(JSONResponse):
         super().__init__(content=jsonable_encoder(content), status_code=status_code)
 
 
-# New response models for completions
-# TODO Decide to remain here or in elsewhere
-class CompletionItem(BaseModel):
-    model_id: int = Field(..., description="Model ID")
-    model_name: str = Field(..., description="Model name")
-    completion: str = Field(..., description="Generated code")
-    confidence: float = Field(..., description="Confidence score")
+# api/user/create
+class CreateUserPostResponse(MessageResponse):
+    message: str = Field(
+        default="User created successfully. Please check your email for verification."
+    )
+    user_id: UUID = Field(..., description="Created user id")
 
 
-class CompletionResponseData(BaseModel):
-    query_id: UUID = Field(..., description="Query ID")
-    completions: List[CompletionItem] = Field(..., description="Generated completions")
+class UserAlreadyExistsWithThisEmail(ErrorResponse):
+    message: str = Field(default="User already exists with this email!")
 
 
-class CompletionResponse(MessageResponse):
-    data: CompletionResponseData = Field(..., description="Completion data")
+class InvalidOrExpiredToken(ErrorResponse):
+    message: str = Field(default="Invalid or expired token!")
 
 
-class FeedbackResponseData(BaseModel):
-    query_id: UUID = Field(..., description="Query ID")
-    model_id: int = Field(..., description="Model ID")
+# api/user/authenticate
+class AuthenticateUserPostResponse(MessageResponse, ABC):
+    user_id: UUID = Field(..., description="User id for authentication")
+    session_token: Optional[UUID] = Field(
+        None, description="Session token for authentication"
+    )
+    user: UserBase = Field(..., description="User details")  # Uncomment if needed
 
 
-class FeedbackResponse(MessageResponse):
-    data: FeedbackResponseData = Field(..., description="Feedback data")
+class AuthenticateUserNormalPostResponse(AuthenticateUserPostResponse):
+    message: str = Field(
+        default="User authenticated successfully via email and password."
+    )
+
+
+class AuthenticateUserOAuthPostResponse(AuthenticateUserPostResponse):
+    message: str = Field(default="User authenticated successfully via OAuth.")
+
+
+class InvalidEmailOrPassword(ErrorResponse):
+    message: str = Field(default="Invalid email or password!")

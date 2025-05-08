@@ -1,11 +1,14 @@
+import logging
+
+import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from App import App
 from Code4meV2Config import Code4meV2Config
 from backend.routers import router
-import uvicorn
-from dotenv import load_dotenv
+from backend.session_manager import SessionManager
 
 load_dotenv()
 app = FastAPI(
@@ -15,7 +18,8 @@ app = FastAPI(
 )
 
 config = Code4meV2Config()
-App.setup(config)
+
+App().setup(config)
 
 # Configure CORS
 app.add_middleware(
@@ -44,6 +48,13 @@ app.add_middleware(
 # app = FastAPI()
 # app.add_middleware(SimpleRateLimiter)
 app.include_router(router, prefix="/api")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,  # Set the logging level (e.g., DEBUG, INFO, WARNING, ERROR)
+    format="%(asctime)s - %(levelname)s - %(message)s",  # Define the log message format
+    handlers=[logging.StreamHandler()],  # Output logs to the console
+)
 
 if __name__ == "__main__":
     uvicorn.run(
