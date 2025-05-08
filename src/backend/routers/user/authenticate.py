@@ -3,7 +3,6 @@ from typing import Union
 
 from fastapi import APIRouter
 from fastapi import Depends
-from sqlalchemy.orm import Session
 
 import database.crud as crud
 from App import App
@@ -39,7 +38,7 @@ router = APIRouter()
 )
 def authenticate_user(
     user_to_authenticate: Union[AuthenticateUserEmailPassword, AuthenticateUserOAuth],
-    db_session: Session = Depends(App.get_db_session),
+    app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Authenticate a user
@@ -53,7 +52,10 @@ def authenticate_user(
     3. The authentication should either return a JsonResponseWithStatus with content of UserAuthenticationPostResponse or a ErrorResponse
     """
     # TODO: check for too many requests using session manager and return 429 if needed
-    logging.log(logging.INFO, f"Authenticating user {user_to_authenticate}")
+    logging.log(logging.INFO, f"Authenticating user ({user_to_authenticate})")
+    db_session = app.get_db_session()
+    session_manager = app.get_session_manager()
+
     if isinstance(user_to_authenticate, AuthenticateUserOAuth):
         # OAuth Authentication
         verification_result = verify_jwt_token(user_to_authenticate.token)
@@ -69,11 +71,14 @@ def authenticate_user(
                 content=InvalidOrExpiredToken(),
             )
         else:
+            # Create a session id using redis session manager
+            session_token = session_manager.create_session(found_user.user_id)
+
             return JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserOAuthPostResponse(
                     user_id=found_user.user_id,
-                    session_id=None,
+                    session_token=session_token,
                     user=UserBase.model_validate(found_user),
                 ),
             )
@@ -91,11 +96,14 @@ def authenticate_user(
                 content=InvalidEmailOrPassword(),
             )
         else:
+            # Create a session id using redis session manager
+            session_token = session_manager.create_session(found_user.user_id)
+
             return JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserNormalPostResponse(
                     user_id=found_user.user_id,
-                    session_id=None,
+                    session_token=session_token,
                     user=UserBase.model_validate(found_user),
                 ),
             )

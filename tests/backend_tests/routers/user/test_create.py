@@ -45,8 +45,7 @@ class TestCreate:
             response_content = response.json()
             response_content["user_id"] = uuid.UUID(response_content["user_id"])
             assert (
-                response_content
-                == CreateUserPostResponse(user_id=user_id, session_id=None).model_dump()
+                response_content == CreateUserPostResponse(user_id=user_id).model_dump()
             )
 
     def test_create_user_already_exists(self, client: TestClient, normal_payload: dict):

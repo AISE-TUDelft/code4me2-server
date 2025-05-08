@@ -29,7 +29,6 @@ class CreateUserPostResponse(MessageResponse):
         default="User created successfully. Please check your email for verification."
     )
     user_id: UUID = Field(..., description="Created user id")
-    session_id: Optional[UUID] = Field(None, description="Created session id")
 
 
 class UserAlreadyExistsWithThisEmail(ErrorResponse):
@@ -43,8 +42,8 @@ class InvalidOrExpiredToken(ErrorResponse):
 # api/user/authenticate
 class AuthenticateUserPostResponse(MessageResponse, ABC):
     user_id: UUID = Field(..., description="User id for authentication")
-    session_id: Optional[UUID] = Field(
-        None, description="Session id for authentication"
+    session_token: Optional[UUID] = Field(
+        None, description="Session token for authentication"
     )
     user: UserBase = Field(..., description="User details")  # Uncomment if needed
 

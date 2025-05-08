@@ -15,6 +15,7 @@ from backend.models.Responses import (
     InvalidOrExpiredToken,
     UserAlreadyExistsWithThisEmail,
 )
+
 from backend.utils import verify_jwt_token
 
 router = APIRouter()
@@ -35,7 +36,7 @@ router = APIRouter()
 )
 def create_user(
     user_to_create: Union[Queries.CreateUser, Queries.CreateUserAuth],
-    db_session: Session = Depends(App.get_db_session),
+    app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Create a new user
@@ -44,8 +45,11 @@ def create_user(
     3. The user should be sent a success message
     4. If the user already exists, then a 409 error should be returned
     """
+    # TODO: at this point if the given provider is not valid or if the token is empty the user will be created normally based on their email and password and no errors will be raised. This could be changed later on if needed.
     # Check if user already exists
-    logging.log(logging.INFO, f"Creating user {user_to_create}")
+    logging.log(logging.INFO, f"Creating user: ({user_to_create})")
+    db_session = app.get_db_session()
+
     existing_user = crud.get_user_by_email(db_session, str(user_to_create.email))
     if existing_user:
         return JsonResponseWithStatus(
@@ -71,7 +75,6 @@ def create_user(
         status_code=201,
         content=CreateUserPostResponse(
             user_id=user.user_id,
-            session_id=None,
         ),
     )
 

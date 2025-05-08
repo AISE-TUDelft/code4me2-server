@@ -1,21 +1,17 @@
 import datetime
+import uuid
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
+
 from backend.main import app  # Adjust this import based on your project structure
-import uuid
 from backend.models.Responses import (
-    AuthenticateUserPostResponse,
     InvalidOrExpiredToken,
     InvalidEmailOrPassword,
-    ErrorResponse,
     AuthenticateUserNormalPostResponse,
     AuthenticateUserOAuthPostResponse,
 )
-from backend.utils import verify_jwt_token
-from Queries import AuthenticateUserOAuth, AuthenticateUserEmailPassword
-from base_models import UserBase
 
 
 class TestAuthenticate:
@@ -50,10 +46,16 @@ class TestAuthenticate:
         mock_user.verified = False
 
         mock_get_user.return_value = mock_user
+        mock_session_manager = MagicMock()
+        mock_session_token = uuid.uuid4()
+        mock_session_manager.create_session.return_value = mock_session_token
 
         with patch(
             "backend.routers.user.authenticate.crud.get_user_by_email_password",
             mock_get_user,
+        ), patch(
+            "backend.routers.user.authenticate.App.get_session_manager",
+            return_value=mock_session_manager,
         ):
             response = client.post("/api/user/authenticate", json=normal_payload)
 
@@ -66,11 +68,16 @@ class TestAuthenticate:
             response_content["user"]["joined_at"] = datetime.datetime.fromisoformat(
                 response_content["user"]["joined_at"]
             )
+            response_content["session_token"] = uuid.UUID(
+                response_content["session_token"]
+            )
 
             assert (
                 response_content
                 == AuthenticateUserNormalPostResponse(
-                    user_id=mock_user.user_id, session_id=None, user=mock_user
+                    user_id=mock_user.user_id,
+                    session_token=mock_session_token,
+                    user=mock_user,
                 ).model_dump()
             )
 
@@ -87,11 +94,17 @@ class TestAuthenticate:
         mock_get_user.return_value = mock_user
 
         mock_verify_jwt_token = MagicMock(return_value={"email": mock_user.email})
+        mock_session_manager = MagicMock()
+        mock_session_token = uuid.uuid4()
+        mock_session_manager.create_session.return_value = mock_session_token
 
         with patch(
             "backend.routers.user.authenticate.verify_jwt_token", mock_verify_jwt_token
         ), patch(
             "backend.routers.user.authenticate.crud.get_user_by_email", mock_get_user
+        ), patch(
+            "backend.routers.user.authenticate.App.get_session_manager",
+            return_value=mock_session_manager,
         ):
             response = client.post("/api/user/authenticate", json=oauth_payload)
 
@@ -104,12 +117,15 @@ class TestAuthenticate:
             response_content["user"]["joined_at"] = datetime.datetime.fromisoformat(
                 response_content["user"]["joined_at"]
             )
+            response_content["session_token"] = uuid.UUID(
+                response_content["session_token"]
+            )
 
             assert (
                 response_content
                 == AuthenticateUserOAuthPostResponse(
                     user_id=mock_user.user_id,
-                    session_id=None,
+                    session_token=mock_session_token,
                     user=mock_user,
                 ).model_dump()
             )
