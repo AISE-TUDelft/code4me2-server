@@ -1,4 +1,4 @@
-## Database Schema for CoCo
+## Database Schema for Code4meV2
 
 **Note: image of database design available at the end of the document**
 
