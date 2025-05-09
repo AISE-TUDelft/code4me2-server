@@ -37,15 +37,17 @@ router = APIRouter()
     },
 )
 def request_completion(
-    completion_request: CompletionRequest,
-    db_session: Session = Depends(App.get_db_session),
+        completion_request: CompletionRequest,
+        app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Request code completions based on provided context.
     """
     logging.log(logging.INFO, f"Completion request: {completion_request}")
+    db_session = app.get_db_session()
 
     try:
+        # Begin transaction
         # Check if user exists
         user = crud.get_user_by_id(db_session, str(completion_request.user_id))
         if not user:
@@ -76,9 +78,21 @@ def request_completion(
         )
         crud.add_telemetry(db_session, telemetry_create)
 
-        # Create query
+        # Create query FIRST - before any generations
         query_id = uuid.uuid4()
         current_time = datetime.now().isoformat()
+
+        # Create query record BEFORE completions
+        query_create = QueryCreate(
+            query_id=query_id,
+            user_id=completion_request.user_id,
+            telemetry_id=telemetry_id,
+            context_id=context_id,
+            timestamp=current_time,
+            total_serving_time=0,  # Will update this later
+            server_version_id=app.get_config().server_version_id,
+        )
+        crud.add_query(db_session, query_create)
 
         # Get model completions
         start_time = datetime.now()
@@ -124,17 +138,9 @@ def request_completion(
         end_time = datetime.now()
         total_serving_time = int((end_time - start_time).total_seconds() * 1000)
 
-        # Create query after completions to include serving time
-        query_create = QueryCreate(
-            query_id=query_id,
-            user_id=completion_request.user_id,
-            telemetry_id=telemetry_id,
-            context_id=context_id,
-            timestamp=current_time,
-            total_serving_time=total_serving_time,
-            server_version_id=App.get_config().server_version_id,
-        )
-        crud.add_query(db_session, query_create)
+        # Update query with actual total_serving_time
+        # You'll need to add this method to your crud.py
+        crud.update_query_serving_time(db_session, str(query_id), total_serving_time)
 
         # Return completions
         return JsonResponseWithStatus(

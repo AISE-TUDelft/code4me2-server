@@ -28,12 +28,13 @@ router = APIRouter()
 )
 def get_completions_by_query(
     query_id: UUID,
-    db_session: Session = Depends(App.get_db_session),
+    app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Get completions for a specific query ID.
     """
     logging.log(logging.INFO, f"Getting completions for query: {query_id}")
+    db_session = app.get_db_session()
 
     try:
         # Check if query exists

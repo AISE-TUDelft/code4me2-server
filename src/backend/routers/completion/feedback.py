@@ -30,12 +30,13 @@ router = APIRouter()
 )
 def submit_completion_feedback(
     feedback: CompletionFeedback,
-    db_session: Session = Depends(App.get_db_session),
+    app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Submit feedback on a generated completion.
     """
     logging.log(logging.INFO, f"Completion feedback: {feedback}")
+    db_session = app.get_db_session()
 
     try:
         # Get the generation record

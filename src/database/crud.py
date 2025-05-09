@@ -271,6 +271,19 @@ def add_ground_truth(
     db.refresh(db_ground_truth)
     return db_ground_truth
 
+def update_query_serving_time(db: Session, query_id: str, total_serving_time: int) -> Optional[db_schemas.Query]:
+    """Update query total serving time"""
+    query = get_query_by_id(db, query_id)
+    if query:
+        query.total_serving_time = total_serving_time
+        db.commit()
+        db.refresh(query)
+    return query
+
+
+
+
+
     #
     #
     # # Query Table

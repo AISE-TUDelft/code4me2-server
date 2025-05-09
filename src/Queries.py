@@ -136,7 +136,7 @@ class GenerationCreate(BaseModel):
     confidence: float = Field(..., description="Confidence score")
     logprobs: List[float] = Field(..., description="Token log probabilities")
 
-
+#consider refactoring
 class CompletionFeedback(QueryBase):
     query_id: UUID = Field(..., description="Query ID")
     model_id: int = Field(..., description="Model ID")
