@@ -40,7 +40,7 @@ class TestCompletionRoutes:
             "time_since_last_completion": 5000,
             "typing_speed": 120,
             "document_char_length": 500,
-            "relative_document_position": 0.5
+            "relative_document_position": 0.5,
         }
 
     @pytest.fixture(scope="function")
@@ -65,11 +65,11 @@ class TestCompletionRoutes:
             "query_id": query_id,
             "model_id": 1,
             "was_accepted": True,
-            "ground_truth": "def calculate_sum(a, b):\n    return a + b"
+            "ground_truth": "def calculate_sum(a, b):\n    return a + b",
         }
 
     def test_request_completion_success(
-            self, client, completion_request_payload, mock_models, valid_user_id
+        self, client, completion_request_payload, mock_models, valid_user_id
     ):
         # Mock user, add_context, add_telemetry, add_query, add_generation, and get_model_by_id
         mock_user = MagicMock()
@@ -92,15 +92,28 @@ class TestCompletionRoutes:
         mock_app.get_db_session.return_value = mock_db_session
         mock_app.get_config.return_value.server_version_id = 1
 
-        with patch("backend.routers.completion.request.App.get_instance", return_value=mock_app), \
-                patch("backend.routers.completion.request.crud.get_user_by_id", mock_get_user), \
-                patch("backend.routers.completion.request.crud.add_context", mock_add_context), \
-                patch("backend.routers.completion.request.crud.add_telemetry", mock_add_telemetry), \
-                patch("backend.routers.completion.request.crud.add_query", mock_add_query), \
-                patch("backend.routers.completion.request.crud.add_generation", mock_add_generation), \
-                patch("backend.routers.completion.request.crud.get_model_by_id", mock_get_model), \
-                patch("backend.routers.completion.request.crud.update_query_serving_time", MagicMock()):
-            response = client.post("/api/completion/request/", json=completion_request_payload)
+        with patch(
+            "backend.routers.completion.request.App.get_instance", return_value=mock_app
+        ), patch(
+            "backend.routers.completion.request.crud.get_user_by_id", mock_get_user
+        ), patch(
+            "backend.routers.completion.request.crud.add_context", mock_add_context
+        ), patch(
+            "backend.routers.completion.request.crud.add_telemetry", mock_add_telemetry
+        ), patch(
+            "backend.routers.completion.request.crud.add_query", mock_add_query
+        ), patch(
+            "backend.routers.completion.request.crud.add_generation",
+            mock_add_generation,
+        ), patch(
+            "backend.routers.completion.request.crud.get_model_by_id", mock_get_model
+        ), patch(
+            "backend.routers.completion.request.crud.update_query_serving_time",
+            MagicMock(),
+        ):
+            response = client.post(
+                "/api/completion/request/", json=completion_request_payload
+            )
 
             assert response.status_code == 200
             response_data = response.json()
@@ -109,15 +122,19 @@ class TestCompletionRoutes:
             assert "completions" in response_data["data"]
             assert len(response_data["data"]["completions"]) == 2
             assert response_data["data"]["completions"][0]["model_id"] == 1
-            assert response_data["data"]["completions"][0]["model_name"] == "deepseek-1.3b"
+            assert (
+                response_data["data"]["completions"][0]["model_name"] == "deepseek-1.3b"
+            )
             assert response_data["data"]["completions"][1]["model_id"] == 2
-            assert response_data["data"]["completions"][1]["model_name"] == "starcoder2-3b"
+            assert (
+                response_data["data"]["completions"][1]["model_name"] == "starcoder2-3b"
+            )
 
             # Return query_id for use in other tests
             return response_data["data"]["query_id"]
 
     def test_request_completion_user_not_found(
-            self, client, completion_request_payload
+        self, client, completion_request_payload
     ):
         # Mock get_user_by_id to return None (user not found)
         mock_get_user = MagicMock(return_value=None)
@@ -127,16 +144,19 @@ class TestCompletionRoutes:
         mock_db_session = MagicMock()
         mock_app.get_db_session.return_value = mock_db_session
 
-        with patch("backend.routers.completion.request.App.get_instance", return_value=mock_app), \
-                patch("backend.routers.completion.request.crud.get_user_by_id", mock_get_user):
-            response = client.post("/api/completion/request/", json=completion_request_payload)
+        with patch(
+            "backend.routers.completion.request.App.get_instance", return_value=mock_app
+        ), patch(
+            "backend.routers.completion.request.crud.get_user_by_id", mock_get_user
+        ):
+            response = client.post(
+                "/api/completion/request/", json=completion_request_payload
+            )
 
             assert response.status_code == 404
             assert response.json()["message"] == "User not found"
 
-    def test_get_completions_success(
-            self, client, query_id, mock_models
-    ):
+    def test_get_completions_success(self, client, query_id, mock_models):
         # Mock query, generations, and get_model_by_id
         mock_query = MagicMock()
         mock_query.query_id = query_id
@@ -144,17 +164,23 @@ class TestCompletionRoutes:
         mock_generation1 = MagicMock()
         mock_generation1.query_id = query_id
         mock_generation1.model_id = 1
-        mock_generation1.completion = "def example_function():\n    # Completion from deepseek-1.3b\n    pass"
+        mock_generation1.completion = (
+            "def example_function():\n    # Completion from deepseek-1.3b\n    pass"
+        )
         mock_generation1.confidence = 0.85
 
         mock_generation2 = MagicMock()
         mock_generation2.query_id = query_id
         mock_generation2.model_id = 2
-        mock_generation2.completion = "def example_function():\n    # Completion from starcoder2-3b\n    pass"
+        mock_generation2.completion = (
+            "def example_function():\n    # Completion from starcoder2-3b\n    pass"
+        )
         mock_generation2.confidence = 0.85
 
         mock_get_query = MagicMock(return_value=mock_query)
-        mock_get_generations = MagicMock(return_value=[mock_generation1, mock_generation2])
+        mock_get_generations = MagicMock(
+            return_value=[mock_generation1, mock_generation2]
+        )
 
         def mock_get_model_side_effect(db, model_id):
             return mock_models.get(model_id)
@@ -166,10 +192,16 @@ class TestCompletionRoutes:
         mock_db_session = MagicMock()
         mock_app.get_db_session.return_value = mock_db_session
 
-        with patch("backend.routers.completion.get.App.get_instance", return_value=mock_app), \
-                patch("backend.routers.completion.get.crud.get_query_by_id", mock_get_query), \
-                patch("backend.routers.completion.get.crud.get_generations_by_query_id", mock_get_generations), \
-                patch("backend.routers.completion.get.crud.get_model_by_id", mock_get_model):
+        with patch(
+            "backend.routers.completion.get.App.get_instance", return_value=mock_app
+        ), patch(
+            "backend.routers.completion.get.crud.get_query_by_id", mock_get_query
+        ), patch(
+            "backend.routers.completion.get.crud.get_generations_by_query_id",
+            mock_get_generations,
+        ), patch(
+            "backend.routers.completion.get.crud.get_model_by_id", mock_get_model
+        ):
             response = client.get(f"/api/completion/{query_id}")
 
             assert response.status_code == 200
@@ -178,13 +210,15 @@ class TestCompletionRoutes:
             assert response_data["data"]["query_id"] == query_id
             assert len(response_data["data"]["completions"]) == 2
             assert response_data["data"]["completions"][0]["model_id"] == 1
-            assert response_data["data"]["completions"][0]["model_name"] == "deepseek-1.3b"
+            assert (
+                response_data["data"]["completions"][0]["model_name"] == "deepseek-1.3b"
+            )
             assert response_data["data"]["completions"][1]["model_id"] == 2
-            assert response_data["data"]["completions"][1]["model_name"] == "starcoder2-3b"
+            assert (
+                response_data["data"]["completions"][1]["model_name"] == "starcoder2-3b"
+            )
 
-    def test_get_completions_query_not_found(
-            self, client, query_id
-    ):
+    def test_get_completions_query_not_found(self, client, query_id):
         # Mock get_query_by_id to return None (query not found)
         mock_get_query = MagicMock(return_value=None)
 
@@ -193,16 +227,15 @@ class TestCompletionRoutes:
         mock_db_session = MagicMock()
         mock_app.get_db_session.return_value = mock_db_session
 
-        with patch("backend.routers.completion.get.App.get_instance", return_value=mock_app), \
-                patch("backend.routers.completion.get.crud.get_query_by_id", mock_get_query):
+        with patch(
+            "backend.routers.completion.get.App.get_instance", return_value=mock_app
+        ), patch("backend.routers.completion.get.crud.get_query_by_id", mock_get_query):
             response = client.get(f"/api/completion/{query_id}")
 
             assert response.status_code == 404
             assert response.json()["message"] == "Query not found"
 
-    def test_submit_feedback_success(
-            self, client, query_id, feedback_payload
-    ):
+    def test_submit_feedback_success(self, client, query_id, feedback_payload):
         # Mock generation and add_ground_truth
         mock_generation = MagicMock()
         mock_generation.query_id = query_id
@@ -217,11 +250,19 @@ class TestCompletionRoutes:
         mock_db_session = MagicMock()
         mock_app.get_db_session.return_value = mock_db_session
 
-        with patch("backend.routers.completion.feedback.App.get_instance", return_value=mock_app), \
-                patch("backend.routers.completion.feedback.crud.get_generations_by_query_and_model_id",
-                      mock_get_generation), \
-                patch("backend.routers.completion.feedback.crud.update_generation_acceptance", mock_update_generation), \
-                patch("backend.routers.completion.feedback.crud.add_ground_truth", mock_add_ground_truth):
+        with patch(
+            "backend.routers.completion.feedback.App.get_instance",
+            return_value=mock_app,
+        ), patch(
+            "backend.routers.completion.feedback.crud.get_generations_by_query_and_model_id",
+            mock_get_generation,
+        ), patch(
+            "backend.routers.completion.feedback.crud.update_generation_acceptance",
+            mock_update_generation,
+        ), patch(
+            "backend.routers.completion.feedback.crud.add_ground_truth",
+            mock_add_ground_truth,
+        ):
             response = client.post("/api/completion/feedback/", json=feedback_payload)
 
             assert response.status_code == 200
@@ -231,9 +272,7 @@ class TestCompletionRoutes:
             assert response_data["data"]["query_id"] == query_id
             assert response_data["data"]["model_id"] == feedback_payload["model_id"]
 
-    def test_submit_feedback_generation_not_found(
-            self, client, feedback_payload
-    ):
+    def test_submit_feedback_generation_not_found(self, client, feedback_payload):
         # Mock get_generations_by_query_and_model_id to return None (generation not found)
         mock_get_generation = MagicMock(return_value=None)
 
@@ -242,9 +281,13 @@ class TestCompletionRoutes:
         mock_db_session = MagicMock()
         mock_app.get_db_session.return_value = mock_db_session
 
-        with patch("backend.routers.completion.feedback.App.get_instance", return_value=mock_app), \
-                patch("backend.routers.completion.feedback.crud.get_generations_by_query_and_model_id",
-                      mock_get_generation):
+        with patch(
+            "backend.routers.completion.feedback.App.get_instance",
+            return_value=mock_app,
+        ), patch(
+            "backend.routers.completion.feedback.crud.get_generations_by_query_and_model_id",
+            mock_get_generation,
+        ):
             response = client.post("/api/completion/feedback/", json=feedback_payload)
 
             assert response.status_code == 404

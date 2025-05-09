@@ -15,19 +15,18 @@ class CompletionController:
         completions = []
 
         for model_id in completion_request["model_ids"]:
-            completions.append({
-                "model_id": model_id,
-                "model_name": f"model-{model_id}",
-                "completion": "def example_function():\n    pass",
-                "confidence": 0.85
-            })
+            completions.append(
+                {
+                    "model_id": model_id,
+                    "model_name": f"model-{model_id}",
+                    "completion": "def example_function():\n    pass",
+                    "confidence": 0.85,
+                }
+            )
 
         return {
             "message": "Completions generated successfully",
-            "data": {
-                "query_id": query_id,
-                "completions": completions
-            }
+            "data": {"query_id": query_id, "completions": completions},
         }
 
     def get_completions(self, query_id, app):
@@ -45,10 +44,10 @@ class CompletionController:
                             "model_id": 1,
                             "model_name": "model-1",
                             "completion": "def example_function():\n    pass",
-                            "confidence": 0.85
+                            "confidence": 0.85,
                         }
-                    ]
-                }
+                    ],
+                },
             }
         else:
             return {"message": "Query not found"}, 404
@@ -63,8 +62,8 @@ class CompletionController:
                 "message": "Feedback recorded successfully",
                 "data": {
                     "query_id": feedback["query_id"],
-                    "model_id": feedback["model_id"]
-                }
+                    "model_id": feedback["model_id"],
+                },
             }
         else:
             return {"message": "Generation record not found"}, 404
@@ -93,7 +92,7 @@ class TestCompletionController:
             "time_since_last_completion": 5000,
             "typing_speed": 120,
             "document_char_length": 500,
-            "relative_document_position": 0.5
+            "relative_document_position": 0.5,
         }
 
         # Request completion
@@ -130,7 +129,7 @@ class TestCompletionController:
             "query_id": query_id,
             "model_id": 1,
             "was_accepted": True,
-            "ground_truth": "def calculate_sum(a, b):\n    return a + b"
+            "ground_truth": "def calculate_sum(a, b):\n    return a + b",
         }
 
         # Submit feedback

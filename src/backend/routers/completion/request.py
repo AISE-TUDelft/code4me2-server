@@ -37,8 +37,8 @@ router = APIRouter()
     },
 )
 def request_completion(
-        completion_request: CompletionRequest,
-        app: App = Depends(App.get_instance),
+    completion_request: CompletionRequest,
+    app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Request code completions based on provided context.

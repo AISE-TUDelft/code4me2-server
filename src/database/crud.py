@@ -223,7 +223,7 @@ def get_generations_by_query_id(
     db: Session, query_id: str
 ) -> list[db_schemas.HadGeneration]:
     """Get all generations for a query"""
-    #assert is_valid_uuid(query_id)
+    # assert is_valid_uuid(query_id)
     return (
         db.query(db_schemas.HadGeneration)
         .filter(db_schemas.HadGeneration.query_id == query_id)
@@ -271,7 +271,10 @@ def add_ground_truth(
     db.refresh(db_ground_truth)
     return db_ground_truth
 
-def update_query_serving_time(db: Session, query_id: str, total_serving_time: int) -> Optional[db_schemas.Query]:
+
+def update_query_serving_time(
+    db: Session, query_id: str, total_serving_time: int
+) -> Optional[db_schemas.Query]:
     """Update query total serving time"""
     query = get_query_by_id(db, query_id)
     if query:
@@ -279,10 +282,6 @@ def update_query_serving_time(db: Session, query_id: str, total_serving_time: in
         db.commit()
         db.refresh(query)
     return query
-
-
-
-
 
     #
     #
@@ -845,7 +844,6 @@ def update_query_serving_time(db: Session, query_id: str, total_serving_time: in
     #     db.refresh(db_version)
     #     return db_version
     #
-
 
     #
     # def add_generation(

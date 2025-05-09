@@ -36,7 +36,9 @@ class App:
             sessionmaker(autocommit=False, autoflush=False, bind=engine)
         )
         self.__config = config
-        self.__session_manager = SessionManager(host= config.redis_host, port= config.redis_port)
+        self.__session_manager = SessionManager(
+            host=config.redis_host, port=config.redis_port
+        )
 
     def get_db_session(self):
         """
