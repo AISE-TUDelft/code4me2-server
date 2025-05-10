@@ -1,26 +1,26 @@
 # This file is intended for the current version of the codebase and may not be compatible with future versions.
-import datetime
 import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from App import App
 from backend.main import app
-from backend.models.Responses import (
-    CompletionResponse,
-    CompletionResponseData,
-    CompletionItem,
-    FeedbackResponse,
-    FeedbackResponseData,
-    ErrorResponse,
-)
 
 
 class TestCompletionRoutes:
+    @pytest.fixture(scope="session")
+    def setup_app(self):
+        mock_app = MagicMock()
+        # override the get_instance method cached by fastapi to return the mock app
+        app.dependency_overrides[App.get_instance] = lambda: mock_app
+        return mock_app
+
     @pytest.fixture(scope="function")
-    def client(self):
+    def client(self, setup_app):
         with TestClient(app) as client:
+            client.mock_app = setup_app
             yield client
 
     @pytest.fixture(scope="function")
@@ -129,9 +129,6 @@ class TestCompletionRoutes:
             assert (
                 response_data["data"]["completions"][1]["model_name"] == "starcoder2-3b"
             )
-
-            # Return query_id for use in other tests
-            return response_data["data"]["query_id"]
 
     def test_request_completion_user_not_found(
         self, client, completion_request_payload
