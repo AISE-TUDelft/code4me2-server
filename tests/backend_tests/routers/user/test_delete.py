@@ -22,6 +22,7 @@ class TestDeleteUser:
     def client(self, setup_app):
         with TestClient(app) as client:
             client.mock_app = setup_app
+            client.cookies.set("session_token", "valid_token")
             yield client
 
     def test_delete_user_success(self, client):
@@ -35,9 +36,7 @@ class TestDeleteUser:
         client.mock_app.get_session_manager.return_value = mock_session_manager
         client.mock_app.get_db_session.return_value = mock_db
         with patch("backend.routers.user.delete.crud.remove_user_by_id") as mock_remove:
-            response = client.delete(
-                "/api/user/delete", cookies={"session_token": "valid-token"}
-            )
+            response = client.delete("/api/user/delete")
 
         assert response.status_code == 200
         assert response.json() == DeleteUserDeleteResponse()
@@ -52,9 +51,7 @@ class TestDeleteUser:
 
         client.mock_app.get_session_manager.return_value = mock_session_manager
 
-        response = client.delete(
-            "/api/user/delete", cookies={"session_token": "invalid-token"}
-        )
+        response = client.delete("/api/user/delete")
 
         assert response.status_code == 401
         assert response.json() == InvalidSessionToken()

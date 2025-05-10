@@ -18,7 +18,7 @@ class SerializableBaseModel(BaseModel):
     def dict(self, *args, **kwargs) -> Dict[str, Any]:
         data = {}
         # Iterate over the fields and convert fields to plain strings
-        for field_name, value in self.model_fields.items():
+        for field_name, value in self.__class__.model_fields.items():
             if value.annotation is SecretStr:
                 data[field_name] = str(getattr(self, field_name).get_secret_value())
             elif value.annotation is EmailStr:

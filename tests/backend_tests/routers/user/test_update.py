@@ -25,6 +25,7 @@ class TestUpdateUser:
     def client(self, setup_app):
         with TestClient(app) as client:
             client.mock_app = setup_app
+            client.cookies.set("session_token", "valid_token")
             yield client
 
     @pytest.fixture(scope="function")
@@ -48,11 +49,7 @@ class TestUpdateUser:
         client.mock_app.get_session_manager.return_value = mock_session
 
         with patch("backend.routers.user.update.crud", mock_crud):
-            response = client.put(
-                "/api/user/update",
-                json=update_user_query.dict(),
-                cookies={"session_token": "valid_token"},
-            )
+            response = client.put("/api/user/update", json=update_user_query.dict())
 
         assert response.status_code == 201
         assert response.json() == UpdateUserPutResponse(user=fake_updated_user)
@@ -64,11 +61,7 @@ class TestUpdateUser:
 
         client.mock_app.get_session_manager.return_value = mock_session
 
-        response = client.put(
-            "/api/user/update",
-            json=update_user_query.dict(),
-            cookies={"session_token": "invalid_token"},
-        )
+        response = client.put("/api/user/update", json=update_user_query.dict())
 
         assert response.status_code == 401
         assert response.json() == InvalidSessionToken()
@@ -78,9 +71,5 @@ class TestUpdateUser:
         invalid_payload = {
             "name": ""
         }  # Likely to fail validation if fields are required
-        response = client.put(
-            "/api/user/update",
-            json=invalid_payload,
-            cookies={"session_token": "some_token"},
-        )
+        response = client.put("/api/user/update", json=invalid_payload)
         assert response.status_code == 422

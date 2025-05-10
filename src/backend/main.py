@@ -17,7 +17,8 @@ app = FastAPI(
 )
 
 config = Code4meV2Config()
-App().setup(config)
+if not config.test_mode:
+    App().setup(config)
 
 # Configure CORS
 app.add_middleware(

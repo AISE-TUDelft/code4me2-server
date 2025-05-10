@@ -36,4 +36,5 @@ class Code4meV2Config(BaseSettings):
     react_app_google_client_id: str = Field(
         alias="REACT_APP_GOOGLE_CLIENT_ID", frozen=True
     )
-    debug: bool = Field(alias="DEBUG", frozen=True)
+    debug_mode: bool = Field(alias="DEBUG_MODE", frozen=True)
+    test_mode: bool = Field(alias="TEST_MODE", frozen=True)
