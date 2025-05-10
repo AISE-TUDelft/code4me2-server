@@ -31,16 +31,16 @@ def get_user_by_email_password(
 
 # Create new user (authentication version)
 def create_user(
-    db: Session, user: Union[Queries.CreateUser, Queries.CreateUserAuth]
+    db: Session, user: Union[Queries.CreateUser, Queries.CreateUserOauth]
 ) -> db_schemas.User:
     # Create user object
     db_user = db_schemas.User(
-        user_id=str(uuid.uuid4()),
+        user_id=uuid.uuid4(),
         joined_at=datetime.now().isoformat(),
         email=str(user.email),
         name=user.name,
         password_hash=hash_password(user.password.get_secret_value()),
-        is_oauth_signup=isinstance(user, Queries.CreateUserAuth),
+        is_oauth_signup=isinstance(user, Queries.CreateUserOauth),
         verified=False,
     )
 
@@ -69,9 +69,23 @@ def create_user(
     #
 
 
-def get_user_by_id(db: Session, user_id: str) -> Optional[db_schemas.User]:
+def get_user_by_id(db: Session, user_id: uuid.UUID) -> Optional[db_schemas.User]:
     return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
 
+
+def remove_user_by_id(db: Session, user_id: uuid.UUID) -> None:
+    db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
+    db.commit()
+
+
+def update_user(
+    db: Session, user_id: uuid.UUID, user_to_update: Queries.UpdateUser
+) -> db_schemas.User:
+    db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).update(
+        user_to_update.dict()
+    )
+    db.commit()
+    return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
     #
     #
     # # Query Table

@@ -22,6 +22,7 @@ starlette~=0.46.0
 httpx~=0.25.0
 pydantic~=2.11.3
 pydantic_settings~=2.9.1
+polyfactory~=2.21.0
 fastapi-limiter~=0.1.6
 email-validator~=2.0.0
 python-dotenv~=1.0.1

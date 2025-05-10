@@ -8,7 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from App import App
 from Code4meV2Config import Code4meV2Config
 from backend.routers import router
-from backend.session_manager import SessionManager
 
 load_dotenv()
 app = FastAPI(
@@ -18,8 +17,6 @@ app = FastAPI(
 )
 
 config = Code4meV2Config()
-
-App().setup(config)
 
 # Configure CORS
 app.add_middleware(
@@ -57,6 +54,7 @@ logging.basicConfig(
 )
 
 if __name__ == "__main__":
+    App().setup(config)
     uvicorn.run(
         "backend.main:app", host="0.0.0.0", port=config.backend_port, reload=True
     )

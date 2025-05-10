@@ -1,192 +1,140 @@
-import datetime
-import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.main import app  # Adjust this import based on your project structure
+import Queries
+from App import App
+from backend.main import app
 from backend.models.Responses import (
+    AuthenticateUserOAuthPostResponse,
+    AuthenticateUserNormalPostResponse,
     InvalidOrExpiredToken,
     InvalidEmailOrPassword,
-    AuthenticateUserNormalPostResponse,
-    AuthenticateUserOAuthPostResponse,
 )
+from base_models import UserBase
 
 
 class TestAuthenticate:
+
+    @pytest.fixture(scope="session")
+    def setup_app(self):
+        mock_app = MagicMock()
+        app.dependency_overrides[App.get_instance] = lambda: mock_app
+        return mock_app
+
     @pytest.fixture(scope="function")
-    def client(self):
+    def client(self, setup_app):
         with TestClient(app) as client:
+            client.mock_app = setup_app
             yield client
 
     @pytest.fixture(scope="function")
-    def normal_payload(self):
-        return {
-            "email": "test@example.com",
-            "password": "ValidPassword123",
-        }
+    def auth_email_query(self):
+        return Queries.AuthenticateUserEmailPassword.fake()
 
     @pytest.fixture(scope="function")
-    def oauth_payload(self):
-        return {
-            "token": "valid_jwt_token",
-            "provider": "google",
-        }
+    def auth_oauth_query(self):
+        return Queries.AuthenticateUserOAuth.fake()
 
-    def test_authenticate_user_success_email_password(
-        self, client: TestClient, normal_payload: dict
+    def test_authenticate_user_email_success(
+        self,
+        client: TestClient,
+        auth_email_query: Queries.AuthenticateUserEmailPassword,
     ):
-        mock_get_user = MagicMock()
-        mock_user = MagicMock()
-        mock_user.user_id = uuid.uuid4()
-        mock_user.email = normal_payload["email"]
-        mock_user.name = "Test name"
-        mock_user.joined_at = datetime.datetime.now()
-        mock_user.verified = False
+        mock_crud = MagicMock()
+        mock_user = UserBase.fake(email=auth_email_query.email)
+        mock_crud.get_user_by_email_password.return_value = mock_user
 
-        mock_get_user.return_value = mock_user
-        mock_session_manager = MagicMock()
-        mock_session_token = uuid.uuid4()
-        mock_session_manager.create_session.return_value = mock_session_token
+        session_token = "dummy_session_token"
+        client.mock_app.get_session_manager.return_value.create_session.return_value = (
+            session_token
+        )
 
-        with patch(
-            "backend.routers.user.authenticate.crud.get_user_by_email_password",
-            mock_get_user,
-        ), patch(
-            "backend.routers.user.authenticate.App.get_session_manager",
-            return_value=mock_session_manager,
-        ):
-            response = client.post("/api/user/authenticate", json=normal_payload)
+        with patch("backend.routers.user.authenticate.crud", mock_crud):
+            response = client.post(
+                "/api/user/authenticate", json=auth_email_query.dict()
+            )
 
             assert response.status_code == 200
-            response_content = response.json()
-            response_content["user_id"] = uuid.UUID(response_content["user_id"])
-            response_content["user"]["user_id"] = uuid.UUID(
-                response_content["user"]["user_id"]
-            )
-            response_content["user"]["joined_at"] = datetime.datetime.fromisoformat(
-                response_content["user"]["joined_at"]
-            )
-            response_content["session_token"] = uuid.UUID(
-                response_content["session_token"]
-            )
+            assert response.json() == AuthenticateUserNormalPostResponse(user=mock_user)
+            assert response.cookies.get("session_token") == session_token
 
-            assert (
-                response_content
-                == AuthenticateUserNormalPostResponse(
-                    user_id=mock_user.user_id,
-                    session_token=mock_session_token,
-                    user=mock_user,
-                ).model_dump()
-            )
-
-    def test_authenticate_user_success_oauth(
-        self, client: TestClient, oauth_payload: dict
+    def test_authenticate_user_email_invalid(
+        self,
+        client: TestClient,
+        auth_email_query: Queries.AuthenticateUserEmailPassword,
     ):
-        mock_get_user = MagicMock()
-        mock_user = MagicMock()
-        mock_user.user_id = uuid.uuid4()
-        mock_user.email = "test@example.com"
-        mock_user.name = "OAuth User"
-        mock_user.joined_at = datetime.datetime.now()
-        mock_user.verified = False
-        mock_get_user.return_value = mock_user
+        mock_crud = MagicMock()
+        mock_crud.get_user_by_email_password.return_value = None
 
-        mock_verify_jwt_token = MagicMock(return_value={"email": mock_user.email})
-        mock_session_manager = MagicMock()
-        mock_session_token = uuid.uuid4()
-        mock_session_manager.create_session.return_value = mock_session_token
-
-        with patch(
-            "backend.routers.user.authenticate.verify_jwt_token", mock_verify_jwt_token
-        ), patch(
-            "backend.routers.user.authenticate.crud.get_user_by_email", mock_get_user
-        ), patch(
-            "backend.routers.user.authenticate.App.get_session_manager",
-            return_value=mock_session_manager,
-        ):
-            response = client.post("/api/user/authenticate", json=oauth_payload)
-
-            assert response.status_code == 200
-            response_content = response.json()
-            response_content["user_id"] = uuid.UUID(response_content["user_id"])
-            response_content["user"]["user_id"] = uuid.UUID(
-                response_content["user"]["user_id"]
+        with patch("backend.routers.user.authenticate.crud", mock_crud):
+            response = client.post(
+                "/api/user/authenticate", json=auth_email_query.dict()
             )
-            response_content["user"]["joined_at"] = datetime.datetime.fromisoformat(
-                response_content["user"]["joined_at"]
-            )
-            response_content["session_token"] = uuid.UUID(
-                response_content["session_token"]
-            )
-
-            assert (
-                response_content
-                == AuthenticateUserOAuthPostResponse(
-                    user_id=mock_user.user_id,
-                    session_token=mock_session_token,
-                    user=mock_user,
-                ).model_dump()
-            )
-
-    def test_authenticate_user_invalid_email_or_password(
-        self, client: TestClient, normal_payload: dict
-    ):
-        mock_get_user = MagicMock()
-        mock_get_user.return_value = None  # User not found
-
-        with patch(
-            "backend.routers.user.authenticate.crud.get_user_by_email_password",
-            mock_get_user,
-        ):
-            response = client.post("/api/user/authenticate", json=normal_payload)
 
             assert response.status_code == 401
-            assert response.json() == InvalidEmailOrPassword().model_dump()
+            assert response.json() == InvalidEmailOrPassword()
 
-    def test_authenticate_user_invalid_oauth_token(
-        self, client: TestClient, oauth_payload: dict
+    def test_authenticate_user_oauth_success(
+        self, client: TestClient, auth_oauth_query: Queries.AuthenticateUserOAuth
     ):
-        oauth_payload["token"] = "invalidtoken"
-        mock_verify_jwt_token = MagicMock(return_value=None)  # Invalid JWT token
+        mock_crud = MagicMock()
+        mock_user = UserBase.fake()
+        mock_crud.get_user_by_email.return_value = mock_user
 
-        with patch(
+        mock_verify_jwt_token = MagicMock(return_value={"email": mock_user.email})
+        session_token = "dummy_session_token"
+        client.mock_app.get_db_session.return_value = MagicMock()
+        client.mock_app.get_session_manager.return_value.create_session.return_value = (
+            session_token
+        )
+
+        with patch("backend.routers.user.authenticate.crud", mock_crud), patch(
             "backend.routers.user.authenticate.verify_jwt_token", mock_verify_jwt_token
         ):
-            response = client.post("/api/user/authenticate", json=oauth_payload)
+            response = client.post(
+                "/api/user/authenticate", json=auth_oauth_query.dict()
+            )
+
+            assert response.status_code == 200
+            assert response.json() == AuthenticateUserOAuthPostResponse(user=mock_user)
+            assert response.cookies.get("session_token") == session_token
+
+    def test_authenticate_user_oauth_invalid_token(
+        self, client: TestClient, auth_oauth_query: Queries.AuthenticateUserOAuth
+    ):
+        mock_crud = MagicMock()
+        mock_verify_jwt_token = MagicMock(return_value=None)
+
+        with patch("backend.routers.user.authenticate.crud", mock_crud), patch(
+            "backend.routers.user.authenticate.verify_jwt_token", mock_verify_jwt_token
+        ):
+            response = client.post(
+                "/api/user/authenticate", json=auth_oauth_query.dict()
+            )
 
             assert response.status_code == 401
             assert response.json() == InvalidOrExpiredToken().model_dump()
 
     def test_authenticate_user_oauth_user_not_found(
-        self, client: TestClient, oauth_payload: dict
+        self, client: TestClient, auth_oauth_query: Queries.AuthenticateUserOAuth
     ):
-        mock_verify_jwt_token = MagicMock(return_value={"email": "test@example.com"})
-        mock_get_user = MagicMock(return_value=None)  # User not found in DB
+        mock_crud = MagicMock()
+        mock_crud.get_user_by_email.return_value = None
+        mock_verify_jwt_token = MagicMock(return_value=None)
 
-        with patch(
+        with patch("backend.routers.user.authenticate.crud", mock_crud), patch(
             "backend.routers.user.authenticate.verify_jwt_token", mock_verify_jwt_token
-        ), patch(
-            "backend.routers.user.authenticate.crud.get_user_by_email", mock_get_user
         ):
-            response = client.post("/api/user/authenticate", json=oauth_payload)
+            response = client.post(
+                "/api/user/authenticate", json=auth_oauth_query.dict()
+            )
 
             assert response.status_code == 401
             assert response.json() == InvalidOrExpiredToken().model_dump()
 
-    def test_authenticate_user_invalid_oauth_provider(
-        self, client: TestClient, oauth_payload: dict
-    ):
-        oauth_payload["provider"] = "facebook"  # Invalid provider
-        mock_verify_jwt_token = MagicMock(return_value={"email": "test@example.com"})
-
-        with patch(
-            "backend.routers.user.authenticate.verify_jwt_token", mock_verify_jwt_token
-        ):
-            response = client.post("/api/user/authenticate", json=oauth_payload)
-
-            assert response.status_code == 422
-            assert (
-                "detail" in response.json()
-            )  # FastAPI should return validation error details
+    def test_authenticate_user_invalid_payload(self, client: TestClient):
+        response = client.post("/api/user/authenticate", json={"email": "bad"})
+        assert response.status_code == 422
+        assert "detail" in response.json()
