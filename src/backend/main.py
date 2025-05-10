@@ -17,6 +17,7 @@ app = FastAPI(
 )
 
 config = Code4meV2Config()
+App().setup(config)
 
 # Configure CORS
 app.add_middleware(
@@ -54,7 +55,6 @@ logging.basicConfig(
 )
 
 if __name__ == "__main__":
-    App().setup(config)
     uvicorn.run(
         "backend.main:app", host="0.0.0.0", port=config.backend_port, reload=True
     )

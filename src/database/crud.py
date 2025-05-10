@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 import Queries as Queries
 from database import db_schemas
-from database.utils import hash_password
+from database.utils import hash_password, verify_password
 
 
 # READ operation
@@ -21,7 +21,7 @@ def get_user_by_email_password(
     db: Session, email: str, password: str
 ) -> Optional[Type[db_schemas.User]]:
     user = db.query(db_schemas.User).filter(db_schemas.User.email == email).first()
-    if user and user.password_hash == hash_password(password):
+    if user and verify_password(user.password_hash, password):
         return user
     return None
 

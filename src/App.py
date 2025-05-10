@@ -59,7 +59,7 @@ class App:
                 session.close()
 
         if self.__db_session_factory is None:
-            raise RuntimeError("Database is not initialized. Call `setup` first.")
+            raise RuntimeError("Database is not initialized. Call `App.setup` first.")
         with __get_db_session_unmanaged() as db_session:
             return db_session
 
