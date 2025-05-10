@@ -1,5 +1,9 @@
 import hashlib
 import re
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError
+
+ph = PasswordHasher()
 
 
 # helper functions
@@ -13,6 +17,12 @@ def is_valid_uuid(uuid: str) -> bool:
     return bool(uuidv4_pattern.fullmatch(uuid))
 
 
-# Helper function to hash passwords
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    return ph.hash(password)
+
+
+def verify_password(hashed_password: str, input_password: str) -> bool:
+    try:
+        return ph.verify(hashed_password, input_password)
+    except VerifyMismatchError:
+        return False

@@ -1,10 +1,15 @@
+import os
+
 from fastapi import APIRouter
 
-from .authenticate import router as authenticate_router
-from .create import router as create_user_router
-
 router = APIRouter()
-router.include_router(
-    authenticate_router, prefix="/authenticate", tags=["Authenticate User"]
-)
-router.include_router(create_user_router, prefix="/create", tags=["Create User"])
+
+for filename in os.listdir(os.path.dirname(__file__)):
+    if filename.endswith(".py") and filename != "__init__.py":
+        module_name = filename[:-3]
+        sub_router = __import__(f"{__name__}.{module_name}", fromlist=["router"]).router
+        router.include_router(
+            sub_router,
+            prefix=f"/{module_name}",
+            tags=[module_name.replace("_", " ").title() + __name__.title()],
+        )

@@ -74,14 +74,19 @@ def authenticate_user(
             # Create a session id using redis session manager
             session_token = session_manager.create_session(found_user.user_id)
 
-            return JsonResponseWithStatus(
+            # secure=True can be uncommented after we migrated to HTTPS
+            # samesite="lax" # used to prevent Cross-Site Request Forgery (CSRF) attacks. Check if it works with the frontend
+
+            response_obj = JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserOAuthPostResponse(
-                    user_id=found_user.user_id,
-                    session_token=session_token,
                     user=UserBase.model_validate(found_user),
                 ),
             )
+            response_obj.set_cookie(
+                key="session_token", value=session_token, httponly=True, samesite="lax"
+            )
+            return response_obj
 
     else:
         # Email/Password Authentication
@@ -99,14 +104,19 @@ def authenticate_user(
             # Create a session id using redis session manager
             session_token = session_manager.create_session(found_user.user_id)
 
-            return JsonResponseWithStatus(
+            # secure=True can be uncommented after we migrated to HTTPS
+            # samesite="lax" # used to prevent Cross-Site Request Forgery (CSRF) attacks. Check if it works with the frontend
+
+            response_obj = JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserNormalPostResponse(
-                    user_id=found_user.user_id,
-                    session_token=session_token,
                     user=UserBase.model_validate(found_user),
                 ),
             )
+            response_obj.set_cookie(
+                key="session_token", value=session_token, httponly=True, samesite="lax"
+            )
+            return response_obj
 
 
 def __init__():

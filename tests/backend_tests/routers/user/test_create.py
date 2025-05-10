@@ -1,84 +1,100 @@
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 from fastapi.testclient import TestClient
+
+import Queries
+from App import App
 from backend.main import app  # Adjust this import based on your project structure
-import uuid
 from backend.models.Responses import (
     CreateUserPostResponse,
     UserAlreadyExistsWithThisEmail,
     InvalidOrExpiredToken,
-    ErrorResponse,
 )
+from base_models import UserBase
 
 
 class TestCreate:
+
+    @pytest.fixture(scope="session")
+    def setup_app(self):
+        mock_app = MagicMock()
+        # override the get_instance method cached by fastapi to return the mock app
+        app.dependency_overrides[App.get_instance] = lambda: mock_app
+        return mock_app
+
     @pytest.fixture(scope="function")
-    def client(self):
+    def client(self, setup_app):
         with TestClient(app) as client:
+            client.mock_app = setup_app
             yield client
 
     @pytest.fixture(scope="function")
-    def normal_payload(self):
-        return {
-            "email": "test@example.com",
-            "name": "Test User",
-            "password": "ValidPassword123",
-        }
+    def create_user_query(self):
+        return Queries.CreateUser.fake()
 
     @pytest.fixture(scope="function")
-    def oauth_payload(self, normal_payload):
-        return normal_payload | {"token": "Test token", "provider": "google"}
+    def create_user_oauth_query(self):
+        return Queries.CreateUserOauth.fake()
 
-    def test_create_user_success(self, client: TestClient, normal_payload: dict):
-        mock_get_user = MagicMock(return_value=None)  # User doesn't exist
-        mock_user = MagicMock()
-        user_id = uuid.uuid4()
-        mock_user.user_id = user_id
-        mock_create_user = MagicMock(return_value=mock_user)
+    def test_create_user_success(
+        self, client: TestClient, create_user_query: Queries.CreateUser
+    ):
+        mock_crud = MagicMock()
+        mock_crud.get_user_by_email.return_value = None  # Simulating no user found
+        fake_user = UserBase.fake(
+            email=create_user_query.email,
+            name=create_user_query.name,
+            password=create_user_query.password,
+        )
+        mock_crud.create_user.return_value = fake_user
 
-        with patch(
-            "backend.routers.user.create.crud.get_user_by_email", mock_get_user
-        ), patch("backend.routers.user.create.crud.create_user", mock_create_user):
-            response = client.post("/api/user/create", json=normal_payload)
+        with patch("backend.routers.user.create.crud", mock_crud):
+            response = client.post("/api/user/create", json=create_user_query.dict())
 
             assert response.status_code == 201
-            response_content = response.json()
-            response_content["user_id"] = uuid.UUID(response_content["user_id"])
-            assert (
-                response_content == CreateUserPostResponse(user_id=user_id).model_dump()
-            )
+            assert response.json() == CreateUserPostResponse(user_id=fake_user.user_id)
 
-    def test_create_user_already_exists(self, client: TestClient, normal_payload: dict):
-        mock_user = MagicMock()
-        mock_get_user = MagicMock(return_value=mock_user)  # User already exists
-        with patch("backend.routers.user.create.crud.get_user_by_email", mock_get_user):
-            response = client.post("/api/user/create", json=normal_payload)
+            client.mock_app.get_db_session.assert_called_once()
+
+    def test_create_user_already_exists(
+        self, client: TestClient, create_user_query: Queries.CreateUser
+    ):
+        mock_crud = MagicMock()
+        mock_crud.get_user_by_email.return_value = (
+            MagicMock()
+        )  # Simulating a user found
+
+        with patch("backend.routers.user.create.crud", mock_crud):
+            response = client.post("/api/user/create", json=create_user_query.dict())
+
             assert response.status_code == 409
             assert (
-                response.json() == UserAlreadyExistsWithThisEmail().model_dump()
+                response.json() == UserAlreadyExistsWithThisEmail()
             )  # Check the correct error response
 
-    def test_create_user_invalid_token(self, client: TestClient, oauth_payload: dict):
-        oauth_payload["token"] = "invalid token"
-        mock_get_user = MagicMock(return_value=None)
-        mock_user = MagicMock()
-        mock_create_user = MagicMock(return_value=mock_user)
+    def test_create_user_invalid_token(
+        self, client: TestClient, create_user_oauth_query: Queries.CreateUserOauth
+    ):
+        mock_crud = MagicMock()
+        mock_crud.get_user_by_email.return_value = None  # Simulating no user found
         mock_verify_jwt_token = MagicMock(
             return_value=None
         )  # Simulating an invalid/expired token
 
-        with patch(
-            "backend.routers.user.create.crud.get_user_by_email", mock_get_user
-        ), patch(
-            "backend.routers.user.create.crud.create_user", mock_create_user
-        ), patch(
-            "backend.routers.user.create.verify_jwt_token", mock_verify_jwt_token
+        with (
+            patch("backend.routers.user.create.crud", mock_crud),
+            patch(
+                "backend.routers.user.create.verify_jwt_token", mock_verify_jwt_token
+            ),
         ):
-            response = client.post("/api/user/create", json=oauth_payload)
+            response = client.post(
+                "/api/user/create", json=create_user_oauth_query.dict()
+            )
 
             assert response.status_code == 401
             assert (
-                response.json() == InvalidOrExpiredToken().model_dump()
+                response.json() == InvalidOrExpiredToken()
             )  # Check the invalid token error response
 
     def test_create_user_invalid_payload(self, client: TestClient):

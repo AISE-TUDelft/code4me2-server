@@ -19,17 +19,26 @@ class SessionManager:
                 "Could not connect to Redis server. Please check your configuration."
             )
 
-    def create_session(self, user_id: uuid.UUID) -> uuid.UUID:
-        session_id = uuid.uuid4()
+    def create_session(self, user_id: uuid.UUID) -> str:
+        session_token = str(uuid.uuid4())
         session_data = json.dumps({"user_id": str(user_id), "data": {}})
         self.redis_client.setex(
-            f"session:{session_id}", SessionManager.SESSION_EXPIRY_SECONDS, session_data
+            f"session:{session_token}",
+            SessionManager.SESSION_EXPIRY_SECONDS,
+            session_data,
         )
-        return session_id
+        return session_token
 
-    def get_session(self, session_id: uuid.UUID) -> Optional[dict]:
-        session_data = self.redis_client.get(f"session:{session_id}")
+    def get_session(self, session_token: str) -> Optional[dict]:
+        session_data = self.redis_client.get(f"session:{session_token}")
         return json.loads(session_data) if session_data else None
 
-    def delete_session(self, session_id: uuid.UUID) -> None:
-        self.redis_client.delete(f"session:{session_id}")
+    def delete_session(self, session_token: str) -> None:
+        self.redis_client.delete(f"session:{session_token}")
+
+    def delete_user_sessions(self, user_id: uuid.UUID) -> None:
+        keys = self.redis_client.keys(f"session:*")
+        for key in keys:
+            session_data = json.loads(self.redis_client.get(key))
+            if session_data and session_data["user_id"] == str(user_id):
+                self.redis_client.delete(key)

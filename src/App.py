@@ -1,9 +1,13 @@
+import uuid
 from contextlib import contextmanager
+from typing import Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
-
+from sqlalchemy.orm import Session
 import Code4meV2Config
+from fastapi import Depends, Cookie
+import Queries
 from backend.session_manager import SessionManager
 
 
@@ -40,7 +44,7 @@ class App:
             host=config.redis_host, port=config.redis_port
         )
 
-    def get_db_session(self):
+    def get_db_session(self) -> Session:
         """
         Provides a database session without requiring a 'with' statement in the calling code.
         """
@@ -57,18 +61,29 @@ class App:
                 session.close()
 
         if self.__db_session_factory is None:
-            raise RuntimeError("Database is not initialized. Call `setup` first.")
+            raise RuntimeError("Database is not initialized. Call `App.setup` first.")
         with __get_db_session_unmanaged() as db_session:
             return db_session
 
-    def get_config(self):
+    def get_config(self) -> Code4meV2Config:
         return self.__config
 
-    def get_session_manager(self):
+    def get_session_manager(self) -> SessionManager:
         return self.__session_manager
 
+    # def get_current_user(self, session_token: Optional[str] = Cookie("session_token")) -> uuid.UUID:
+    #     """
+    #     Retrieves the current user from the session token.
+    #     """
+    #     if session_token is None:
+    #         return None
+    #     session_data = self.__session_manager.get_session(session_token)
+    #     if session_data:
+    #         return uuid.UUID(session_data["user_id"])
+    #     return None
+
     @classmethod
-    def get_instance(cls):
+    def get_instance(cls) -> "App":
         if cls.__instance is None:
             cls.__instance = cls()
         return cls.__instance

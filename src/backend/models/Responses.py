@@ -1,19 +1,18 @@
 from abc import ABC
-from typing import Optional
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from base_models import UserBase
+from base_models import UserBase, SerializableBaseModel
 
 
-class MessageResponse(BaseModel, ABC):
+class BaseResponse(SerializableBaseModel, ABC):
     message: str = Field(..., description="Response message")
 
 
-class ErrorResponse(MessageResponse):
+class ErrorResponse(BaseResponse, ABC):
     message: str = Field(..., description="Error message")
 
 
@@ -24,7 +23,7 @@ class JsonResponseWithStatus(JSONResponse):
 
 
 # api/user/create
-class CreateUserPostResponse(MessageResponse):
+class CreateUserPostResponse(BaseResponse):
     message: str = Field(
         default="User created successfully. Please check your email for verification."
     )
@@ -40,11 +39,7 @@ class InvalidOrExpiredToken(ErrorResponse):
 
 
 # api/user/authenticate
-class AuthenticateUserPostResponse(MessageResponse, ABC):
-    user_id: UUID = Field(..., description="User id for authentication")
-    session_token: Optional[UUID] = Field(
-        None, description="Session token for authentication"
-    )
+class AuthenticateUserPostResponse(BaseResponse, ABC):
     user: UserBase = Field(..., description="User details")  # Uncomment if needed
 
 
@@ -62,6 +57,23 @@ class InvalidEmailOrPassword(ErrorResponse):
     message: str = Field(default="Invalid email or password!")
 
 
+# /api/user/delete
+class DeleteUserDeleteResponse(BaseResponse):
+    message: str = Field(default="User is deleted successfully.")
+
+
+class InvalidSessionToken(ErrorResponse):
+    message: str = Field(
+        default="Session not found! You are not authenticated or your session has expired. Login before you can perform this action."
+    )
+
+
+# /api/user/update
+class UpdateUserPutResponse(BaseResponse):
+    message: str = Field(default="User is updated successfully.")
+    user: UserBase = Field(..., description="User details")  # Uncomment if needed
+
+
 # New response models for completions
 # TODO Decide to remain here or in elsewhere
 class CompletionItem(BaseModel):
@@ -76,7 +88,7 @@ class CompletionResponseData(BaseModel):
     completions: list[CompletionItem] = Field(..., description="Generated completions")
 
 
-class CompletionResponse(MessageResponse):
+class CompletionResponse(BaseResponse):
     data: CompletionResponseData = Field(..., description="Completion data")
 
 
@@ -85,5 +97,5 @@ class FeedbackResponseData(BaseModel):
     model_id: int = Field(..., description="Model ID")
 
 
-class FeedbackResponse(MessageResponse):
+class FeedbackResponse(BaseResponse):
     data: FeedbackResponseData = Field(..., description="Feedback data")

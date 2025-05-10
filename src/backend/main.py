@@ -8,7 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from App import App
 from Code4meV2Config import Code4meV2Config
 from backend.routers import router
-from backend.session_manager import SessionManager
 
 load_dotenv()
 app = FastAPI(
@@ -18,8 +17,8 @@ app = FastAPI(
 )
 
 config = Code4meV2Config()
-
-App().setup(config)
+if not config.test_mode:
+    App().setup(config)
 
 # Configure CORS
 app.add_middleware(

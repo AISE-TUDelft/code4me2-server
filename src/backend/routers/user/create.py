@@ -3,7 +3,6 @@ from typing import Union
 
 from fastapi import APIRouter
 from fastapi import Depends
-from sqlalchemy.orm import Session
 
 import Queries as Queries
 import database.crud as crud
@@ -15,7 +14,6 @@ from backend.models.Responses import (
     InvalidOrExpiredToken,
     UserAlreadyExistsWithThisEmail,
 )
-
 from backend.utils import verify_jwt_token
 
 router = APIRouter()
@@ -35,7 +33,7 @@ router = APIRouter()
     tags=["Create User"],
 )
 def create_user(
-    user_to_create: Union[Queries.CreateUser, Queries.CreateUserAuth],
+    user_to_create: Union[Queries.CreateUser, Queries.CreateUserOauth],
     app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
@@ -56,7 +54,7 @@ def create_user(
             status_code=409,
             content=UserAlreadyExistsWithThisEmail(),
         )
-    if isinstance(user_to_create, Queries.CreateUserAuth):
+    if isinstance(user_to_create, Queries.CreateUserOauth):
         verification_result = verify_jwt_token(user_to_create.token)
         if (
             verification_result is None

@@ -9,11 +9,11 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 import uuid
 from pydantic import EmailStr, SecretStr
-from src.database.db import Base
-import src.database.crud as crud
-from src.database import db_schemas
-from src.Queries import CreateUser, CreateUserAuth, Provider
-from src.utils import hash_password
+from database.db import Base
+import database.crud as crud
+from database import db_schemas
+from Queries import CreateUser, CreateUserOauth, Provider
+from database.utils import hash_password
 
 
 # Get test database URL from environment or use default for Docker
@@ -86,7 +86,7 @@ def test_create_user_with_oauth(db_session):
     """Test creating a user with OAuth authentication"""
     # Create test user data using CreateUserAuth
     user_email = "oauth_user@example.com"
-    user_data = CreateUserAuth(
+    user_data = CreateUserOauth(
         email=user_email,
         name="OAuth User",
         password="securepassword456",
@@ -205,9 +205,9 @@ from typing import List
 
 # Import modules based on your project structure
 from src.database.db import Base
-import src.database.crud as crud
-from src.database import db_schemas
-from src.Queries import (
+import database.crud as crud
+from database import db_schemas
+from Queries import (
     ContextCreate,
     TelemetryCreate,
     QueryCreate,
