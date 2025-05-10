@@ -18,7 +18,7 @@ lint:
   image: node:latest
   script:
     - npm install
-    - cd website && npm install --legacy-peer-deps && cd ..
+    - cd src/website && npm install --legacy-peer-deps && cd ../..
     - npx prettier --check "**/*.{js,jsx,ts,tsx,json,css,html,yaml,markdown,scss}"
   artifacts:
     paths:
@@ -31,7 +31,7 @@ black:
   image: python:3.11-slim
   script:
     - pip install black>=23.9.1
-    - black --check **/*.py
+    - black --check src/backend
   artifacts:
     paths:
       - black-report.json
@@ -62,9 +62,9 @@ dependency-scan:
   script:
     - npm install -g npm-audit-resolver
     - npm install
-    - cd website && npm install --legacy-peer-deps && cd ..
+    - cd src/website && npm install --legacy-peer-deps && cd ../..
     - npm audit --production || true
-    - cd website && npm audit --production || true
+    - cd src/website && npm audit --production || true
   allow_failure: true
   artifacts:
     paths:
