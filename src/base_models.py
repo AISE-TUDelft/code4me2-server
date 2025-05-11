@@ -119,3 +119,20 @@ class PluginVersionBase(ModelBase):
     version_name: str
     ide_type: str
     description: str
+
+
+class CompletionItem(ModelBase):
+    model_id: int = Field(..., description="Model ID")
+    model_name: str = Field(..., description="Model name")
+    completion: str = Field(..., description="Generated code")
+    confidence: float = Field(..., description="Confidence score")
+
+
+class CompletionResponseData(ModelBase):
+    query_id: UUID = Field(..., description="Query ID")
+    completions: list[CompletionItem] = Field(..., description="Generated completions")
+
+
+class FeedbackResponseData(ModelBase):
+    query_id: UUID = Field(..., description="Query ID")
+    model_id: int = Field(..., description="Model ID")

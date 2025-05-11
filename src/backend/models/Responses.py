@@ -5,7 +5,13 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from base_models import UserBase, SerializableBaseModel
+
+from base_models import (
+    UserBase,
+    SerializableBaseModel,
+    CompletionResponseData,
+    FeedbackResponseData,
+)
 
 
 class BaseResponse(SerializableBaseModel, ABC):
@@ -74,28 +80,19 @@ class UpdateUserPutResponse(BaseResponse):
     user: UserBase = Field(..., description="User details")  # Uncomment if needed
 
 
-# New response models for completions
-# TODO Decide to remain here or in elsewhere
-class CompletionItem(BaseModel):
-    model_id: int = Field(..., description="Model ID")
-    model_name: str = Field(..., description="Model name")
-    completion: str = Field(..., description="Generated code")
-    confidence: float = Field(..., description="Confidence score")
+# /api/completion/request
+class CompletionPostResponse(BaseResponse):
+    message: str = Field(
+        default="Completions generated successfully. Ready for display in your IDE."
+    )
+    data: CompletionResponseData = Field(
+        ..., description="Generated code completions including query ID and suggestions"
+    )
 
 
-class CompletionResponseData(BaseModel):
-    query_id: UUID = Field(..., description="Query ID")
-    completions: list[CompletionItem] = Field(..., description="Generated completions")
-
-
-class CompletionResponse(BaseResponse):
-    data: CompletionResponseData = Field(..., description="Completion data")
-
-
-class FeedbackResponseData(BaseModel):
-    query_id: UUID = Field(..., description="Query ID")
-    model_id: int = Field(..., description="Model ID")
-
-
-class FeedbackResponse(BaseResponse):
-    data: FeedbackResponseData = Field(..., description="Feedback data")
+# /api/completion/feedback
+class CompletionFeedbackPostResponse(BaseResponse):
+    message: str = Field(default="Feedback recorded successfully.")
+    data: FeedbackResponseData = Field(
+        ..., description="Information about the recorded feedback"
+    )

@@ -77,7 +77,9 @@ class UpdateUser(QueryBase):
 # New models for completions feature
 
 
+# CompletionRequest initial version with all attributes separated
 # ID might need to change to Email
+# TODO: Put TelemetryData and ContextData in the relevant objects
 class CompletionRequest(QueryBase):
     user_id: UUID = Field(..., description="User ID requesting completion")
     prefix: str = Field(..., description="Code before the cursor position")
@@ -100,14 +102,14 @@ class CompletionRequest(QueryBase):
     )
 
 
-class CompletionItemCreate(BaseModel):
+class CompletionItemCreate(QueryBase):
     model_id: int = Field(..., description="Model ID")
     model_name: str = Field(..., description="Model name")
     completion: str = Field(..., description="Generated code")
     confidence: float = Field(..., description="Confidence score")
 
 
-class TelemetryCreate(BaseModel):
+class TelemetryCreate(QueryBase):
     telemetry_id: UUID = Field(..., description="Telemetry record ID")
     time_since_last_completion: int = Field(
         ..., description="Time since last completion (ms)"
@@ -119,7 +121,7 @@ class TelemetryCreate(BaseModel):
     )
 
 
-class ContextCreate(BaseModel):
+class ContextCreate(QueryBase):
     context_id: UUID = Field(..., description="Context record ID")
     prefix: str = Field(..., description="Code before cursor")
     suffix: str = Field(..., description="Code after cursor")
@@ -128,7 +130,7 @@ class ContextCreate(BaseModel):
     version_id: int = Field(..., description="Plugin version ID")
 
 
-class QueryCreate(BaseModel):
+class QueryCreate(QueryBase):
     query_id: UUID = Field(..., description="Query record ID")
     user_id: UUID = Field(..., description="User ID")
     telemetry_id: UUID = Field(..., description="Telemetry record ID")
@@ -138,7 +140,7 @@ class QueryCreate(BaseModel):
     server_version_id: int = Field(..., description="Server version ID")
 
 
-class GenerationCreate(BaseModel):
+class GenerationCreate(QueryBase):
     query_id: UUID = Field(..., description="Query ID")
     model_id: int = Field(..., description="Model ID")
     completion: str = Field(..., description="Generated code")
@@ -157,7 +159,7 @@ class CompletionFeedback(QueryBase):
     ground_truth: Optional[str] = Field(None, description="Actual code if available")
 
 
-class GroundTruthCreate(BaseModel):
+class GroundTruthCreate(QueryBase):
     query_id: UUID = Field(..., description="Query ID")
     truth_timestamp: str = Field(..., description="Timestamp of ground truth")
     ground_truth: str = Field(..., description="Ground truth code")

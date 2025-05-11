@@ -8,11 +8,11 @@ from sqlalchemy.orm import Session
 import database.crud as crud
 from App import App
 from backend.models.Responses import (
-    FeedbackResponse,
-    FeedbackResponseData,
+    CompletionFeedbackPostResponse,
     ErrorResponse,
     JsonResponseWithStatus,
 )
+from base_models import FeedbackResponseData
 from Queries import CompletionFeedback, GroundTruthCreate
 
 router = APIRouter()
@@ -20,9 +20,9 @@ router = APIRouter()
 
 @router.post(
     "/",
-    response_model=FeedbackResponse,
+    response_model=CompletionFeedbackPostResponse,
     responses={
-        "200": {"model": FeedbackResponse},
+        "200": {"model": CompletionFeedbackPostResponse},
         "404": {"model": ErrorResponse},
         "422": {"model": ErrorResponse},
         "500": {"model": ErrorResponse},
@@ -66,7 +66,7 @@ def submit_completion_feedback(
 
         return JsonResponseWithStatus(
             status_code=200,
-            content=FeedbackResponse(
+            content=CompletionFeedbackPostResponse(
                 message="Feedback recorded successfully",
                 data=FeedbackResponseData(
                     query_id=feedback.query_id, model_id=feedback.model_id

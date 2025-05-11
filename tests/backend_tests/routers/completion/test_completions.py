@@ -10,6 +10,7 @@ from backend.main import app
 
 
 class TestCompletionRoutes:
+
     @pytest.fixture(scope="session")
     def setup_app(self):
         mock_app = MagicMock()

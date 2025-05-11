@@ -8,12 +8,11 @@ from sqlalchemy.orm import Session
 import database.crud as crud
 from App import App
 from backend.models.Responses import (
-    CompletionResponse,
-    CompletionResponseData,
-    CompletionItem,
+    CompletionPostResponse,
     ErrorResponse,
     JsonResponseWithStatus,
 )
+from base_models import CompletionItem, CompletionResponseData
 from Queries import (
     CompletionRequest,
     TelemetryCreate,
@@ -27,9 +26,9 @@ router = APIRouter()
 
 @router.post(
     "/",
-    response_model=CompletionResponse,
+    response_model=CompletionPostResponse,
     responses={
-        "200": {"model": CompletionResponse},
+        "200": {"model": CompletionPostResponse},
         "404": {"model": ErrorResponse},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -145,7 +144,7 @@ def request_completion(
         # Return completions
         return JsonResponseWithStatus(
             status_code=200,
-            content=CompletionResponse(
+            content=CompletionPostResponse(
                 message="Completions generated successfully",
                 data=CompletionResponseData(query_id=query_id, completions=completions),
             ),

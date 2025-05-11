@@ -7,21 +7,20 @@ from sqlalchemy.orm import Session
 import database.crud as crud
 from App import App
 from backend.models.Responses import (
-    CompletionResponse,
-    CompletionResponseData,
-    CompletionItem,
+    CompletionPostResponse,
     ErrorResponse,
     JsonResponseWithStatus,
 )
+from base_models import CompletionItem, CompletionResponseData
 
 router = APIRouter()
 
 
 @router.get(
     "/{query_id}",
-    response_model=CompletionResponse,
+    response_model=CompletionPostResponse,
     responses={
-        "200": {"model": CompletionResponse},
+        "200": {"model": CompletionPostResponse},
         "404": {"model": ErrorResponse},
         "500": {"model": ErrorResponse},
     },
@@ -68,7 +67,7 @@ def get_completions_by_query(
 
         return JsonResponseWithStatus(
             status_code=200,
-            content=CompletionResponse(
+            content=CompletionPostResponse(
                 message="Completions retrieved successfully",
                 data=CompletionResponseData(query_id=query_id, completions=completions),
             ),

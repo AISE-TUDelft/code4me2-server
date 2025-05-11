@@ -4,17 +4,26 @@ Tests for user CRUD operations in the database module.
 
 import os
 import pytest
+import uuid
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
-import uuid
+from typing import List
 from pydantic import EmailStr, SecretStr
 from database.db import Base
 import database.crud as crud
 from database import db_schemas
-from Queries import CreateUser, CreateUserOauth, Provider
+from Queries import (
+    ContextCreate,
+    TelemetryCreate,
+    QueryCreate,
+    GenerationCreate,
+    GroundTruthCreate,
+    CreateUser,
+    CreateUserOauth,
+    Provider)
 from database.utils import hash_password
-
 
 # Get test database URL from environment or use default for Docker
 TEST_DB_URL = os.getenv(
@@ -195,54 +204,6 @@ def test_create_multiple_users(db_session):
 """
 Tests for completion-related CRUD operations in the database module.
 """
-import os
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime
-import uuid
-from typing import List
-
-# Import modules based on your project structure
-from src.database.db import Base
-import database.crud as crud
-from database import db_schemas
-from Queries import (
-    ContextCreate,
-    TelemetryCreate,
-    QueryCreate,
-    GenerationCreate,
-    GroundTruthCreate,
-)
-
-# Get test database URL from environment or use default for Docker
-TEST_DB_URL = os.getenv(
-    "TEST_DATABASE_URL", "postgresql://postgres:postgres@test_db:5432/test_db"
-)
-
-
-@pytest.fixture(scope="function")
-def db_session():
-    """
-    Creates a fresh database session for each test function.
-    """
-    # Create test database engine
-    engine = create_engine(TEST_DB_URL)
-
-    # Create all tables
-    Base.metadata.create_all(engine)
-
-    # Create session
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    db = TestingSessionLocal()
-
-    try:
-        yield db
-    finally:
-        db.close()
-        # Drop all tables after test
-        Base.metadata.drop_all(engine)
-
 
 @pytest.fixture(scope="function")
 def setup_reference_data(db_session):
