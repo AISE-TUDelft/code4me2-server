@@ -113,6 +113,7 @@ class TelemetryData(QueryBase):
         0.0, description="Cursor position as fraction of document"
     )
 
+
 # Context data nested object
 class ContextData(QueryBase):
     prefix: str = Field(..., description="Code before the cursor position")

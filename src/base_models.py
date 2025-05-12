@@ -15,6 +15,7 @@ class SerializableBaseModel(BaseModel):
     A base class that automatically converts SecretStr and EmailStr fields to plain strings
     when calling dict() or json() methods. Any model that extends this will inherit this functionality.
     """
+
     def dict(self, *args, **kwargs) -> Dict[str, Any]:
         data = {}
         # Iterate over the fields and convert fields to plain strings
@@ -29,7 +30,9 @@ class SerializableBaseModel(BaseModel):
                 data[field_name] = str(getattr(self, field_name))
             elif value.annotation is datetime:
                 data[field_name] = getattr(self, field_name).isoformat()
-            elif inspect.isclass(value.annotation) and issubclass(value.annotation, BaseModel):
+            elif inspect.isclass(value.annotation) and issubclass(
+                value.annotation, BaseModel
+            ):
                 # Check if the annotation is a subclass of BaseModel (handles nested models)
                 data[field_name] = getattr(self, field_name).dict(*args, **kwargs)
             else:
@@ -47,6 +50,7 @@ class SerializableBaseModel(BaseModel):
             return self.dict() == other
         else:
             return False
+
 
 class Fakable:
     @classmethod

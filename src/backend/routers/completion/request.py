@@ -36,8 +36,8 @@ router = APIRouter()
     },
 )
 def request_completion(
-        completion_request: CompletionRequest,
-        app: App = Depends(App.get_instance),
+    completion_request: CompletionRequest,
+    app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Request code completions based on provided context.
@@ -143,7 +143,9 @@ def request_completion(
 
         # Update query with actual total_serving_time
         if query_id is not None:
-            crud.update_query_serving_time(db_session, str(query_id), total_serving_time)
+            crud.update_query_serving_time(
+                db_session, str(query_id), total_serving_time
+            )
 
         # Return completions (after processing all models)
         return JsonResponseWithStatus(
