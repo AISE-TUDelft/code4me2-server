@@ -10,6 +10,14 @@ repos:
         args: [--]
         pass_filenames: true
 
+      - id: ruff
+        name: Run ruff
+        entry: ruff check
+        language: python
+        types: [python]
+        pass_filenames: true
+        args: [--fix]
+
       - id: black
         name: Run black
         entry: black --color

@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi import Depends, Cookie
 
 import database.crud as crud
@@ -29,6 +29,7 @@ router = APIRouter()
 def delete_user(
     session_token: str = Cookie("session_token"),
     app: App = Depends(App.get_instance),
+    delete_user_data: bool = Query(False, description="Delete users data"),
 ) -> JsonResponseWithStatus:
     logging.log(logging.INFO, "Deleting user")
     db_session = app.get_db_session()
@@ -41,7 +42,8 @@ def delete_user(
             content=InvalidSessionToken(),
         )
 
-    crud.remove_user_by_id(db=db_session, user_id=user_dict["user_id"])
+    if delete_user_data:
+        crud.remove_user_by_id(db=db_session, user_id=user_dict["user_id"])
     session_manager.delete_user_sessions(user_id=user_dict["user_id"])
     return JsonResponseWithStatus(
         status_code=200,

@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -25,7 +26,7 @@ class TestDeleteUser:
             client.cookies.set("session_token", "valid_token")
             yield client
 
-    def test_delete_user_success(self, client):
+    def test_delete_user_success(self, client: TestClient):
         fake_user_id = "user-123"
 
         mock_session_manager = MagicMock()
@@ -36,7 +37,9 @@ class TestDeleteUser:
         client.mock_app.get_session_manager.return_value = mock_session_manager
         client.mock_app.get_db_session.return_value = mock_db
         with patch("backend.routers.user.delete.crud.remove_user_by_id") as mock_remove:
-            response = client.delete("/api/user/delete")
+            response = client.delete(
+                "/api/user/delete", params={"delete_user_data": True}
+            )
 
         assert response.status_code == 200
         assert response.json() == DeleteUserDeleteResponse()
@@ -45,7 +48,7 @@ class TestDeleteUser:
             user_id=fake_user_id
         )
 
-    def test_delete_user_invalid_session_token(self, client):
+    def test_delete_user_invalid_session_token(self, client: TestClient):
         mock_session_manager = MagicMock()
         mock_session_manager.get_session.return_value = None
 
@@ -56,7 +59,7 @@ class TestDeleteUser:
         assert response.status_code == 401
         assert response.json() == InvalidSessionToken()
 
-    def test_delete_user_no_cookie_provided(self, client):
+    def test_delete_user_no_cookie_provided(self, client: TestClient):
         response = client.delete("/api/user/delete")
         assert (
             response.status_code == 401
