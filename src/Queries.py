@@ -78,20 +78,32 @@ class UpdateUser(QueryBase):
 
 
 # CompletionRequest initial version with all attributes separated
+# Keep until connected to core
 # ID might need to change to Email
-# TODO: Put TelemetryData and ContextData in the relevant objects
-class CompletionRequest(QueryBase):
-    user_id: UUID = Field(..., description="User ID requesting completion")
-    prefix: str = Field(..., description="Code before the cursor position")
-    suffix: str = Field(..., description="Code after the cursor position")
-    language_id: int = Field(..., description="Programming language ID")
-    trigger_type_id: int = Field(
-        ..., description="Trigger type ID (manual, auto, idle)"
-    )
-    version_id: int = Field(..., description="Plugin version ID")
-    model_ids: List[int] = Field(..., description="Models to use for completion")
+# class CompletionRequest(QueryBase):
+#     user_id: UUID = Field(..., description="User ID requesting completion")
+#     prefix: str = Field(..., description="Code before the cursor position")
+#     suffix: str = Field(..., description="Code after the cursor position")
+#     language_id: int = Field(..., description="Programming language ID")
+#     trigger_type_id: int = Field(
+#         ..., description="Trigger type ID (manual, auto, idle)"
+#     )
+#     version_id: int = Field(..., description="Plugin version ID")
+#     model_ids: List[int] = Field(..., description="Models to use for completion")
+#
+#     # Telemetry data
+#     time_since_last_completion: int = Field(
+#         0, description="Time since last completion (ms)"
+#     )
+#     typing_speed: int = Field(0, description="Typing speed (chars per minute)")
+#     document_char_length: int = Field(0, description="Document length in characters")
+#     relative_document_position: float = Field(
+#         0.0, description="Cursor position as fraction of document"
+#     )
 
-    # Telemetry data
+
+# Telemetry data nested object
+class TelemetryData(QueryBase):
     time_since_last_completion: int = Field(
         0, description="Time since last completion (ms)"
     )
@@ -100,6 +112,24 @@ class CompletionRequest(QueryBase):
     relative_document_position: float = Field(
         0.0, description="Cursor position as fraction of document"
     )
+
+# Context data nested object
+class ContextData(QueryBase):
+    prefix: str = Field(..., description="Code before the cursor position")
+    suffix: str = Field(..., description="Code after the cursor position")
+    language_id: int = Field(..., description="Programming language ID")
+    trigger_type_id: int = Field(
+        ..., description="Trigger type ID (manual, auto, idle)"
+    )
+    version_id: int = Field(..., description="Plugin version ID")
+
+
+# Updated CompletionRequest with nested structures
+class CompletionRequest(QueryBase):
+    user_id: UUID = Field(..., description="User ID requesting completion")
+    model_ids: List[int] = Field(..., description="Models to use for completion")
+    context: ContextData = Field(..., description="Context data for completion")
+    telemetry: TelemetryData = Field(..., description="Telemetry data for completion")
 
 
 class CompletionItemCreate(QueryBase):

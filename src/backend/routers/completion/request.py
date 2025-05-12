@@ -36,8 +36,8 @@ router = APIRouter()
     },
 )
 def request_completion(
-    completion_request: CompletionRequest,
-    app: App = Depends(App.get_instance),
+        completion_request: CompletionRequest,
+        app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Request code completions based on provided context.
@@ -45,8 +45,12 @@ def request_completion(
     logging.log(logging.INFO, f"Completion request: {completion_request}")
     db_session = app.get_db_session()
 
+    # Initialize variables that might be referenced in exception handling
+    query_id = None
+    context_id = None
+    telemetry_id = None
+
     try:
-        # Begin transaction
         # Check if user exists
         user = crud.get_user_by_id(db_session, str(completion_request.user_id))
         if not user:
@@ -54,26 +58,26 @@ def request_completion(
                 status_code=404, content=ErrorResponse(message="User not found")
             )
 
-        # Create context
+        # Create context using nested context data
         context_id = uuid.uuid4()
         context_create = ContextCreate(
             context_id=context_id,
-            prefix=completion_request.prefix,
-            suffix=completion_request.suffix,
-            language_id=completion_request.language_id,
-            trigger_type_id=completion_request.trigger_type_id,
-            version_id=completion_request.version_id,
+            prefix=completion_request.context.prefix,
+            suffix=completion_request.context.suffix,
+            language_id=completion_request.context.language_id,
+            trigger_type_id=completion_request.context.trigger_type_id,
+            version_id=completion_request.context.version_id,
         )
         crud.add_context(db_session, context_create)
 
-        # Create telemetry
+        # Create telemetry using nested telemetry data
         telemetry_id = uuid.uuid4()
         telemetry_create = TelemetryCreate(
             telemetry_id=telemetry_id,
-            time_since_last_completion=completion_request.time_since_last_completion,
-            typing_speed=completion_request.typing_speed,
-            document_char_length=completion_request.document_char_length,
-            relative_document_position=completion_request.relative_document_position,
+            time_since_last_completion=completion_request.telemetry.time_since_last_completion,
+            typing_speed=completion_request.telemetry.typing_speed,
+            document_char_length=completion_request.telemetry.document_char_length,
+            relative_document_position=completion_request.telemetry.relative_document_position,
         )
         crud.add_telemetry(db_session, telemetry_create)
 
@@ -133,15 +137,15 @@ def request_completion(
                 )
             )
 
-        # Calculate total serving time
+        # Calculate total serving time (after all models are processed)
         end_time = datetime.now()
         total_serving_time = int((end_time - start_time).total_seconds() * 1000)
 
         # Update query with actual total_serving_time
-        # You'll need to add this method to your crud.py
-        crud.update_query_serving_time(db_session, str(query_id), total_serving_time)
+        if query_id is not None:
+            crud.update_query_serving_time(db_session, str(query_id), total_serving_time)
 
-        # Return completions
+        # Return completions (after processing all models)
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
