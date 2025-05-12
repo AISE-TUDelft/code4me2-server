@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -6,10 +7,9 @@ import Queries
 from App import App
 from backend.main import app
 from backend.models.Responses import (
-    CompletionPostResponse,
     ErrorResponse,
 )
-from base_models import UserBase, CompletionItem, CompletionResponseData
+from base_models import UserBase
 
 
 class TestCompletionRequest:

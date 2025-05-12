@@ -1,4 +1,5 @@
-from unittest.mock import MagicMock, patch, ANY  # Changed: use ANY instead of Mock
+from unittest.mock import ANY, MagicMock, patch  # Changed: use ANY instead of Mock
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -6,10 +7,8 @@ import Queries
 from App import App
 from backend.main import app
 from backend.models.Responses import (
-    CompletionFeedbackPostResponse,
     ErrorResponse,
 )
-from base_models import FeedbackResponseData
 
 
 class TestCompletionFeedback:

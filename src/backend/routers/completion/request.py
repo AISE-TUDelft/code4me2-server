@@ -3,7 +3,6 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
 
 import database.crud as crud
 from App import App
@@ -15,10 +14,10 @@ from backend.models.Responses import (
 from base_models import CompletionItem, CompletionResponseData
 from Queries import (
     CompletionRequest,
-    TelemetryCreate,
     ContextCreate,
-    QueryCreate,
     GenerationCreate,
+    QueryCreate,
+    TelemetryCreate,
 )
 
 router = APIRouter()

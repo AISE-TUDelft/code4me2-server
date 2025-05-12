@@ -8,10 +8,9 @@ import Queries as Queries
 from database import db_schemas
 from database.utils import hash_password, verify_password
 
+
 # READ operation
 # User Table
-
-
 def get_user_by_email(db: Session, email: str) -> Optional[Type[db_schemas.User]]:
     return db.query(db_schemas.User).filter(db_schemas.User.email == email).first()
 
@@ -48,25 +47,6 @@ def create_user(
     db.refresh(db_user)
     return db_user
 
-    #
-    #
-    # # Set user verification status
-    # def set_user_verified(
-    #     db: Session, user_token: str, verified: bool = True
-    # ) -> db_schemas.User:
-    #     user = self.get_user_by_token(user_token)
-    #     if user:
-    #         user.verified = verified
-    #         db.commit()
-    #         db.refresh(user)
-    #     return user
-    #
-    #
-    # def get_all_users(self) -> list[Type[db_schemas.User]]:
-    #     return db.query(db_schemas.User).all()
-    #
-    #
-
 
 def get_user_by_id(db: Session, user_id: uuid.UUID) -> Optional[db_schemas.User]:
     return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
@@ -87,7 +67,7 @@ def update_user(
     return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
 
 
-# Context operations
+# Context Operations
 def add_context(db: Session, context: Queries.ContextCreate) -> db_schemas.Context:
     """Create a new context record"""
     db_context = db_schemas.Context(
@@ -147,6 +127,18 @@ def get_query_by_id(db: Session, query_id: str) -> Optional[Type[db_schemas.Quer
     )
 
 
+def update_query_serving_time(
+    db: Session, query_id: str, total_serving_time: int
+) -> Optional[db_schemas.Query]:
+    """Update query total serving time"""
+    query = get_query_by_id(db, query_id)
+    if query:
+        query.total_serving_time = total_serving_time
+        db.commit()
+        db.refresh(query)
+    return query
+
+
 # Generation operations
 def add_generation(
     db: Session, generation: Queries.GenerationCreate
@@ -168,32 +160,9 @@ def add_generation(
     return db_generation
 
 
-def update_generation_acceptance(
-    db: Session, query_id: str, model_id: int, was_accepted: bool
-) -> Optional[Type[db_schemas.HadGeneration]]:
-    """Update generation acceptance status"""
-    db_generation = get_generations_by_query_and_model_id(db, query_id, model_id)
-    if db_generation:
-        db_generation.was_accepted = was_accepted
-        db.commit()
-        db.refresh(db_generation)
-    return db_generation
-
-
-def get_generations_by_query_id(
-    db: Session, query_id: str
-) -> list[Type[db_schemas.HadGeneration]]:
-    """Get all generations for a query"""
-    return (
-        db.query(db_schemas.HadGeneration)
-        .filter(db_schemas.HadGeneration.query_id == query_id)
-        .all()
-    )
-
-
 def get_generations_by_query_and_model_id(
     db: Session, query_id: str, model_id: int
-) -> Optional[Type[db_schemas.HadGeneration]]:
+) -> Optional[db_schemas.HadGeneration]:
     """Get generation by query ID and model ID"""
     return (
         db.query(db_schemas.HadGeneration)
@@ -201,34 +170,6 @@ def get_generations_by_query_and_model_id(
             db_schemas.HadGeneration.query_id == query_id,
             db_schemas.HadGeneration.model_id == model_id,
         )
-        .first()
-    )
-
-
-# Ground truth operations
-def add_ground_truth(
-    db: Session, ground_truth: Queries.GroundTruthCreate
-) -> db_schemas.GroundTruth:
-    """Create a new ground truth record"""
-    db_ground_truth = db_schemas.GroundTruth(
-        query_id=str(ground_truth.query_id),
-        truth_timestamp=ground_truth.truth_timestamp,
-        ground_truth=ground_truth.ground_truth,
-    )
-    db.add(db_ground_truth)
-    db.commit()
-    db.refresh(db_ground_truth)
-    return db_ground_truth
-
-
-# Add these to your crud.py file
-
-
-def get_model_by_id(db: Session, model_id: int) -> Optional[db_schemas.ModelName]:
-    """Get model by ID"""
-    return (
-        db.query(db_schemas.ModelName)
-        .filter(db_schemas.ModelName.model_id == model_id)
         .first()
     )
 
@@ -245,30 +186,25 @@ def get_generations_by_query_id(
     )
 
 
-def get_generations_by_query_and_model_id(
-    db: Session, query_id: str, model_id: int
-) -> Optional[db_schemas.HadGeneration]:
-    """Get generation by query ID and model ID"""
-    return (
-        db.query(db_schemas.HadGeneration)
-        .filter(
-            db_schemas.HadGeneration.query_id == query_id,
-            db_schemas.HadGeneration.model_id == model_id,
-        )
-        .first()
-    )
-
-
 def update_generation_acceptance(
     db: Session, query_id: str, model_id: int, was_accepted: bool
-) -> db_schemas.HadGeneration:
+) -> Optional[Type[db_schemas.HadGeneration]]:
     """Update generation acceptance status"""
-    generation = get_generations_by_query_and_model_id(db, query_id, model_id)
-    if generation:
-        generation.was_accepted = was_accepted
+    db_generation = get_generations_by_query_and_model_id(db, query_id, model_id)
+    if db_generation:
+        db_generation.was_accepted = was_accepted
         db.commit()
-        db.refresh(generation)
-    return generation
+        db.refresh(db_generation)
+    return db_generation
+
+
+def get_model_by_id(db: Session, model_id: int) -> Optional[db_schemas.ModelName]:
+    """Get model by ID"""
+    return (
+        db.query(db_schemas.ModelName)
+        .filter(db_schemas.ModelName.model_id == model_id)
+        .first()
+    )
 
 
 def add_ground_truth(
@@ -284,18 +220,6 @@ def add_ground_truth(
     db.commit()
     db.refresh(db_ground_truth)
     return db_ground_truth
-
-
-def update_query_serving_time(
-    db: Session, query_id: str, total_serving_time: int
-) -> Optional[db_schemas.Query]:
-    """Update query total serving time"""
-    query = get_query_by_id(db, query_id)
-    if query:
-        query.total_serving_time = total_serving_time
-        db.commit()
-        db.refresh(query)
-    return query
 
     #
     #

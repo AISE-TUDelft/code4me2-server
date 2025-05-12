@@ -1,15 +1,12 @@
 import re
 from abc import ABC
 from enum import Enum
+from typing import List, Optional
+from uuid import UUID
 
 from pydantic import EmailStr, Field, SecretStr, field_validator
 
 from base_models import Fakable, SerializableBaseModel
-
-from typing import List, Optional, Dict
-from uuid import UUID
-from pydantic import BaseModel, Field
-from datetime import datetime
 
 
 class Provider(Enum):

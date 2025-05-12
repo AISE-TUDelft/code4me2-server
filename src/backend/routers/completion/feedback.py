@@ -1,9 +1,7 @@
 import logging
 from datetime import datetime
-from uuid import UUID
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
 
 import database.crud as crud
 from App import App

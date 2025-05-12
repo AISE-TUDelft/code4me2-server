@@ -1,8 +1,8 @@
 from fastapi import APIRouter
 
-from .request import router as request_router
 from .feedback import router as feedback_router
 from .get import router as get_router
+from .request import router as request_router
 
 router = APIRouter()
 router.include_router(request_router, prefix="/request", tags=["Request Completion"])
