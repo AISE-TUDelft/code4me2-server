@@ -2,7 +2,7 @@ import re
 from abc import ABC
 from enum import Enum
 
-from pydantic import EmailStr, SecretStr, Field, field_validator
+from pydantic import EmailStr, Field, SecretStr, field_validator
 
 from base_models import Fakable, SerializableBaseModel
 

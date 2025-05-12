@@ -1,13 +1,9 @@
-import uuid
 from contextlib import contextmanager
-from typing import Optional
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, scoped_session
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, scoped_session, sessionmaker
+
 import Code4meV2Config
-from fastapi import Depends, Cookie
-import Queries
 from backend.session_manager import SessionManager
 
 

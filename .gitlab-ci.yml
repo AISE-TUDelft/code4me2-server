@@ -31,10 +31,22 @@ black:
   image: python:3.11-slim
   script:
     - pip install black>=23.9.1
-    - black --check src/backend
+    - black --check src/ tests/
   artifacts:
     paths:
       - black-report.json
+    when: always
+
+# Ruff job
+ruff:
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - pip install ruff # Install Ruff for linting and type checking
+    - ruff check # Run Ruff for linting and type checking
+  artifacts:
+    paths:
+      - ruff-report.json # Save Ruff's report for artifacts
     when: always
 
 ## Test coverage checks for python files

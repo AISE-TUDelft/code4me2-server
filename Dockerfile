@@ -29,8 +29,8 @@ RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -
 # add conda to the path
 ENV PATH=/opt/conda/bin:$PATH
 
-# Create a Conda environment with Python 3.10
-RUN conda create -y -n myenv python=3.10 && conda clean -a -y
+# Create a Conda environment with Python 3.11
+RUN conda create -y -n myenv python=3.11 && conda clean -a -y
 
 # set the working directory
 WORKDIR /app

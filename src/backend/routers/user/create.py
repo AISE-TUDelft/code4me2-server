@@ -1,17 +1,16 @@
 import logging
 from typing import Union
 
-from fastapi import APIRouter
-from fastapi import Depends
+from fastapi import APIRouter, Depends
 
-import Queries as Queries
 import database.crud as crud
+import Queries as Queries
 from App import App
 from backend.models.Responses import (
-    ErrorResponse,
     CreateUserPostResponse,
-    JsonResponseWithStatus,
+    ErrorResponse,
     InvalidOrExpiredToken,
+    JsonResponseWithStatus,
     UserAlreadyExistsWithThisEmail,
 )
 from backend.utils import verify_jwt_token

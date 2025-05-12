@@ -1,25 +1,22 @@
 import logging
 from typing import Union
 
-from fastapi import APIRouter
-from fastapi import Depends
+from fastapi import APIRouter, Depends
 
 import database.crud as crud
 from App import App
-from Queries import AuthenticateUserEmailPassword, AuthenticateUserOAuth
 from backend.models.Responses import (
-    AuthenticateUserPostResponse,
-)
-from backend.models.Responses import (
-    ErrorResponse,
-    JsonResponseWithStatus,
     AuthenticateUserNormalPostResponse,
     AuthenticateUserOAuthPostResponse,
-    InvalidOrExpiredToken,
+    AuthenticateUserPostResponse,
+    ErrorResponse,
     InvalidEmailOrPassword,
+    InvalidOrExpiredToken,
+    JsonResponseWithStatus,
 )
 from backend.utils import verify_jwt_token
 from base_models import UserBase
+from Queries import AuthenticateUserEmailPassword, AuthenticateUserOAuth
 
 router = APIRouter()
 

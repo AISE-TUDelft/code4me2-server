@@ -3,6 +3,8 @@ Tests for user CRUD operations in the database module.
 """
 
 import os
+import uuid
+
 import pytest
 import uuid
 

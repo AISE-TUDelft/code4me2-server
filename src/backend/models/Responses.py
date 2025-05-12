@@ -70,7 +70,8 @@ class DeleteUserDeleteResponse(BaseResponse):
 
 class InvalidSessionToken(ErrorResponse):
     message: str = Field(
-        default="Session not found! You are not authenticated or your session has expired. Login before you can perform this action."
+        default="Session not found! You are not authenticated or your session has expired. "
+        "Login before you can perform this action."
     )
 
 

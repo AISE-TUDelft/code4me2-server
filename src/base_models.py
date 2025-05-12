@@ -2,7 +2,7 @@ import inspect
 from abc import ABC
 from datetime import datetime
 from enum import EnumType
-from typing import Union, Dict, Any
+from typing import Any, Dict, Union
 from uuid import UUID
 
 from polyfactory.factories.pydantic_factory import ModelFactory
@@ -24,7 +24,7 @@ class SerializableBaseModel(BaseModel):
                 data[field_name] = str(getattr(self, field_name).get_secret_value())
             elif value.annotation is EmailStr:
                 data[field_name] = str(getattr(self, field_name))
-            elif type(value.annotation) == EnumType:
+            elif type(value.annotation) is EnumType:
                 data[field_name] = str(getattr(self, field_name).value)
             elif value.annotation is UUID:
                 data[field_name] = str(getattr(self, field_name))
