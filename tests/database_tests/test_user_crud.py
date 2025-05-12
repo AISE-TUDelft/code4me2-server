@@ -205,6 +205,7 @@ def test_create_multiple_users(db_session):
 Tests for completion-related CRUD operations in the database module.
 """
 
+
 @pytest.fixture(scope="function")
 def setup_reference_data(db_session):
     """

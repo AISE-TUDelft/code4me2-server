@@ -35,11 +35,11 @@ class TestCompletionRequest:
         return Queries.CompletionRequest.fake(
             model_ids=[1, 2],  # Request from two models
             context=context_data,
-            telemetry=telemetry_data
+            telemetry=telemetry_data,
         )
 
     def test_request_completion_success(
-            self, client: TestClient, completion_request: Queries.CompletionRequest
+        self, client: TestClient, completion_request: Queries.CompletionRequest
     ):
         # Setup mocks
         mock_crud = MagicMock()
@@ -68,7 +68,7 @@ class TestCompletionRequest:
         with patch("backend.routers.completion.request.crud", mock_crud):
             response = client.post(
                 "/api/completion/request/",
-                json=completion_request.dict()  # Now uses the fixed dict() method
+                json=completion_request.dict(),  # Now uses the fixed dict() method
             )
 
         assert response.status_code == 200
@@ -89,7 +89,7 @@ class TestCompletionRequest:
         assert mock_crud.add_generation.call_count == 2
 
     def test_request_completion_user_not_found(
-            self, client: TestClient, completion_request: Queries.CompletionRequest
+        self, client: TestClient, completion_request: Queries.CompletionRequest
     ):
         mock_crud = MagicMock()
         mock_crud.get_user_by_id.return_value = None
@@ -98,14 +98,14 @@ class TestCompletionRequest:
         with patch("backend.routers.completion.request.crud", mock_crud):
             response = client.post(
                 "/api/completion/request/",
-                json=completion_request.dict()  # Now uses the fixed dict() method
+                json=completion_request.dict(),  # Now uses the fixed dict() method
             )
 
         assert response.status_code == 404
         assert response.json() == ErrorResponse(message="User not found").dict()
 
     def test_request_completion_model_not_found(
-            self, client: TestClient, completion_request: Queries.CompletionRequest
+        self, client: TestClient, completion_request: Queries.CompletionRequest
     ):
         # Test case where some models don't exist
         mock_crud = MagicMock()
@@ -121,7 +121,7 @@ class TestCompletionRequest:
         with patch("backend.routers.completion.request.crud", mock_crud):
             response = client.post(
                 "/api/completion/request/",
-                json=completion_request.dict()  # Now uses the fixed dict() method
+                json=completion_request.dict(),  # Now uses the fixed dict() method
             )
 
         assert response.status_code == 200
@@ -138,7 +138,7 @@ class TestCompletionRequest:
                 "prefix": "",
                 # Missing required fields
             },
-            "telemetry": {}  # Empty object
+            "telemetry": {},  # Empty object
         }
 
         response = client.post("/api/completion/request/", json=invalid_payload)
@@ -146,7 +146,7 @@ class TestCompletionRequest:
         assert "detail" in response.json()
 
     def test_request_completion_database_error(
-            self, client: TestClient, completion_request: Queries.CompletionRequest
+        self, client: TestClient, completion_request: Queries.CompletionRequest
     ):
         mock_crud = MagicMock()
         mock_crud.get_user_by_id.side_effect = Exception("Database error")
@@ -155,7 +155,7 @@ class TestCompletionRequest:
         with patch("backend.routers.completion.request.crud", mock_crud):
             response = client.post(
                 "/api/completion/request/",
-                json=completion_request.dict()  # Now uses the fixed dict() method
+                json=completion_request.dict(),  # Now uses the fixed dict() method
             )
 
         assert response.status_code == 500

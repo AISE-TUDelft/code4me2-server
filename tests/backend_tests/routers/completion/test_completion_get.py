@@ -69,7 +69,6 @@ class TestCompletionRoutes:
             "ground_truth": "def calculate_sum(a, b):\n    return a + b",
         }
 
-
     def test_get_completions_success(self, client, query_id, mock_models):
         # Mock query, generations, and get_model_by_id
         mock_query = MagicMock()
@@ -148,4 +147,3 @@ class TestCompletionRoutes:
 
             assert response.status_code == 404
             assert response.json()["message"] == "Query not found"
-
