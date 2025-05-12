@@ -1,17 +1,17 @@
 import logging
 from typing import Union
 
-from fastapi import APIRouter
-from fastapi import Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends
 
-import Queries as Queries
 import database.crud as crud
+import Queries as Queries
 from App import App
 from backend.models.Responses import (
     CreateUserPostResponse,
     ErrorResponse,
+    InvalidOrExpiredToken,
     JsonResponseWithStatus,
+    UserAlreadyExistsWithThisEmail,
 )
 from backend.utils import verify_jwt_token
 
@@ -23,7 +23,8 @@ router = APIRouter()
     response_model=CreateUserPostResponse,
     responses={
         "201": {"model": CreateUserPostResponse},
-        "409": {"model": ErrorResponse},
+        "401": {"model": InvalidOrExpiredToken},
+        "409": {"model": UserAlreadyExistsWithThisEmail},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": ErrorResponse},
@@ -31,8 +32,8 @@ router = APIRouter()
     tags=["Create User"],
 )
 def create_user(
-    user_to_create: Union[Queries.CreateUser, Queries.CreateUserAuth],
-    db_session: Session = Depends(App.get_db_session),
+    user_to_create: Union[Queries.CreateUser, Queries.CreateUserOauth],
+    app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Create a new user
@@ -41,23 +42,26 @@ def create_user(
     3. The user should be sent a success message
     4. If the user already exists, then a 409 error should be returned
     """
+    # TODO: at this point if the given provider is not valid or if the token is empty the user will be created normally based on their email and password and no errors will be raised. This could be changed later on if needed.
     # Check if user already exists
-    logging.log(logging.INFO, f"Creating user {user_to_create}")
+    logging.log(logging.INFO, f"Creating user: ({user_to_create})")
+    db_session = app.get_db_session()
+
     existing_user = crud.get_user_by_email(db_session, str(user_to_create.email))
     if existing_user:
         return JsonResponseWithStatus(
             status_code=409,
-            content=ErrorResponse(message="User already exists with this email!"),
+            content=UserAlreadyExistsWithThisEmail(),
         )
-    if isinstance(user_to_create, Queries.CreateUserAuth):
+    if isinstance(user_to_create, Queries.CreateUserOauth):
         verification_result = verify_jwt_token(user_to_create.token)
         if (
             verification_result is None
             or verification_result["email"] != user_to_create.email
         ):
             return JsonResponseWithStatus(
-                status_code=422,
-                content=ErrorResponse(message="Invalid or expired token!"),
+                status_code=401,
+                content=InvalidOrExpiredToken(),
             )
 
     user = crud.create_user(db_session, user_to_create)
@@ -67,9 +71,7 @@ def create_user(
     return JsonResponseWithStatus(
         status_code=201,
         content=CreateUserPostResponse(
-            message="User created successfully. Please check your email for verification.",
             user_id=user.user_id,
-            session_id=None,
         ),
     )
 

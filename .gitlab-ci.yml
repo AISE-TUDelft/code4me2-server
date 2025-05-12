@@ -2,7 +2,8 @@
 stages:
   - lint
   - black
-  #  - test Uncomment if you want to run tests. make sure to also uncomment the test stage in the pipeline
+  #  - Uncomment if you want to run tests. make sure to also uncomment the test stage in the pipeline
+  - test
   - security
 
 # Cache node_modules for faster builds
@@ -30,24 +31,42 @@ black:
   image: python:3.11-slim
   script:
     - pip install black>=23.9.1
-    - black --check src/backend
+    - black --check src/ tests/
   artifacts:
     paths:
       - black-report.json
     when: always
 
+# Ruff job
+ruff:
+  stage: lint
+  image: python:3.11-slim
+  script:
+    - pip install ruff # Install Ruff for linting and type checking
+    - ruff check # Run Ruff for linting and type checking
+  artifacts:
+    paths:
+      - ruff-report.json # Save Ruff's report for artifacts
+    when: always
+
 ## Test coverage checks for python files
-#coverage:
-#  stage: test
-#  image: python:3.11-slim
-#  script:
-#    - pip install -r requirements.txt
-#    - pytest --cov=./backend --cov-report=xml
-#  artifacts:
-#    paths:
-#      - test-report.xml
-#    when: always
-#  allow_failure: true
+coverage:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - pip install -r requirements.txt
+    - pytest tests/backend_tests --cov=./src/backend --cov-report=xml --junitxml=test-report.xml
+  artifacts:
+    reports:
+      junit: test-report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - test-report.xml
+      - coverage.xml
+    when: always
+  allow_failure: true
 # Dependency security check
 dependency-scan:
   stage: security

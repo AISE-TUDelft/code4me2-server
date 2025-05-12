@@ -1,27 +1,57 @@
-google_auth>=2.22.0
+# -----------------------
+# Dev Tools & Linting
+# -----------------------
+black~=24.3.0
 pre-commit~=3.2.0
-black~=23.9.1
-PyJWT~=2.6.0
-hypothesis~=6.70.0 # Backend
-starlette~=0.37.2
-fastapi-limiter~=0.1.6
-pydantic_settings
-pydantic~=2.7.1
-email-validator~=2.0.0
-fastapi~=0.111.0
-SQLAlchemy~=2.0.30 # We have two almost identical dependencies here...
-psycopg_binary~=3.2.1
-psycopg2-binary~=2.9.9
-pytest-postgresql~=6.0.0
-#torch~=2.3.0
-langchain~=0.2.6
-langchain-core~=0.2.6
-transformers~=4.42.0
-langchain-community~=0.2.5
-#vllm~=0.5.0
+ruff~=0.11.0
+
+# -----------------------
+# Testing
+# -----------------------
 pytest~=8.2.2
 pytest-cov~=4.1.0
-requests~=2.32.3
-python-dotenv~=1.0.1
 pytest-mock~=3.10.0
+pytest-postgresql~=6.0.0
+pytest-env~=1.1.0
+hypothesis~=6.70.0
 
+# -----------------------
+# Core Backend
+# -----------------------
+fastapi~=0.115.0
+uvicorn~=0.34.0
+starlette~=0.46.0
+httpx~=0.25.0
+pydantic~=2.11.3
+pydantic_settings~=2.9.1
+polyfactory~=2.21.0
+fastapi-limiter~=0.1.6
+email-validator~=2.0.0
+python-dotenv~=1.0.1
+argon2-cffi~=21.1.0
+
+# -----------------------
+# Database
+# -----------------------
+SQLAlchemy~=2.0.30
+psycopg_binary~=3.2.1
+psycopg2-binary~=2.9.9
+# -----------------------
+# Auth & Security
+# -----------------------
+google-auth~=2.22.0
+
+# -----------------------
+# LLMs & AI (Optional)
+# -----------------------
+#langchain~=0.2.6
+#langchain-core~=0.2.6
+#langchain-community~=0.2.5
+#transformers~=4.42.0
+# torch~=2.3.0           # Uncomment if using PyTorch
+# vllm~=0.5.0            # Uncomment if using vLLM
+
+# -----------------------
+# Utilities
+# -----------------------
+requests~=2.32.3

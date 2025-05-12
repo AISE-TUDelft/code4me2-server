@@ -1,7 +1,6 @@
 from pydantic import BaseModel, Field
 
-from base_models import UserBase, ModelNameBase, PluginVersionBase
-
+from base_models import ModelNameBase, PluginVersionBase, UserBase
 
 # pydantic classes for the database models
 

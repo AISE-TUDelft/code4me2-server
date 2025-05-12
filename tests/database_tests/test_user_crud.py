@@ -1,25 +1,26 @@
 """
 Tests for user CRUD operations in the database module.
 """
+
 import os
+import uuid
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime
-import uuid
-from pydantic import EmailStr, SecretStr
+
+import database.crud as crud
 
 # Import your modules based on your project structure
 # These need to be adjusted to match your actual import paths
-from src.database.db import Base
-import src.database.crud as crud
-from src.database import db_schemas
-from src.Queries import CreateUser, CreateUserAuth, Provider
-from src.utils import hash_password
-
+from database.db import Base
+from database.utils import hash_password
+from Queries import CreateUser, CreateUserOauth, Provider
 
 # Get test database URL from environment or use default for Docker
-TEST_DB_URL = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@test_db:5432/test_db")
+TEST_DB_URL = os.getenv(
+    "TEST_DATABASE_URL", "postgresql://postgres:postgres@test_db:5432/test_db"
+)
 
 
 @pytest.fixture(scope="function")
@@ -60,9 +61,7 @@ def test_create_and_get_user_by_email(db_session):
     # Create test user data using CreateUser
     user_email = "test@example.com"
     user_data = CreateUser(
-        email=user_email,
-        name="Test User",
-        password="securepassword123"
+        email=user_email, name="Test User", password="securepassword123"
     )
 
     # Create user in the database
@@ -88,12 +87,12 @@ def test_create_user_with_oauth(db_session):
     """Test creating a user with OAuth authentication"""
     # Create test user data using CreateUserAuth
     user_email = "oauth_user@example.com"
-    user_data = CreateUserAuth(
+    user_data = CreateUserOauth(
         email=user_email,
         name="OAuth User",
         password="securepassword456",
         token="mock_oauth_token",
-        provider=Provider.google
+        provider=Provider.google,
     )
 
     # Create user in the database
@@ -114,9 +113,7 @@ def test_get_user_by_id(db_session):
     # Create test user data
     user_email = "id_test@example.com"
     user_data = CreateUser(
-        email=user_email,
-        name="ID Test User",
-        password="secureidpassword"
+        email=user_email, name="ID Test User", password="secureidpassword"
     )
 
     # Create user in the database
@@ -152,11 +149,7 @@ def test_password_hashing(db_session):
     # Create test user data
     user_email = "hash_test@example.com"
     password = "SecurePassword123"
-    user_data = CreateUser(
-        email=user_email,
-        name="Hash Test User",
-        password=password
-    )
+    user_data = CreateUser(email=user_email, name="Hash Test User", password=password)
 
     # Create user in the database
     created_user = crud.create_user(db_session, user_data)
@@ -174,15 +167,15 @@ def test_create_multiple_users(db_session):
     # Create test user data for multiple users
     users_data = [
         CreateUser(
-            email=f"user{i}@example.com",
-            name=f"Test User {i}",
-            password=f"password{i}"
+            email=f"user{i}@example.com", name=f"Test User {i}", password=f"password{i}"
         )
         for i in range(1, 4)  # Create 3 users
     ]
 
     # Create users in the database
-    created_users = [crud.create_user(db_session, user_data) for user_data in users_data]
+    created_users = [
+        crud.create_user(db_session, user_data) for user_data in users_data
+    ]
 
     # Verify all users were created
     assert len(created_users) == 3
