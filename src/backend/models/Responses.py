@@ -5,7 +5,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from base_models import UserBase, SerializableBaseModel
+from base_models import SerializableBaseModel, UserBase
 
 
 class BaseResponse(SerializableBaseModel, ABC):
@@ -64,7 +64,8 @@ class DeleteUserDeleteResponse(BaseResponse):
 
 class InvalidSessionToken(ErrorResponse):
     message: str = Field(
-        default="Session not found! You are not authenticated or your session has expired. Login before you can perform this action."
+        default="Session not found! You are not authenticated or your session has expired. "
+        "Login before you can perform this action."
     )
 
 

@@ -2,8 +2,6 @@ import os
 
 from fastapi import APIRouter
 
-from backend.routers.user import router as user_router
-
 router = APIRouter()
 
 for folder in filter(

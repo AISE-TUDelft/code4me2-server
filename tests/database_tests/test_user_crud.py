@@ -3,21 +3,19 @@ Tests for user CRUD operations in the database module.
 """
 
 import os
+import uuid
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime
-import uuid
-from pydantic import EmailStr, SecretStr
+
+import database.crud as crud
 
 # Import your modules based on your project structure
 # These need to be adjusted to match your actual import paths
 from database.db import Base
-import database.crud as crud
-from database import db_schemas
-from Queries import CreateUser, CreateUserOauth, Provider
 from database.utils import hash_password
-
+from Queries import CreateUser, CreateUserOauth, Provider
 
 # Get test database URL from environment or use default for Docker
 TEST_DB_URL = os.getenv(

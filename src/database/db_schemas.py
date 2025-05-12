@@ -1,16 +1,16 @@
 from sqlalchemy import (
+    ARRAY,
+    BIGINT,
+    Boolean,
     Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
     Integer,
     String,
     Text,
-    Boolean,
-    ForeignKey,
-    DateTime,
-    Float,
     UniqueConstraint,
-    Index,
-    ARRAY,
-    BIGINT,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship

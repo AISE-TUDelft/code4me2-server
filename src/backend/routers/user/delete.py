@@ -1,15 +1,14 @@
 import logging
 
-from fastapi import APIRouter, Query
-from fastapi import Depends, Cookie
+from fastapi import APIRouter, Cookie, Depends, Query
 
 import database.crud as crud
 from App import App
 from backend.models.Responses import (
-    ErrorResponse,
-    JsonResponseWithStatus,
     DeleteUserDeleteResponse,
+    ErrorResponse,
     InvalidSessionToken,
+    JsonResponseWithStatus,
 )
 
 router = APIRouter()

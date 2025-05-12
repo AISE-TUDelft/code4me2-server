@@ -8,8 +8,8 @@ from App import App
 from backend.main import app  # Adjust this import based on your project structure
 from backend.models.Responses import (
     CreateUserPostResponse,
-    UserAlreadyExistsWithThisEmail,
     InvalidOrExpiredToken,
+    UserAlreadyExistsWithThisEmail,
 )
 from base_models import UserBase
 

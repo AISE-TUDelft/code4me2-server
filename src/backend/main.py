@@ -6,8 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from App import App
-from Code4meV2Config import Code4meV2Config
 from backend.routers import router
+from Code4meV2Config import Code4meV2Config
 
 load_dotenv()
 app = FastAPI(

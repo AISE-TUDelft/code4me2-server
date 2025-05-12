@@ -37,7 +37,7 @@ class SessionManager:
         self.redis_client.delete(f"session:{session_token}")
 
     def delete_user_sessions(self, user_id: uuid.UUID) -> None:
-        keys = self.redis_client.keys(f"session:*")
+        keys = self.redis_client.keys("session:*")
         for key in keys:
             session_data = json.loads(self.redis_client.get(key))
             if session_data and session_data["user_id"] == str(user_id):

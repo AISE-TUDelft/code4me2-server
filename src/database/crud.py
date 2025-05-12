@@ -1,13 +1,12 @@
 import uuid
 from datetime import datetime
-from typing import Type, Optional, Union
+from typing import Optional, Type, Union
 
 from sqlalchemy.orm import Session
 
 import Queries as Queries
 from database import db_schemas
 from database.utils import hash_password, verify_password
-
 
 # READ operation
 # User Table

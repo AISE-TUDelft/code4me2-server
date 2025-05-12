@@ -1,4 +1,6 @@
 [tool.ruff]
-lint.select = ["TCH", "F", "E", "W"]  # Enable Typing Convention Handler (TCH) and common rules
-lint.fixable = ["TCH", "F", "E", "W"]
-line-length = 88
+line-length = 99
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "Q", "I", "TCH"]
+ignore = ["E203", "E501"]

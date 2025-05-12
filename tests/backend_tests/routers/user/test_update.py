@@ -7,8 +7,8 @@ import Queries
 from App import App
 from backend.main import app
 from backend.models.Responses import (
-    UpdateUserPutResponse,
     InvalidSessionToken,
+    UpdateUserPutResponse,
 )
 from base_models import UserBase
 

@@ -1,17 +1,16 @@
 import logging
 
-from fastapi import APIRouter
-from fastapi import Depends, Cookie
+from fastapi import APIRouter, Cookie, Depends
 
-import Queries as Queries
 import database.crud as crud
+import Queries as Queries
 from App import App
 from backend.models.Responses import (
     ErrorResponse,
-    JsonResponseWithStatus,
     InvalidOrExpiredToken,
-    UpdateUserPutResponse,
     InvalidSessionToken,
+    JsonResponseWithStatus,
+    UpdateUserPutResponse,
 )
 from base_models import UserBase
 

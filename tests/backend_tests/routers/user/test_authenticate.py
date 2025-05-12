@@ -7,10 +7,10 @@ import Queries
 from App import App
 from backend.main import app
 from backend.models.Responses import (
-    AuthenticateUserOAuthPostResponse,
     AuthenticateUserNormalPostResponse,
-    InvalidOrExpiredToken,
+    AuthenticateUserOAuthPostResponse,
     InvalidEmailOrPassword,
+    InvalidOrExpiredToken,
 )
 from base_models import UserBase
 
