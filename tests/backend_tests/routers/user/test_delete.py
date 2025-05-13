@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from App import App
 from backend.main import app
-from backend.models.Responses import (
+from backend.Responses import (
     DeleteUserDeleteResponse,
     InvalidSessionToken,
 )

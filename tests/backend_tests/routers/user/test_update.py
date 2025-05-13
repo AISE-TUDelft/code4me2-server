@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import Queries
 from App import App
 from backend.main import app
-from backend.models.Responses import (
+from backend.Responses import (
     InvalidSessionToken,
     UpdateUserPutResponse,
 )
