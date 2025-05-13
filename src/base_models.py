@@ -57,7 +57,7 @@ class Fakable:
     def fake(cls, n: int = 1, **overrides) -> Union[BaseModel, list[BaseModel]]:
         """
         Generates fake data for the class that calls this method.
-        It works dynamically for any subclass of Fakable.
+        It works dynamically for any subclass of Fakable and handles nested BaseModel relationships.
         """
 
         class _Factory(ModelFactory):
@@ -74,6 +74,31 @@ class Fakable:
                 return super().get_constrained_field_value(
                     annotation, field_meta, *args, **kwargs
                 )
+
+            @classmethod
+            def get_field_value(cls, field_meta: FieldMeta, *args, **kwargs):
+                """Override to handle nested BaseModel objects"""
+                annotation = field_meta.annotation
+
+                # Handle nested BaseModel objects
+                if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
+                    if hasattr(annotation, "fake"):
+                        return annotation.fake()
+
+                # Handle lists of BaseModel objects
+                if hasattr(annotation, "__origin__") and annotation.__origin__ is list:
+                    inner_type = annotation.__args__[0] if annotation.__args__ else None
+                    if (
+                        inner_type
+                        and inspect.isclass(inner_type)
+                        and issubclass(inner_type, BaseModel)
+                    ):
+                        if hasattr(inner_type, "fake"):
+                            # Generate 1-3 items for lists by default
+                            count = cls.__faker__.random_int(min=1, max=3)
+                            return [inner_type.fake() for _ in range(count)]
+
+                return super().get_field_value(field_meta, *args, **kwargs)
 
         if n == 1:
             return _Factory.build(**overrides)

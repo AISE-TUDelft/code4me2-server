@@ -59,24 +59,16 @@ def request_completion(
 
         # Create context using nested context data
         context_id = uuid.uuid4()
+        # Cleaner approach with unpacking
         context_create = ContextCreate(
-            context_id=context_id,
-            prefix=completion_request.context.prefix,
-            suffix=completion_request.context.suffix,
-            language_id=completion_request.context.language_id,
-            trigger_type_id=completion_request.context.trigger_type_id,
-            version_id=completion_request.context.version_id,
+            context_id=context_id, **completion_request.context.dict()
         )
         crud.add_context(db_session, context_create)
 
         # Create telemetry using nested telemetry data
         telemetry_id = uuid.uuid4()
         telemetry_create = TelemetryCreate(
-            telemetry_id=telemetry_id,
-            time_since_last_completion=completion_request.telemetry.time_since_last_completion,
-            typing_speed=completion_request.telemetry.typing_speed,
-            document_char_length=completion_request.telemetry.document_char_length,
-            relative_document_position=completion_request.telemetry.relative_document_position,
+            telemetry_id=telemetry_id, **completion_request.telemetry.dict()
         )
         crud.add_telemetry(db_session, telemetry_create)
 

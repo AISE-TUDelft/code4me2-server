@@ -29,13 +29,8 @@ class TestCompletionRequest:
     @pytest.fixture(scope="function")
     def completion_request(self):
         """Generate a fake completion request with nested structure"""
-        context_data = Queries.ContextData.fake()
-        telemetry_data = Queries.TelemetryData.fake()
-
         return Queries.CompletionRequest.fake(
-            model_ids=[1, 2],  # Request from two models
-            context=context_data,
-            telemetry=telemetry_data,
+            model_ids=[1, 2],
         )
 
     def test_request_completion_success(

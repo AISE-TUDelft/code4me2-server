@@ -29,22 +29,6 @@ class TestCompletionRoutes:
         return str(uuid.uuid4())
 
     @pytest.fixture(scope="function")
-    def completion_request_payload(self, valid_user_id):
-        return {
-            "user_id": valid_user_id,
-            "prefix": "def calculate_sum(a, b):",
-            "suffix": "",
-            "language_id": 67,
-            "trigger_type_id": 1,
-            "version_id": 1,
-            "model_ids": [1, 2],
-            "time_since_last_completion": 5000,
-            "typing_speed": 120,
-            "document_char_length": 500,
-            "relative_document_position": 0.5,
-        }
-
-    @pytest.fixture(scope="function")
     def mock_models(self):
         model1 = MagicMock()
         model1.model_id = 1
@@ -59,15 +43,6 @@ class TestCompletionRoutes:
     @pytest.fixture(scope="function")
     def query_id(self):
         return str(uuid.uuid4())
-
-    @pytest.fixture(scope="function")
-    def feedback_payload(self, query_id):
-        return {
-            "query_id": query_id,
-            "model_id": 1,
-            "was_accepted": True,
-            "ground_truth": "def calculate_sum(a, b):\n    return a + b",
-        }
 
     def test_get_completions_success(self, client, query_id, mock_models):
         # Mock query, generations, and get_model_by_id
