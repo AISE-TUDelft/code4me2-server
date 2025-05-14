@@ -1,3 +1,4 @@
+import inspect
 from abc import ABC
 from datetime import datetime
 from enum import EnumType
@@ -29,7 +30,10 @@ class SerializableBaseModel(BaseModel):
                 data[field_name] = str(getattr(self, field_name))
             elif value.annotation is datetime:
                 data[field_name] = getattr(self, field_name).isoformat()
-            elif value.annotation is BaseModel:
+            elif inspect.isclass(value.annotation) and issubclass(
+                value.annotation, BaseModel
+            ):
+                # Check if the annotation is a subclass of BaseModel (handles nested models)
                 data[field_name] = getattr(self, field_name).dict(*args, **kwargs)
             else:
                 data[field_name] = getattr(self, field_name)
@@ -53,7 +57,7 @@ class Fakable:
     def fake(cls, n: int = 1, **overrides) -> Union[BaseModel, list[BaseModel]]:
         """
         Generates fake data for the class that calls this method.
-        It works dynamically for any subclass of Fakable.
+        It works dynamically for any subclass of Fakable and handles nested BaseModel relationships.
         """
 
         class _Factory(ModelFactory):
@@ -70,6 +74,31 @@ class Fakable:
                 return super().get_constrained_field_value(
                     annotation, field_meta, *args, **kwargs
                 )
+
+            @classmethod
+            def get_field_value(cls, field_meta: FieldMeta, *args, **kwargs):
+                """Override to handle nested BaseModel objects"""
+                annotation = field_meta.annotation
+
+                # Handle nested BaseModel objects
+                if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
+                    if hasattr(annotation, "fake"):
+                        return annotation.fake()
+
+                # Handle lists of BaseModel objects
+                if hasattr(annotation, "__origin__") and annotation.__origin__ is list:
+                    inner_type = annotation.__args__[0] if annotation.__args__ else None
+                    if (
+                        inner_type
+                        and inspect.isclass(inner_type)
+                        and issubclass(inner_type, BaseModel)
+                    ):
+                        if hasattr(inner_type, "fake"):
+                            # Generate 1-3 items for lists by default
+                            count = cls.__faker__.random_int(min=1, max=3)
+                            return [inner_type.fake() for _ in range(count)]
+
+                return super().get_field_value(field_meta, *args, **kwargs)
 
         if n == 1:
             return _Factory.build(**overrides)
@@ -119,3 +148,20 @@ class PluginVersionBase(ModelBase):
     version_name: str
     ide_type: str
     description: str
+
+
+class CompletionItem(ModelBase):
+    model_id: int = Field(..., description="Model ID")
+    model_name: str = Field(..., description="Model name")
+    completion: str = Field(..., description="Generated code")
+    confidence: float = Field(..., description="Confidence score")
+
+
+class CompletionResponseData(ModelBase):
+    query_id: UUID = Field(..., description="Query ID")
+    completions: list[CompletionItem] = Field(..., description="Generated completions")
+
+
+class FeedbackResponseData(ModelBase):
+    query_id: UUID = Field(..., description="Query ID")
+    model_id: int = Field(..., description="Model ID")

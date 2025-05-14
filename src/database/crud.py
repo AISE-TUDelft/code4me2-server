@@ -8,10 +8,9 @@ import Queries as Queries
 from database import db_schemas
 from database.utils import hash_password, verify_password
 
+
 # READ operation
 # User Table
-
-
 def get_user_by_email(db: Session, email: str) -> Optional[Type[db_schemas.User]]:
     return db.query(db_schemas.User).filter(db_schemas.User.email == email).first()
 
@@ -48,25 +47,6 @@ def create_user(
     db.refresh(db_user)
     return db_user
 
-    #
-    #
-    # # Set user verification status
-    # def set_user_verified(
-    #     db: Session, user_token: str, verified: bool = True
-    # ) -> db_schemas.User:
-    #     user = self.get_user_by_token(user_token)
-    #     if user:
-    #         user.verified = verified
-    #         db.commit()
-    #         db.refresh(user)
-    #     return user
-    #
-    #
-    # def get_all_users(self) -> list[Type[db_schemas.User]]:
-    #     return db.query(db_schemas.User).all()
-    #
-    #
-
 
 def get_user_by_id(db: Session, user_id: uuid.UUID) -> Optional[db_schemas.User]:
     return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
@@ -85,6 +65,162 @@ def update_user(
     )
     db.commit()
     return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
+
+
+# Context Operations
+def add_context(db: Session, context: Queries.ContextCreate) -> db_schemas.Context:
+    """Create a new context record"""
+    db_context = db_schemas.Context(
+        context_id=str(context.context_id),
+        prefix=context.prefix,
+        suffix=context.suffix,
+        language_id=context.language_id,
+        trigger_type_id=context.trigger_type_id,
+        version_id=context.version_id,
+    )
+    db.add(db_context)
+    db.commit()
+    db.refresh(db_context)
+    return db_context
+
+
+# Telemetry operations
+def add_telemetry(
+    db: Session, telemetry: Queries.TelemetryCreate
+) -> db_schemas.Telemetry:
+    """Create a new telemetry record"""
+    db_telemetry = db_schemas.Telemetry(
+        telemetry_id=str(telemetry.telemetry_id),
+        time_since_last_completion=telemetry.time_since_last_completion,
+        typing_speed=telemetry.typing_speed,
+        document_char_length=telemetry.document_char_length,
+        relative_document_position=telemetry.relative_document_position,
+    )
+    db.add(db_telemetry)
+    db.commit()
+    db.refresh(db_telemetry)
+    return db_telemetry
+
+
+# Query operations
+def add_query(db: Session, query: Queries.QueryCreate) -> db_schemas.Query:
+    """Create a new query record"""
+    db_query = db_schemas.Query(
+        query_id=str(query.query_id),
+        user_id=str(query.user_id),
+        telemetry_id=str(query.telemetry_id),
+        context_id=str(query.context_id),
+        timestamp=query.timestamp,
+        total_serving_time=query.total_serving_time,
+        server_version_id=query.server_version_id,
+    )
+    db.add(db_query)
+    db.commit()
+    db.refresh(db_query)
+    return db_query
+
+
+def get_query_by_id(db: Session, query_id: str) -> Optional[Type[db_schemas.Query]]:
+    """Get query by ID"""
+    return (
+        db.query(db_schemas.Query).filter(db_schemas.Query.query_id == query_id).first()
+    )
+
+
+def update_query_serving_time(
+    db: Session, query_id: str, total_serving_time: int
+) -> Optional[db_schemas.Query]:
+    """Update query total serving time"""
+    query = get_query_by_id(db, query_id)
+    if query:
+        query.total_serving_time = total_serving_time
+        db.commit()
+        db.refresh(query)
+    return query
+
+
+# Generation operations
+def add_generation(
+    db: Session, generation: Queries.GenerationCreate
+) -> db_schemas.HadGeneration:
+    """Create a new generation record"""
+    db_generation = db_schemas.HadGeneration(
+        query_id=str(generation.query_id),
+        model_id=generation.model_id,
+        completion=generation.completion,
+        generation_time=generation.generation_time,
+        shown_at=generation.shown_at,
+        was_accepted=generation.was_accepted,
+        confidence=generation.confidence,
+        logprobs=generation.logprobs,
+    )
+    db.add(db_generation)
+    db.commit()
+    db.refresh(db_generation)
+    return db_generation
+
+
+def get_generations_by_query_and_model_id(
+    db: Session, query_id: str, model_id: int
+) -> Optional[db_schemas.HadGeneration]:
+    """Get generation by query ID and model ID"""
+    return (
+        db.query(db_schemas.HadGeneration)
+        .filter(
+            db_schemas.HadGeneration.query_id == query_id,
+            db_schemas.HadGeneration.model_id == model_id,
+        )
+        .first()
+    )
+
+
+def get_generations_by_query_id(
+    db: Session, query_id: str
+) -> list[db_schemas.HadGeneration]:
+    """Get all generations for a query"""
+    # assert is_valid_uuid(query_id)
+    return (
+        db.query(db_schemas.HadGeneration)
+        .filter(db_schemas.HadGeneration.query_id == query_id)
+        .all()
+    )
+
+
+def update_generation_acceptance(
+    db: Session, query_id: str, model_id: int, was_accepted: bool
+) -> Optional[Type[db_schemas.HadGeneration]]:
+    """Update generation acceptance status"""
+    db_generation = get_generations_by_query_and_model_id(db, query_id, model_id)
+    if db_generation:
+        db_generation.was_accepted = was_accepted
+        db.commit()
+        db.refresh(db_generation)
+    return db_generation
+
+
+def get_model_by_id(db: Session, model_id: int) -> Optional[db_schemas.ModelName]:
+    """Get model by ID"""
+    return (
+        db.query(db_schemas.ModelName)
+        .filter(db_schemas.ModelName.model_id == model_id)
+        .first()
+    )
+
+
+def add_ground_truth(
+    db: Session, ground_truth_data: Queries.GroundTruthCreate
+) -> db_schemas.GroundTruth:
+    """Create a ground truth record"""
+    db_ground_truth = db_schemas.GroundTruth(
+        query_id=str(ground_truth_data.query_id),
+        truth_timestamp=ground_truth_data.truth_timestamp,
+        ground_truth=ground_truth_data.ground_truth,
+    )
+    db.add(db_ground_truth)
+    db.commit()
+    db.refresh(db_ground_truth)
+    return db_ground_truth
+
     #
     #
     # # Query Table
@@ -181,17 +317,7 @@ def update_user(
     #     return db.query(db_schemas.HadGeneration).all()
     #
     #
-    # def get_generations_by_query_id(
-    #     db: Session, query_id: str
-    # ) -> list[Type[db_schemas.HadGeneration]]:
-    #     assert is_valid_uuid(query_id)
-    #     return (
-    #         db.query(db_schemas.HadGeneration)
-    #         .filter(db_schemas.HadGeneration.query_id == query_id)
-    #         .all()
-    #     )
-    #
-    #
+
     # def get_generations_by_query_and_model_id(
     #     db: Session, query_id: str, model_id: int
     # ) -> Type[db_schemas.HadGeneration]:
@@ -278,13 +404,6 @@ def update_user(
     # def get_all_db_schemas(self) -> list[Type[db_schemas.ModelName]]:
     #     return db.query(db_schemas.ModelName).all()
     #
-    #
-    # def get_model_by_id(db: Session, model_id: int) -> db_schemas.ModelName:
-    #     return (
-    #         db.query(db_schemas.ModelName)
-    #         .filter(db_schemas.ModelName.model_id == model_id)
-    #         .first()
-    #     )
     #
     #
     # def get_model_by_name(db: Session, model_name: str) -> db_schemas.ModelName:
@@ -663,42 +782,7 @@ def update_user(
     #     db.refresh(db_version)
     #     return db_version
     #
-    #
-    # def add_context(db: Session, context: db_schemas.ContextCreate) -> db_schemas.Context:
-    #     db_context = db_schemas.Context(**context.model_dump())
-    #     db.add(db_context)
-    #     db.commit()
-    #     db.refresh(db_context)
-    #     return db_context
-    #
-    #
-    # def add_query(db: Session, query: db_schemas.QueryCreate) -> db_schemas.Query:
-    #     db_query = db_schemas.Query(**query.model_dump())
-    #     db.add(db_query)
-    #     db.commit()
-    #     db.refresh(db_query)
-    #     return db_query
-    #
-    #
-    # def add_telemetry(
-    #     db: Session, telemetry: db_schemas.TelemetryCreate
-    # ) -> db_schemas.Telemetry:
-    #     db_telemetry = db_schemas.Telemetry(**telemetry.model_dump())
-    #     db.add(db_telemetry)
-    #     db.commit()
-    #     db.refresh(db_telemetry)
-    #     return db_telemetry
-    #
-    #
-    # def add_ground_truth(
-    #     db: Session, ground_truth: db_schemas.GroundTruthCreate
-    # ) -> db_schemas.GroundTruth:
-    #     db_ground_truth = db_schemas.GroundTruth(**ground_truth.model_dump())
-    #     db.add(db_ground_truth)
-    #     db.commit()
-    #     db.refresh(db_ground_truth)
-    #     return db_ground_truth
-    #
+
     #
     # def add_generation(
     #     db: Session, generation: db_schemas.HadGenerationCreate

@@ -31,6 +31,8 @@ class Code4meV2Config(BaseSettings):
     website_host: str = Field(alias="WEBSITE_HOST", frozen=True)
     website_port: int = Field(alias="WEBSITE_PORT", frozen=True)
 
+    redis_host: str = Field(alias="REDIS_HOST", frozen=True)
+    redis_port: int = Field(alias="REDIS_PORT", frozen=True)
     backend_host: str = Field(alias="REACT_APP_BACKEND_HOST", frozen=True)
     backend_port: int = Field(alias="REACT_APP_BACKEND_PORT", frozen=True)
     react_app_google_client_id: str = Field(
