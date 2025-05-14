@@ -22,6 +22,7 @@ class TestCompletionRoutes:
     def client(self, setup_app):
         with TestClient(app) as client:
             client.mock_app = setup_app
+            client.cookies.set("session_token", "valid_token")
             yield client
 
     @pytest.fixture(scope="function")
@@ -79,7 +80,10 @@ class TestCompletionRoutes:
         mock_app = MagicMock()
         mock_db_session = MagicMock()
         mock_app.get_db_session.return_value = mock_db_session
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": "test_id"}
 
+        client.mock_app.get_session_manager.return_value = mock_session
         with patch(
             "backend.routers.completion.get.App.get_instance", return_value=mock_app
         ), patch(
@@ -114,6 +118,10 @@ class TestCompletionRoutes:
         mock_app = MagicMock()
         mock_db_session = MagicMock()
         mock_app.get_db_session.return_value = mock_db_session
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": "test_id"}
+
+        client.mock_app.get_session_manager.return_value = mock_session
 
         with patch(
             "backend.routers.completion.get.App.get_instance", return_value=mock_app

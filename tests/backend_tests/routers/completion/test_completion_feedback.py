@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import Queries
 from App import App
 from backend.main import app
-from backend.models.Responses import (
+from backend.Responses import (
     ErrorResponse,
 )
 
@@ -23,6 +23,7 @@ class TestCompletionFeedback:
     def client(self, setup_app):
         with TestClient(app) as client:
             client.mock_app = setup_app
+            client.cookies.set("session_token", "valid_token")
             yield client
 
     @pytest.fixture(scope="function")
@@ -51,7 +52,10 @@ class TestCompletionFeedback:
         mock_crud.get_generations_by_query_and_model_id.return_value = mock_generation
 
         client.mock_app.get_db_session.return_value = MagicMock()
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": "test_id"}
 
+        client.mock_app.get_session_manager.return_value = mock_session
         with patch("backend.routers.completion.feedback.crud", mock_crud):
             response = client.post(
                 "/api/completion/feedback/", json=completion_feedback.dict()
@@ -86,6 +90,8 @@ class TestCompletionFeedback:
         mock_crud.get_generations_by_query_and_model_id.return_value = mock_generation
 
         client.mock_app.get_db_session.return_value = MagicMock()
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": "test_id"}
 
         with patch("backend.routers.completion.feedback.crud", mock_crud):
             response = client.post(
@@ -105,6 +111,8 @@ class TestCompletionFeedback:
         mock_crud = MagicMock()
         mock_crud.get_generations_by_query_and_model_id.return_value = None
         client.mock_app.get_db_session.return_value = MagicMock()
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": "test_id"}
 
         with patch("backend.routers.completion.feedback.crud", mock_crud):
             response = client.post(
@@ -139,6 +147,8 @@ class TestCompletionFeedback:
 
         mock_db_session = MagicMock()
         client.mock_app.get_db_session.return_value = mock_db_session
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": "test_id"}
 
         with patch("backend.routers.completion.feedback.crud", mock_crud):
             response = client.post(

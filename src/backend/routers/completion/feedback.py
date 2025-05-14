@@ -1,13 +1,14 @@
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Cookie, Depends
 
 import database.crud as crud
 from App import App
-from backend.models.Responses import (
+from backend.Responses import (
     CompletionFeedbackPostResponse,
     ErrorResponse,
+    InvalidSessionToken,
     JsonResponseWithStatus,
 )
 from base_models import FeedbackResponseData
@@ -21,22 +22,31 @@ router = APIRouter()
     response_model=CompletionFeedbackPostResponse,
     responses={
         "200": {"model": CompletionFeedbackPostResponse},
+        "401": {"model": InvalidSessionToken},
         "404": {"model": ErrorResponse},
         "422": {"model": ErrorResponse},
+        "429": {"model": ErrorResponse},
         "500": {"model": ErrorResponse},
     },
 )
 def submit_completion_feedback(
     feedback: CompletionFeedback,
     app: App = Depends(App.get_instance),
+    session_token: str = Cookie("session_token"),
 ) -> JsonResponseWithStatus:
     """
     Submit feedback on a generated completion.
     """
     logging.log(logging.INFO, f"Completion feedback: {feedback}")
     db_session = app.get_db_session()
-
+    session_manager = app.get_session_manager()
     try:
+        user_dict = session_manager.get_session(session_token)
+        if session_token is None or user_dict is None:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidSessionToken(),
+            )
         # Get the generation record
         generation = crud.get_generations_by_query_and_model_id(
             db_session, str(feedback.query_id), feedback.model_id

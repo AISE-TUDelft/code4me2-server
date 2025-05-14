@@ -124,6 +124,7 @@ if __name__ == "__main__":
     # Example usage
     t0 = time.time()
     print("Setting up the model...")
+    # https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-base
     completion_model = TemplateCompletionModel(
         prompt_template=prompt_template,
         model_name="deepseek-ai/deepseek-coder-1.3b-base",

@@ -2,13 +2,14 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Cookie, Depends
 
 import database.crud as crud
 from App import App
-from backend.models.Responses import (
+from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,
+    InvalidSessionToken,
     JsonResponseWithStatus,
 )
 from base_models import CompletionItem, CompletionResponseData
@@ -28,6 +29,7 @@ router = APIRouter()
     response_model=CompletionPostResponse,
     responses={
         "200": {"model": CompletionPostResponse},
+        "401": {"model": InvalidSessionToken},
         "404": {"model": ErrorResponse},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -37,19 +39,29 @@ router = APIRouter()
 def request_completion(
     completion_request: CompletionRequest,
     app: App = Depends(App.get_instance),
+    session_token: str = Cookie("session_token"),
 ) -> JsonResponseWithStatus:
     """
     Request code completions based on provided context.
     """
     logging.log(logging.INFO, f"Completion request: {completion_request}")
     db_session = app.get_db_session()
-
-    # Initialize variables that might be referenced in exception handling
-    query_id = None
-    context_id = None
-    telemetry_id = None
+    session_manager = app.get_session_manager()
 
     try:
+        # Check if user is authenticated
+        user_dict = session_manager.get_session(session_token)
+        if (
+            session_token is None
+            or user_dict is None
+            or user_dict["user_id"] != completion_request.user_id
+        ):
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidSessionToken(),
+            )
+
+        # Ideally the user_id will not be in session if it is deleted and therefore the following error should not be raised unless in some special concurrency cases.
         # Check if user exists
         user = crud.get_user_by_id(db_session, str(completion_request.user_id))
         if not user:
@@ -142,7 +154,6 @@ def request_completion(
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
-                message="Completions generated successfully",
                 data=CompletionResponseData(query_id=query_id, completions=completions),
             ),
         )
