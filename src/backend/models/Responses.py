@@ -5,7 +5,12 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from base_models import SerializableBaseModel, UserBase
+from base_models import (
+    CompletionResponseData,
+    FeedbackResponseData,
+    SerializableBaseModel,
+    UserBase,
+)
 
 
 class BaseResponse(SerializableBaseModel, ABC):
@@ -73,3 +78,21 @@ class InvalidSessionToken(ErrorResponse):
 class UpdateUserPutResponse(BaseResponse):
     message: str = Field(default="User is updated successfully.")
     user: UserBase = Field(..., description="User details")  # Uncomment if needed
+
+
+# /api/completion/request
+class CompletionPostResponse(BaseResponse):
+    message: str = Field(
+        default="Completions generated successfully. Ready for display in your IDE."
+    )
+    data: CompletionResponseData = Field(
+        ..., description="Generated code completions including query ID and suggestions"
+    )
+
+
+# /api/completion/feedback
+class CompletionFeedbackPostResponse(BaseResponse):
+    message: str = Field(default="Feedback recorded successfully.")
+    data: FeedbackResponseData = Field(
+        ..., description="Information about the recorded feedback"
+    )

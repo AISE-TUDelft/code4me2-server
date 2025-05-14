@@ -1,0 +1,81 @@
+import logging
+from datetime import datetime
+
+from fastapi import APIRouter, Depends
+
+import database.crud as crud
+from App import App
+from backend.models.Responses import (
+    CompletionFeedbackPostResponse,
+    ErrorResponse,
+    JsonResponseWithStatus,
+)
+from base_models import FeedbackResponseData
+from Queries import CompletionFeedback, GroundTruthCreate
+
+router = APIRouter()
+
+
+@router.post(
+    "/",
+    response_model=CompletionFeedbackPostResponse,
+    responses={
+        "200": {"model": CompletionFeedbackPostResponse},
+        "404": {"model": ErrorResponse},
+        "422": {"model": ErrorResponse},
+        "500": {"model": ErrorResponse},
+    },
+)
+def submit_completion_feedback(
+    feedback: CompletionFeedback,
+    app: App = Depends(App.get_instance),
+) -> JsonResponseWithStatus:
+    """
+    Submit feedback on a generated completion.
+    """
+    logging.log(logging.INFO, f"Completion feedback: {feedback}")
+    db_session = app.get_db_session()
+
+    try:
+        # Get the generation record
+        generation = crud.get_generations_by_query_and_model_id(
+            db_session, str(feedback.query_id), feedback.model_id
+        )
+
+        if not generation:
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=ErrorResponse(message="Generation record not found"),
+            )
+
+        # Update generation status
+        crud.update_generation_acceptance(
+            db_session, str(feedback.query_id), feedback.model_id, feedback.was_accepted
+        )
+
+        # If ground truth is provided, save it
+        if feedback.ground_truth:
+            ground_truth_create = GroundTruthCreate(
+                query_id=feedback.query_id,
+                truth_timestamp=datetime.now().isoformat(),
+                ground_truth=feedback.ground_truth,
+            )
+            crud.add_ground_truth(db_session, ground_truth_create)
+
+        return JsonResponseWithStatus(
+            status_code=200,
+            content=CompletionFeedbackPostResponse(
+                message="Feedback recorded successfully",
+                data=FeedbackResponseData(
+                    query_id=feedback.query_id, model_id=feedback.model_id
+                ),
+            ),
+        )
+
+    except Exception as e:
+        logging.error(f"Error recording feedback: {str(e)}")
+        db_session.rollback()
+        return JsonResponseWithStatus(
+            status_code=500,
+            content=ErrorResponse(message=f"Failed to record feedback: {str(e)}"),
+        )
