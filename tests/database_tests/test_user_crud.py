@@ -13,7 +13,6 @@ from sqlalchemy.orm import sessionmaker
 import database.crud as crud
 from database import db_schemas
 from database.db import Base
-from database.utils import hash_password
 from Queries import (
     ContextCreate,
     CreateUser,
@@ -69,7 +68,7 @@ def test_create_and_get_user_by_email(db_session):
     # Create test user data using CreateUser
     user_email = "test@example.com"
     user_data = CreateUser(
-        email=user_email, name="Test User", password="securepassword123"
+        email=user_email, name="Test User", password="SecurePassword123"
     )
 
     # Create user in the database
@@ -98,7 +97,7 @@ def test_create_user_with_oauth(db_session):
     user_data = CreateUserOauth(
         email=user_email,
         name="OAuth User",
-        password="securepassword456",
+        password="SecurePassword456",
         token="mock_oauth_token",
         provider=Provider.google,
     )
@@ -121,7 +120,7 @@ def test_get_user_by_id(db_session):
     # Create test user data
     user_email = "id_test@example.com"
     user_data = CreateUser(
-        email=user_email, name="ID Test User", password="secureidpassword"
+        email=user_email, name="ID Test User", password="SecureIdPassword123"
     )
 
     # Create user in the database
@@ -165,9 +164,16 @@ def test_password_hashing(db_session):
     # Verify the password was hashed (not stored as plaintext)
     assert created_user.password_hash != password
 
-    # Check that the stored hash matches the expected hash
-    expected_hash = hash_password(password)
-    assert created_user.password_hash == expected_hash
+    # Since we're now using Argon2, just verify the hash exists and isn't the plaintext
+    assert created_user.password_hash is not None
+    assert len(created_user.password_hash) > 0
+    assert created_user.password_hash.startswith("$argon2")
+
+    # Test that password verification works
+    from database.utils import verify_password
+
+    assert verify_password(created_user.password_hash, password)
+    assert not verify_password(created_user.password_hash, "wrong_password")
 
 
 def test_create_multiple_users(db_session):
@@ -175,7 +181,9 @@ def test_create_multiple_users(db_session):
     # Create test user data for multiple users
     users_data = [
         CreateUser(
-            email=f"user{i}@example.com", name=f"Test User {i}", password=f"password{i}"
+            email=f"user{i}@example.com",
+            name=f"Test User {i}",
+            password=f"Password{i}23",
         )
         for i in range(1, 4)  # Create 3 users
     ]
