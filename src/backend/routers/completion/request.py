@@ -9,10 +9,10 @@ from App import App
 from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,
+    GenerateCompletionsError,
     InvalidSessionToken,
     JsonResponseWithStatus,
     UserNotFoundError,
-    GenerateCompletionsError,
 )
 from base_models import CompletionItem, CompletionResponseData
 from Queries import (

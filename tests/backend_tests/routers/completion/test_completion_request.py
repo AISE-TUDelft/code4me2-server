@@ -8,10 +8,9 @@ import Queries
 from App import App
 from backend.main import app
 from backend.Responses import (
-    UserNotFoundError,
-    InvalidSessionToken,
-    GenerateCompletionsError,
     CompletionPostResponse,
+    GenerateCompletionsError,
+    InvalidSessionToken,
 )
 from base_models import ContextBase, QueryBase, TelemetryBase
 
@@ -80,7 +79,10 @@ class TestCompletionRequest:
         assert response.status_code == 200
         response_data = response.json()
 
-        assert response_data["message"] == CompletionPostResponse.model_fields["message"].default
+        assert (
+            response_data["message"]
+            == CompletionPostResponse.model_fields["message"].default
+        )
         assert "data" in response_data
         assert "query_id" in response_data["data"]
         assert "completions" in response_data["data"]

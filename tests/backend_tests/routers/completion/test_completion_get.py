@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 from App import App
 from backend.main import app
 from backend.Responses import (
-    QueryNotFoundError,
     CompletionPostResponse,
+    QueryNotFoundError,
 )
 
 
@@ -103,8 +103,10 @@ class TestCompletionRoutes:
             assert response.status_code == 200
             response_data = response.json()
 
-
-            assert response_data["message"] == CompletionPostResponse.model_fields["message"].default
+            assert (
+                response_data["message"]
+                == CompletionPostResponse.model_fields["message"].default
+            )
             assert response_data["data"]["query_id"] == query_id
             assert len(response_data["data"]["completions"]) == 2
             assert response_data["data"]["completions"][0]["model_id"] == 1

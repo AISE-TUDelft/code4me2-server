@@ -7,11 +7,11 @@ import database.crud as crud
 from App import App
 from backend.Responses import (
     CompletionPostResponse,
+    CompletionsNotFoundError,
     ErrorResponse,
     InvalidSessionToken,
     JsonResponseWithStatus,
     QueryNotFoundError,
-    CompletionsNotFoundError,
     RetrieveCompletionsError,
 )
 from base_models import CompletionItem, CompletionResponseData
@@ -55,9 +55,7 @@ def get_completions_by_query(
         # Check if query exists
         query = crud.get_query_by_id(db_session, str(query_id))
         if not query:
-            return JsonResponseWithStatus(
-                status_code=404, content=QueryNotFoundError()
-            )
+            return JsonResponseWithStatus(status_code=404, content=QueryNotFoundError())
 
         # Get all generations for this query
         generations = crud.get_generations_by_query_id(db_session, str(query_id))
