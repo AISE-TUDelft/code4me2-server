@@ -1,4 +1,4 @@
-from unittest.mock import ANY, MagicMock, patch  # Changed: use ANY instead of Mock
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -7,7 +7,9 @@ import Queries
 from App import App
 from backend.main import app
 from backend.Responses import (
-    ErrorResponse,
+    GenerationNotFoundError,
+    FeedbackRecordingError,
+    CompletionFeedbackPostResponse,
 )
 
 
@@ -64,7 +66,7 @@ class TestCompletionFeedback:
         assert response.status_code == 200
         response_data = response.json()
 
-        assert response_data["message"] == "Feedback recorded successfully"
+        assert response_data["message"] == CompletionFeedbackPostResponse.model_fields["message"].default
         assert response_data["data"]["query_id"] == str(completion_feedback.query_id)
         assert response_data["data"]["model_id"] == completion_feedback.model_id
 
@@ -120,10 +122,8 @@ class TestCompletionFeedback:
             )
 
         assert response.status_code == 404
-        assert (
-            response.json()
-            == ErrorResponse(message="Generation record not found").dict()
-        )
+        expected_error = GenerationNotFoundError()
+        assert response.json() == expected_error.dict()
 
     def test_submit_feedback_invalid_payload(self, client: TestClient):
         # Test with invalid data
@@ -156,8 +156,10 @@ class TestCompletionFeedback:
             )
 
         assert response.status_code == 500
-        assert "Failed to record feedback" in response.json()["message"]
-        # Verify rollback was called
+
+        expected_error = FeedbackRecordingError("Database error")
+        assert response.json() == expected_error.dict()
+
         mock_db_session.rollback.assert_called_once()
 
     def test_submit_feedback_partial_update_failure(

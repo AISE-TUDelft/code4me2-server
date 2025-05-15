@@ -11,6 +11,8 @@ from backend.Responses import (
     ErrorResponse,
     InvalidSessionToken,
     JsonResponseWithStatus,
+    UserNotFoundError,
+    GenerateCompletionsError,
 )
 from base_models import CompletionItem, CompletionResponseData
 from Queries import (
@@ -30,9 +32,10 @@ router = APIRouter()
     responses={
         "200": {"model": CompletionPostResponse},
         "401": {"model": InvalidSessionToken},
+        "404": {"model": UserNotFoundError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
-        "500": {"model": ErrorResponse},
+        "500": {"model": GenerateCompletionsError},
     },
 )
 def request_completion(
@@ -140,5 +143,5 @@ def request_completion(
         db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,
-            content=ErrorResponse(message=f"Failed to generate completions: {str(e)}"),
+            content=GenerateCompletionsError(str(e)),
         )

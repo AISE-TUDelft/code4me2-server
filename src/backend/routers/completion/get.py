@@ -10,6 +10,9 @@ from backend.Responses import (
     ErrorResponse,
     InvalidSessionToken,
     JsonResponseWithStatus,
+    QueryNotFoundError,
+    CompletionsNotFoundError,
+    RetrieveCompletionsError,
 )
 from base_models import CompletionItem, CompletionResponseData
 
@@ -22,9 +25,9 @@ router = APIRouter()
     responses={
         "200": {"model": CompletionPostResponse},
         "401": {"model": InvalidSessionToken},
-        "404": {"model": ErrorResponse},
+        "404": {"model": QueryNotFoundError},
         "429": {"model": ErrorResponse},
-        "500": {"model": ErrorResponse},
+        "500": {"model": RetrieveCompletionsError},
     },
 )
 def get_completions_by_query(
@@ -53,7 +56,7 @@ def get_completions_by_query(
         query = crud.get_query_by_id(db_session, str(query_id))
         if not query:
             return JsonResponseWithStatus(
-                status_code=404, content=ErrorResponse(message="Query not found")
+                status_code=404, content=QueryNotFoundError()
             )
 
         # Get all generations for this query
@@ -61,7 +64,7 @@ def get_completions_by_query(
         if not generations:
             return JsonResponseWithStatus(
                 status_code=404,
-                content=ErrorResponse(message="No completions found for this query"),
+                content=CompletionsNotFoundError(),
             )
 
         # Build response
@@ -81,7 +84,6 @@ def get_completions_by_query(
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
-                message="Completions retrieved successfully",
                 data=CompletionResponseData(query_id=query_id, completions=completions),
             ),
         )
@@ -90,5 +92,5 @@ def get_completions_by_query(
         logging.error(f"Error retrieving completions: {str(e)}")
         return JsonResponseWithStatus(
             status_code=500,
-            content=ErrorResponse(message=f"Failed to retrieve completions: {str(e)}"),
+            content=RetrieveCompletionsError(str(e)),
         )

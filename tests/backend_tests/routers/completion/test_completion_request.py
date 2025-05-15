@@ -8,7 +8,10 @@ import Queries
 from App import App
 from backend.main import app
 from backend.Responses import (
+    UserNotFoundError,
     InvalidSessionToken,
+    GenerateCompletionsError,
+    CompletionPostResponse,
 )
 from base_models import ContextBase, QueryBase, TelemetryBase
 
@@ -77,8 +80,7 @@ class TestCompletionRequest:
         assert response.status_code == 200
         response_data = response.json()
 
-        # Verify response structure
-        assert "message" in response_data
+        assert response_data["message"] == CompletionPostResponse.model_fields["message"].default
         assert "data" in response_data
         assert "query_id" in response_data["data"]
         assert "completions" in response_data["data"]
@@ -151,16 +153,16 @@ class TestCompletionRequest:
         )
 
         assert response.status_code == 401
-        assert response.json() == InvalidSessionToken()
+        expected_error = InvalidSessionToken()
+        assert response.json() == expected_error.dict()
 
     def test_request_completion_database_error(
         self, client: TestClient, completion_request: Queries.RequestCompletion
     ):
         mock_crud = MagicMock()
-        mock_crud.get_user_by_id.side_effect = Exception("Database error")
+        mock_crud.add_context.side_effect = Exception("Database error")
         client.mock_app.get_db_session.return_value = MagicMock()
         mock_session = MagicMock()
-        mock_session.get_session.return_value = {"user_id": str(uuid.uuid4())}
 
         client.mock_app.get_session_manager.return_value = mock_session
 
@@ -171,4 +173,5 @@ class TestCompletionRequest:
             )
 
         assert response.status_code == 500
-        assert "Failed to generate completions" in response.json()["message"]
+        expected_error = GenerateCompletionsError("Database error")
+        assert response.json() == expected_error.dict()

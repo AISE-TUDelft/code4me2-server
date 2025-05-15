@@ -89,6 +89,12 @@ class CompletionPostResponse(BaseResponse):
         ..., description="Generated code completions including query ID and suggestions"
     )
 
+class UserNotFoundError(ErrorResponse):
+    message: str = Field(default="User not found")
+
+class GenerateCompletionsError(ErrorResponse):
+    def __init__(self, error_message: str):
+        super().__init__(message=f"Failed to generate completions: {error_message}")
 
 # /api/completion/feedback
 class CompletionFeedbackPostResponse(BaseResponse):
@@ -96,3 +102,23 @@ class CompletionFeedbackPostResponse(BaseResponse):
     data: FeedbackResponseData = Field(
         ..., description="Information about the recorded feedback"
     )
+
+# TODO Consider sending a more generic response after development phase
+class FeedbackRecordingError(ErrorResponse):
+    def __init__(self, error_message: str):
+        super().__init__(message=f"Failed to record feedback: {error_message}")
+
+class GenerationNotFoundError(ErrorResponse):
+    message: str = Field(default="Generation record not found")
+
+class QueryNotFoundError(ErrorResponse):
+    message: str = Field(default="Query not found")
+
+class CompletionsNotFoundError(ErrorResponse):
+    message: str = Field(default="No completions found for this query")
+
+# TODO Consider sending a more generic response after development phase
+class RetrieveCompletionsError(ErrorResponse):
+    def __init__(self, error_message: str):
+        super().__init__(message=f"Failed to retrieve completions: {error_message}")
+
