@@ -14,11 +14,11 @@ from backend.Responses import (
 )
 from base_models import CompletionItem, CompletionResponseData
 from Queries import (
-    CompletionRequest,
-    ContextCreate,
-    GenerationCreate,
-    QueryCreate,
-    TelemetryCreate,
+    CreateContext,
+    CreateGeneration,
+    CreateQuery,
+    CreateTelemetry,
+    RequestCompletion,
 )
 
 router = APIRouter()
@@ -30,14 +30,13 @@ router = APIRouter()
     responses={
         "200": {"model": CompletionPostResponse},
         "401": {"model": InvalidSessionToken},
-        "404": {"model": ErrorResponse},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": ErrorResponse},
     },
 )
 def request_completion(
-    completion_request: CompletionRequest,
+    completion_request: RequestCompletion,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie("session_token"),
 ) -> JsonResponseWithStatus:
@@ -51,59 +50,34 @@ def request_completion(
     try:
         # Check if user is authenticated
         user_dict = session_manager.get_session(session_token)
-        if (
-            session_token is None
-            or user_dict is None
-            or user_dict["user_id"] != completion_request.user_id
-        ):
+        if session_token is None or user_dict is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidSessionToken(),
             )
 
-        # Ideally the user_id will not be in session if it is deleted and therefore the following error should not be raised unless in some special concurrency cases.
-        # Check if user exists
-        user = crud.get_user_by_id(db_session, str(completion_request.user_id))
-        if not user:
-            return JsonResponseWithStatus(
-                status_code=404, content=ErrorResponse(message="User not found")
-            )
-
-        # Create context using nested context data
-        context_id = uuid.uuid4()
         # Cleaner approach with unpacking
-        context_create = ContextCreate(
-            context_id=context_id, **completion_request.context.dict()
-        )
-        crud.add_context(db_session, context_create)
+        context_create = CreateContext(**completion_request.context.dict())
+        created_context = crud.add_context(db_session, context_create)
 
-        # Create telemetry using nested telemetry data
-        telemetry_id = uuid.uuid4()
-        telemetry_create = TelemetryCreate(
-            telemetry_id=telemetry_id, **completion_request.telemetry.dict()
-        )
-        crud.add_telemetry(db_session, telemetry_create)
-
-        # Create query FIRST - before any generations
-        query_id = uuid.uuid4()
-        current_time = datetime.now().isoformat()
+        telemetry_create = CreateTelemetry(**completion_request.telemetry.dict())
+        created_telemetry = crud.add_telemetry(db_session, telemetry_create)
 
         # Create query record BEFORE completions
-        query_create = QueryCreate(
-            query_id=query_id,
-            user_id=completion_request.user_id,
-            telemetry_id=telemetry_id,
-            context_id=context_id,
-            timestamp=current_time,
+        query_create = CreateQuery(
+            user_id=uuid.UUID(user_dict["user_id"]),
+            telemetry_id=created_telemetry.telemetry_id,
+            context_id=created_context.context_id,
             total_serving_time=0,  # Will update this later
             server_version_id=app.get_config().server_version_id,
         )
-        crud.add_query(db_session, query_create)
+        created_query = crud.add_query(db_session, query_create)
 
         # Get model completions
         start_time = datetime.now()
         completions = []
 
+        # TODO: parallelize the completion request for different models
         for model_id in completion_request.model_ids:
             # Get model
             model = crud.get_model_by_id(db_session, model_id)
@@ -112,18 +86,20 @@ def request_completion(
 
             # In a real implementation, call actual model APIs
             # Here creating mock completion
+            # completion_text =
             completion_text = f"def example_function():\n    # Completion from {model.model_name}\n    pass"
             generation_time = 100  # milliseconds
             confidence = 0.85
             logprobs = [-0.05, -0.1, -0.15]  # Mock logprobs
 
             # Create generation record
-            generation_create = GenerationCreate(
-                query_id=query_id,
+            # TODO: check shown_at
+            generation_create = CreateGeneration(
+                query_id=created_query.query_id,
                 model_id=model_id,
                 completion=completion_text,
                 generation_time=generation_time,
-                shown_at=[current_time],
+                shown_at=[start_time.isoformat()],
                 was_accepted=False,
                 confidence=confidence,
                 logprobs=logprobs,
@@ -145,16 +121,17 @@ def request_completion(
         total_serving_time = int((end_time - start_time).total_seconds() * 1000)
 
         # Update query with actual total_serving_time
-        if query_id is not None:
-            crud.update_query_serving_time(
-                db_session, str(query_id), total_serving_time
-            )
+        crud.update_query_serving_time(
+            db_session, str(created_query.query_id), total_serving_time
+        )
 
         # Return completions (after processing all models)
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
-                data=CompletionResponseData(query_id=query_id, completions=completions),
+                data=CompletionResponseData(
+                    query_id=created_query.query_id, completions=completions
+                ),
             ),
         )
 

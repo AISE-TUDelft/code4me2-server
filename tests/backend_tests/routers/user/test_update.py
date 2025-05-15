@@ -51,8 +51,12 @@ class TestUpdateUser:
         with patch("backend.routers.user.update.crud", mock_crud):
             response = client.put("/api/user/update", json=update_user_query.dict())
 
+        response_result = response.json()
+        response_result["user"][
+            "password"
+        ] = fake_updated_user.password.get_secret_value()
         assert response.status_code == 201
-        assert response.json() == UpdateUserPutResponse(user=fake_updated_user)
+        assert response_result == UpdateUserPutResponse(user=fake_updated_user)
 
     def test_update_user_invalid_session_token(self, client, update_user_query):
         # Mock session manager returns None

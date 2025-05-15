@@ -29,7 +29,7 @@ class TestCompletionFeedback:
     @pytest.fixture(scope="function")
     def completion_feedback(self):
         """Generate fake completion feedback"""
-        return Queries.CompletionFeedback.fake(
+        return Queries.FeedbackCompletion.fake(
             was_accepted=True,
             ground_truth="def actual_implementation():\n    return 42",
         )
@@ -37,10 +37,10 @@ class TestCompletionFeedback:
     @pytest.fixture(scope="function")
     def completion_feedback_no_ground_truth(self):
         """Generate fake completion feedback without ground truth"""
-        return Queries.CompletionFeedback.fake(was_accepted=False, ground_truth=None)
+        return Queries.FeedbackCompletion.fake(was_accepted=False, ground_truth=None)
 
     def test_submit_feedback_success_with_ground_truth(
-        self, client: TestClient, completion_feedback: Queries.CompletionFeedback
+        self, client: TestClient, completion_feedback: Queries.FeedbackCompletion
     ):
         # Setup mocks
         mock_crud = MagicMock()
@@ -80,7 +80,7 @@ class TestCompletionFeedback:
     def test_submit_feedback_success_without_ground_truth(
         self,
         client: TestClient,
-        completion_feedback_no_ground_truth: Queries.CompletionFeedback,
+        completion_feedback_no_ground_truth: Queries.FeedbackCompletion,
     ):
         # Setup mocks
         mock_crud = MagicMock()
@@ -106,7 +106,7 @@ class TestCompletionFeedback:
         mock_crud.add_ground_truth.assert_not_called()  # No ground truth provided
 
     def test_submit_feedback_generation_not_found(
-        self, client: TestClient, completion_feedback: Queries.CompletionFeedback
+        self, client: TestClient, completion_feedback: Queries.FeedbackCompletion
     ):
         mock_crud = MagicMock()
         mock_crud.get_generations_by_query_and_model_id.return_value = None
@@ -138,7 +138,7 @@ class TestCompletionFeedback:
         assert "detail" in response.json()
 
     def test_submit_feedback_database_error(
-        self, client: TestClient, completion_feedback: Queries.CompletionFeedback
+        self, client: TestClient, completion_feedback: Queries.FeedbackCompletion
     ):
         mock_crud = MagicMock()
         mock_crud.get_generations_by_query_and_model_id.side_effect = Exception(
@@ -161,7 +161,7 @@ class TestCompletionFeedback:
         mock_db_session.rollback.assert_called_once()
 
     def test_submit_feedback_partial_update_failure(
-        self, client: TestClient, completion_feedback: Queries.CompletionFeedback
+        self, client: TestClient, completion_feedback: Queries.FeedbackCompletion
     ):
         # Test case where generation update succeeds but ground truth save fails
         mock_crud = MagicMock()

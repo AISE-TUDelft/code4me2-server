@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from base_models import ModelNameBase, PluginVersionBase, UserBase
+from base_models import UserBase
 
 # pydantic classes for the database models
 
@@ -27,19 +27,19 @@ class UserDB(UserBase):
     password: str  # This will be converted to password_hash before storage
 
 
-class ModelNameDB(ModelNameBase):
-    model_id: int = Field(..., alias="id")
+# class ModelNameDB(ModelNameBase):
+#     model_id: int = Field(..., alias="id")
+#
+#     class Config:
+#         from_attributes = True
+#         protected_namespaces = ()
 
-    class Config:
-        from_attributes = True
-        protected_namespaces = ()
 
-
-class PluginVersionDB(PluginVersionBase):
-    version_id: int
-
-    class Config:
-        from_attributes = True
+# class PluginVersionDB(PluginVersionBase):
+#     version_id: int
+#
+#     class Config:
+#         from_attributes = True
 
 
 # # Trigger Type

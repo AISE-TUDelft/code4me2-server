@@ -12,7 +12,7 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from base_models import FeedbackResponseData
-from Queries import CompletionFeedback, GroundTruthCreate
+from Queries import CreateGroundTruth, FeedbackCompletion
 
 router = APIRouter()
 
@@ -30,7 +30,7 @@ router = APIRouter()
     },
 )
 def submit_completion_feedback(
-    feedback: CompletionFeedback,
+    feedback: FeedbackCompletion,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie("session_token"),
 ) -> JsonResponseWithStatus:
@@ -65,7 +65,7 @@ def submit_completion_feedback(
 
         # If ground truth is provided, save it
         if feedback.ground_truth:
-            ground_truth_create = GroundTruthCreate(
+            ground_truth_create = CreateGroundTruth(
                 query_id=feedback.query_id,
                 truth_timestamp=datetime.now().isoformat(),
                 ground_truth=feedback.ground_truth,

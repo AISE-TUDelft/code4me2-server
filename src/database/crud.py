@@ -68,7 +68,7 @@ def update_user(
 
 
 # Context Operations
-def add_context(db: Session, context: Queries.ContextCreate) -> db_schemas.Context:
+def add_context(db: Session, context: Queries.CreateContext) -> db_schemas.Context:
     """Create a new context record"""
     db_context = db_schemas.Context(
         context_id=str(context.context_id),
@@ -86,7 +86,7 @@ def add_context(db: Session, context: Queries.ContextCreate) -> db_schemas.Conte
 
 # Telemetry operations
 def add_telemetry(
-    db: Session, telemetry: Queries.TelemetryCreate
+    db: Session, telemetry: Queries.CreateTelemetry
 ) -> db_schemas.Telemetry:
     """Create a new telemetry record"""
     db_telemetry = db_schemas.Telemetry(
@@ -103,14 +103,14 @@ def add_telemetry(
 
 
 # Query operations
-def add_query(db: Session, query: Queries.QueryCreate) -> db_schemas.Query:
+def add_query(db: Session, query: Queries.CreateQuery) -> db_schemas.Query:
     """Create a new query record"""
     db_query = db_schemas.Query(
-        query_id=str(query.query_id),
+        query_id=uuid.uuid4(),
         user_id=str(query.user_id),
         telemetry_id=str(query.telemetry_id),
         context_id=str(query.context_id),
-        timestamp=query.timestamp,
+        timestamp=datetime.now().isoformat(),
         total_serving_time=query.total_serving_time,
         server_version_id=query.server_version_id,
     )
@@ -141,7 +141,7 @@ def update_query_serving_time(
 
 # Generation operations
 def add_generation(
-    db: Session, generation: Queries.GenerationCreate
+    db: Session, generation: Queries.CreateGeneration
 ) -> db_schemas.HadGeneration:
     """Create a new generation record"""
     db_generation = db_schemas.HadGeneration(
@@ -208,7 +208,7 @@ def get_model_by_id(db: Session, model_id: int) -> Optional[db_schemas.ModelName
 
 
 def add_ground_truth(
-    db: Session, ground_truth_data: Queries.GroundTruthCreate
+    db: Session, ground_truth_data: Queries.CreateGroundTruth
 ) -> db_schemas.GroundTruth:
     """Create a ground truth record"""
     db_ground_truth = db_schemas.GroundTruth(
