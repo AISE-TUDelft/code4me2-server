@@ -8,6 +8,8 @@ from App import App
 from backend.Responses import (
     CompletionFeedbackPostResponse,
     ErrorResponse,
+    FeedbackRecordingError,
+    GenerationNotFoundError,
     InvalidSessionToken,
     JsonResponseWithStatus,
 )
@@ -23,10 +25,10 @@ router = APIRouter()
     responses={
         "200": {"model": CompletionFeedbackPostResponse},
         "401": {"model": InvalidSessionToken},
-        "404": {"model": ErrorResponse},
+        "404": {"model": GenerationNotFoundError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
-        "500": {"model": ErrorResponse},
+        "500": {"model": FeedbackRecordingError},
     },
 )
 def submit_completion_feedback(
@@ -55,7 +57,7 @@ def submit_completion_feedback(
         if not generation:
             return JsonResponseWithStatus(
                 status_code=404,
-                content=ErrorResponse(message="Generation record not found"),
+                content=GenerationNotFoundError(),
             )
 
         # Update generation status
@@ -75,7 +77,6 @@ def submit_completion_feedback(
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionFeedbackPostResponse(
-                message="Feedback recorded successfully",
                 data=FeedbackResponseData(
                     query_id=feedback.query_id, model_id=feedback.model_id
                 ),
@@ -87,5 +88,5 @@ def submit_completion_feedback(
         db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,
-            content=ErrorResponse(message=f"Failed to record feedback: {str(e)}"),
+            content=FeedbackRecordingError(str(e)),
         )
