@@ -19,7 +19,7 @@ def get_user_by_email_password(
     db: Session, email: str, password: str
 ) -> Optional[Type[db_schemas.User]]:
     user = db.query(db_schemas.User).filter(db_schemas.User.email == email).first()
-    if user and verify_password(user.password_hash, password):
+    if user and verify_password(user.password, password):
         return user
     return None
 
@@ -37,7 +37,7 @@ def create_user(
         joined_at=datetime.now().isoformat(),
         email=str(user.email),
         name=user.name,
-        password_hash=hash_password(user.password.get_secret_value()),
+        password=hash_password(user.password.get_secret_value()),
         is_oauth_signup=isinstance(user, Queries.CreateUserOauth),
         verified=False,
     )
@@ -71,7 +71,7 @@ def update_user(
 def add_context(db: Session, context: Queries.CreateContext) -> db_schemas.Context:
     """Create a new context record"""
     db_context = db_schemas.Context(
-        context_id=str(context.context_id),
+        context_id=uuid.uuid4(),
         prefix=context.prefix,
         suffix=context.suffix,
         language_id=context.language_id,
@@ -90,7 +90,7 @@ def add_telemetry(
 ) -> db_schemas.Telemetry:
     """Create a new telemetry record"""
     db_telemetry = db_schemas.Telemetry(
-        telemetry_id=str(telemetry.telemetry_id),
+        telemetry_id=uuid.uuid4(),
         time_since_last_completion=telemetry.time_since_last_completion,
         typing_speed=telemetry.typing_speed,
         document_char_length=telemetry.document_char_length,
@@ -820,3 +820,7 @@ def add_ground_truth(
     #         print(f"Error while updating generation status: {e}")
     #         return False
     #     return False
+
+
+def get_all_model_names(db: Session) -> list[db_schemas.ModelName]:
+    return db.query(db_schemas.ModelName).all()

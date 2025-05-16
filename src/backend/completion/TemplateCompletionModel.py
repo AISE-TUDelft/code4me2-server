@@ -3,6 +3,7 @@ import time
 from typing import Any, List, Optional
 
 import torch
+import torch.nn.functional as F
 from langchain_community.llms import BaseLLM
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.outputs import LLMResult
@@ -17,6 +18,7 @@ class TemplateCompletionModel(BaseLLM):
     prompt_template: PromptTemplate = Field(
         ..., description="The prompt to use for text generation"
     )
+    device: torch.device = Field(..., description="The device to use")
 
     @property
     def _llm_type(self) -> str:
@@ -24,8 +26,8 @@ class TemplateCompletionModel(BaseLLM):
 
     def __init__(
         self,
-        prompt_template: str,
         model_name: str,
+        prompt_template: str,
         tokenizer_name: str = None,
         *args: Any,
         **model_kwargs
@@ -44,19 +46,20 @@ class TemplateCompletionModel(BaseLLM):
             model_name,
             cache_dir=os.path.join(".", ".cache"),
             trust_remote_code=True,
-            **model_kwargs
+            **model_kwargs,
         )
-        if torch.cuda.is_available():
-            model = self.model.cuda()
+        model.eval()
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.to(device)
 
         prompt_template = PromptTemplate.from_template(prompt_template)
-
         super().__init__(
             prompt_template=prompt_template,
             tokenizer=tokenizer,
             model=model,
+            device=device,
             *args,
-            **model_kwargs
+            **model_kwargs,
         )
 
     def _generate(
@@ -85,13 +88,48 @@ class TemplateCompletionModel(BaseLLM):
         # Return the results wrapped in an LLMResult
         return LLMResult(generations=generations)
 
-    def invoke(self, input: Any, **kwargs: Any) -> str:
-        if isinstance(input, dict):
-            return self._generate([input], **kwargs).generations[0][0].text
-        elif isinstance(input, str):
-            return self.pipeline(input, **kwargs)[0]["generated_text"]
-        else:
-            raise ValueError("Input must be a dict or a string.")
+    def invoke(self, prompt: dict, max_new_tokens=128, **kwargs) -> dict:
+        if not isinstance(prompt, dict):
+            raise ValueError("Input must be a dict for this model setup.")
+        formatted_prompt = self.prompt_template.format(**prompt)
+        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
+
+        # Measure generation time
+        start_time = time.time()
+        output = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            return_dict_in_generate=True,
+            output_scores=True,
+        )
+        end_time = time.time()
+
+        generated_ids = output.sequences[0][
+            inputs["input_ids"].shape[1] :
+        ]  # Only new tokens
+        generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+        # Compute logprobs from logits
+        logits = torch.stack(output.scores, dim=1)[0]  # shape: (num_tokens, vocab_size)
+        log_probs = F.log_softmax(logits, dim=-1)  # shape: (num_tokens, vocab_size)
+
+        # Get token logprobs
+        token_logprobs = []
+        token_probs = []
+        for i, token_id in enumerate(generated_ids):
+            token_logprob = log_probs[i, token_id].item()
+            token_prob = torch.exp(log_probs[i, token_id]).item()
+            token_logprobs.append(token_logprob)
+            token_probs.append(token_prob)
+
+        confidence = sum(token_probs) / len(token_probs) if token_probs else None
+
+        return {
+            "completion": generated_text,
+            "generation_time": int((end_time - start_time) * 1000),
+            "logprobs": token_logprobs,
+            "confidence": confidence,
+        }
 
 
 if __name__ == "__main__":

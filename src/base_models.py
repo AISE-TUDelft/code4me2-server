@@ -2,7 +2,7 @@ from abc import ABC
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import EmailStr, Field, SecretStr, field_validator
 
 import Queries
 from backend.utils import Fakable, SerializableBaseModel
@@ -14,6 +14,12 @@ class ModelBase(SerializableBaseModel, Fakable, ABC):
 
 class UserBase(Queries.CreateUser):
     user_id: UUID = Field(..., description="Unique id for the user")
+    email: EmailStr = Field(..., description="User's email address")
+    name: str = Field(..., description="User's full name")
+    password: SecretStr = Field(
+        ...,
+        description="User's password",
+    )
     joined_at: datetime = Field(..., description="When the user was created")
     verified: bool = Field(
         ..., description="Whether the user's email has been verified"
@@ -23,9 +29,14 @@ class UserBase(Queries.CreateUser):
         "extra": "ignore",  # Disallow extra fields
     }
 
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: SecretStr) -> SecretStr:
+        return v
+
 
 # Query
-class QueryBase(ModelBase):
+class QueryBase(Queries.CreateQuery):
     query_id: UUID
     user_id: UUID
     telemetry_id: UUID
@@ -61,6 +72,7 @@ class CompletionItem(ModelBase):
     model_id: int = Field(..., description="Model ID")
     model_name: str = Field(..., description="Model name")
     completion: str = Field(..., description="Generated code")
+    generation_time: int = Field(..., description="Generation time")
     confidence: float = Field(..., description="Confidence score")
 
 

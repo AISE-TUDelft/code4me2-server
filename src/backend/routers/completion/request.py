@@ -4,6 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Cookie, Depends
 
+import backend.completion as completion
 import database.crud as crud
 from App import App
 from backend.Responses import (
@@ -46,6 +47,7 @@ def request_completion(
     logging.log(logging.INFO, f"Completion request: {completion_request}")
     db_session = app.get_db_session()
     session_manager = app.get_session_manager()
+    completion_models = app.get_completion_models()
 
     try:
         # Check if user is authenticated
@@ -84,25 +86,29 @@ def request_completion(
             if not model:
                 continue
 
-            # In a real implementation, call actual model APIs
-            # Here creating mock completion
             # completion_text =
-            completion_text = f"def example_function():\n    # Completion from {model.model_name}\n    pass"
-            generation_time = 100  # milliseconds
-            confidence = 0.85
-            logprobs = [-0.05, -0.1, -0.15]  # Mock logprobs
+            completion_model = completion_models.get_model(
+                model_name=model.model_name,
+                prompt_template=completion.Template.PREFIX_SUFFIX,
+            )
+            completion_result = completion_model.invoke(
+                {
+                    "prefix": completion_request.context.prefix,
+                    "suffix": completion_request.context.suffix,
+                }
+            )
 
             # Create generation record
             # TODO: check shown_at
             generation_create = CreateGeneration(
                 query_id=created_query.query_id,
                 model_id=model_id,
-                completion=completion_text,
-                generation_time=generation_time,
+                completion=completion_result["completion"],
+                generation_time=completion_result["generation_time"],
                 shown_at=[start_time.isoformat()],
                 was_accepted=False,
-                confidence=confidence,
-                logprobs=logprobs,
+                confidence=completion_result["confidence"],
+                logprobs=completion_result["logprobs"],
             )
             crud.add_generation(db_session, generation_create)
 
@@ -111,8 +117,9 @@ def request_completion(
                 CompletionItem(
                     model_id=model_id,
                     model_name=model.model_name,
-                    completion=completion_text,
-                    confidence=confidence,
+                    completion=completion_result["completion"],
+                    generation_time=completion_result["generation_time"],
+                    confidence=completion_result["confidence"],
                 )
             )
 

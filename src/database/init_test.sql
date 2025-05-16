@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS public."user"
     joined_at timestamp with time zone NOT NULL,
     email VARCHAR UNIQUE NOT NULL,
     name VARCHAR NOT NULL,
-    password_hash VARCHAR NOT NULL,
+    password VARCHAR NOT NULL,
     is_google_signup BOOLEAN DEFAULT FALSE,
     verified BOOLEAN DEFAULT FALSE
 );

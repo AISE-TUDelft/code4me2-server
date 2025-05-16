@@ -74,6 +74,7 @@ def get_completions_by_query(
                     model_id=generation.model_id,
                     model_name=model.model_name if model else "Unknown Model",
                     completion=generation.completion,
+                    generation_time=generation.generation_time,
                     confidence=generation.confidence,
                 )
             )

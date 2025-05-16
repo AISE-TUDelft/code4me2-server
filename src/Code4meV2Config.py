@@ -38,8 +38,7 @@ class Code4meV2Config(BaseSettings):
     react_app_google_client_id: str = Field(
         alias="REACT_APP_GOOGLE_CLIENT_ID", frozen=True
     )
-    redis_host: str = Field(alias="REDIS_HOST", frozen=True)
-    redis_port: int = Field(alias="REDIS_PORT", frozen=True)
 
+    preload_models: bool = Field(alias="PRELOAD_MODELS", frozen=True)
     debug_mode: bool = Field(alias="DEBUG_MODE", frozen=True)
     test_mode: bool = Field(alias="TEST_MODE", frozen=True)

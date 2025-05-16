@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS public."user"
     joined_at timestamp with time zone NOT NULL,
     email VARCHAR UNIQUE NOT NULL,
     name VARCHAR NOT NULL,
-    password_hash VARCHAR NOT NULL,
+    password VARCHAR NOT NULL,
     is_oauth_signup BOOLEAN DEFAULT FALSE,
     verified BOOLEAN DEFAULT FALSE
 );
@@ -173,7 +173,7 @@ CREATE INDEX idx_query_id_truth_timestamp ON public.ground_truth (query_id, trut
 
 -- now that we have everything set up, we can add some default values
 
-INSERT INTO public.model_name (model_name) VALUES ('deepseek-1.3b'), ('starcoder2-3b');
+INSERT INTO public.model_name (model_name) VALUES ('deepseek-ai/deepseek-coder-1.3b-base'), ('bigcode/starcoder2-3b');
 INSERT INTO public.programming_language (language_name) VALUES ('plaintext'), ('code-text-binary'), ('Log'),
                                                                ('log'), ('scminput'), ('bat'), ('clojure'),
                                                                ('coffeescript'), ('jsonc'), ('json'), ('c'), ('cpp'),

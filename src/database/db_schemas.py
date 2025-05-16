@@ -25,7 +25,7 @@ class User(Base):
     joined_at = Column(DateTime(timezone=True), nullable=False)
     email = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
-    password_hash = Column(String, nullable=False)
+    password = Column(String, nullable=False)
     is_oauth_signup = Column(Boolean, default=False)
     verified = Column(Boolean, default=False)
 

@@ -56,6 +56,7 @@ class TestCompletionRequest:
         mock_crud.add_context.return_value = ContextBase.fake(1)
         mock_crud.add_telemetry.return_value = TelemetryBase.fake(1)
         mock_crud.add_query.return_value = QueryBase.fake(1)
+        mock_crud.get_model_by_id.return_value = mock_model_1
 
         # Mock config
         mock_config = MagicMock()
@@ -64,9 +65,16 @@ class TestCompletionRequest:
 
         mock_session = MagicMock()
         mock_session.get_session.return_value = {"user_id": str(uuid.uuid4())}
-
+        mock_completion_models = MagicMock()
+        mock_completion_models.get_model.return_value.invoke.return_value = {
+            "completion": "",
+            "generation_time": 100,
+            "logprobs": [],
+            "confidence": 0.5,
+        }
         client.mock_app.get_session_manager.return_value = mock_session
         client.mock_app.get_db_session.return_value = MagicMock()
+        client.mock_app.get_completion_models.return_value = mock_completion_models
 
         with patch("backend.routers.completion.request.crud", mock_crud):
             response = client.post(
