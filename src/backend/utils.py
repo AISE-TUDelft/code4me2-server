@@ -1,6 +1,5 @@
 import inspect
 from datetime import datetime
-from enum import EnumType
 from typing import Any, Dict, Union
 from uuid import UUID
 
@@ -25,7 +24,7 @@ class SerializableBaseModel(BaseModel):
                 data[field_name] = str(getattr(self, field_name).get_secret_value())
             elif value.annotation is EmailStr:
                 data[field_name] = str(getattr(self, field_name))
-            elif type(value.annotation) is EnumType:
+            elif "Enum" in str(type(value.annotation)):
                 data[field_name] = str(getattr(self, field_name).value)
             elif value.annotation is UUID:
                 data[field_name] = str(getattr(self, field_name))
