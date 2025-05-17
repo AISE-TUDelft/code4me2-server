@@ -66,7 +66,10 @@ class TestCompletionRequest:
         client.mock_app.get_config.return_value = mock_config
 
         mock_session = MagicMock()
-        mock_session.get_session.return_value = {"user_id": str(uuid.uuid4())}
+        mock_session.get_session.return_value = {
+            "user_id": str(uuid.uuid4()),
+            "data": {},
+        }
         mock_completion_models = MagicMock()
         mock_completion_models.get_model.return_value.invoke.return_value = {
             "completion": "",
@@ -117,7 +120,10 @@ class TestCompletionRequest:
         mock_config.server_version_id = 1
         client.mock_app.get_config.return_value = mock_config
         mock_session = MagicMock()
-        mock_session.get_session.return_value = {"user_id": str(uuid.uuid4())}
+        mock_session.get_session.return_value = {
+            "user_id": str(uuid.uuid4()),
+            "data": {},
+        }
 
         client.mock_app.get_session_manager.return_value = mock_session
         client.mock_app.get_db_session.return_value = MagicMock()

@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 import uvicorn
 from dotenv import load_dotenv
@@ -53,6 +54,15 @@ app.add_middleware(
 # app = FastAPI()
 # app.add_middleware(SimpleRateLimiter)
 app.include_router(router, prefix="/api")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic (if any) can go here
+    yield
+    # Shutdown logic
+    logging.warning("Shutting down the server and cleaning up resources...")
+    App.get_instance().cleanup()
 
 
 if __name__ == "__main__":

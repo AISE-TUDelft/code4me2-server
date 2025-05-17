@@ -61,7 +61,6 @@ def request_completion(
                 content=InvalidSessionToken(),
             )
 
-        # Cleaner approach with unpacking
         context_create = CreateContext(**completion_request.context.dict())
         created_context = crud.add_context(db_session, context_create)
 
@@ -77,6 +76,23 @@ def request_completion(
             server_version_id=app.get_config().server_version_id,
         )
         created_query = crud.add_query(db_session, query_create)
+
+        # By changing prefix after crud operations we ensure that the users code base is not stored in the database for privacy reasons
+        # Check if multi file context is available and if so add to the context prefix
+        multi_file_context = user_dict["data"].get("context")
+        if multi_file_context:
+            completion_request.context.prefix = (
+                "\n".join(
+                    (
+                        f"#{file}\n{context}"
+                        if file != completion_request.context.file_name
+                        else ""
+                    )
+                    for file, context in multi_file_context.items()
+                )
+                + completion_request.context.prefix
+            )
+        logging.log(logging.INFO, f"Completion request: {completion_request}")
 
         # Get model completions
         start_time = datetime.now()

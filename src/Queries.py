@@ -1,7 +1,7 @@
 import re
 from abc import ABC
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from pydantic import EmailStr, Field, SecretStr, field_validator
@@ -85,6 +85,7 @@ class CreateTelemetry(QueryBase):
 class CreateContext(QueryBase):
     prefix: str = Field(..., description="Code before cursor")
     suffix: str = Field(..., description="Code after cursor")
+    file_name: str = Field(..., description="File name")
     language_id: int = Field(..., description="Programming language ID")
     # TODO maybe we can change trigger type to enum since it doesn't update that frequently
     trigger_type_id: int = Field(..., description="Trigger type ID")
@@ -115,6 +116,12 @@ class CreateGeneration(QueryBase):
     was_accepted: bool = Field(..., description="Whether accepted by user")
     confidence: float = Field(..., description="Confidence score")
     logprobs: List[float] = Field(..., description="Token log probabilities")
+
+
+class UpdateMultiFileContext(QueryBase):
+    context_updates: Dict[str, str] = Field(
+        ..., description="Updates to the context for multiple files"
+    )
 
 
 # consider refactoring

@@ -25,11 +25,11 @@ class App:
 
     def __init__(self):
         if not hasattr(self, "_initialized"):
-            self.__db_session_factory = None
-            self.__config = None
-            self.__session_manager = None
+            self.__db_session_factory: scoped_session = None
+            self.__config: Code4meV2Config = None
+            self.__session_manager: SessionManager = None
             self.__completion_models = None
-            self._initialized = True  # Ensure __init__ is only called once
+            self._initialized: bool = True  # Ensure __init__ is only called once
 
     def setup(self, config: Code4meV2Config) -> None:
         """
@@ -107,3 +107,7 @@ class App:
         if cls.__instance is None:
             cls.__instance = cls()
         return cls.__instance
+
+    def cleanup(self):
+        self.__session_manager.cleanup()
+        self.__db_session_factory.remove()

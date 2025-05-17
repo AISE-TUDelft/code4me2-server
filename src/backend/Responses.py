@@ -129,3 +129,13 @@ class CompletionsNotFoundError(ErrorResponse):
 class RetrieveCompletionsError(ErrorResponse):
     def __init__(self, error_message: str):
         super().__init__(message=f"Failed to retrieve completions: {error_message}")
+
+
+# /api/completion/multi-file-context/update
+class MultiFileContextUpdatePostResponse(BaseResponse):
+    message: str = Field(default="Multi-file context updated successfully.")
+    data: dict = Field(..., description="Data related to the multi-file context update")
+
+
+class MultiFileContextUpdateError(ErrorResponse):
+    message: str = Field(default="Failed to update multi-file context.")

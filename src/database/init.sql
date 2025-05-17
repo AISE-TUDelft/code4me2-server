@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS public.context
     context_id uuid NOT NULL PRIMARY KEY,
     prefix text,
     suffix text,
+    file_name text,
     language_id BIGINT,
     trigger_type_id BIGINT,
     version_id BIGINT
