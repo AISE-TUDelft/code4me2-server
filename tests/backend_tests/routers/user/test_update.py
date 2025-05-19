@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import Queries
 from App import App
 from backend.main import app
-from backend.models.Responses import (
+from backend.Responses import (
     InvalidSessionToken,
     UpdateUserPutResponse,
 )
@@ -51,8 +51,12 @@ class TestUpdateUser:
         with patch("backend.routers.user.update.crud", mock_crud):
             response = client.put("/api/user/update", json=update_user_query.dict())
 
+        response_result = response.json()
+        response_result["user"][
+            "password"
+        ] = fake_updated_user.password.get_secret_value()
         assert response.status_code == 201
-        assert response.json() == UpdateUserPutResponse(user=fake_updated_user)
+        assert response_result == UpdateUserPutResponse(user=fake_updated_user)
 
     def test_update_user_invalid_session_token(self, client, update_user_query):
         # Mock session manager returns None

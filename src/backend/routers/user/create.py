@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 import database.crud as crud
 import Queries as Queries
 from App import App
-from backend.models.Responses import (
+from backend.Responses import (
     CreateUserPostResponse,
     ErrorResponse,
     InvalidOrExpiredToken,

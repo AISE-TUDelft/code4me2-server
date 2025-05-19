@@ -7,6 +7,10 @@ from fastapi.testclient import TestClient
 
 from App import App
 from backend.main import app
+from backend.Responses import (
+    CompletionPostResponse,
+    QueryNotFoundError,
+)
 
 
 class TestCompletionRoutes:
@@ -22,6 +26,7 @@ class TestCompletionRoutes:
     def client(self, setup_app):
         with TestClient(app) as client:
             client.mock_app = setup_app
+            client.cookies.set("session_token", "valid_token")
             yield client
 
     @pytest.fixture(scope="function")
@@ -79,7 +84,10 @@ class TestCompletionRoutes:
         mock_app = MagicMock()
         mock_db_session = MagicMock()
         mock_app.get_db_session.return_value = mock_db_session
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": "test_id"}
 
+        client.mock_app.get_session_manager.return_value = mock_session
         with patch(
             "backend.routers.completion.get.App.get_instance", return_value=mock_app
         ), patch(
@@ -95,6 +103,10 @@ class TestCompletionRoutes:
             assert response.status_code == 200
             response_data = response.json()
 
+            assert (
+                response_data["message"]
+                == CompletionPostResponse.model_fields["message"].default
+            )
             assert response_data["data"]["query_id"] == query_id
             assert len(response_data["data"]["completions"]) == 2
             assert response_data["data"]["completions"][0]["model_id"] == 1
@@ -114,6 +126,10 @@ class TestCompletionRoutes:
         mock_app = MagicMock()
         mock_db_session = MagicMock()
         mock_app.get_db_session.return_value = mock_db_session
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": "test_id"}
+
+        client.mock_app.get_session_manager.return_value = mock_session
 
         with patch(
             "backend.routers.completion.get.App.get_instance", return_value=mock_app
@@ -121,4 +137,5 @@ class TestCompletionRoutes:
             response = client.get(f"/api/completion/{query_id}")
 
             assert response.status_code == 404
-            assert response.json()["message"] == "Query not found"
+            expected_error = QueryNotFoundError()
+            assert response.json() == expected_error.dict()

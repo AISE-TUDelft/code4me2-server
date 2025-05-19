@@ -1,3 +1,4 @@
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -6,10 +7,12 @@ from fastapi.testclient import TestClient
 import Queries
 from App import App
 from backend.main import app
-from backend.models.Responses import (
-    ErrorResponse,
+from backend.Responses import (
+    CompletionPostResponse,
+    GenerateCompletionsError,
+    InvalidSessionToken,
 )
-from base_models import UserBase
+from base_models import ContextBase, QueryBase, TelemetryBase
 
 
 class TestCompletionRequest:
@@ -24,22 +27,21 @@ class TestCompletionRequest:
     def client(self, setup_app):
         with TestClient(app) as client:
             client.mock_app = setup_app
+            client.cookies.set("session_token", "valid_token")
             yield client
 
     @pytest.fixture(scope="function")
     def completion_request(self):
         """Generate a fake completion request with nested structure"""
-        return Queries.CompletionRequest.fake(
+        return Queries.RequestCompletion.fake(
             model_ids=[1, 2],
         )
 
     def test_request_completion_success(
-        self, client: TestClient, completion_request: Queries.CompletionRequest
+        self, client: TestClient, completion_request: Queries.RequestCompletion
     ):
         # Setup mocks
         mock_crud = MagicMock()
-        mock_user = UserBase.fake(user_id=completion_request.user_id)
-        mock_crud.get_user_by_id.return_value = mock_user
 
         # Mock model data
         mock_model_1 = MagicMock()
@@ -53,12 +55,28 @@ class TestCompletionRequest:
         mock_crud.get_model_by_id.side_effect = lambda db, model_id: (
             mock_model_1 if model_id == 1 else mock_model_2
         )
+        mock_crud.add_context.return_value = ContextBase.fake(1)
+        mock_crud.add_telemetry.return_value = TelemetryBase.fake(1)
+        mock_crud.add_query.return_value = QueryBase.fake(1)
+        mock_crud.get_model_by_id.return_value = mock_model_1
 
         # Mock config
         mock_config = MagicMock()
         mock_config.server_version_id = 1
         client.mock_app.get_config.return_value = mock_config
+
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": str(uuid.uuid4())}
+        mock_completion_models = MagicMock()
+        mock_completion_models.get_model.return_value.invoke.return_value = {
+            "completion": "",
+            "generation_time": 100,
+            "logprobs": [],
+            "confidence": 0.5,
+        }
+        client.mock_app.get_session_manager.return_value = mock_session
         client.mock_app.get_db_session.return_value = MagicMock()
+        client.mock_app.get_completion_models.return_value = mock_completion_models
 
         with patch("backend.routers.completion.request.crud", mock_crud):
             response = client.post(
@@ -69,48 +87,39 @@ class TestCompletionRequest:
         assert response.status_code == 200
         response_data = response.json()
 
-        # Verify response structure
-        assert "message" in response_data
+        assert (
+            response_data["message"]
+            == CompletionPostResponse.model_fields["message"].default
+        )
         assert "data" in response_data
         assert "query_id" in response_data["data"]
         assert "completions" in response_data["data"]
         assert len(response_data["data"]["completions"]) == 2
 
         # Verify mock calls
-        mock_crud.get_user_by_id.assert_called_once()
         mock_crud.add_context.assert_called_once()
         mock_crud.add_telemetry.assert_called_once()
         mock_crud.add_query.assert_called_once()
         assert mock_crud.add_generation.call_count == 2
 
-    def test_request_completion_user_not_found(
-        self, client: TestClient, completion_request: Queries.CompletionRequest
-    ):
-        mock_crud = MagicMock()
-        mock_crud.get_user_by_id.return_value = None
-        client.mock_app.get_db_session.return_value = MagicMock()
-
-        with patch("backend.routers.completion.request.crud", mock_crud):
-            response = client.post(
-                "/api/completion/request/",
-                json=completion_request.dict(),  # Now uses the fixed dict() method
-            )
-
-        assert response.status_code == 404
-        assert response.json() == ErrorResponse(message="User not found").dict()
-
     def test_request_completion_model_not_found(
-        self, client: TestClient, completion_request: Queries.CompletionRequest
+        self, client: TestClient, completion_request: Queries.RequestCompletion
     ):
         # Test case where some models don't exist
         mock_crud = MagicMock()
-        mock_user = UserBase.fake(user_id=completion_request.user_id)
-        mock_crud.get_user_by_id.return_value = mock_user
         mock_crud.get_model_by_id.return_value = None  # No models found
+
+        mock_crud.add_context.return_value = ContextBase.fake(1)
+        mock_crud.add_telemetry.return_value = TelemetryBase.fake(1)
+        mock_crud.add_query.return_value = QueryBase.fake(1)
 
         mock_config = MagicMock()
         mock_config.server_version_id = 1
         client.mock_app.get_config.return_value = mock_config
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = {"user_id": str(uuid.uuid4())}
+
+        client.mock_app.get_session_manager.return_value = mock_session
         client.mock_app.get_db_session.return_value = MagicMock()
 
         with patch("backend.routers.completion.request.crud", mock_crud):
@@ -140,12 +149,32 @@ class TestCompletionRequest:
         assert response.status_code == 422
         assert "detail" in response.json()
 
+    def test_request_completion_user_invalid_session_token(
+        self, client, completion_request: Queries.RequestCompletion
+    ):
+        # Mock session manager returns None
+        mock_session = MagicMock()
+        mock_session.get_session.return_value = None
+
+        client.mock_app.get_session_manager.return_value = mock_session
+
+        response = client.post(
+            "/api/completion/request/", json=completion_request.dict()
+        )
+
+        assert response.status_code == 401
+        expected_error = InvalidSessionToken()
+        assert response.json() == expected_error.dict()
+
     def test_request_completion_database_error(
-        self, client: TestClient, completion_request: Queries.CompletionRequest
+        self, client: TestClient, completion_request: Queries.RequestCompletion
     ):
         mock_crud = MagicMock()
-        mock_crud.get_user_by_id.side_effect = Exception("Database error")
+        mock_crud.add_context.side_effect = Exception("Database error")
         client.mock_app.get_db_session.return_value = MagicMock()
+        mock_session = MagicMock()
+
+        client.mock_app.get_session_manager.return_value = mock_session
 
         with patch("backend.routers.completion.request.crud", mock_crud):
             response = client.post(
@@ -154,4 +183,5 @@ class TestCompletionRequest:
             )
 
         assert response.status_code == 500
-        assert "Failed to generate completions" in response.json()["message"]
+        expected_error = GenerateCompletionsError("Database error")
+        assert response.json() == expected_error.dict()

@@ -10,6 +10,12 @@ from backend.routers import router
 from Code4meV2Config import Code4meV2Config
 
 load_dotenv()
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,  # Set the logging level (e.g., DEBUG, INFO, WARNING, ERROR)
+    format="%(asctime)s - %(levelname)s - %(message)s",  # Define the log message format
+    handlers=[logging.StreamHandler()],  # Output logs to the console
+)
 app = FastAPI(
     title="Code4Me V2 API",
     description="The complete API for Code4Me V2",
@@ -48,12 +54,6 @@ app.add_middleware(
 # app.add_middleware(SimpleRateLimiter)
 app.include_router(router, prefix="/api")
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,  # Set the logging level (e.g., DEBUG, INFO, WARNING, ERROR)
-    format="%(asctime)s - %(levelname)s - %(message)s",  # Define the log message format
-    handlers=[logging.StreamHandler()],  # Output logs to the console
-)
 
 if __name__ == "__main__":
     uvicorn.run(

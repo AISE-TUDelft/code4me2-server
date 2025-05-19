@@ -4,7 +4,7 @@ from fastapi import APIRouter, Cookie, Depends, Query
 
 import database.crud as crud
 from App import App
-from backend.models.Responses import (
+from backend.Responses import (
     DeleteUserDeleteResponse,
     ErrorResponse,
     InvalidSessionToken,

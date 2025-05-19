@@ -1,10 +1,14 @@
+import logging
+import time
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 
 import Code4meV2Config
+from backend.completion import CompletionModels
 from backend.session_manager import SessionManager
+from database import crud
 
 
 class App:
@@ -24,6 +28,7 @@ class App:
             self.__db_session_factory = None
             self.__config = None
             self.__session_manager = None
+            self.__completion_models = None
             self._initialized = True  # Ensure __init__ is only called once
 
     def setup(self, config: Code4meV2Config) -> None:
@@ -39,6 +44,22 @@ class App:
         self.__session_manager = SessionManager(
             host=config.redis_host, port=config.redis_port
         )
+        self.__completion_models = CompletionModels()
+        if config.preload_models:
+            logging.log(logging.INFO, "Preloading llm models...")
+            models = crud.get_all_model_names(self.get_db_session())
+            for model in models:
+                # TODO: Remove the following lines when the code is run on the server with enough disk space since starcoder takes 12GB of memory
+                if model.model_name.startswith("bigcode/starcoder"):
+                    continue
+
+                logging.log(logging.INFO, f"Loading {model.model_name}...")
+                t0 = time.time()
+                self.__completion_models.load_model(model.model_name)
+                logging.log(
+                    logging.INFO,
+                    f"{model.model_name} is setup in {time.time()-t0:.2f} seconds",
+                )
 
     def get_db_session(self) -> Session:
         """
@@ -66,6 +87,9 @@ class App:
 
     def get_session_manager(self) -> SessionManager:
         return self.__session_manager
+
+    def get_completion_models(self) -> CompletionModels:
+        return self.__completion_models
 
     # def get_current_user(self, session_token: Optional[str] = Cookie("session_token")) -> uuid.UUID:
     #     """

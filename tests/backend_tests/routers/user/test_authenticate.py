@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import Queries
 from App import App
 from backend.main import app
-from backend.models.Responses import (
+from backend.Responses import (
     AuthenticateUserNormalPostResponse,
     AuthenticateUserOAuthPostResponse,
     InvalidEmailOrPassword,
@@ -55,9 +55,10 @@ class TestAuthenticate:
             response = client.post(
                 "/api/user/authenticate", json=auth_email_query.dict()
             )
-
+            response_result = response.json()
+            response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response.status_code == 200
-            assert response.json() == AuthenticateUserNormalPostResponse(user=mock_user)
+            assert response_result == AuthenticateUserNormalPostResponse(user=mock_user)
             assert response.cookies.get("session_token") == session_token
 
     def test_authenticate_user_email_invalid(
@@ -97,8 +98,10 @@ class TestAuthenticate:
                 "/api/user/authenticate", json=auth_oauth_query.dict()
             )
 
+            response_result = response.json()
+            response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response.status_code == 200
-            assert response.json() == AuthenticateUserOAuthPostResponse(user=mock_user)
+            assert response_result == AuthenticateUserOAuthPostResponse(user=mock_user)
             assert response.cookies.get("session_token") == session_token
 
     def test_authenticate_user_oauth_invalid_token(

@@ -1,17 +1,20 @@
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Cookie, Depends
 
 import database.crud as crud
 from App import App
-from backend.models.Responses import (
+from backend.Responses import (
     CompletionFeedbackPostResponse,
     ErrorResponse,
+    FeedbackRecordingError,
+    GenerationNotFoundError,
+    InvalidSessionToken,
     JsonResponseWithStatus,
 )
 from base_models import FeedbackResponseData
-from Queries import CompletionFeedback, GroundTruthCreate
+from Queries import CreateGroundTruth, FeedbackCompletion
 
 router = APIRouter()
 
@@ -21,22 +24,31 @@ router = APIRouter()
     response_model=CompletionFeedbackPostResponse,
     responses={
         "200": {"model": CompletionFeedbackPostResponse},
-        "404": {"model": ErrorResponse},
+        "401": {"model": InvalidSessionToken},
+        "404": {"model": GenerationNotFoundError},
         "422": {"model": ErrorResponse},
-        "500": {"model": ErrorResponse},
+        "429": {"model": ErrorResponse},
+        "500": {"model": FeedbackRecordingError},
     },
 )
 def submit_completion_feedback(
-    feedback: CompletionFeedback,
+    feedback: FeedbackCompletion,
     app: App = Depends(App.get_instance),
+    session_token: str = Cookie("session_token"),
 ) -> JsonResponseWithStatus:
     """
     Submit feedback on a generated completion.
     """
     logging.log(logging.INFO, f"Completion feedback: {feedback}")
     db_session = app.get_db_session()
-
+    session_manager = app.get_session_manager()
     try:
+        user_dict = session_manager.get_session(session_token)
+        if session_token is None or user_dict is None:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidSessionToken(),
+            )
         # Get the generation record
         generation = crud.get_generations_by_query_and_model_id(
             db_session, str(feedback.query_id), feedback.model_id
@@ -45,7 +57,7 @@ def submit_completion_feedback(
         if not generation:
             return JsonResponseWithStatus(
                 status_code=404,
-                content=ErrorResponse(message="Generation record not found"),
+                content=GenerationNotFoundError(),
             )
 
         # Update generation status
@@ -55,7 +67,7 @@ def submit_completion_feedback(
 
         # If ground truth is provided, save it
         if feedback.ground_truth:
-            ground_truth_create = GroundTruthCreate(
+            ground_truth_create = CreateGroundTruth(
                 query_id=feedback.query_id,
                 truth_timestamp=datetime.now().isoformat(),
                 ground_truth=feedback.ground_truth,
@@ -65,7 +77,6 @@ def submit_completion_feedback(
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionFeedbackPostResponse(
-                message="Feedback recorded successfully",
                 data=FeedbackResponseData(
                     query_id=feedback.query_id, model_id=feedback.model_id
                 ),
@@ -77,5 +88,5 @@ def submit_completion_feedback(
         db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,
-            content=ErrorResponse(message=f"Failed to record feedback: {str(e)}"),
+            content=FeedbackRecordingError(str(e)),
         )

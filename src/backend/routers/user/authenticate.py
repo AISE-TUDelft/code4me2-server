@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 
 import database.crud as crud
 from App import App
-from backend.models.Responses import (
+from backend.Responses import (
     AuthenticateUserNormalPostResponse,
     AuthenticateUserOAuthPostResponse,
     AuthenticateUserPostResponse,
