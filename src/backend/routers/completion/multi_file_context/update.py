@@ -1,5 +1,6 @@
 import logging
-from copy import copy
+from copy import copy, deepcopy
+from typing import Dict, List
 
 from fastapi import APIRouter, Cookie, Depends
 
@@ -11,9 +12,62 @@ from backend.Responses import (
     MultiFileContextUpdateError,
     MultiFileContextUpdatePostResponse,
 )
-from Queries import UpdateMultiFileContext
+from Queries import ContextChangeType, FileContextChangeData, UpdateMultiFileContext
 
 router = APIRouter()
+
+
+def update_multi_file_context_in_session(
+    existing_context: Dict[str, List[str]],
+    context_update: Dict[str, List[FileContextChangeData]],
+) -> Dict[str, List[str]]:
+    """
+    Update the context with the new content, given per-file line-level diffs.
+
+    Parameters:
+        existing_context: A mapping from file name to its content (list of lines).
+        context_update: A mapping from file name to list of context change operations.
+
+    Returns:
+        A new context dict with the updates applied.
+    """
+    updated_contexts = deepcopy(existing_context)
+    for file, context_changes in context_update.items():
+        # Ensure updates don't affect later indices
+        context_changes = sorted(
+            context_changes, key=lambda c: c.start_line, reverse=True
+        )
+        if file not in updated_contexts:
+            # If the file is new, create an empty list with sufficient length
+            max_lines = max(
+                map(
+                    lambda x: x.end_line,
+                    filter(
+                        lambda c: c.change_type != ContextChangeType.insert,
+                        context_changes,
+                    ),
+                ),
+                default=0,
+            )
+            updated_context = [""] * max_lines
+        else:
+            updated_context = updated_contexts[file][:]  # shallow copy of lines
+        for change in context_changes:
+            if change.change_type == ContextChangeType.update:
+                updated_context[change.start_line : change.end_line] = change.new_lines
+            elif change.change_type == ContextChangeType.insert:
+                updated_context[change.start_line : change.start_line] = (
+                    change.new_lines
+                )
+            elif change.change_type == ContextChangeType.remove:
+                del updated_context[
+                    change.start_line : min(change.end_line, len(updated_context))
+                ]
+        if updated_context:
+            updated_contexts[file] = updated_context
+        else:
+            del updated_contexts[file]  # Remove empty files
+    return updated_contexts
 
 
 @router.post(
@@ -49,9 +103,10 @@ def update_multi_file_context(
             )
 
         # Update the context with the new content
-        # TODO: if a big file changes frequently, we should consider updating it in a different way
         existing_context = user_dict["data"].get("context", {})
-        updated_context = existing_context | context_update.context_updates
+        updated_context = update_multi_file_context_in_session(
+            existing_context, context_update.context_updates
+        )
 
         # Remove the files that their new content are empty
         for file in copy(list(updated_context.keys())):

@@ -17,10 +17,8 @@ from backend.Responses import (
 )
 from base_models import CompletionItem, CompletionResponseData
 from Queries import (
-    CreateContext,
     CreateGeneration,
     CreateQuery,
-    CreateTelemetry,
     RequestCompletion,
 )
 
@@ -61,11 +59,8 @@ def request_completion(
                 content=InvalidSessionToken(),
             )
 
-        context_create = CreateContext(**completion_request.context.dict())
-        created_context = crud.add_context(db_session, context_create)
-
-        telemetry_create = CreateTelemetry(**completion_request.telemetry.dict())
-        created_telemetry = crud.add_telemetry(db_session, telemetry_create)
+        created_context = crud.add_context(db_session, completion_request.context)
+        created_telemetry = crud.add_telemetry(db_session, completion_request.telemetry)
 
         # Create query record BEFORE completions
         query_create = CreateQuery(
@@ -81,18 +76,22 @@ def request_completion(
         # Check if multi file context is available and if so add to the context prefix
         multi_file_context = user_dict["data"].get("context")
         if multi_file_context:
-            completion_request.context.prefix = (
+            completion_request.context.prefix = "Other files context:\n" + (
                 "\n".join(
                     (
-                        f"#{file}\n{context}"
-                        if file != completion_request.context.file_name
+                        f"#{file_name}\n{('\n'.join(context)).strip()}"
+                        if file_name != completion_request.context.file_name
+                        and (
+                            completion_request.context.context_files == ["*"]
+                            or file_name in completion_request.context.context_files
+                        )
                         else ""
                     )
-                    for file, context in multi_file_context.items()
+                    for file_name, context in multi_file_context.items()
                 )
+                + "\n\n"
                 + completion_request.context.prefix
             )
-        logging.log(logging.INFO, f"Completion request: {completion_request}")
 
         # Get model completions
         start_time = datetime.now()
@@ -105,7 +104,6 @@ def request_completion(
             if not model:
                 continue
 
-            # completion_text =
             completion_model = completion_models.get_model(
                 model_name=model.model_name,
                 prompt_template=completion.Template.PREFIX_SUFFIX,
