@@ -76,22 +76,22 @@ def request_completion(
         # Check if multi file context is available and if so add to the context prefix
         multi_file_context = user_dict["data"].get("context")
         if multi_file_context:
-            completion_request.context.prefix = "Other files context:\n" + (
-                "\n".join(
-                    (
-                        f"#{file_name}\n{('\n'.join(context)).strip()}"
-                        if file_name != completion_request.context.file_name
-                        and (
-                            completion_request.context.context_files == ["*"]
-                            or file_name in completion_request.context.context_files
-                        )
-                        else ""
-                    )
-                    for file_name, context in multi_file_context.items()
+            other_files_context = []
+            for file_name, context in multi_file_context.items():
+                if file_name != completion_request.context.file_name and (
+                    completion_request.context.context_files == ["*"]
+                    or file_name in completion_request.context.context_files
+                ):
+                    joined_context = "\n".join(context).strip()
+                    other_files_context.append(f"#{file_name}\n{joined_context}")
+
+            if other_files_context:
+                completion_request.context.prefix = (
+                    "Other files context:\n"
+                    + "\n".join(other_files_context)
+                    + "\n\n"
+                    + completion_request.context.prefix
                 )
-                + "\n\n"
-                + completion_request.context.prefix
-            )
 
         # Get model completions
         start_time = datetime.now()
