@@ -5,12 +5,12 @@ from fastapi.testclient import TestClient
 
 import Queries
 from App import App
-from backend.main import app
 from backend.Responses import (
     InvalidSessionToken,
     UpdateUserPutResponse,
 )
 from base_models import UserBase
+from main import app
 
 
 class TestUpdateUser:

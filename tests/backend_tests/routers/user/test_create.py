@@ -5,13 +5,13 @@ from fastapi.testclient import TestClient
 
 import Queries
 from App import App
-from backend.main import app  # Adjust this import based on your project structure
 from backend.Responses import (
     CreateUserPostResponse,
     InvalidOrExpiredToken,
     UserAlreadyExistsWithThisEmail,
 )
 from base_models import UserBase
+from main import app  # Adjust this import based on your project structure
 
 
 class TestCreate:

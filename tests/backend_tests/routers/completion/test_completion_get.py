@@ -6,11 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from App import App
-from backend.main import app
 from backend.Responses import (
     CompletionPostResponse,
     QueryNotFoundError,
 )
+from main import app
 
 
 class TestCompletionRoutes:

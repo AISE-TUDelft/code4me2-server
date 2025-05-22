@@ -4,11 +4,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from App import App
-from backend.main import app
 from backend.Responses import (
     InvalidSessionToken,
     MultiFileContextUpdateError,
 )
+from main import app
 from Queries import UpdateMultiFileContext
 
 

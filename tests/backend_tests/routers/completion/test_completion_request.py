@@ -6,13 +6,13 @@ from fastapi.testclient import TestClient
 
 import Queries
 from App import App
-from backend.main import app
 from backend.Responses import (
     CompletionPostResponse,
     GenerateCompletionsError,
     InvalidSessionToken,
 )
 from base_models import ContextBase, QueryBase, TelemetryBase
+from main import app
 
 
 class TestCompletionRequest:
