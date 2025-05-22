@@ -60,11 +60,7 @@ services:
     build: .
     container_name: backend
     command:
-      [
-        "/bin/bash",
-        "-c",
-        "source activate myenv && python /app/src/backend/main.py",
-      ]
+      ["/bin/bash", "-c", "source activate myenv && python /app/src/main.py"]
     expose:
       - ${REACT_APP_BACKEND_PORT}
     volumes:
