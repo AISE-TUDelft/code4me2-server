@@ -10,6 +10,20 @@ from polyfactory.field_meta import FieldMeta
 from pydantic import BaseModel, EmailStr, SecretStr
 
 
+def iterable_to_dict(obj: Any) -> Dict[str, Any]:
+    """
+    Converts an iterable to a dictionary, handling nested models and custom types.
+    """
+    if isinstance(obj, BaseModel):
+        return obj.dict()
+    elif isinstance(obj, list):
+        return [iterable_to_dict(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {key: iterable_to_dict(value) for key, value in obj.items()}
+    else:
+        return obj
+
+
 class SerializableBaseModel(BaseModel):
     """
     A base class that automatically converts SecretStr and EmailStr fields to plain strings
@@ -30,13 +44,8 @@ class SerializableBaseModel(BaseModel):
                 data[field_name] = str(getattr(self, field_name))
             elif value.annotation is datetime:
                 data[field_name] = getattr(self, field_name).isoformat()
-            elif inspect.isclass(value.annotation) and issubclass(
-                value.annotation, BaseModel
-            ):
-                # Check if the annotation is a subclass of BaseModel (handles nested models)
-                data[field_name] = getattr(self, field_name).dict(*args, **kwargs)
             else:
-                data[field_name] = getattr(self, field_name)
+                data[field_name] = iterable_to_dict(getattr(self, field_name))
         return data
 
     def json(self, *args, **kwargs) -> str:

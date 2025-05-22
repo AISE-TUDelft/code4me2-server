@@ -139,6 +139,7 @@ class Context(Base):
     context_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
     prefix = Column(Text)
     suffix = Column(Text)
+    file_name = Column(Text)
     language_id = Column(
         BIGINT, ForeignKey("programming_language.language_id"), index=True
     )

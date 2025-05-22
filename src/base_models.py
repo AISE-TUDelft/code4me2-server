@@ -37,13 +37,13 @@ class UserBase(Queries.CreateUser):
 
 # Query
 class QueryBase(Queries.CreateQuery):
-    query_id: UUID
-    user_id: UUID
-    telemetry_id: UUID
-    context_id: UUID
-    total_serving_time: int
-    timestamp: str
-    server_version_id: UUID
+    query_id: UUID = Field(..., description="Query ID")
+    user_id: UUID = Field(..., description="User ID")
+    telemetry_id: UUID = Field(..., description="Telemetry record ID")
+    context_id: UUID = Field(..., description="Context record ID")
+    total_serving_time: int = Field(..., description="Total serving time (ms)", ge=0)
+    timestamp: str = Field(..., description="Timestamp of the query")
+    server_version_id: UUID = Field(..., description="Server version ID")
 
 
 # Model Name
@@ -60,19 +60,11 @@ class QueryBase(Queries.CreateQuery):
 #     description: str
 
 
-class ContextBase(Queries.CreateContext):
-    context_id: UUID = Field(..., description="Context record ID")
-
-
-class TelemetryBase(Queries.CreateTelemetry):
-    telemetry_id: UUID = Field(..., description="Telemetry record ID")
-
-
 class CompletionItem(ModelBase):
-    model_id: int = Field(..., description="Model ID")
+    model_id: int = Field(..., description="Model ID", ge=0)
     model_name: str = Field(..., description="Model name")
     completion: str = Field(..., description="Generated code")
-    generation_time: int = Field(..., description="Generation time")
+    generation_time: int = Field(..., description="Generation time", ge=0)
     confidence: float = Field(..., description="Confidence score")
 
 
@@ -83,4 +75,12 @@ class CompletionResponseData(ModelBase):
 
 class FeedbackResponseData(ModelBase):
     query_id: UUID = Field(..., description="Query ID")
-    model_id: int = Field(..., description="Model ID")
+    model_id: int = Field(..., description="Model ID", ge=0)
+
+
+class ContextBase(Queries.ContextData):
+    context_id: UUID = Field(..., description="Context record ID")
+
+
+class TelemetryBase(Queries.TelemetryData):
+    telemetry_id: UUID = Field(..., description="Telemetry record ID")

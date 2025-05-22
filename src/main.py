@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 import uvicorn
 from dotenv import load_dotenv
@@ -55,7 +56,22 @@ app.add_middleware(
 app.include_router(router, prefix="/api")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic (if any) can go here
+    yield
+    # Shutdown logic
+    logging.warning("Shutting down the server and cleaning up resources...")
+    App.get_instance().cleanup()
+
+
 if __name__ == "__main__":
     uvicorn.run(
-        "backend.main:app", host="0.0.0.0", port=config.backend_port, reload=True
+        "main:app",
+        host="0.0.0.0",
+        port=config.backend_port,
+        reload=config.test_mode,
+        reload_excludes=[
+            "src/website/**",
+        ],
     )

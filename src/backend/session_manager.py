@@ -33,6 +33,14 @@ class SessionManager:
         session_data = self.redis_client.get(f"session:{session_token}")
         return json.loads(session_data) if session_data else None
 
+    def update_session(self, session_token: str, session_data: dict) -> None:
+        session_data_str = json.dumps(session_data)
+        self.redis_client.setex(
+            f"session:{session_token}",
+            SessionManager.SESSION_EXPIRY_SECONDS,
+            session_data_str,
+        )
+
     def delete_session(self, session_token: str) -> None:
         self.redis_client.delete(f"session:{session_token}")
 
@@ -42,3 +50,6 @@ class SessionManager:
             session_data = json.loads(self.redis_client.get(key))
             if session_data and session_data["user_id"] == str(user_id):
                 self.redis_client.delete(key)
+
+    def cleanup(self):
+        self.redis_client.close()

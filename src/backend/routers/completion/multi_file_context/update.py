@@ -1,0 +1,131 @@
+import logging
+from copy import copy, deepcopy
+from typing import Dict, List
+
+from fastapi import APIRouter, Cookie, Depends
+
+from App import App
+from backend.Responses import (
+    ErrorResponse,
+    InvalidSessionToken,
+    JsonResponseWithStatus,
+    MultiFileContextUpdateError,
+    MultiFileContextUpdatePostResponse,
+)
+from Queries import ContextChangeType, FileContextChangeData, UpdateMultiFileContext
+
+router = APIRouter()
+
+
+def update_multi_file_context_in_session(
+    existing_context: Dict[str, List[str]],
+    context_update: Dict[str, List[FileContextChangeData]],
+) -> Dict[str, List[str]]:
+    """
+    Update the context with the new content, given per-file line-level diffs.
+
+    Parameters:
+        existing_context: A mapping from file name to its content (list of lines).
+        context_update: A mapping from file name to list of context change operations.
+
+    Returns:
+        A new context dict with the updates applied.
+    """
+    updated_contexts = deepcopy(existing_context)
+    for file, context_changes in context_update.items():
+        # Ensure updates don't affect later indices
+        context_changes = sorted(
+            context_changes, key=lambda c: c.start_line, reverse=True
+        )
+        if file not in updated_contexts:
+            # If the file is new, create an empty list with sufficient length
+            max_lines = max(
+                map(
+                    lambda x: x.end_line,
+                    filter(
+                        lambda c: c.change_type != ContextChangeType.insert,
+                        context_changes,
+                    ),
+                ),
+                default=0,
+            )
+            updated_context = [""] * max_lines
+        else:
+            updated_context = updated_contexts[file][:]  # shallow copy of lines
+        for change in context_changes:
+            if change.change_type == ContextChangeType.update:
+                updated_context[change.start_line : change.end_line] = change.new_lines
+            elif change.change_type == ContextChangeType.insert:
+                updated_context[change.start_line : change.start_line] = (
+                    change.new_lines
+                )
+            elif change.change_type == ContextChangeType.remove:
+                del updated_context[
+                    change.start_line : min(change.end_line, len(updated_context))
+                ]
+        if updated_context:
+            updated_contexts[file] = updated_context
+        else:
+            del updated_contexts[file]  # Remove empty files
+    return updated_contexts
+
+
+@router.post(
+    "/",
+    response_model=MultiFileContextUpdatePostResponse,
+    responses={
+        "200": {"model": MultiFileContextUpdatePostResponse},
+        "401": {"model": InvalidSessionToken},
+        "422": {"model": ErrorResponse},
+        "429": {"model": ErrorResponse},
+        "500": {"model": MultiFileContextUpdateError},
+    },
+)
+def update_multi_file_context(
+    context_update: UpdateMultiFileContext,
+    app: App = Depends(App.get_instance),
+    session_token: str = Cookie("session_token"),
+) -> JsonResponseWithStatus:
+    """
+    Update the context for a specific query ID.
+    """
+    logging.log(logging.INFO, f"Updating context for session: {session_token}")
+    db_session = app.get_db_session()
+    session_manager = app.get_session_manager()
+
+    try:
+        # Check if user is authenticated
+        user_dict = session_manager.get_session(session_token)
+        if session_token is None or user_dict is None:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidSessionToken(),
+            )
+
+        # Update the context with the new content
+        existing_context = user_dict["data"].get("context", {})
+        updated_context = update_multi_file_context_in_session(
+            existing_context, context_update.context_updates
+        )
+
+        # Remove the files that their new content are empty
+        for file in copy(list(updated_context.keys())):
+            if not updated_context[file]:
+                logging.log(logging.WARNING, f"Removing {file} context")
+                del updated_context[file]
+
+        # Store the updated context in the session
+        user_dict["data"]["context"] = updated_context
+        session_manager.update_session(session_token, user_dict)
+
+        return JsonResponseWithStatus(
+            status_code=200,
+            content=MultiFileContextUpdatePostResponse(
+                data=updated_context,
+            ),
+        )
+    except Exception as e:
+        logging.log(logging.ERROR, f"Error updating context: {e}")
+        return JsonResponseWithStatus(
+            status_code=500, content=MultiFileContextUpdateError()
+        )

@@ -68,7 +68,7 @@ def update_user(
 
 
 # Context Operations
-def add_context(db: Session, context: Queries.CreateContext) -> db_schemas.Context:
+def add_context(db: Session, context: Queries.ContextData) -> db_schemas.Context:
     """Create a new context record"""
     db_context = db_schemas.Context(
         context_id=uuid.uuid4(),
@@ -86,7 +86,7 @@ def add_context(db: Session, context: Queries.CreateContext) -> db_schemas.Conte
 
 # Telemetry operations
 def add_telemetry(
-    db: Session, telemetry: Queries.CreateTelemetry
+    db: Session, telemetry: Queries.TelemetryData
 ) -> db_schemas.Telemetry:
     """Create a new telemetry record"""
     db_telemetry = db_schemas.Telemetry(

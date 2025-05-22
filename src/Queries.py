@@ -1,7 +1,7 @@
 import re
 from abc import ABC
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from pydantic import EmailStr, Field, SecretStr, field_validator
@@ -11,6 +11,12 @@ from backend.utils import Fakable, SerializableBaseModel
 
 class Provider(Enum):
     google = "google"
+
+
+class ContextChangeType(Enum):
+    update = "update"
+    insert = "insert"
+    remove = "remove"
 
 
 class QueryBase(SerializableBaseModel, Fakable, ABC):
@@ -71,56 +77,80 @@ class UpdateUser(QueryBase):
     name: str = Field(..., description="User's new name", min_length=3, max_length=50)
 
 
-class CreateTelemetry(QueryBase):
-    time_since_last_completion: int = Field(
-        ..., description="Time since last completion (ms)"
+class ContextData(QueryBase):
+    prefix: str = Field(..., description="Code before cursor")
+    suffix: str = Field(..., description="Code after cursor")
+    file_name: str = Field(..., description="File name")
+    language_id: int = Field(..., description="Programming language ID", ge=0)
+    # TODO maybe we can change trigger type to enum since it doesn't update that frequently
+    trigger_type_id: int = Field(..., description="Trigger type ID", ge=0)
+    version_id: int = Field(..., description="Plugin version ID", ge=0)
+    context_files: Optional[list[str]] = Field(
+        default=[],
+        description="List of context files to include upon completion. "
+        "If ['*'] is passed, all files will be included. "
+        "If empty list is passed, no files will be included.",
     )
-    typing_speed: int = Field(..., description="Typing speed (chars per minute)")
-    document_char_length: int = Field(..., description="Document length in characters")
+
+
+class TelemetryData(QueryBase):
+    time_since_last_completion: int = Field(
+        ..., description="Time since last completion (ms)", ge=0
+    )
+    typing_speed: int = Field(..., description="Typing speed (chars per minute)", ge=0)
+    document_char_length: int = Field(
+        ..., description="Document length in characters", ge=0
+    )
     relative_document_position: float = Field(
         ..., description="Cursor position as fraction of document"
     )
 
 
-class CreateContext(QueryBase):
-    prefix: str = Field(..., description="Code before cursor")
-    suffix: str = Field(..., description="Code after cursor")
-    language_id: int = Field(..., description="Programming language ID")
-    # TODO maybe we can change trigger type to enum since it doesn't update that frequently
-    trigger_type_id: int = Field(..., description="Trigger type ID")
-    version_id: int = Field(..., description="Plugin version ID")
-
-
 # Updated CompletionRequest with nested structures
 class RequestCompletion(QueryBase):
     model_ids: List[int] = Field(..., description="Models to use for completion")
-    context: CreateContext = Field(..., description="Context data for completion")
-    telemetry: CreateTelemetry = Field(..., description="Telemetry data for completion")
+    context: ContextData = Field(..., description="Context data for completion")
+    telemetry: TelemetryData = Field(..., description="Telemetry data for completion")
 
 
 class CreateQuery(QueryBase):
     user_id: UUID = Field(..., description="User ID")
     telemetry_id: UUID = Field(..., description="Telemetry record ID")
     context_id: UUID = Field(..., description="Context record ID")
-    total_serving_time: int = Field(..., description="Total serving time (ms)")
-    server_version_id: int = Field(..., description="Server version ID")
+    total_serving_time: int = Field(..., description="Total serving time (ms)", ge=0)
+    server_version_id: int = Field(..., description="Server version ID", ge=0)
 
 
 class CreateGeneration(QueryBase):
     query_id: UUID = Field(..., description="Query ID")
-    model_id: int = Field(..., description="Model ID")
+    model_id: int = Field(..., description="Model ID", ge=0)
     completion: str = Field(..., description="Generated code")
-    generation_time: int = Field(..., description="Generation time (ms)")
+    generation_time: int = Field(..., description="Generation time (ms)", ge=0)
     shown_at: List[str] = Field(..., description="Timestamps when shown")
     was_accepted: bool = Field(..., description="Whether accepted by user")
     confidence: float = Field(..., description="Confidence score")
     logprobs: List[float] = Field(..., description="Token log probabilities")
 
 
+class FileContextChangeData(QueryBase):
+    change_type: ContextChangeType = Field(
+        ..., description="Type of change ('update', 'insert', 'remove')"
+    )
+    start_line: int = Field(..., description="Start line number", ge=0)
+    end_line: int = Field(..., description="End line number", ge=0)
+    new_lines: List[str] = Field(..., description="New lines of code")
+
+
+class UpdateMultiFileContext(QueryBase):
+    context_updates: Dict[str, List[FileContextChangeData]] = Field(
+        ..., description="Updates to the context for multiple files"
+    )
+
+
 # consider refactoring
 class FeedbackCompletion(QueryBase):
     query_id: UUID = Field(..., description="Query ID")
-    model_id: int = Field(..., description="Model ID")
+    model_id: int = Field(..., description="Model ID", ge=0)
     was_accepted: bool = Field(..., description="Whether completion was accepted")
     ground_truth: Optional[str] = Field(None, description="Actual code if available")
 
@@ -129,3 +159,9 @@ class CreateGroundTruth(QueryBase):
     query_id: UUID = Field(..., description="Query ID")
     truth_timestamp: str = Field(..., description="Timestamp of ground truth")
     ground_truth: str = Field(..., description="Ground truth code")
+
+
+if __name__ == "__main__":
+    fake_update_multi_file_context = UpdateMultiFileContext.fake(1)
+    res = fake_update_multi_file_context.dict()
+    print(res)

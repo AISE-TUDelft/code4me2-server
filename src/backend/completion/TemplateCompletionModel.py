@@ -125,7 +125,7 @@ class TemplateCompletionModel(BaseLLM):
         confidence = sum(token_probs) / len(token_probs) if token_probs else None
 
         return {
-            "completion": generated_text,
+            "completion": generated_text.strip(),
             "generation_time": int((end_time - start_time) * 1000),
             "logprobs": token_logprobs,
             "confidence": confidence,

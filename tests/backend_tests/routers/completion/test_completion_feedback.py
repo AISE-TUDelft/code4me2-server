@@ -5,12 +5,12 @@ from fastapi.testclient import TestClient
 
 import Queries
 from App import App
-from backend.main import app
 from backend.Responses import (
     CompletionFeedbackPostResponse,
     FeedbackRecordingError,
     GenerationNotFoundError,
 )
+from main import app
 
 
 class TestCompletionFeedback:
