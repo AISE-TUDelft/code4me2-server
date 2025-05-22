@@ -63,6 +63,8 @@ services:
       ["/bin/bash", "-c", "source activate myenv && python /app/src/main.py"]
     expose:
       - ${REACT_APP_BACKEND_PORT}
+    ports:
+      - "8008:8008"
     volumes:
       - .:/app
     environment:
@@ -99,6 +101,8 @@ services:
     command: ["npm", "start"]
     expose:
       - 3000
+    ports:
+      - "3000:3000"
     volumes:
       - ./src/website:/website
     depends_on:
@@ -115,8 +119,7 @@ services:
     image: nginx:1.25
     container_name: nginx
     ports:
-      - "80:80"
-      - "443:443"
+      - "8000:8000"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
     depends_on:
