@@ -61,6 +61,13 @@ services:
     container_name: backend
     command:
       ["/bin/bash", "-c", "source activate myenv && python /app/src/main.py"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
     expose:
       - ${REACT_APP_BACKEND_PORT}
     ports:
