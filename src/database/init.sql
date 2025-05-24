@@ -94,6 +94,29 @@ CREATE TABLE IF NOT EXISTS public.telemetry
     relative_document_position double precision
 );
 
+-- Added manually
+---------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.session
+(
+    session_id uuid NOT NULL PRIMARY KEY,
+    user_id uuid NOT NULL,
+    multi_file_contexts text,
+--     started_at timestamp with time zone NOT NULL,
+--     ended_at timestamp with time zone,
+    CONSTRAINT unique_user_session UNIQUE (user_id, session_id)
+);
+-- Add index on user_id for session table
+CREATE INDEX IF NOT EXISTS idx_session_user_id ON public.session (user_id);
+
+CREATE TABLE IF NOT EXISTS public.session_queries
+(
+    session_id uuid NOT NULL PRIMARY KEY,
+    query_id uuid NOT NULL,
+    multi_file_context_changes text,
+    CONSTRAINT unique_session_query UNIQUE (session_id, query_id),
+)
+CREATE INDEX IF NOT EXISTS idx_session_queries_query_id ON public.session_queries (query_id);
+----------------------------------------------------------------------------------
 -- Foreign Key Constraints
 ALTER TABLE public.query
     ADD CONSTRAINT user_fk FOREIGN KEY (user_id)
@@ -148,6 +171,27 @@ ALTER TABLE public.context
     REFERENCES public.plugin_version (version_id)
     ON UPDATE NO ACTION
     ON DELETE NO ACTION;
+
+-- Manually added foreign key constraints
+--------------------------------------------------------------------------------------
+ALTER TABLE public.session
+    ADD CONSTRAINT fk_session_user FOREIGN KEY (user_id)
+    REFERENCES public."user" (user_id)
+    ON UPDATE NO ACTION
+    ON DELETE NO ACTION;
+
+ALTER TABLE public.session_queries
+    ADD CONSTRAINT fk_session_queries_session FOREIGN KEY (session_id)
+    REFERENCES public.session (session_id)
+    ON UPDATE NO ACTION
+    ON DELETE CASCADE;
+
+ALTER TABLE public.session_queries
+    ADD CONSTRAINT fk_session_queries_query FOREIGN KEY (query_id)
+    REFERENCES public.query (query_id)
+    ON UPDATE NO ACTION
+    ON DELETE CASCADE;
+---------------------------------------------------------------------------------------
 
 -- Indexes on Foreign Keys
 CREATE INDEX idx_query_user_id ON public.query (user_id);

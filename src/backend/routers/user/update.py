@@ -7,7 +7,7 @@ import Queries as Queries
 from App import App
 from backend.Responses import (
     ErrorResponse,
-    InvalidOrExpiredToken,
+    InvalidOrExpiredJWTToken,
     InvalidSessionToken,
     JsonResponseWithStatus,
     UpdateUserPutResponse,
@@ -22,7 +22,7 @@ router = APIRouter()
     response_model=UpdateUserPutResponse,
     responses={
         "201": {"model": UpdateUserPutResponse},
-        "401": {"model": InvalidOrExpiredToken},
+        "401": {"model": InvalidOrExpiredJWTToken},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": ErrorResponse},

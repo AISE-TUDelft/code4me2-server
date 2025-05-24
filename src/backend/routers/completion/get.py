@@ -9,7 +9,7 @@ from backend.Responses import (
     CompletionPostResponse,
     CompletionsNotFoundError,
     ErrorResponse,
-    InvalidSessionToken,
+    InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
     QueryNotFoundError,
     RetrieveCompletionsError,
@@ -24,7 +24,7 @@ router = APIRouter()
     response_model=CompletionPostResponse,
     responses={
         "200": {"model": CompletionPostResponse},
-        "401": {"model": InvalidSessionToken},
+        "401": {"model": InvalidOrExpiredSessionToken},
         "404": {"model": QueryNotFoundError},
         "429": {"model": ErrorResponse},
         "500": {"model": RetrieveCompletionsError},
@@ -50,7 +50,7 @@ def get_completions_by_query(
         if session_token is None or user_dict is None:
             return JsonResponseWithStatus(
                 status_code=401,
-                content=InvalidSessionToken(),
+                content=InvalidOrExpiredSessionToken(),
             )
         # Check if query exists
         query = crud.get_query_by_id(db_session, str(query_id))
@@ -88,8 +88,8 @@ def get_completions_by_query(
         )
 
     except Exception as e:
-        logging.error(f"Error retrieving completions: {str(e)}")
+        logging.log(logging.ERROR, f"Error retrieving completions: {str(e)}")
         return JsonResponseWithStatus(
             status_code=500,
-            content=RetrieveCompletionsError(str(e)),
+            content=RetrieveCompletionsError(),
         )

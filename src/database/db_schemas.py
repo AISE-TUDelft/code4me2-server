@@ -31,6 +31,7 @@ class User(Base):
 
     # New field for future designs
     queries = relationship("Query", back_populates="user")
+    sessions = relationship("Session", back_populates="user")
 
 
 class Query(Base):
@@ -48,6 +49,7 @@ class Query(Base):
     context = relationship("Context", back_populates="queries")
     had_generations = relationship("HadGeneration", back_populates="query")
     ground_truths = relationship("GroundTruth", back_populates="query")
+    session_queries = relationship("SessionQuery", back_populates="query")
 
     __table_args__ = (
         UniqueConstraint("user_id", "query_id", name="unique_user_query"),
@@ -165,3 +167,46 @@ class Telemetry(Base):
     queries = relationship("Query", back_populates="telemetry")
 
     __table_args__ = (Index("telemetry_id_index", "telemetry_id"),)
+
+
+class Session(Base):
+    __tablename__ = "session"
+    session_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.user_id"), nullable=False)
+    multi_file_contexts = Column(
+        Text, nullable=True, default=""
+    )  # JSON string of multi-file contexts
+    # Relationships
+    user = relationship("User", back_populates="sessions")
+    session_queries = relationship("SessionQuery", back_populates="session")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "session_id", name="unique_user_session"),
+        Index("idx_session_user_id", "user_id"),
+    )
+
+
+class SessionQuery(Base):
+    __tablename__ = "session_queries"
+    session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("session.session_id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    query_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("query.query_id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    multi_file_context_changes = Column(Text, nullable=True, default="")
+
+    # Relationships
+    session = relationship("Session", back_populates="session_queries")
+    query = relationship("Query", back_populates="session_queries")
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "query_id", name="unique_session_query"),
+        Index("idx_session_queries_query_id", "query_id"),
+    )

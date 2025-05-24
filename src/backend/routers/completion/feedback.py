@@ -10,7 +10,7 @@ from backend.Responses import (
     ErrorResponse,
     FeedbackRecordingError,
     GenerationNotFoundError,
-    InvalidSessionToken,
+    InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
 )
 from base_models import FeedbackResponseData
@@ -24,7 +24,7 @@ router = APIRouter()
     response_model=CompletionFeedbackPostResponse,
     responses={
         "200": {"model": CompletionFeedbackPostResponse},
-        "401": {"model": InvalidSessionToken},
+        "401": {"model": InvalidOrExpiredSessionToken},
         "404": {"model": GenerationNotFoundError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -47,7 +47,7 @@ def submit_completion_feedback(
         if session_token is None or user_dict is None:
             return JsonResponseWithStatus(
                 status_code=401,
-                content=InvalidSessionToken(),
+                content=InvalidOrExpiredSessionToken(),
             )
         # Get the generation record
         generation = crud.get_generations_by_query_and_model_id(
@@ -84,9 +84,9 @@ def submit_completion_feedback(
         )
 
     except Exception as e:
-        logging.error(f"Error recording feedback: {str(e)}")
+        logging.log(logging.ERROR, f"Error recording feedback: {str(e)}")
         db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,
-            content=FeedbackRecordingError(str(e)),
+            content=FeedbackRecordingError(),
         )

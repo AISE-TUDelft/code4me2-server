@@ -11,7 +11,7 @@ from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,
     GenerateCompletionsError,
-    InvalidSessionToken,
+    InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
     UserNotFoundError,
 )
@@ -30,7 +30,7 @@ router = APIRouter()
     response_model=CompletionPostResponse,
     responses={
         "200": {"model": CompletionPostResponse},
-        "401": {"model": InvalidSessionToken},
+        "401": {"model": InvalidOrExpiredSessionToken},
         "404": {"model": UserNotFoundError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -56,7 +56,7 @@ def request_completion(
         if session_token is None or user_dict is None:
             return JsonResponseWithStatus(
                 status_code=401,
-                content=InvalidSessionToken(),
+                content=InvalidOrExpiredSessionToken(),
             )
 
         created_context = crud.add_context(db_session, completion_request.context)
@@ -160,9 +160,9 @@ def request_completion(
         )
 
     except Exception as e:
-        logging.error(f"Error generating completions: {str(e)}")
+        logging.log(logging.ERROR, f"Error generating completions: {str(e)}")
         db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,
-            content=GenerateCompletionsError(str(e)),
+            content=GenerateCompletionsError(),
         )

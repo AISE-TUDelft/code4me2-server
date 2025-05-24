@@ -11,7 +11,7 @@ from backend.Responses import (
     AuthenticateUserPostResponse,
     ErrorResponse,
     InvalidEmailOrPassword,
-    InvalidOrExpiredToken,
+    InvalidOrExpiredJWTToken,
     JsonResponseWithStatus,
 )
 from backend.utils import verify_jwt_token
@@ -26,7 +26,7 @@ router = APIRouter()
     response_model=AuthenticateUserPostResponse,
     responses={
         "200": {"model": AuthenticateUserPostResponse},
-        "401": {"model": Union[InvalidOrExpiredToken, InvalidEmailOrPassword]},
+        "401": {"model": Union[InvalidOrExpiredJWTToken, InvalidEmailOrPassword]},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": ErrorResponse},
@@ -52,6 +52,7 @@ def authenticate_user(
     logging.log(logging.INFO, f"Authenticating user ({user_to_authenticate})")
     db_session = app.get_db_session()
     session_manager = app.get_session_manager()
+    config = app.get_config()
 
     if isinstance(user_to_authenticate, AuthenticateUserOAuth):
         # OAuth Authentication
@@ -59,29 +60,29 @@ def authenticate_user(
         if verification_result is None:
             return JsonResponseWithStatus(
                 status_code=401,
-                content=InvalidOrExpiredToken(),
+                content=InvalidOrExpiredJWTToken(),
             )
         found_user = crud.get_user_by_email(db_session, verification_result["email"])
         if not found_user:
             return JsonResponseWithStatus(
                 status_code=401,
-                content=InvalidOrExpiredToken(),
+                content=InvalidOrExpiredJWTToken(),
             )
         else:
-            # Create a session id using redis session manager
-            session_token = session_manager.create_session(found_user.user_id)
-
-            # secure=True can be uncommented after we migrated to HTTPS
-            # samesite="lax" # used to prevent Cross-Site Request Forgery (CSRF) attacks. Check if it works with the frontend
-
+            authentication_token = session_manager.create_auth_token(found_user.user_id)
             response_obj = JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserOAuthPostResponse(
                     user=UserBase.model_validate(found_user),
                 ),
             )
+
             response_obj.set_cookie(
-                key="session_token", value=session_token, httponly=True, samesite="lax"
+                key="auth_token",
+                value=authentication_token,
+                httponly=True,
+                samesite="lax",
+                expires=config.authentication_token_expires_in_seconds,
             )
             return response_obj
 
@@ -98,12 +99,7 @@ def authenticate_user(
                 content=InvalidEmailOrPassword(),
             )
         else:
-            # Create a session id using redis session manager
-            session_token = session_manager.create_session(found_user.user_id)
-
-            # secure=True can be uncommented after we migrated to HTTPS
-            # samesite="lax" # used to prevent Cross-Site Request Forgery (CSRF) attacks. Check if it works with the frontend
-
+            authentication_token = session_manager.create_auth_token(found_user.user_id)
             response_obj = JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserNormalPostResponse(
@@ -111,7 +107,11 @@ def authenticate_user(
                 ),
             )
             response_obj.set_cookie(
-                key="session_token", value=session_token, httponly=True, samesite="lax"
+                key="auth_token",
+                value=authentication_token,
+                httponly=True,
+                samesite="lax",
+                expires=config.authentication_token_expires_in_seconds,
             )
             return response_obj
 

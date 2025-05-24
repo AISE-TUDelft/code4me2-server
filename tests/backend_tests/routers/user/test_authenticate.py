@@ -9,7 +9,7 @@ from backend.Responses import (
     AuthenticateUserNormalPostResponse,
     AuthenticateUserOAuthPostResponse,
     InvalidEmailOrPassword,
-    InvalidOrExpiredToken,
+    InvalidOrExpiredJWTToken,
 )
 from base_models import UserBase
 from main import app
@@ -118,7 +118,7 @@ class TestAuthenticate:
             )
 
             assert response.status_code == 401
-            assert response.json() == InvalidOrExpiredToken().model_dump()
+            assert response.json() == InvalidOrExpiredJWTToken().model_dump()
 
     def test_authenticate_user_oauth_user_not_found(
         self, client: TestClient, auth_oauth_query: Queries.AuthenticateUserOAuth
@@ -135,7 +135,7 @@ class TestAuthenticate:
             )
 
             assert response.status_code == 401
-            assert response.json() == InvalidOrExpiredToken().model_dump()
+            assert response.json() == InvalidOrExpiredJWTToken().model_dump()
 
     def test_authenticate_user_invalid_payload(self, client: TestClient):
         response = client.post("/api/user/authenticate", json={"email": "bad"})

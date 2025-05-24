@@ -824,3 +824,24 @@ def add_ground_truth(
 
 def get_all_model_names(db: Session) -> list[db_schemas.ModelName]:
     return db.query(db_schemas.ModelName).all()
+
+
+def get_session_by_id(db: Session, session_id: str) -> Optional[db_schemas.Session]:
+    return (
+        db.query(db_schemas.Session)
+        .filter(db_schemas.Session.session_id == session_id)
+        .first()
+    )
+
+
+def delete_session_by_id(db: Session, session_id: str) -> None:
+    db.query(db_schemas.Session).filter(
+        db_schemas.Session.session_id == session_id
+    ).delete()
+    db.commit()
+
+
+def add_session(db: Session, session: db_schemas.Session) -> None:
+    db.add(session)
+    db.commit()
+    db.refresh(session)
