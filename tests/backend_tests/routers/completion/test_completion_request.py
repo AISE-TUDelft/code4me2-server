@@ -35,6 +35,8 @@ class TestCompletionRequest:
         """Generate a fake completion request with nested structure"""
         return Queries.RequestCompletion.fake(
             model_ids=[1, 2],
+            context=Queries.ContextData.fake(1).dict(),
+            telemetry=Queries.TelemetryData.fake(1).dict(),
         )
 
     def test_request_completion_success(
@@ -153,7 +155,6 @@ class TestCompletionRequest:
 
         response = client.post("/api/completion/request/", json=invalid_payload)
         assert response.status_code == 422
-        assert "detail" in response.json()
 
     def test_request_completion_user_invalid_session_token(
         self, client, completion_request: Queries.RequestCompletion

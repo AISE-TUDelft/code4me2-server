@@ -3,9 +3,11 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Cookie, Depends
+from pydantic_core._pydantic_core import ValidationError
 
 import backend.completion as completion
 import database.crud as crud
+import Queries
 from App import App
 from backend.Responses import (
     CompletionPostResponse,
@@ -59,8 +61,20 @@ def request_completion(
                 content=InvalidSessionToken(),
             )
 
-        created_context = crud.add_context(db_session, completion_request.context)
-        created_telemetry = crud.add_telemetry(db_session, completion_request.telemetry)
+        telemetry_data = None
+        context_data = None
+        try:
+            telemetry_data = Queries.TelemetryData(**completion_request.telemetry)
+            context_data = Queries.ContextData(**completion_request.context)
+        except ValidationError:
+            return JsonResponseWithStatus(
+                status_code=422,
+                content=ErrorResponse(
+                    message="Invalid telemetry or context data format."
+                ),
+            )
+        created_context = crud.add_context(db_session, context_data)
+        created_telemetry = crud.add_telemetry(db_session, telemetry_data)
 
         # Create query record BEFORE completions
         query_create = CreateQuery(
@@ -78,19 +92,19 @@ def request_completion(
         if multi_file_context:
             other_files_context = []
             for file_name, context in multi_file_context.items():
-                if file_name != completion_request.context.file_name and (
-                    completion_request.context.context_files == ["*"]
-                    or file_name in completion_request.context.context_files
+                if file_name != context_data.file_name and (
+                    context_data.context_files == ["*"]
+                    or file_name in context_data.context_files
                 ):
                     joined_context = "\n".join(context).strip()
                     other_files_context.append(f"#{file_name}\n{joined_context}")
 
             if other_files_context:
-                completion_request.context.prefix = (
+                context_data.prefix = (
                     "Other files context:\n"
                     + "\n".join(other_files_context)
                     + "\n\n"
-                    + completion_request.context.prefix
+                    + context_data.prefix
                 )
 
         # Get model completions
@@ -110,8 +124,8 @@ def request_completion(
             )
             completion_result = completion_model.invoke(
                 {
-                    "prefix": completion_request.context.prefix,
-                    "suffix": completion_request.context.suffix,
+                    "prefix": context_data.prefix,
+                    "suffix": context_data.suffix,
                 }
             )
 

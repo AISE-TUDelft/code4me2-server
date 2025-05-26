@@ -24,10 +24,6 @@ class UserBase(Queries.CreateUser):
     verified: bool = Field(
         ..., description="Whether the user's email has been verified"
     )
-    model_config = {
-        "from_attributes": True,  # enables reading from ORM objects
-        "extra": "ignore",  # Disallow extra fields
-    }
 
     @field_validator("password")
     @classmethod

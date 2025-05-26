@@ -1,10 +1,10 @@
 import re
 from abc import ABC
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from uuid import UUID
 
-from pydantic import EmailStr, Field, SecretStr, field_validator
+from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
 
 from backend.utils import Fakable, SerializableBaseModel
 
@@ -20,7 +20,7 @@ class ContextChangeType(Enum):
 
 
 class QueryBase(SerializableBaseModel, Fakable, ABC):
-    pass
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
 class CreateUser(QueryBase):
@@ -80,11 +80,12 @@ class UpdateUser(QueryBase):
 class ContextData(QueryBase):
     prefix: str = Field(..., description="Code before cursor")
     suffix: str = Field(..., description="Code after cursor")
+    # TODO make things optional
     file_name: str = Field(..., description="File name")
-    language_id: int = Field(..., description="Programming language ID", ge=0)
     # TODO maybe we can change trigger type to enum since it doesn't update that frequently
-    trigger_type_id: int = Field(..., description="Trigger type ID", ge=0)
-    version_id: int = Field(..., description="Plugin version ID", ge=0)
+    language_id: Optional[int] = Field(..., description="Programming language ID", ge=0)
+    trigger_type_id: Optional[int] = Field(..., description="Trigger type ID", ge=0)
+    version_id: Optional[int] = Field(..., description="Plugin version ID", ge=0)
     context_files: Optional[list[str]] = Field(
         default=[],
         description="List of context files to include upon completion. "
@@ -109,8 +110,12 @@ class TelemetryData(QueryBase):
 # Updated CompletionRequest with nested structures
 class RequestCompletion(QueryBase):
     model_ids: List[int] = Field(..., description="Models to use for completion")
-    context: ContextData = Field(..., description="Context data for completion")
-    telemetry: TelemetryData = Field(..., description="Telemetry data for completion")
+    # context: ContextData = Field(..., description="Context data for completion")
+    context: Mapping[str, Any] = Field(..., description="Context data for completion")
+    telemetry: Mapping[str, Any] = Field(
+        ..., description="Telemetry data for completion"
+    )
+    # telemetry: TelemetryData = Field(..., description="Telemetry data for completion")
 
 
 class CreateQuery(QueryBase):
