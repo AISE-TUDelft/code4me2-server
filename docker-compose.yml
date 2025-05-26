@@ -152,7 +152,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_DB=test_db
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_test_data:/var/lib/postgresql/data
       - ./src/database/init_test.sql:/docker-entrypoint-initdb.d/init_test.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -167,6 +167,12 @@ volumes:
       type: none
       o: bind
       device: ${DATA_DIR}/postgres
+  postgres_test_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/postgres_test
   pgadmin_data:
     driver: local
     driver_opts:

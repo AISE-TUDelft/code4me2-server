@@ -11,6 +11,7 @@ mkdir -p $DATA_DIR
 
 # Create subdirectories for each service
 mkdir -p $DATA_DIR/postgres
+mkdir -p $DATA_DIR/postgres_test
 mkdir -p $DATA_DIR/pgadmin
 mkdir -p $DATA_DIR/redis
 mkdir -p $DATA_DIR/website
