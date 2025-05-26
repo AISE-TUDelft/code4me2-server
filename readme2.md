@@ -10,7 +10,7 @@
 ## Executive Summary
 ## Project Overview
 
-Code4me V2 is a comprehensive research platform developed as part of the **Algorithmics, Intelligence, Software Engineering (AISE)** laboratory at **TU Delft**. This project explores the intersection of artificial intelligence and software engineering by implementing an intelligent code completion system that leverages state-of-the-art transformer models to enhance developer productivity.
+Code4me V2 is a comprehensive research platform developed as part of the AI4SE laboratory at **TU Delft**. This project explores the intersection of artificial intelligence and software engineering by implementing an intelligent code completion system that leverages state-of-the-art transformer models to enhance developer productivity.
 
 ### Research Objectives
 
