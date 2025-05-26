@@ -1,428 +1,581 @@
-# Code4me V2 - AI-Powered Code Completion Service
+# Code4me V2: Enterprise AI Code Completion Platform
 
-## 🚀 Overview
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/code4me/v2)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
+[![React](https://img.shields.io/badge/react-18+-blue.svg)](https://reactjs.org)
+[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://docker.com)
+[![CI/CD](https://img.shields.io/badge/ci%2Fcd-gitlab-orange.svg)](https://gitlab.com)
 
-Code4me V2 is a comprehensive AI-powered code completion service that provides intelligent code suggestions using state-of-the-art language models. The platform offers real-time code completions, multi-file context awareness, and detailed analytics for developers and organizations.
+## Project Overview
 
-### Key Features
+Code4me V2 is a JetBrains Plugin developed as part of the software project for the AI4SE laboratory at **TU Delft**. 
+This project explores the intersection of artificial intelligence and software engineering by implementing an intelligent code completion plugin
+that can leverage state-of-the-art transformer model.
 
-- **🤖 AI-Powered Completions**: Leverages advanced models like DeepSeek Coder and StarCoder2
-- **🔐 Secure Authentication**: Email/password and Google OAuth support
-- **📊 Analytics Dashboard**: Comprehensive metrics and visualization
-- **🗂️ Multi-File Context**: Context-aware completions across multiple files
-- **⚡ Real-Time Performance**: Fast, low-latency code suggestions
-- **📈 Telemetry & Feedback**: Detailed usage analytics and model improvement feedback
-- **🌐 Web Interface**: Modern React-based dashboard
-- **🐳 Docker Support**: Easy deployment with Docker Compose
+### Research Objectives
 
-## 🏗️ Architecture
+This student project aims to create a platform which could allow researchers to address several key research needs in the field of AI-assisted software development:
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   React Web    │    │  FastAPI        │    │  PostgreSQL     │
-│   Frontend      │◄──►│  Backend        │◄──►│  Database       │
-│   (Port 3000)   │    │  (Port 8008)    │    │  (Port 5432)    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         │              ┌─────────────────┐    ┌─────────────────┐
-         │              │     Redis       │    │   AI Models     │
-         └──────────────►│ Session Store   │    │ (DeepSeek/      │
-                        │ (Port 6379)     │    │  StarCoder)     │
-                        └─────────────────┘    └─────────────────┘
-```
+- **Model Performance Analysis**: How do different transformer architectures (DeepSeek Coder vs. StarCoder2) perform in real-world code completion scenarios?
+- **Context-Aware Completion**: Can multi-file context significantly improve completion accuracy and relevance?
+- **Developer Interaction Patterns**: What telemetry data provides the most insight into effective code completion workflows?
+- **Scalable AI Infrastructure**: How can we build production-ready AI systems that handle concurrent users while maintaining low latency?
 
-### Technology Stack
+### Technical Innovation
 
-**Backend:**
-- FastAPI (Python 3.11+)
-- SQLAlchemy ORM
-- PostgreSQL Database
-- Redis Session Management
-- Transformers & PyTorch for AI models
-- Argon2 for password hashing
+The platform demonstrates several innovative approaches to AI-powered development tools:
 
-**Frontend:**
-- React 18
-- CSS Variables for theming
-- Google OAuth integration
-- Modern responsive design
+1. **Multi-Model Architecture**: Simultaneous inference from multiple AI models with performance comparison
+2. **Dynamic Context Management**: Real-time multi-file context updates for improved completion relevance
+3. **Comprehensive Telemetry**: Detailed user interaction tracking for research insights
+4. **Feedback-Driven Learning**: Ground truth collection, making model fine-tuning research possible
 
-**Infrastructure:**
-- Docker & Docker Compose
-- Nginx reverse proxy
-- GitLab CI/CD
-- Pytest for testing
 
-## 📋 Prerequisites
+---
 
-- **Docker & Docker Compose** (recommended)
-- **Python 3.11+** (for local development)
-- **Node.js 18+** (for frontend development)
-- **PostgreSQL 16+** (if running without Docker)
-- **Redis 7.0+** (if running without Docker)
+## 📊 System Architecture
 
-## 🚀 Quick Start
+### High-Level Architecture Overview
 
-### Option 1: Docker Compose (Recommended)
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd code4me-v2
-   ```
-
-2. **Set up environment variables**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
-
-3. **Start all services**
-   ```bash
-   docker-compose up -d
-   ```
-
-4. **Access the application**
-   - Web Interface: http://localhost:3000
-   - API Documentation: http://localhost:8008/docs
-   - PgAdmin: http://localhost:5050
-
-### Option 2: Local Development
-
-1. **Database Setup**
-   ```bash
-   # Start PostgreSQL and Redis
-   docker-compose up -d db redis
-   ```
-
-2. **Backend Setup**
-   ```bash
-   # Install Python dependencies
-   pip install -r requirements.txt
-   
-   # Set environment variables
-   export PYTHONPATH=$PWD/src
-   
-   # Run the backend
-   python src/main.py
-   ```
-
-3. **Frontend Setup**
-   ```bash
-   cd src/website
-   npm install
-   npm start
-   ```
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-Create a `.env` file in the project root:
-
-```bash
-# Database Configuration
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=your_password
-DB_NAME=code4me_v2
-
-# Redis Configuration
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Backend Configuration
-REACT_APP_BACKEND_HOST=http://localhost
-REACT_APP_BACKEND_PORT=8008
-
-# Frontend Configuration
-WEBSITE_HOST=localhost
-WEBSITE_PORT=3000
-
-# Authentication
-REACT_APP_GOOGLE_CLIENT_ID=your_google_client_id
-
-# PgAdmin
-PGADMIN_PORT=5050
-PGADMIN_DEFAULT_EMAIL=admin@example.com
-PGADMIN_DEFAULT_PASSWORD=admin
-
-# Application Settings
-SERVER_VERSION_ID=1
-SESSION_LENGTH=3600
-MAX_FAILED_SESSION_ATTEMPTS=5
-MAX_REQUEST_RATE=1000
-PRELOAD_MODELS=true
-DEBUG_MODE=false
-TEST_MODE=false
-
-# Survey (Optional)
-SURVEY_LINK=https://your-survey-link.com
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        A[Web Dashboard<br/>React 18]
+        B[IDE Plugins<br/>JetBrains]
+    end
+    
+    subgraph "Application Layer"
+        C[Nginx<br/>Reverse Proxy<br/>Port 8000]
+        D[FastAPI Backend<br/>Python 3.11<br/>Port 8008]
+    end
+    
+    subgraph "Data Layer"
+        E[PostgreSQL<br/>Primary Database<br/>Port 5432]
+        F[Redis<br/>Session Store<br/>Port 6379]
+        G[PgAdmin<br/>Database Admin<br/>Port 5050]
+    end
+    
+    subgraph "AI/ML Layer"
+        H[Specified AI Model]
+        I[StarCoder2<br/>3B Parameters]
+        J[Model Cache<br/>Local Storage]
+    end
+    
+    A --> C
+    B --> C
+    C --> D
+    D --> E
+    D --> F
+    D --> H
+    D --> I
+    H --> J
+    I --> J
+    
+    style A fill:#e1f5fe
+    style D fill:#f3e5f5
+    style E fill:#e8f5e8
+    style H fill:#fff3e0
 ```
 
-### Google OAuth Setup
+### Component Interaction Flow
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing one
-3. Enable Google+ API
-4. Create OAuth 2.0 credentials
-5. Add your domain to authorized origins
-6. Copy the Client ID to your `.env` file
+```mermaid
+sequenceDiagram
+    participant Client as Web Client
+    participant API as FastAPI Backend
+    participant Auth as Authentication Service
+    participant AI as AI Model Service
+    participant DB as PostgreSQL
+    participant Cache as Redis Cache
+    
+    Client->>API: Code Completion Request
+    API->>Auth: Validate Session Token
+    Auth->>Cache: Check Session
+    Cache-->>Auth: Session Valid
+    Auth-->>API: Authentication Success
+    
+    API->>DB: Store Context & Telemetry
+    DB-->>API: Records Created
+    
+    API->>AI: Generate Completions
+    AI-->>API: Model Predictions
+    
+    API->>DB: Store Generations
+    API-->>Client: Return Completions
+    
+    Client->>API: Submit Feedback
+    API->>DB: Update Acceptance Status
+```
 
-## 🗄️ Database
+---
+
+## 🛠 Technology Stack
+
+### Backend Technologies
+
+| Component | Technology | Version | Purpose |
+|-----------|------------|---------|---------|
+| **Web Framework** | FastAPI | 0.115.0+ | High-performance async API |
+| **Database ORM** | SQLAlchemy | 2.0.30+ | Database abstraction layer |
+| **Authentication** | Argon2 + JWT | 21.1.0+ | Secure password hashing |
+| **Session Management** | Redis | 7.0+ | Distributed session storage |
+| **AI/ML Framework** | Transformers | 4.50.0+ | Model inference engine |
+| **Async Runtime** | Uvicorn | 0.34.0+ | ASGI server implementation |
+
+### Website Technologies
+
+| Component | Technology | Version | Purpose |
+|-----------|------------|---------|---------|
+| **UI Framework** | React | 18+ | Component-based UI |
+| **State Management** | Context API | - | Application state |
+| **Styling** | CSS Variables | - | Theming system |
+| **Authentication** | Google OAuth | 2.0 | Social authentication |
+| **Build Tool** | Create React App | 5+ | Development environment |
+
+### Infrastructure & DevOps
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Containerization** | Docker + Docker Compose | Service orchestration |
+| **Reverse Proxy** | Nginx | Load balancing & SSL termination |
+| **CI/CD Pipeline** | GitLab CI/CD | Automated testing & deployment |
+| **Code Quality** | Black, Ruff, Prettier | Code formatting & linting |
+| **Testing Framework** | Pytest + Jest | Automated testing |
+
+---
+
+## 🏗 Database Architecture
 
 ### Schema Overview
 
-The database contains several key tables:
+The Code4me V2 platform utilizes a PostgreSQL database with a comprehensive schema designed for high-performance code completion analytics and user management.
 
-- **user**: User accounts and authentication
-- **query**: Completion requests from users
-- **context**: Code context for completions
-- **telemetry**: Usage metrics and performance data
-- **had_generation**: AI model completions
-- **ground_truth**: User feedback and actual code
-- **model_name**: Available AI models
-- **programming_language**: Supported languages
+### Database Documentation References
 
-### Database Initialization
+| Component                   | File Location                                                                                      | Description                             |
+|-----------------------------|----------------------------------------------------------------------------------------------------|-----------------------------------------|
+| **Database Documentation**  | [`src/database/resources/documentation/readme.md`](src/database/resources/documentation/readme.md) | Database documentation                  |
+| **Schema Definition**       | [`src/database/db_schemas.py`](src/database/db_schemas.py)                                         | SQLAlchemy ORM models and relationships |
+| **Database Initialization** | [`src/database/init.sql`](src/database/init.sql)                                                   | Complete schema creation and seed data  |
+| **Test Schema**             | [`src/database/init_test.sql`](src/database/init_test.sql)                                         | Test database schema setup              |
+| **CRUD Operations**         | [`src/database/crud.py`](src/database/crud.py)                                                     | Database operation functions            |
+| **Utilities**               | [`src/database/utils.py`](src/database/utils.py)                                                   | Password hashing and validation         |
 
-The database is automatically initialized with:
-- Default AI models (DeepSeek Coder, StarCoder2)
-- Programming language mappings
-- Trigger types and plugin versions
 
-See `src/database/init.sql` for complete initialization script.
+---
 
-## 🔌 API Documentation
+## 🚀 Installation & Deployment
+
+### Prerequisites Checklist
+
+- [ ] **Docker Engine** (20.10+) & **Docker Compose** (2.0+)
+- [ ] **Network**: Ports 3000, 5432, 6379, 8000, 8008 available
+- [ ] **Google OAuth Credentials** (for authentication)
+
+### Production Deployment Architecture
+
+```mermaid
+graph TB
+    subgraph "Load Balancer"
+        LB[Nginx Load Balancer<br/>SSL Termination]
+    end
+    
+    subgraph "Application Tier"
+        APP1[FastAPI Instance 1<br/>Port 8008]
+        APP2[FastAPI Instance 2<br/>Port 8009]
+        APP3[FastAPI Instance 3<br/>Port 8010]
+    end
+    
+    subgraph "Data Tier"
+        DB[(PostgreSQL Primary<br/>Port 5432)]
+        DB_REPLICA[(PostgreSQL Replica<br/>Port 5433)]
+        REDIS[(Redis Cluster<br/>Ports 6379-6381)]
+    end
+    
+    subgraph "Monitoring"
+        GRAFANA[Grafana Dashboard]
+        PROMETHEUS[Prometheus Metrics]
+    end
+    
+    LB --> APP1
+    LB --> APP2
+    LB --> APP3
+    
+    APP1 --> DB
+    APP2 --> DB
+    APP3 --> DB
+    
+    APP1 --> REDIS
+    APP2 --> REDIS
+    APP3 --> REDIS
+    
+    DB --> DB_REPLICA
+    
+    APP1 --> PROMETHEUS
+    APP2 --> PROMETHEUS
+    APP3 --> PROMETHEUS
+    PROMETHEUS --> GRAFANA
+```
+
+### Deployment Commands
+
+#### Option A: Single-Command Production Deployment
+
+```bash
+# Clone repository
+git clone https://github.com/your-org/code4me-v2.git
+cd code4me-v2
+
+# Configure environment
+cp .env.production .env
+nano .env  # Edit configuration
+
+# Deploy with Docker Compose
+docker-compose -f docker-compose.prod.yml up -d
+
+# Verify deployment
+docker-compose ps
+docker-compose logs -f backend
+```
+
+#### Option B: Development Environment
+
+```bash
+# Development setup
+cp .env.development .env
+
+# Start infrastructure services
+docker-compose up -d db redis pgadmin
+
+# Backend development
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+export PYTHONPATH=$PWD/src
+python src/main.py
+
+# Frontend development (new terminal)
+cd src/website
+npm install
+npm start
+```
+
+---
+
+## 🔌 API Reference
 
 ### Authentication Endpoints
 
-```
-POST /api/user/create/          # Create new user
-POST /api/user/authenticate/    # User login
-PUT  /api/user/update/          # Update user profile
-DELETE /api/user/delete/        # Delete user account
-```
+| Method | Endpoint | Description | Request Body | Response |
+|--------|----------|-------------|--------------|----------|
+| `POST` | `/api/user/create/` | Create new user account | `CreateUser` | `CreateUserPostResponse` |
+| `POST` | `/api/user/authenticate/` | Authenticate user credentials | `AuthenticateUser` | `AuthenticateUserPostResponse` |
+| `PUT` | `/api/user/update/` | Update user profile | `UpdateUser` | `UpdateUserPutResponse` |
+| `DELETE` | `/api/user/delete/` | Delete user account | Query params | `DeleteUserDeleteResponse` |
 
-### Completion Endpoints
+### Code Completion Endpoints
 
-```
-POST /api/completion/request/            # Request code completion
-GET  /api/completion/{query_id}          # Get completions by query ID
-POST /api/completion/feedback/           # Submit completion feedback
-POST /api/completion/multi-file-context/update/  # Update multi-file context
-```
+| Method | Endpoint | Description | Request Body | Response |
+|--------|----------|-------------|--------------|----------|
+| `POST` | `/api/completion/request/` | Request code completion | `RequestCompletion` | `CompletionPostResponse` |
+| `GET` | `/api/completion/{query_id}` | Retrieve completions by ID | Path param | `CompletionPostResponse` |
+| `POST` | `/api/completion/feedback/` | Submit completion feedback | `FeedbackCompletion` | `CompletionFeedbackPostResponse` |
+| `POST` | `/api/completion/multi-file-context/update/` | Update multi-file context | `UpdateMultiFileContext` | `MultiFileContextUpdatePostResponse` |
 
-### Interactive API Documentation
+### Request/Response Flow
 
-Visit http://localhost:8008/docs for complete Swagger/OpenAPI documentation with interactive testing.
-
-## 🧪 Testing
-
-### Backend Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run specific test modules
-pytest tests/backend_tests/
-
-# Run with coverage
-pytest --cov=./src/backend --cov-report=html
-```
-
-### Frontend Tests
-
-```bash
-cd src/website
-npm test
+```mermaid
+graph LR
+    A[Client Request] --> B{Authentication Check}
+    B -->|Valid| C[Process Request]
+    B -->|Invalid| D[Return 401]
+    C --> E[Validate Input]
+    E -->|Valid| F[Execute Business Logic]
+    E -->|Invalid| G[Return 422]
+    F --> H[Generate Response]
+    H --> I[Return Success]
+    
+    style A fill:#e3f2fd
+    style D fill:#ffebee
+    style G fill:#ffebee
+    style I fill:#e8f5e8
 ```
 
-### Test Database
 
-Tests use a separate test database. Ensure your test environment is configured:
+---
 
-```bash
-# Start test database
-docker-compose up -d test_db
+## 🧪 Quality Assurance
 
-# Run tests with test database
-TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5433/test_db" pytest
+### Testing Strategy
+
+```mermaid
+graph TB
+    subgraph "Testing Pyramid"
+        A[Unit Tests<br/>80% Coverage]
+        B[Integration Tests<br/>API Endpoints]
+        C[End-to-End Tests<br/>User Workflows]
+    end
+    
+    subgraph "Testing Tools"
+        D[Pytest<br/>Backend Testing]
+        E[Jest<br/>Frontend Testing]
+        F[Docker<br/>Environment Isolation]
+    end
+    
+    A --> D
+    B --> D
+    C --> E
+    D --> F
+    E --> F
 ```
 
-## 🚀 Deployment
+### Test Coverage Metrics
 
-### Production Deployment
-
-1. **Prepare environment**
-   ```bash
-   # Set production environment variables
-   export DEBUG_MODE=false
-   export TEST_MODE=false
-   ```
-
-2. **Deploy with Docker Compose**
-   ```bash
-   docker-compose -f docker-compose.prod.yml up -d
-   ```
-
-3. **Set up reverse proxy** (Nginx configuration included)
-
-4. **Configure SSL/TLS** for production security
+| Component | Unit Tests | Integration Tests | Coverage Target |
+|-----------|------------|-------------------|-----------------|
+| **Authentication** | ✅ | ✅ | 80%+            |
+| **Code Completion** | ✅ | ✅ | 80%+            |
+| **Database Operations** | ✅ | ✅ | 80%+            |
+| **API Endpoints** | ✅ | ✅ | 80%+            |
+| **Frontend Components** | ✅ | ✅ | 80%+            |
 
 ### CI/CD Pipeline
 
-The project includes GitLab CI/CD configuration (`.gitlab-ci.yml`) with:
-
-- **Linting**: Prettier, Black, Ruff
-- **Testing**: Pytest with coverage
-- **Security**: Dependency scanning
-- **Deployment**: Automated deployment stages
-
-## 🛠️ Development
-
-### Code Style
-
-The project uses several tools for code quality:
-
-- **Python**: Black (formatting), Ruff (linting)
-- **JavaScript/React**: Prettier (formatting)
-- **Pre-commit hooks**: Automatic formatting on commit
-
-```bash
-# Install pre-commit hooks
-pip install pre-commit
-pre-commit install
-
-# Run formatting manually
-npx prettier --write .
-black src/ tests/
-ruff check src/ tests/
+```mermaid
+graph LR
+    A[Code Push] --> B[Lint & Format]
+    B --> C[Unit Tests]
+    C --> D[Integration Tests]
+    D --> E[Security Scan]
+    E --> F[Build Images]
+    F --> G[Deploy Staging]
+    G --> H[E2E Tests]
+    H --> I[Deploy Production]
+    
+    style A fill:#e3f2fd
+    style I fill:#e8f5e8
 ```
 
-### Adding New AI Models
+### Quality Gates
 
-1. **Register in database**
-   ```sql
-   INSERT INTO model_name (model_name) VALUES ('your-model-name');
-   ```
+| Stage | Criteria | Tools |
+|-------|----------|-------|
+| **Code Quality** | Black, Ruff, Prettier compliance | Pre-commit hooks |
+| **Test Coverage** | >85% line coverage | Pytest-cov |
+| **Security** | No high/critical vulnerabilities | npm audit, safety |
 
-2. **Update model loading**
-   ```python
-   # In App.py setup method
-   self.__completion_models.load_model('your-model-name')
-   ```
 
-3. **Test the integration**
-   ```bash
-   pytest tests/backend_tests/test_completion_request.py
-   ```
+---
 
-## 📊 Monitoring & Analytics
+### Scalability Considerations
 
-### Built-in Metrics
+| Component | Scaling Strategy | Implementation |
+|-----------|------------------|----------------|
+| **API Service** | Horizontal scaling | Multiple FastAPI instances |
+| **Database** | Read replicas + sharding | PostgreSQL cluster |
+| **Session Store** | Redis cluster | Multi-node Redis setup |
+| **AI Models** | Model caching + GPU acceleration | NVIDIA GPU support |
 
-- **Completion Performance**: Response times, model accuracy
-- **User Activity**: Request patterns, feature usage
-- **System Health**: Database performance, error rates
-- **Model Analytics**: Completion acceptance rates, feedback
+---
 
-### Dashboard Features
+## 🔒 Security Framework
 
-- Real-time performance monitoring
-- User activity visualization
-- Completion success metrics
-- System resource utilization
+### Authentication & Authorization
 
-## 🔧 Troubleshooting
-
-### Common Issues
-
-**Database Connection Issues**
-```bash
-# Check database status
-docker-compose ps db
-
-# View database logs
-docker-compose logs db
-
-# Reset database
-docker-compose down -v
-docker-compose up -d db
+```mermaid
+graph TB
+    A[User Request] --> B{Session Valid?}
+    B -->|Yes| C[Check Permissions]
+    B -->|No| D[Redirect to Login]
+    C -->|Authorized| E[Process Request]
+    C -->|Unauthorized| F[Return 403]
+    D --> G[OAuth/Email Login]
+    G --> H[Create Session]
+    H --> C
+    
+    style D fill:#ffebee
+    style F fill:#ffebee
+    style E fill:#e8f5e8
 ```
 
-**Model Loading Problems**
-```bash
-# Check available disk space (models require ~12GB for StarCoder)
-df -h
+### Security Measures
 
-# View backend logs
-docker-compose logs backend
+| Category | Implementation | Tools/Methods |
+|----------|----------------|---------------|
+| **Password Security** | Argon2 hashing with salt | argon2-cffi library |
+| **Session Management** | Redis-based with expiration | JWT tokens, HTTP-only cookies |
+| **API Security** | Rate limiting, input validation | FastAPI validators, Redis limiter |
+| **Database Security** | Connection encryption, parameterized queries | SQLAlchemy ORM |
+| **OAuth Integration** | Google OAuth 2.0 | @react-oauth/google |
 
-# Disable model preloading for development
-export PRELOAD_MODELS=false
+### Compliance & Best Practices
+
+
+- **GDPR** data protection measures
+
+- **Encrypted data transmission** (TLS 1.3)
+- **Secure password policies** and MFA support
+
+---
+
+## 🛠 Development Guidelines
+
+### Code Quality Standards
+
+#### Python (Backend)
+
+```python
+# Example: Proper type hints and documentation
+from typing import Optional, List
+from pydantic import BaseModel, Field
+
+class CompletionRequest(BaseModel):
+    """Request model for code completion.
+    
+    Attributes:
+        model_ids: List of AI model identifiers
+        context: Code context information
+        telemetry: User interaction telemetry
+    """
+    model_ids: List[int] = Field(..., description="AI models to use")
+    context: ContextData = Field(..., description="Code context")
+    telemetry: TelemetryData = Field(..., description="Usage metrics")
 ```
 
-**Frontend Build Issues**
-```bash
-# Clear npm cache
-npm cache clean --force
+### Development Environment Setup
 
-# Reinstall dependencies
+| Step | Command | Purpose |
+|------|---------|---------|
+| 1. **Clone Repository** | `git clone <repo-url>` | Get source code |
+| 2. **Install Pre-commit** | `pre-commit install` | Code quality automation |
+| 3. **Setup Environment** | `cp .env.development .env` | Configure settings |
+| 4. **Start Services** | `docker-compose up -d db redis` | Infrastructure |
+| 5. **Install Dependencies** | `pip install -r requirements.txt` | Python packages |
+| 6. **Run Tests** | `pytest --cov` | Verify setup |
+
+---
+
+## 🚨 Troubleshooting Guide
+
+### Common Issues & Solutions
+
+#### Database Connection Issues
+
+```mermaid
+graph TD
+    A[Database Connection Error] --> B{Check Docker Status}
+    B -->|Container Down| C[docker-compose up -d db]
+    B -->|Container Running| D{Check Network}
+    D -->|Network Issue| E[docker network ls<br/>docker network prune]
+    D -->|Network OK| F{Check Credentials}
+    F -->|Invalid Credentials| G[Update .env file]
+    F -->|Valid Credentials| H[Check PostgreSQL logs]
+```
+
+#### Model Loading Problems
+
+| Issue | Symptom | Solution |
+|-------|---------|----------|
+| **Memory Error** | `torch.cuda.OutOfMemoryError` | Increase system RAM or disable model preloading |
+| **Model Not Found** | `Model 'xyz' not available` | Verify model is registered in database |
+| **Slow Loading** | Extended startup time | Use SSD storage and adequate RAM |
+| **GPU Issues** | CUDA errors | Verify NVIDIA drivers and Docker GPU support |
+
+#### Frontend Build Failures
+
+```bash
+# Common resolution steps
 rm -rf node_modules package-lock.json
+npm cache clean --force
 npm install
+npm run build
+
+# For persistent issues
+npm audit fix
+npm update
 ```
 
-## 📝 Contributing
+### Performance Optimization
 
-1. **Fork the repository**
-2. **Create a feature branch**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-3. **Make your changes** following code style guidelines
-4. **Add tests** for new functionality
-5. **Submit a pull request**
+#### Database Optimization
 
-### Development Guidelines
+```sql
+-- Check slow queries
+SELECT query, mean_time, calls, total_time
+FROM pg_stat_statements
+ORDER BY total_time DESC
+LIMIT 10;
 
-- Follow PEP 8 for Python code
-- Use TypeScript for new React components
-- Write comprehensive tests
-- Update documentation for API changes
-- Use conventional commit messages
+-- Analyze table statistics
+ANALYZE user, query, context, had_generation;
 
-## 📄 License
+-- Reindex if necessary
+REINDEX INDEX CONCURRENTLY idx_query_user_id;
+```
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+#### Application Optimization
 
-## 🆘 Support
+| Component | Optimization Strategy | Implementation |
+|-----------|----------------------|----------------|
+| **API Response** | Implement caching | Redis cache for frequent queries |
+| **Model Inference** | Batch processing | Process multiple requests together |
+| **Database Queries** | Connection pooling | SQLAlchemy pool configuration |
+| **Static Assets** | CDN distribution | Nginx static file serving |
 
-- **Documentation**: Check this README and inline code comments
-- **API Reference**: http://localhost:8008/docs
-- **Issues**: Use the GitHub issue tracker
-- **Discussions**: Use GitHub Discussions for questions
+---
 
-## 🗺️ Roadmap
+## 📋 Operational Procedures
 
-- [ ] **Plugin System**: IDE plugins for VS Code, JetBrains
-- [ ] **Advanced Models**: Integration with GPT-4, Claude
-- [ ] **Team Features**: Organization management, team analytics
-- [ ] **Performance**: Model optimization, caching improvements
-- [ ] **Security**: Enhanced authentication, audit logging
+### Backup & Recovery
+
+#### Database Backup Strategy
+
+```bash
+# Daily automated backup
+docker exec postgres_container pg_dump -U postgres code4me_v2 | \
+  gzip > backup_$(date +%Y%m%d_%H%M%S).sql.gz
+
+# Restore from backup
+gunzip -c backup_20240115_120000.sql.gz | \
+  docker exec -i postgres_container psql -U postgres code4me_v2
+```
+
 
 ---
 
 ## 📚 Additional Resources
 
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [React Documentation](https://reactjs.org/docs/)
-- [PostgreSQL Documentation](https://www.postgresql.org/docs/)
-- [Docker Compose Reference](https://docs.docker.com/compose/)
-- [Transformers Library](https://huggingface.co/docs/transformers/)
+### Links
 
----
+| Resource | URL | Description |
+|----------|-----|-------------|
+| **API Documentation** | `http://localhost:8008/docs` | Interactive Swagger/OpenAPI documentation |
+| **Database Schema** | [`src/database/init.sql`](src/database/init.sql) | Complete database initialization script |
+| **Environment Config** | [`.env.example`](.env.example) | Sample environment configuration |
+| **Docker Configuration** | [`docker-compose.yml`](docker-compose.yml) | Service orchestration definition |
+| **Main Application** | [`src/main.py`](src/main.py) | FastAPI application entry point |
+| **Frontend Source** | [`src/website/`](src/website/) | React application source code |
+| **Requirements** | [`requirements.txt`](requirements.txt) | Python dependencies |
+| **CI/CD Configuration** | [`.gitlab-ci.yml`](.gitlab-ci.yml) | GitLab CI/CD pipeline definition |
 
-**Built with ❤️ for developers, by developers**
+### External Dependencies
+
+| Technology | Documentation | Version Compatibility |
+|------------|---------------|----------------------|
+| **FastAPI** | [fastapi.tiangolo.com](https://fastapi.tiangolo.com/) | 0.115.0+ |
+| **PostgreSQL** | [postgresql.org/docs](https://www.postgresql.org/docs/) | 16+ |
+| **Redis** | [redis.io/docs](https://redis.io/docs/) | 7.0+ |
+| **React** | [reactjs.org/docs](https://reactjs.org/docs/) | 18+ |
+| **Transformers** | [huggingface.co/docs/transformers](https://huggingface.co/docs/transformers/) | 4.50.0+ |
+
+### Training & Practices
+
+- [ ] **FastAPI Fundamentals** - Backend development
+- [ ] **React Advanced Patterns** - Frontend development
+- [ ] **PostgreSQL Administration** - Database management
+- [ ] **Docker & Kubernetes** - Container orchestration
+- [ ] **AI/ML Model Deployment** - Production ML systems
+
+
+*This documentation is maintained by the Code4me V2 development team and is updated regularly to reflect the current state of the platform.*
