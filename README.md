@@ -1,4 +1,4 @@
-# Code4me V2
+# Code4me V2 Backend
 
 [![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/code4me/v2)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -58,8 +58,7 @@ graph TB
     
     subgraph "AI/ML Layer"
         H[Specified AI Model]
-        I[StarCoder2<br/>3B Parameters]
-        J[Model Cache<br/>Local Storage]
+        I[Model Cache<br/>Local Storage]
     end
     
     A --> C
@@ -68,9 +67,8 @@ graph TB
     D --> E
     D --> F
     D --> H
-    D --> I
-    H --> J
-    I --> J
+    H --> I
+    
     
     style A fill:#e1f5fe
     style D fill:#f3e5f5
@@ -183,8 +181,6 @@ graph TB
     
     subgraph "Application Tier"
         APP1[FastAPI Instance 1<br/>Port 8008]
-        APP2[FastAPI Instance 2<br/>Port 8009]
-        APP3[FastAPI Instance 3<br/>Port 8010]
     end
     
     subgraph "Data Tier"
@@ -199,22 +195,15 @@ graph TB
     end
     
     LB --> APP1
-    LB --> APP2
-    LB --> APP3
     
     APP1 --> DB
-    APP2 --> DB
-    APP3 --> DB
     
     APP1 --> REDIS
-    APP2 --> REDIS
-    APP3 --> REDIS
     
     DB --> DB_REPLICA
     
     APP1 --> PROMETHEUS
-    APP2 --> PROMETHEUS
-    APP3 --> PROMETHEUS
+    
     PROMETHEUS --> GRAFANA
 ```
 
@@ -350,8 +339,7 @@ graph LR
     D --> E[Security Scan]
     E --> F[Build Images]
     F --> G[Deploy Staging]
-    G --> H[E2E Tests]
-    H --> I[Deploy Production]
+    G --> I[Deploy Production]
     
     style A fill:#e3f2fd
     style I fill:#e8f5e8
@@ -359,10 +347,10 @@ graph LR
 
 ### Quality Gates
 
-| Stage | Criteria | Tools |
-|-------|----------|-------|
+| Stage | Criteria                         | Tools |
+|-------|----------------------------------|-------|
 | **Code Quality** | Black, Ruff, Prettier compliance | Pre-commit hooks |
-| **Test Coverage** | >85% line coverage | Pytest-cov |
+| **Test Coverage** | >80% line coverage               | Pytest-cov |
 | **Security** | No high/critical vulnerabilities | npm audit, safety |
 
 
@@ -379,25 +367,6 @@ graph LR
 
 ---
 
-## 🔒 Security Framework
-
-### Authentication & Authorization
-
-```mermaid
-graph TB
-    A[User Request] --> B{Session Valid?}
-    B -->|Yes| C[Check Permissions]
-    B -->|No| D[Redirect to Login]
-    C -->|Authorized| E[Process Request]
-    C -->|Unauthorized| F[Return 403]
-    D --> G[OAuth/Email Login]
-    G --> H[Create Session]
-    H --> C
-    
-    style D fill:#ffebee
-    style F fill:#ffebee
-    style E fill:#e8f5e8
-```
 
 ### Security Measures
 
@@ -423,7 +392,7 @@ graph TB
 
 ### Code Quality Standards
 
-#### Python (Backend)
+#### Python Example (Backend)
 
 ```python
 # Example: Proper type hints and documentation
@@ -496,51 +465,6 @@ npm audit fix
 npm update
 ```
 
-### Performance Optimization
-
-#### Database Optimization
-
-```sql
--- Check slow queries
-SELECT query, mean_time, calls, total_time
-FROM pg_stat_statements
-ORDER BY total_time DESC
-LIMIT 10;
-
--- Analyze table statistics
-ANALYZE user, query, context, had_generation;
-
--- Reindex if necessary
-REINDEX INDEX CONCURRENTLY idx_query_user_id;
-```
-
-#### Application Optimization
-
-| Component | Optimization Strategy | Implementation |
-|-----------|----------------------|----------------|
-| **API Response** | Implement caching | Redis cache for frequent queries |
-| **Model Inference** | Batch processing | Process multiple requests together |
-| **Database Queries** | Connection pooling | SQLAlchemy pool configuration |
-| **Static Assets** | CDN distribution | Nginx static file serving |
-
----
-
-## 📋 Operational Procedures
-
-### Backup & Recovery
-
-#### Database Backup Strategy
-
-```bash
-# Daily automated backup
-docker exec postgres_container pg_dump -U postgres code4me_v2 | \
-  gzip > backup_$(date +%Y%m%d_%H%M%S).sql.gz
-
-# Restore from backup
-gunzip -c backup_20240115_120000.sql.gz | \
-  docker exec -i postgres_container psql -U postgres code4me_v2
-```
-
 
 ---
 
@@ -574,7 +498,7 @@ gunzip -c backup_20240115_120000.sql.gz | \
 - [ ] **FastAPI Fundamentals** - Backend development
 - [ ] **React Advanced Patterns** - Frontend development
 - [ ] **PostgreSQL Administration** - Database management
-- [ ] **Docker & Kubernetes** - Container orchestration
+- [ ] **Docker** - Container orchestration
 - [ ] **AI/ML Model Deployment** - Production ML systems
 
 
