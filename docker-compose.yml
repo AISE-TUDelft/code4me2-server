@@ -49,6 +49,8 @@ services:
       - ${REDIS_PORT}:6379
     expose:
       - 6379
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       start_interval: 0s
@@ -105,13 +107,14 @@ services:
     image: node:18
     container_name: website
     working_dir: /website
-    command: ["npm", "start"]
+    command: bash -c "npm install && npm start"
     expose:
       - 3000
     ports:
       - "3000:3000"
     volumes:
       - ./src/website:/website
+      - website_data:/website/node_modules
     depends_on:
       backend:
         condition: service_healthy
@@ -159,4 +162,26 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/postgres
   pgadmin_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/pgadmin
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/redis
+  website_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/website

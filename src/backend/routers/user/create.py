@@ -53,7 +53,10 @@ def create_user(
             status_code=409,
             content=UserAlreadyExistsWithThisEmail(),
         )
-    if isinstance(user_to_create, Queries.CreateUserOauth):
+    if (
+        isinstance(user_to_create, Queries.CreateUserOauth)
+        and not len(user_to_create.token) == 0
+    ):
         verification_result = verify_jwt_token(user_to_create.token)
         if (
             verification_result is None
