@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Cookie, Depends
+from pydantic_core._pydantic_core import ValidationError
 
 import backend.completion as completion
 import database.crud as crud
@@ -60,9 +61,19 @@ def request_completion(
                 content=InvalidSessionToken(),
             )
 
-        context_data = Queries.ContextData(**completion_request.context)
+        telemetry_data = None
+        context_data = None
+        try:
+            telemetry_data = Queries.TelemetryData(**completion_request.telemetry)
+            context_data = Queries.ContextData(**completion_request.context)
+        except ValidationError:
+            return JsonResponseWithStatus(
+                status_code=422,
+                content=ErrorResponse(
+                    message="Invalid telemetry or context data format."
+                ),
+            )
         created_context = crud.add_context(db_session, context_data)
-        telemetry_data = Queries.TelemetryData(**completion_request.telemetry)
         created_telemetry = crud.add_telemetry(db_session, telemetry_data)
 
         # Create query record BEFORE completions

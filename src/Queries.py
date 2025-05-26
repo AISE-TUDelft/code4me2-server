@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional
 from uuid import UUID
 
-from pydantic import EmailStr, Field, SecretStr, field_validator
+from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
 
 from backend.utils import Fakable, SerializableBaseModel
 
@@ -20,11 +20,7 @@ class ContextChangeType(Enum):
 
 
 class QueryBase(SerializableBaseModel, Fakable, ABC):
-    model_config = {
-        "from_attributes": True,  # enables reading from ORM objects
-        "extra": "ignore",  # Disallow extra fields
-    }
-    pass
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
 
 class CreateUser(QueryBase):
@@ -109,9 +105,6 @@ class TelemetryData(QueryBase):
     relative_document_position: float = Field(
         ..., description="Cursor position as fraction of document"
     )
-
-    class Config:
-        extra = "allow"
 
 
 # Updated CompletionRequest with nested structures
