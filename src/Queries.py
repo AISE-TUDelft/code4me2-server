@@ -83,9 +83,13 @@ class ContextData(QueryBase):
     # TODO make things optional
     file_name: str = Field(..., description="File name")
     # TODO maybe we can change trigger type to enum since it doesn't update that frequently
-    language_id: Optional[int] = Field(..., description="Programming language ID", ge=0)
-    trigger_type_id: Optional[int] = Field(..., description="Trigger type ID", ge=0)
-    version_id: Optional[int] = Field(..., description="Plugin version ID", ge=0)
+    language_id: Optional[int] = Field(
+        default=1, description="Programming language ID", ge=0
+    )
+    trigger_type_id: Optional[int] = Field(
+        default=1, description="Trigger type ID", ge=0
+    )
+    version_id: Optional[int] = Field(default=1, description="Plugin version ID", ge=0)
     context_files: Optional[list[str]] = Field(
         default=[],
         description="List of context files to include upon completion. "

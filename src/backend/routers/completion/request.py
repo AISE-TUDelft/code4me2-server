@@ -66,7 +66,7 @@ def request_completion(
         try:
             telemetry_data = Queries.TelemetryData(**completion_request.telemetry)
             context_data = Queries.ContextData(**completion_request.context)
-        except ValidationError:
+        except ValidationError as e:
             return JsonResponseWithStatus(
                 status_code=422,
                 content=ErrorResponse(
