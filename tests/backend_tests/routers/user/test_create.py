@@ -7,7 +7,7 @@ import Queries
 from App import App
 from backend.Responses import (
     CreateUserPostResponse,
-    InvalidOrExpiredToken,
+    InvalidOrExpiredJWTToken,
     UserAlreadyExistsWithThisEmail,
 )
 from base_models import UserBase
@@ -94,7 +94,7 @@ class TestCreate:
 
             assert response.status_code == 401
             assert (
-                response.json() == InvalidOrExpiredToken()
+                response.json() == InvalidOrExpiredJWTToken()
             )  # Check the invalid token error response
 
     def test_create_user_invalid_payload(self, client: TestClient):

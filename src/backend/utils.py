@@ -1,4 +1,5 @@
 import inspect
+import json
 from datetime import datetime
 from typing import Any, Dict, Union
 from uuid import UUID
@@ -48,6 +49,9 @@ class SerializableBaseModel(BaseModel):
                 data[field_name] = iterable_to_dict(getattr(self, field_name))
         return data
 
+    def to_json(self) -> str:
+        pass
+
     def json(self, *args, **kwargs) -> str:
         # Convert the model to JSON (a string)
         return super().json(*args, **kwargs)
@@ -59,6 +63,9 @@ class SerializableBaseModel(BaseModel):
             return self.dict() == other
         else:
             return False
+
+    def __str__(self) -> str:
+        return json.dumps(self.dict())
 
 
 class Fakable:
