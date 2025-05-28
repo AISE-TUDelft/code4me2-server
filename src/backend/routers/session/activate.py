@@ -1,9 +1,11 @@
+import json
 import logging
 from typing import Union
 
 from fastapi import APIRouter, Cookie, Depends
 
 import database.crud as crud
+import Queries
 from App import App
 from backend.Responses import (
     ActivateSessionError,
@@ -17,7 +19,7 @@ from backend.Responses import (
 router = APIRouter()
 
 
-@router.get(
+@router.put(
     "/",
     response_model=ActivateSessionPostResponse,
     responses={
@@ -28,10 +30,10 @@ router = APIRouter()
         "429": {"model": ErrorResponse},
         "500": {"model": ActivateSessionError},
     },
-    tags=["Get Session"],
+    tags=["Activate Session"],
 )
 def activate_session(
-    session_token: str,
+    activate_session_request: Queries.ActivateSession,
     app: App = Depends(App.get_instance),
     auth_token: str = Cookie("auth_token"),
 ) -> JsonResponseWithStatus:
@@ -46,7 +48,7 @@ def activate_session(
     """
     session_manager = app.get_session_manager()
     db_session = app.get_db_session()
-
+    config = app.get_config()
     try:
         # Validate auth token
         user_id = session_manager.get_user_id_by_auth_token(auth_token)
@@ -55,8 +57,14 @@ def activate_session(
                 status_code=401,
                 content=InvalidOrExpiredAuthToken(),
             )
-        session_info = session_manager.activate_session(session_token)
-        if not session_info:
+        session_token = activate_session_request.session_token
+
+        session_info = session_manager.get_session(session_token=session_token)
+        if session_info:
+            session_manager.update_session(
+                session_token=session_token, session_data=session_info
+            ),
+        else:
             # The session is not in the redis, so we need to fetch it from the database if it exists there
             session_model_data = crud.get_session_by_id(db_session, session_token)
             if session_model_data is None:
@@ -67,18 +75,29 @@ def activate_session(
             else:
                 # The session exists in the database, so we put it in the redis
                 session_info = {
-                    "user_id": session_model_data.user_id,
+                    "user_id": str(session_model_data.user_id),
                     "data": {
-                        "context": session_model_data.multi_file_contexts,
+                        "context": json.loads(session_model_data.multi_file_contexts),
+                        "context_changes": json.loads(
+                            session_model_data.multi_file_context_changes
+                        ),
                     },
                 }
                 session_manager.update_session(session_token, session_info)
 
         logging.log(logging.INFO, f"Retrieved session info: {session_info}")
 
-        return JsonResponseWithStatus(
+        response_obj = JsonResponseWithStatus(
             status_code=200, content=ActivateSessionPostResponse()
         )
+        response_obj.set_cookie(
+            key="session_token",
+            value=session_token,
+            httponly=True,
+            samesite="lax",
+            expires=config.session_token_expires_in_seconds,
+        )
+        return response_obj
     except Exception as e:
         logging.log(logging.ERROR, f"Error activating session: {e}")
         db_session.rollback()

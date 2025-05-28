@@ -9,7 +9,7 @@ from App import App
 from backend.Responses import (
     CompletionPostResponse,
     GenerateCompletionsError,
-    InvalidSessionToken,
+    InvalidOrExpiredSessionToken,
 )
 from base_models import ContextBase, QueryBase, TelemetryBase
 from main import app
@@ -169,7 +169,7 @@ class TestCompletionRequest:
         )
 
         assert response.status_code == 401
-        expected_error = InvalidSessionToken()
+        expected_error = InvalidOrExpiredSessionToken()
         assert response.json() == expected_error.dict()
 
     def test_request_completion_database_error(
@@ -189,5 +189,5 @@ class TestCompletionRequest:
             )
 
         assert response.status_code == 500
-        expected_error = GenerateCompletionsError("Database error")
+        expected_error = GenerateCompletionsError()
         assert response.json() == expected_error.dict()

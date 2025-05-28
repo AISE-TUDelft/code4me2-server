@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from contextlib import contextmanager
 
@@ -41,9 +42,25 @@ class App:
             sessionmaker(autocommit=False, autoflush=False, bind=engine)
         )
         self.__config = config
+
         self.__session_manager = SessionManager(
-            host=config.redis_host, port=config.redis_port
+            host=config.redis_host,
+            port=config.redis_port,
+            auth_token_expires_in_seconds=config.auth_token_expires_in_seconds,
+            session_token_expires_in_seconds=config.session_token_expires_in_seconds,
         )
+        try:
+            session_expiration_listener_thread = threading.Thread(
+                target=self.__session_manager.listen_for_expired_keys,
+                args=(self.__db_session_factory(),),
+                daemon=True,
+            )
+            session_expiration_listener_thread.start()
+        except Exception as e:
+            logging.log(
+                logging.ERROR, f"Exception happened in session expiration listener: {e}"
+            )
+
         self.__completion_models = CompletionModels()
         if config.preload_models:
             logging.log(logging.INFO, "Preloading llm models...")
@@ -58,7 +75,7 @@ class App:
                 self.__completion_models.load_model(model.model_name)
                 logging.log(
                     logging.INFO,
-                    f"{model.model_name} is setup in {time.time()-t0:.2f} seconds",
+                    f"{model.model_name} is setup in {time.time() - t0:.2f} seconds",
                 )
 
     def get_db_session(self) -> Session:
@@ -91,17 +108,6 @@ class App:
     def get_completion_models(self) -> CompletionModels:
         return self.__completion_models
 
-    # def get_current_user(self, session_token: Optional[str] = Cookie("session_token")) -> uuid.UUID:
-    #     """
-    #     Retrieves the current user from the session token.
-    #     """
-    #     if session_token is None:
-    #         return None
-    #     session_data = self.__session_manager.get_session(session_token)
-    #     if session_data:
-    #         return uuid.UUID(session_data["user_id"])
-    #     return None
-
     @classmethod
     def get_instance(cls) -> "App":
         if cls.__instance is None:
@@ -109,5 +115,5 @@ class App:
         return cls.__instance
 
     def cleanup(self):
-        self.__session_manager.cleanup()
+        self.__session_manager.cleanup(db=self.__db_session_factory())
         self.__db_session_factory.remove()

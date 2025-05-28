@@ -161,6 +161,20 @@ class CreateGroundTruth(QueryBase):
     ground_truth: str = Field(..., description="Ground truth code")
 
 
+class ActivateSession(QueryBase):
+    session_token: str = Field(..., description="Session token to activate")
+
+
+class DeactivateSession(QueryBase):
+    session_token: str = Field(..., description="Session token to deactivate")
+
+
+class DeleteUser(QueryBase):
+    delete_data: Optional[bool] = Field(
+        default=False, description="Whether to delete user data or just the account"
+    )
+
+
 if __name__ == "__main__":
     fake_update_multi_file_context = UpdateMultiFileContext.fake(1)
     res = fake_update_multi_file_context.dict()

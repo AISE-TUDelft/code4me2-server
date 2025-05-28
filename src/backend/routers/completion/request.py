@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -13,9 +14,9 @@ from backend.Responses import (
     GenerateCompletionsError,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
-    UserNotFoundError,
 )
 from base_models import CompletionItem, CompletionResponseData
+from database import db_schemas
 from Queries import (
     CreateGeneration,
     CreateQuery,
@@ -31,7 +32,6 @@ router = APIRouter()
     responses={
         "200": {"model": CompletionPostResponse},
         "401": {"model": InvalidOrExpiredSessionToken},
-        "404": {"model": UserNotFoundError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": GenerateCompletionsError},
@@ -71,7 +71,24 @@ def request_completion(
             server_version_id=app.get_config().server_version_id,
         )
         created_query = crud.add_query(db_session, query_create)
-
+        multi_file_context_changes_indexes = {}
+        if user_dict["data"].get("context_changes"):
+            multi_file_context_changes_indexes = {
+                file_name: len(changes)
+                for file_name, changes in user_dict["data"]
+                .get("context_changes")
+                .items()
+            }
+        crud.add_session_query(
+            db_session,
+            db_schemas.SessionQuery(
+                session_id=session_token,
+                query_id=str(created_query.query_id),
+                multi_file_context_changes_indexes=json.dumps(
+                    multi_file_context_changes_indexes
+                ),
+            ),
+        )
         # By changing prefix after crud operations we ensure that the users code base is not stored in the database for privacy reasons
         # Check if multi file context is available and if so add to the context prefix
         multi_file_context = user_dict["data"].get("context")

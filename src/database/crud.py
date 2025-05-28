@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 from typing import Optional, Type, Union
@@ -52,9 +53,12 @@ def get_user_by_id(db: Session, user_id: uuid.UUID) -> Optional[db_schemas.User]
     return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
 
 
-def remove_user_by_id(db: Session, user_id: uuid.UUID) -> None:
-    db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
+def remove_user_by_id(db: Session, user_id: uuid.UUID) -> bool:
+    result = (
+        db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
+    )
     db.commit()
+    return result > 0
 
 
 def update_user(
@@ -137,6 +141,15 @@ def update_query_serving_time(
         db.commit()
         db.refresh(query)
     return query
+
+
+def remove_query_by_user_id(db: Session, user_id: str) -> bool:
+    """Remove all queries by user ID"""
+    result = (
+        db.query(db_schemas.Query).filter(db_schemas.Query.user_id == user_id).delete()
+    )
+    db.commit()
+    return result > 0
 
 
 # Generation operations
@@ -845,3 +858,29 @@ def add_session(db: Session, session: db_schemas.Session) -> None:
     db.add(session)
     db.commit()
     db.refresh(session)
+
+
+def remove_session_by_user_id(db: Session, user_id: str) -> bool:
+    """Remove all sessions by user ID"""
+    result = (
+        db.query(db_schemas.Session)
+        .filter(db_schemas.Session.user_id == user_id)
+        .delete()
+    )
+    db.commit()
+    return result > 0
+
+
+def add_session_query(db: Session, session_query: db_schemas.SessionQuery) -> None:
+    logging.log(logging.INFO, "Add session query is called")
+    db.add(session_query)
+    db.commit()
+    db.refresh(session_query)
+
+
+def create_session(db: Session, user_id: str) -> db_schemas.Session:
+    session = db_schemas.Session(session_id=uuid.uuid4(), user_id=user_id)
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session

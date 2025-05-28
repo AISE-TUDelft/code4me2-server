@@ -10,6 +10,7 @@ from backend.Responses import (
     InvalidOrExpiredAuthToken,
     JsonResponseWithStatus,
 )
+from database import crud
 
 router = APIRouter()
 
@@ -36,6 +37,7 @@ def create_session(
     """
     session_manager = app.get_session_manager()
     config = app.get_config()
+    db_session = app.get_db_session()
 
     try:
         user_id = session_manager.get_user_id_by_auth_token(auth_token)
@@ -49,14 +51,24 @@ def create_session(
         logging.log(logging.INFO, f"Creating session for user_id: {user_id}")
 
         # Create session
-        session_token = session_manager.create_session(user_id)
-
-        return JsonResponseWithStatus(
-            status_code=201,
-            content=CreateSessionPostResponse(
-                session_token=session_token,
-            ),
+        created_session = crud.create_session(db_session, user_id=str(user_id))
+        session_token = created_session.session_id
+        session_manager.update_session(
+            session_token, {"user_id": str(user_id), "data": {}}
         )
+        # session_token = session_manager.create_session(user_id)
+        response_obj = JsonResponseWithStatus(
+            status_code=201,
+            content=CreateSessionPostResponse(),
+        )
+        response_obj.set_cookie(
+            key="session_token",
+            value=session_token,
+            httponly=True,
+            samesite="lax",
+            expires=config.session_token_expires_in_seconds,
+        )
+        return response_obj
     except Exception as e:
         logging.log(logging.ERROR, f"Error creating session: {e}")
         return JsonResponseWithStatus(

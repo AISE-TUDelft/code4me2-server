@@ -99,8 +99,9 @@ CREATE TABLE IF NOT EXISTS public.telemetry
 CREATE TABLE IF NOT EXISTS public.session
 (
     session_id uuid NOT NULL PRIMARY KEY,
-    user_id uuid NOT NULL,
+    user_id uuid,
     multi_file_contexts text,
+    multi_file_context_changes text,
 --     started_at timestamp with time zone NOT NULL,
 --     ended_at timestamp with time zone,
     CONSTRAINT unique_user_session UNIQUE (user_id, session_id)
@@ -112,9 +113,9 @@ CREATE TABLE IF NOT EXISTS public.session_queries
 (
     session_id uuid NOT NULL PRIMARY KEY,
     query_id uuid NOT NULL,
-    multi_file_context_changes text,
-    CONSTRAINT unique_session_query UNIQUE (session_id, query_id),
-)
+    multi_file_context_changes_indexes text,
+    CONSTRAINT unique_session_query UNIQUE (session_id, query_id)
+);
 CREATE INDEX IF NOT EXISTS idx_session_queries_query_id ON public.session_queries (query_id);
 ----------------------------------------------------------------------------------
 -- Foreign Key Constraints
@@ -122,7 +123,7 @@ ALTER TABLE public.query
     ADD CONSTRAINT user_fk FOREIGN KEY (user_id)
     REFERENCES public."user" (user_id)
     ON UPDATE NO ACTION
-    ON DELETE NO ACTION;
+    ON DELETE SET NULL;
 
 ALTER TABLE IF EXISTS public.query
     ADD CONSTRAINT fk_context FOREIGN KEY (context_id)
@@ -178,7 +179,7 @@ ALTER TABLE public.session
     ADD CONSTRAINT fk_session_user FOREIGN KEY (user_id)
     REFERENCES public."user" (user_id)
     ON UPDATE NO ACTION
-    ON DELETE NO ACTION;
+    ON DELETE SET NULL;
 
 ALTER TABLE public.session_queries
     ADD CONSTRAINT fk_session_queries_session FOREIGN KEY (session_id)

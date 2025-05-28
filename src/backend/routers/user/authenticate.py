@@ -82,7 +82,7 @@ def authenticate_user(
                 value=authentication_token,
                 httponly=True,
                 samesite="lax",
-                expires=config.authentication_token_expires_in_seconds,
+                expires=config.auth_token_expires_in_seconds,
             )
             return response_obj
 
@@ -111,7 +111,7 @@ def authenticate_user(
                 value=authentication_token,
                 httponly=True,
                 samesite="lax",
-                expires=config.authentication_token_expires_in_seconds,
+                expires=config.auth_token_expires_in_seconds,
             )
             return response_obj
 

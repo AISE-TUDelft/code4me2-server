@@ -39,8 +39,11 @@ class Code4meV2Config(BaseSettings):
         alias="REACT_APP_GOOGLE_CLIENT_ID", frozen=True
     )
 
-    authentication_token_expires_in_seconds: int = Field(
+    auth_token_expires_in_seconds: int = Field(
         alias="AUTHENTICATION_TOKEN_EXPIRES_IN_SECONDS", frozen=True
+    )
+    session_token_expires_in_seconds: int = Field(
+        alias="SESSION_TOKEN_EXPIRES_IN_SECONDS", frozen=True
     )
 
     preload_models: bool = Field(alias="PRELOAD_MODELS", frozen=True)

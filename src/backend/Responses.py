@@ -146,7 +146,6 @@ class MultiFileContextUpdateError(ErrorResponse):
 # /api/session/create
 class CreateSessionPostResponse(BaseResponse):
     message: str = Field(default="Session created successfully.")
-    session_token: UUID = Field(..., description="Created session token")
 
 
 class CreateSessionError(ErrorResponse):

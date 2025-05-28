@@ -37,7 +37,12 @@ class User(Base):
 class Query(Base):
     __tablename__ = "query"
     query_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("user.user_id"), index=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     telemetry_id = Column(UUID(as_uuid=True), ForeignKey("telemetry.telemetry_id"))
     context_id = Column(UUID(as_uuid=True), ForeignKey("context.context_id"))
     total_serving_time = Column(Integer)
@@ -172,10 +177,17 @@ class Telemetry(Base):
 class Session(Base):
     __tablename__ = "session"
     session_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("user.user_id"), nullable=False)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     multi_file_contexts = Column(
-        Text, nullable=True, default=""
+        Text, default="{}"
     )  # JSON string of multi-file contexts
+    multi_file_context_changes = Column(
+        Text, default="{}"
+    )  # A list of changes to multi-file contexts
     # Relationships
     user = relationship("User", back_populates="sessions")
     session_queries = relationship("SessionQuery", back_populates="session")
@@ -200,7 +212,9 @@ class SessionQuery(Base):
         primary_key=True,
         nullable=False,
     )
-    multi_file_context_changes = Column(Text, nullable=True, default="")
+    multi_file_context_changes_indexes = Column(
+        Text, default="{}"
+    )  # JSON string of the upper limit indexes of context changes used for the query in the session
 
     # Relationships
     session = relationship("Session", back_populates="session_queries")

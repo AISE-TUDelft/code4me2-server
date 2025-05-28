@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from App import App
 from backend.Responses import (
-    InvalidSessionToken,
+    InvalidOrExpiredSessionToken,
     MultiFileContextUpdateError,
 )
 from main import app
@@ -78,7 +78,7 @@ class TestUpdateMultiFileContext:
             "/api/completion/multi-file-context/update/", json=update_request.dict()
         )
         assert response.status_code == 401
-        assert response.json() == InvalidSessionToken().dict()
+        assert response.json() == InvalidOrExpiredSessionToken().dict()
 
     def test_update_internal_error(
         self, client: TestClient, update_request: UpdateMultiFileContext

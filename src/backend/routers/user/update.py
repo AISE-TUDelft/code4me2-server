@@ -7,8 +7,8 @@ import Queries as Queries
 from App import App
 from backend.Responses import (
     ErrorResponse,
+    InvalidOrExpiredAuthToken,
     InvalidOrExpiredJWTToken,
-    InvalidSessionToken,
     JsonResponseWithStatus,
     UpdateUserPutResponse,
 )
@@ -32,20 +32,20 @@ router = APIRouter()
 def update_user(
     user_to_update: Queries.UpdateUser,
     app: App = Depends(App.get_instance),
-    session_token: str = Cookie("session_token"),
+    auth_token: str = Cookie("auth_token"),
 ) -> JsonResponseWithStatus:
     logging.log(logging.INFO, f"Updating user: ({user_to_update})")
     db_session = app.get_db_session()
     session_manager = app.get_session_manager()
 
-    user_dict = session_manager.get_session(session_token)
-    if session_token is None or user_dict is None:
+    user_id = session_manager.get_user_id_by_auth_token(auth_token)
+    if auth_token is None or user_id is None:
         return JsonResponseWithStatus(
             status_code=401,
-            content=InvalidSessionToken(),
+            content=InvalidOrExpiredAuthToken(),
         )
     updated_user = crud.update_user(
-        db=db_session, user_id=user_dict["user_id"], user_to_update=user_to_update
+        db=db_session, user_id=user_id, user_to_update=user_to_update
     )
     return JsonResponseWithStatus(
         status_code=201,
