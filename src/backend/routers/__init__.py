@@ -1,9 +1,11 @@
 from fastapi import APIRouter
 
 from .completion import router as completion_router
+from .session import router as sesson_router
 from .user import router as user_router
 
 router = APIRouter()
+router.include_router(sesson_router, prefix="/session", tags=["Session"])
 router.include_router(user_router, prefix="/user", tags=["User"])
 router.include_router(completion_router, prefix="/completion", tags=["Completion"])
 

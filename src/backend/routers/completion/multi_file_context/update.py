@@ -7,7 +7,7 @@ from fastapi import APIRouter, Cookie, Depends
 from App import App
 from backend.Responses import (
     ErrorResponse,
-    InvalidSessionToken,
+    InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
     MultiFileContextUpdateError,
     MultiFileContextUpdatePostResponse,
@@ -70,12 +70,23 @@ def update_multi_file_context_in_session(
     return updated_contexts
 
 
+def update_multi_file_context_changes_in_session(
+    existing_context_changes: Dict[str, List[Dict[str, str]]],
+    context_updates: Dict[str, List[FileContextChangeData]],
+) -> Dict[str, List[Dict[str, str]]]:
+    for file, context_changes in context_updates.items():
+        existing_context_changes.setdefault(file, []).extend(
+            [context_change.dict() for context_change in context_changes]
+        )
+    return existing_context_changes
+
+
 @router.post(
     "/",
     response_model=MultiFileContextUpdatePostResponse,
     responses={
         "200": {"model": MultiFileContextUpdatePostResponse},
-        "401": {"model": InvalidSessionToken},
+        "401": {"model": InvalidOrExpiredSessionToken},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": MultiFileContextUpdateError},
@@ -99,7 +110,7 @@ def update_multi_file_context(
         if session_token is None or user_dict is None:
             return JsonResponseWithStatus(
                 status_code=401,
-                content=InvalidSessionToken(),
+                content=InvalidOrExpiredSessionToken(),
             )
 
         # Update the context with the new content
@@ -116,6 +127,13 @@ def update_multi_file_context(
 
         # Store the updated context in the session
         user_dict["data"]["context"] = updated_context
+
+        existing_context_changes = user_dict["data"].get("context_changes", {})
+        updated_context_changes = update_multi_file_context_changes_in_session(
+            existing_context_changes, context_update.context_updates
+        )
+        user_dict["data"]["context_changes"] = updated_context_changes
+
         session_manager.update_session(session_token, user_dict)
 
         return JsonResponseWithStatus(

@@ -160,7 +160,7 @@ class TestCompletionFeedback:
 
         assert response.status_code == 500
 
-        expected_error = FeedbackRecordingError("Database error")
+        expected_error = FeedbackRecordingError()
         assert response.json() == expected_error.dict()
 
         mock_db_session.rollback.assert_called_once()

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import Queries
 from App import App
 from backend.Responses import (
-    InvalidSessionToken,
+    InvalidOrExpiredAuthToken,
     UpdateUserPutResponse,
 )
 from base_models import UserBase
@@ -42,11 +42,13 @@ class TestUpdateUser:
         mock_crud = MagicMock()
         mock_crud.update_user.return_value = fake_updated_user
 
-        mock_session = MagicMock()
-        mock_session.get_session.return_value = {"user_id": fake_updated_user.user_id}
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_user_id_by_auth_token.return_value = (
+            fake_updated_user.user_id
+        )
 
         client.mock_app.get_db_session.return_value = MagicMock()
-        client.mock_app.get_session_manager.return_value = mock_session
+        client.mock_app.get_session_manager.return_value = mock_session_manager
 
         with patch("backend.routers.user.update.crud", mock_crud):
             response = client.put("/api/user/update", json=update_user_query.dict())
@@ -60,15 +62,15 @@ class TestUpdateUser:
 
     def test_update_user_invalid_session_token(self, client, update_user_query):
         # Mock session manager returns None
-        mock_session = MagicMock()
-        mock_session.get_session.return_value = None
+        mock_session_manager = MagicMock()
+        mock_session_manager.get_user_id_by_auth_token.return_value = None
 
-        client.mock_app.get_session_manager.return_value = mock_session
+        client.mock_app.get_session_manager.return_value = mock_session_manager
 
         response = client.put("/api/user/update", json=update_user_query.dict())
 
         assert response.status_code == 401
-        assert response.json() == InvalidSessionToken()
+        assert response.json() == InvalidOrExpiredAuthToken()
 
     def test_update_user_validation_error(self, client):
         # Send payload missing required fields

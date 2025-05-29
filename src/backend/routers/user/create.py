@@ -9,7 +9,7 @@ from App import App
 from backend.Responses import (
     CreateUserPostResponse,
     ErrorResponse,
-    InvalidOrExpiredToken,
+    InvalidOrExpiredJWTToken,
     JsonResponseWithStatus,
     UserAlreadyExistsWithThisEmail,
 )
@@ -23,7 +23,7 @@ router = APIRouter()
     response_model=CreateUserPostResponse,
     responses={
         "201": {"model": CreateUserPostResponse},
-        "401": {"model": InvalidOrExpiredToken},
+        "401": {"model": InvalidOrExpiredJWTToken},
         "409": {"model": UserAlreadyExistsWithThisEmail},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -61,7 +61,7 @@ def create_user(
         ):
             return JsonResponseWithStatus(
                 status_code=401,
-                content=InvalidOrExpiredToken(),
+                content=InvalidOrExpiredJWTToken(),
             )
 
     user = crud.create_user(db_session, user_to_create)

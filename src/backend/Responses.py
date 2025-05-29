@@ -39,7 +39,7 @@ class UserAlreadyExistsWithThisEmail(ErrorResponse):
     message: str = Field(default="User already exists with this email!")
 
 
-class InvalidOrExpiredToken(ErrorResponse):
+class InvalidOrExpiredJWTToken(ErrorResponse):
     message: str = Field(default="Invalid or expired token!")
 
 
@@ -67,9 +67,16 @@ class DeleteUserDeleteResponse(BaseResponse):
     message: str = Field(default="User is deleted successfully.")
 
 
-class InvalidSessionToken(ErrorResponse):
+class InvalidOrExpiredSessionToken(ErrorResponse):
     message: str = Field(
         default="Session not found! You are not authenticated or your session has expired. "
+        "Login before you can perform this action."
+    )
+
+
+class InvalidOrExpiredAuthToken(ErrorResponse):
+    message: str = Field(
+        default="Authentication token not found! You are not authenticated or your token has expired. "
         "Login before you can perform this action."
     )
 
@@ -95,8 +102,7 @@ class UserNotFoundError(ErrorResponse):
 
 
 class GenerateCompletionsError(ErrorResponse):
-    def __init__(self, error_message: str):
-        super().__init__(message=f"Failed to generate completions: {error_message}")
+    message: str = Field(default="Failed to generate completions.")
 
 
 # /api/completion/feedback
@@ -107,10 +113,8 @@ class CompletionFeedbackPostResponse(BaseResponse):
     )
 
 
-# TODO Consider sending a more generic response after development phase
 class FeedbackRecordingError(ErrorResponse):
-    def __init__(self, error_message: str):
-        super().__init__(message=f"Failed to record feedback: {error_message}")
+    message: str = Field(default="Failed to record feedback.")
 
 
 class GenerationNotFoundError(ErrorResponse):
@@ -125,10 +129,8 @@ class CompletionsNotFoundError(ErrorResponse):
     message: str = Field(default="No completions found for this query")
 
 
-# TODO Consider sending a more generic response after development phase
 class RetrieveCompletionsError(ErrorResponse):
-    def __init__(self, error_message: str):
-        super().__init__(message=f"Failed to retrieve completions: {error_message}")
+    message: str = Field(default="Failed to retrieve completions.")
 
 
 # /api/completion/multi-file-context/update
@@ -139,3 +141,34 @@ class MultiFileContextUpdatePostResponse(BaseResponse):
 
 class MultiFileContextUpdateError(ErrorResponse):
     message: str = Field(default="Failed to update multi-file context.")
+
+
+# /api/session/create
+class CreateSessionPostResponse(BaseResponse):
+    message: str = Field(default="Session created successfully.")
+
+
+class CreateSessionError(ErrorResponse):
+    message: str = Field(
+        default="Failed to create session. User not found or invalid data."
+    )
+
+
+# /api/session/activate
+class ActivateSessionPostResponse(BaseResponse):
+    message: str = Field(default="Session activated successfully.")
+
+
+class ActivateSessionError(ErrorResponse):
+    message: str = Field(
+        default="Failed to activate session. Session not found or expired."
+    )
+
+
+# /api/session/deactivate
+class DeactivateSessionPostResponse(BaseResponse):
+    message: str = Field(default="Session deactivated successfully.")
+
+
+class DeactivateSessionError(ErrorResponse):
+    message: str = Field(default="Failed to deactivate session.")

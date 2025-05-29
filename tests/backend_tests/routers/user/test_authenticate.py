@@ -9,7 +9,7 @@ from backend.Responses import (
     AuthenticateUserNormalPostResponse,
     AuthenticateUserOAuthPostResponse,
     InvalidEmailOrPassword,
-    InvalidOrExpiredToken,
+    InvalidOrExpiredJWTToken,
 )
 from base_models import UserBase
 from main import app
@@ -46,9 +46,9 @@ class TestAuthenticate:
         mock_user = UserBase.fake(email=auth_email_query.email)
         mock_crud.get_user_by_email_password.return_value = mock_user
 
-        session_token = "dummy_session_token"
-        client.mock_app.get_session_manager.return_value.create_session.return_value = (
-            session_token
+        auth_token = "dummy_auth_token"
+        client.mock_app.get_session_manager.return_value.create_auth_token.return_value = (
+            auth_token
         )
 
         with patch("backend.routers.user.authenticate.crud", mock_crud):
@@ -59,7 +59,7 @@ class TestAuthenticate:
             response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response.status_code == 200
             assert response_result == AuthenticateUserNormalPostResponse(user=mock_user)
-            assert response.cookies.get("session_token") == session_token
+            assert response.cookies.get("auth_token") == auth_token
 
     def test_authenticate_user_email_invalid(
         self,
@@ -85,10 +85,10 @@ class TestAuthenticate:
         mock_crud.get_user_by_email.return_value = mock_user
 
         mock_verify_jwt_token = MagicMock(return_value={"email": mock_user.email})
-        session_token = "dummy_session_token"
+        auth_token = "dummy_auth_token"
         client.mock_app.get_db_session.return_value = MagicMock()
-        client.mock_app.get_session_manager.return_value.create_session.return_value = (
-            session_token
+        client.mock_app.get_session_manager.return_value.create_auth_token.return_value = (
+            auth_token
         )
 
         with patch("backend.routers.user.authenticate.crud", mock_crud), patch(
@@ -102,7 +102,7 @@ class TestAuthenticate:
             response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response.status_code == 200
             assert response_result == AuthenticateUserOAuthPostResponse(user=mock_user)
-            assert response.cookies.get("session_token") == session_token
+            assert response.cookies.get("auth_token") == auth_token
 
     def test_authenticate_user_oauth_invalid_token(
         self, client: TestClient, auth_oauth_query: Queries.AuthenticateUserOAuth
@@ -118,7 +118,7 @@ class TestAuthenticate:
             )
 
             assert response.status_code == 401
-            assert response.json() == InvalidOrExpiredToken().model_dump()
+            assert response.json() == InvalidOrExpiredJWTToken().model_dump()
 
     def test_authenticate_user_oauth_user_not_found(
         self, client: TestClient, auth_oauth_query: Queries.AuthenticateUserOAuth
@@ -135,7 +135,7 @@ class TestAuthenticate:
             )
 
             assert response.status_code == 401
-            assert response.json() == InvalidOrExpiredToken().model_dump()
+            assert response.json() == InvalidOrExpiredJWTToken().model_dump()
 
     def test_authenticate_user_invalid_payload(self, client: TestClient):
         response = client.post("/api/user/authenticate", json={"email": "bad"})

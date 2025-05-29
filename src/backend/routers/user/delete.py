@@ -7,8 +7,9 @@ from App import App
 from backend.Responses import (
     DeleteUserDeleteResponse,
     ErrorResponse,
-    InvalidSessionToken,
+    InvalidOrExpiredAuthToken,
     JsonResponseWithStatus,
+    UserNotFoundError,
 )
 
 router = APIRouter()
@@ -19,35 +20,49 @@ router = APIRouter()
     response_model=DeleteUserDeleteResponse,
     responses={
         "200": {"model": DeleteUserDeleteResponse},
-        "401": {"model": InvalidSessionToken},
+        "401": {"model": InvalidOrExpiredAuthToken},
+        "404": {"model": UserNotFoundError},
+        "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": ErrorResponse},
     },
     tags=["Delete User"],
 )
 def delete_user(
-    session_token: str = Cookie("session_token"),
+    delete_data: bool = Query(False, description="Delete users data"),
+    auth_token: str = Cookie("auth_token"),
     app: App = Depends(App.get_instance),
-    delete_user_data: bool = Query(False, description="Delete users data"),
 ) -> JsonResponseWithStatus:
-    logging.log(logging.INFO, "Deleting user")
     db_session = app.get_db_session()
     session_manager = app.get_session_manager()
-
-    user_dict = session_manager.get_session(session_token)
-    if session_token is None or user_dict is None:
+    user_id = session_manager.get_user_id_by_auth_token(auth_token)
+    if auth_token is None or user_id is None:
         return JsonResponseWithStatus(
             status_code=401,
-            content=InvalidSessionToken(),
+            content=InvalidOrExpiredAuthToken(),
         )
+    logging.log(logging.INFO, f"Deleting user with ID: {user_id}")
+    session_manager.delete_user_sessions(db=db_session, user_id=user_id)
+    session_manager.delete_user_auths(user_id=user_id)
 
-    if delete_user_data:
-        crud.remove_user_by_id(db=db_session, user_id=user_dict["user_id"])
-    session_manager.delete_user_sessions(user_id=user_dict["user_id"])
-    return JsonResponseWithStatus(
-        status_code=200,
-        content=DeleteUserDeleteResponse(),
-    )
+    # TODO: check this later on
+    if delete_data:
+        logging.log(
+            logging.INFO, f"Deleting user session and query data for user ID: {user_id}"
+        )
+        crud.remove_session_by_user_id(db=db_session, user_id=user_id)
+        crud.remove_query_by_user_id(db=db_session, user_id=user_id)
+    is_deleted = crud.remove_user_by_id(db=db_session, user_id=user_id)
+    if is_deleted:
+        return JsonResponseWithStatus(
+            status_code=200,
+            content=DeleteUserDeleteResponse(),
+        )
+    else:
+        return JsonResponseWithStatus(
+            status_code=404,
+            content=UserNotFoundError(),
+        )
 
 
 def __init__():
