@@ -1044,7 +1044,7 @@ def test_cascade_deletions(db_session, test_user, test_project, test_session):
 
 
 def test_metaquery_cascade_deletion(
-        db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, setup_reference_data
 ):
     """Test that metaquery deletion cascades properly to generations and ground truths"""
 
@@ -1108,7 +1108,9 @@ def test_metaquery_cascade_deletion(
     generations_before = crud.get_generations_by_metaquery(db_session, metaquery_id)
     assert len(generations_before) == 1
 
-    ground_truths_before = crud.get_ground_truths_for_completion(db_session, metaquery_id)
+    ground_truths_before = crud.get_ground_truths_for_completion(
+        db_session, metaquery_id
+    )
     assert len(ground_truths_before) == 1
 
     # Delete metaquery using cascade method
@@ -1124,8 +1126,11 @@ def test_metaquery_cascade_deletion(
     assert len(generations_after) == 0
 
     # Verify ground truths were cascaded
-    ground_truths_after = crud.get_ground_truths_for_completion(db_session, metaquery_id)
+    ground_truths_after = crud.get_ground_truths_for_completion(
+        db_session, metaquery_id
+    )
     assert len(ground_truths_after) == 0
+
 
 def test_unique_constraints(db_session, test_config):
     """Test unique constraint violations"""

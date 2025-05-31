@@ -40,12 +40,26 @@ class User(Base):
     config_id = Column(BIGINT, ForeignKey("config.config_id"), nullable=False)
     preference = Column(Text, nullable=True)  # JSON string
 
-    # Relationships
+    # Relationships with proper cascade configurations
     config = relationship("Config", back_populates="users")
-    metaqueries = relationship("MetaQuery", back_populates="user")
-    project_users = relationship("ProjectUser", back_populates="user")
-    sessions = relationship("Session", back_populates="user")
-    chats = relationship("Chat", back_populates="user")
+    metaqueries = relationship(
+        "MetaQuery",
+        back_populates="user",
+        cascade="save-update, merge",
+        passive_deletes=True,
+    )
+    project_users = relationship(
+        "ProjectUser",
+        back_populates="user",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+    sessions = relationship(
+        "Session", back_populates="user", cascade="all, delete", passive_deletes=True
+    )
+    chats = relationship(
+        "Chat", back_populates="user", cascade="all, delete", passive_deletes=True
+    )
 
 
 class ModelName(Base):
@@ -149,11 +163,25 @@ class Project(Base):
     multi_file_context_changes = Column(Text, default="{}")  # JSON string
     created_at = Column(DateTime(timezone=True), nullable=False)
 
-    # Relationships
-    project_users = relationship("ProjectUser", back_populates="project")
-    sessions = relationship("Session", back_populates="project")
-    chats = relationship("Chat", back_populates="project")
-    metaqueries = relationship("MetaQuery", back_populates="project")
+    # Relationships with proper cascade configurations
+    project_users = relationship(
+        "ProjectUser",
+        back_populates="project",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
+    sessions = relationship(
+        "Session", back_populates="project", cascade="all, delete", passive_deletes=True
+    )
+    chats = relationship(
+        "Chat", back_populates="project", cascade="all, delete", passive_deletes=True
+    )
+    metaqueries = relationship(
+        "MetaQuery",
+        back_populates="project",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
 
 
 class ProjectUser(Base):
@@ -202,7 +230,12 @@ class Session(Base):
     # Relationships
     user = relationship("User", back_populates="sessions")
     project = relationship("Project", back_populates="sessions")
-    metaqueries = relationship("MetaQuery", back_populates="session")
+    metaqueries = relationship(
+        "MetaQuery",
+        back_populates="session",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         Index("idx_session_user_id", "user_id"),
@@ -226,10 +259,12 @@ class Chat(Base):
     title = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
 
-    # Relationships
+    # Relationships with proper cascade configurations
     project = relationship("Project", back_populates="chats")
     user = relationship("User", back_populates="chats")
-    chat_queries = relationship("ChatQuery", back_populates="chat")
+    chat_queries = relationship(
+        "ChatQuery", back_populates="chat", cascade="all, delete", passive_deletes=True
+    )
 
     __table_args__ = (
         Index("idx_chat_project_id", "project_id"),
@@ -272,7 +307,7 @@ class MetaQuery(Base):
     server_version_id = Column(BIGINT, nullable=True)
     query_type = Column(String, nullable=False)  # 'chat' or 'completion'
 
-    # Relationships
+    # Relationships with proper cascade configurations
     user = relationship("User", back_populates="metaqueries")
     contextual_telemetry = relationship(
         "ContextualTelemetry", back_populates="metaqueries"
@@ -283,7 +318,12 @@ class MetaQuery(Base):
     context = relationship("Context", back_populates="metaqueries")
     project = relationship("Project", back_populates="metaqueries")
     session = relationship("Session", back_populates="metaqueries")
-    had_generations = relationship("HadGeneration", back_populates="metaquery")
+    had_generations = relationship(
+        "HadGeneration",
+        back_populates="metaquery",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         Index("idx_metaquery_user_id", "user_id"),
@@ -307,8 +347,13 @@ class CompletionQuery(MetaQuery):
         nullable=False,
     )
 
-    # Relationships
-    ground_truths = relationship("GroundTruth", back_populates="completion_query")
+    # Relationships with proper cascade configurations
+    ground_truths = relationship(
+        "GroundTruth",
+        back_populates="completion_query",
+        cascade="all, delete",
+        passive_deletes=True,
+    )
 
     __mapper_args__ = {
         "polymorphic_identity": "completion",

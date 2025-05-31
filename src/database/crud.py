@@ -58,6 +58,25 @@ def remove_user_by_id(db: Session, user_id: uuid.UUID) -> bool:
     return result > 0
 
 
+def delete_user_cascade(db: Session, user_id: uuid.UUID) -> bool:
+    """
+    Properly delete user with all cascading relationships
+    Uses SQLAlchemy ORM cascades for proper cleanup
+    """
+    user = get_user_by_id(db, user_id)
+    if not user:
+        return False
+
+    try:
+        # SQLAlchemy will handle cascades with proper relationship config
+        db.delete(user)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        raise e
+
+
 def update_user(
     db: Session, user_id: uuid.UUID, user_to_update: Queries.UpdateUser
 ) -> db_schemas.User:
@@ -348,6 +367,23 @@ def get_chat_queries_for_chat(
     )
 
 
+def delete_metaquery_cascade(db: Session, metaquery_id: uuid.UUID) -> bool:
+    """
+    Properly delete metaquery with all cascading relationships
+    """
+    metaquery = get_metaquery_by_id(db, metaquery_id)
+    if not metaquery:
+        return False
+
+    try:
+        db.delete(metaquery)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        raise e
+
+
 # Generation operations
 
 # def add_generation(
@@ -522,6 +558,23 @@ def get_chats_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Chat]
     return db.query(db_schemas.Chat).filter(db_schemas.Chat.user_id == user_id).all()
 
 
+def delete_chat_cascade(db: Session, chat_id: uuid.UUID) -> bool:
+    """
+    Properly delete chat with all cascading relationships
+    """
+    chat = get_chat_by_id(db, chat_id)
+    if not chat:
+        return False
+
+    try:
+        db.delete(chat)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        raise e
+
+
 # Config Operations
 def get_config_by_id(db: Session, config_id: int) -> Optional[db_schemas.Config]:
     return (
@@ -630,6 +683,23 @@ def get_project_users(
     )
 
 
+def delete_project_cascade(db: Session, project_id: uuid.UUID) -> bool:
+    """
+    Properly delete project with all cascading relationships
+    """
+    project = get_project_by_id(db, project_id)
+    if not project:
+        return False
+
+    try:
+        db.delete(project)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        raise e
+
+
 # New Session Operations
 def create_session(db: Session, session: Queries.CreateSession) -> db_schemas.Session:
     db_session = db_schemas.Session(
@@ -687,6 +757,25 @@ def get_session_by_id(
         )
         .first()
     )
+
+
+def delete_session_cascade(
+    db: Session, session_id: uuid.UUID, user_id: uuid.UUID
+) -> bool:
+    """
+    Properly delete session with all cascading relationships
+    """
+    session = get_session_by_id(db, session_id, user_id)
+    if not session:
+        return False
+
+    try:
+        db.delete(session)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        raise e
 
 
 def create_ground_truth(
