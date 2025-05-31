@@ -18,55 +18,41 @@ from sqlalchemy.orm import relationship
 from .db import Base
 
 
+class Config(Base):
+    __tablename__ = "config"
+    config_id = Column(BIGINT, primary_key=True, nullable=False, autoincrement=True)
+    config_data = Column(Text, nullable=False)  # JSON string
+
+    # Relationships
+    users = relationship("User", back_populates="config")
+
+
 class User(Base):
     __tablename__ = "user"
     __table_args__ = {"extend_existing": True}
-    user_id = Column(UUID, unique=True, primary_key=True, nullable=False)
+    user_id = Column(UUID(as_uuid=True), unique=True, primary_key=True, nullable=False)
     joined_at = Column(DateTime(timezone=True), nullable=False)
     email = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
     password = Column(String, nullable=False)
     is_oauth_signup = Column(Boolean, default=False)
     verified = Column(Boolean, default=False)
+    config_id = Column(BIGINT, ForeignKey("config.config_id"), nullable=False)
+    preference = Column(Text, nullable=True)  # JSON string
 
-    # New field for future designs
-    queries = relationship("Query", back_populates="user")
+    # Relationships
+    config = relationship("Config", back_populates="users")
+    metaqueries = relationship("MetaQuery", back_populates="user")
+    project_users = relationship("ProjectUser", back_populates="user")
     sessions = relationship("Session", back_populates="user")
-
-
-class Query(Base):
-    __tablename__ = "query"
-    query_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
-    user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("user.user_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    telemetry_id = Column(UUID(as_uuid=True), ForeignKey("telemetry.telemetry_id"))
-    context_id = Column(UUID(as_uuid=True), ForeignKey("context.context_id"))
-    total_serving_time = Column(Integer)
-    timestamp = Column(DateTime(timezone=True))
-    server_version_id = Column(Integer)
-
-    user = relationship("User", back_populates="queries")
-    telemetry = relationship("Telemetry", back_populates="queries")
-    context = relationship("Context", back_populates="queries")
-    had_generations = relationship("HadGeneration", back_populates="query")
-    ground_truths = relationship("GroundTruth", back_populates="query")
-    session_queries = relationship("SessionQuery", back_populates="query")
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "query_id", name="unique_user_query"),
-        Index("idx_query_user_id", "user_id"),
-        Index("idx_query_query_id", "query_id"),
-    )
+    chats = relationship("Chat", back_populates="user")
 
 
 class ModelName(Base):
     __tablename__ = "model_name"
     model_id = Column(BIGINT, primary_key=True, nullable=False, autoincrement=True)
     model_name = Column(Text, nullable=False)
+    is_instructionTuned = Column(Boolean, nullable=False, default=False)
 
     had_generations = relationship("HadGeneration", back_populates="model")
 
@@ -78,7 +64,9 @@ class PluginVersion(Base):
     ide_type = Column(Text, nullable=False)
     description = Column(Text)
 
-    contexts = relationship("Context", back_populates="version")
+    contextual_telemetries = relationship(
+        "ContextualTelemetry", back_populates="version"
+    )
 
 
 class TriggerType(Base):
@@ -88,7 +76,9 @@ class TriggerType(Base):
     )
     trigger_type_name = Column(Text, nullable=False)
 
-    contexts = relationship("Context", back_populates="trigger_type")
+    contextual_telemetries = relationship(
+        "ContextualTelemetry", back_populates="trigger_type"
+    )
 
 
 class ProgrammingLanguage(Base):
@@ -96,14 +86,265 @@ class ProgrammingLanguage(Base):
     language_id = Column(BIGINT, primary_key=True, nullable=False, autoincrement=True)
     language_name = Column(Text, nullable=False)
 
-    contexts = relationship("Context", back_populates="language")
+    contextual_telemetries = relationship(
+        "ContextualTelemetry", back_populates="language"
+    )
+
+
+class Context(Base):
+    __tablename__ = "context"
+    context_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    prefix = Column(Text)
+    suffix = Column(Text)
+    file_name = Column(Text)
+    selected_text = Column(Text)
+
+    metaqueries = relationship("MetaQuery", back_populates="context")
+
+
+class ContextualTelemetry(Base):
+    __tablename__ = "contextual_telemetry"
+    contextual_telemetry_id = Column(
+        UUID(as_uuid=True), primary_key=True, nullable=False
+    )
+    version_id = Column(BIGINT, ForeignKey("plugin_version.version_id"), nullable=False)
+    trigger_type_id = Column(
+        BIGINT, ForeignKey("trigger_type.trigger_type_id"), nullable=False
+    )
+    language_id = Column(
+        BIGINT, ForeignKey("programming_language.language_id"), nullable=False
+    )
+    file_path = Column(Text, nullable=True)
+    caret_line = Column(Integer, nullable=True)
+    document_char_length = Column(Integer, nullable=True)
+    relative_document_position = Column(Float, nullable=True)
+
+    # Relationships
+    version = relationship("PluginVersion", back_populates="contextual_telemetries")
+    trigger_type = relationship("TriggerType", back_populates="contextual_telemetries")
+    language = relationship(
+        "ProgrammingLanguage", back_populates="contextual_telemetries"
+    )
+    metaqueries = relationship("MetaQuery", back_populates="contextual_telemetry")
+
+
+class BehavioralTelemetry(Base):
+    __tablename__ = "behavioral_telemetry"
+    behavioral_telemetry_id = Column(
+        UUID(as_uuid=True), primary_key=True, nullable=False
+    )
+    time_since_last_shown = Column(Integer, nullable=True)  # milliseconds
+    time_since_last_accepted = Column(Integer, nullable=True)  # milliseconds
+    typing_speed = Column(Integer, nullable=True)
+
+    # Relationships
+    metaqueries = relationship("MetaQuery", back_populates="behavioral_telemetry")
+
+
+class Project(Base):
+    __tablename__ = "project"
+    project_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    project_name = Column(String, nullable=False)
+    multi_file_contexts = Column(Text, default="{}")  # JSON string
+    multi_file_context_changes = Column(Text, default="{}")  # JSON string
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+    # Relationships
+    project_users = relationship("ProjectUser", back_populates="project")
+    sessions = relationship("Session", back_populates="project")
+    chats = relationship("Chat", back_populates="project")
+    metaqueries = relationship("MetaQuery", back_populates="project")
+
+
+class ProjectUser(Base):
+    __tablename__ = "project_users"
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project.project_id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.user_id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    # role = Column(String, nullable=True, default="member")  # owner, member, viewer, etc.
+    joined_at = Column(DateTime(timezone=True), nullable=False)
+
+    # Relationships
+    project = relationship("Project", back_populates="project_users")
+    user = relationship("User", back_populates="project_users")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="unique_project_user"),
+    )
+
+
+class Session(Base):
+    __tablename__ = "session"
+    session_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    start_time = Column(DateTime(timezone=True), nullable=False)
+    end_time = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user = relationship("User", back_populates="sessions")
+    project = relationship("Project", back_populates="sessions")
+    metaqueries = relationship("MetaQuery", back_populates="session")
+
+    __table_args__ = (
+        Index("idx_session_user_id", "user_id"),
+        Index("idx_session_project_id", "project_id"),
+    )
+
+
+class Chat(Base):
+    __tablename__ = "chat"
+    chat_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+    # Relationships
+    project = relationship("Project", back_populates="chats")
+    user = relationship("User", back_populates="chats")
+    chat_queries = relationship("ChatQuery", back_populates="chat")
+
+    __table_args__ = (
+        Index("idx_chat_project_id", "project_id"),
+        Index("idx_chat_user_id", "user_id"),
+    )
+
+
+class MetaQuery(Base):
+    __tablename__ = "metaquery"
+    metaquery_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    contextual_telemetry_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("contextual_telemetry.contextual_telemetry_id"),
+        nullable=False,
+    )
+    behavioral_telemetry_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("behavioral_telemetry.behavioral_telemetry_id"),
+        nullable=False,
+    )
+    context_id = Column(
+        UUID(as_uuid=True), ForeignKey("context.context_id"), nullable=False
+    )
+    session_id = Column(
+        UUID(as_uuid=True), ForeignKey("session.session_id"), nullable=False
+    )
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project.project_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    multifile_context_changes_indexes = Column(Text, default="{}")  # JSON string
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    total_serving_time = Column(Integer, nullable=True)
+    server_version_id = Column(BIGINT, nullable=True)
+    query_type = Column(String, nullable=False)  # 'chat' or 'completion'
+
+    # Relationships
+    user = relationship("User", back_populates="metaqueries")
+    contextual_telemetry = relationship(
+        "ContextualTelemetry", back_populates="metaqueries"
+    )
+    behavioral_telemetry = relationship(
+        "BehavioralTelemetry", back_populates="metaqueries"
+    )
+    context = relationship("Context", back_populates="metaqueries")
+    project = relationship("Project", back_populates="metaqueries")
+    session = relationship("Session", back_populates="metaqueries")
+    had_generations = relationship("HadGeneration", back_populates="metaquery")
+
+    __table_args__ = (
+        Index("idx_metaquery_user_id", "user_id"),
+        Index("idx_metaquery_project_id", "project_id"),
+        Index("idx_metaquery_session_id", "session_id"),
+        Index("idx_metaquery_type", "query_type"),
+    )
+
+    __mapper_args__ = {
+        "polymorphic_identity": "base",
+        "polymorphic_on": query_type,
+    }
+
+
+class CompletionQuery(MetaQuery):
+    __tablename__ = "completionquery"
+    metaquery_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("metaquery.metaquery_id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+
+    # Relationships
+    ground_truths = relationship("GroundTruth", back_populates="completion_query")
+
+    __mapper_args__ = {
+        "polymorphic_identity": "completion",
+    }
+
+
+class ChatQuery(MetaQuery):
+    __tablename__ = "chatquery"
+    metaquery_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("metaquery.metaquery_id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    chat_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("chat.chat_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    web_enabled = Column(Boolean, nullable=False, default=False)
+
+    # Relationships
+    chat = relationship("Chat", back_populates="chat_queries")
+
+    __table_args__ = (Index("idx_chatquery_chat_id", "chat_id"),)
+
+    __mapper_args__ = {
+        "polymorphic_identity": "chat",
+    }
 
 
 class HadGeneration(Base):
     __tablename__ = "had_generation"
-    query_id = Column(
+    metaquery_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("query.query_id", ondelete="CASCADE"),
+        ForeignKey("metaquery.metaquery_id", ondelete="CASCADE"),
         primary_key=True,
         nullable=False,
     )
@@ -117,110 +358,58 @@ class HadGeneration(Base):
     confidence = Column(Float, nullable=False)
     logprobs = Column(ARRAY(Float), nullable=False)
 
-    query = relationship("Query", back_populates="had_generations")
+    metaquery = relationship("MetaQuery", back_populates="had_generations")
     model = relationship("ModelName", back_populates="had_generations")
 
-    __table_args__ = (Index("idx_query_id_model_id", "query_id", "model_id"),)
+    __table_args__ = (Index("idx_metaquery_id_model_id", "metaquery_id", "model_id"),)
 
 
 class GroundTruth(Base):
     __tablename__ = "ground_truth"
-    query_id = Column(
+    completionquery_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("query.query_id", ondelete="CASCADE"),
+        ForeignKey("completionquery.metaquery_id", ondelete="CASCADE"),
         primary_key=True,
         nullable=False,
     )
     truth_timestamp = Column(DateTime(timezone=True), primary_key=True, nullable=False)
     ground_truth = Column(Text, nullable=False)
 
-    query = relationship("Query", back_populates="ground_truths")
+    completion_query = relationship("CompletionQuery", back_populates="ground_truths")
 
     __table_args__ = (
-        Index("idx_query_id_truth_timestamp", "query_id", "truth_timestamp"),
+        Index(
+            "idx_completionquery_id_truth_timestamp",
+            "completionquery_id",
+            "truth_timestamp",
+        ),
     )
 
 
-class Context(Base):
-    __tablename__ = "context"
-    context_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
-    prefix = Column(Text)
-    suffix = Column(Text)
-    file_name = Column(Text)
-    language_id = Column(
-        BIGINT, ForeignKey("programming_language.language_id"), index=True
-    )
-    trigger_type_id = Column(
-        BIGINT, ForeignKey("trigger_type.trigger_type_id"), index=True
-    )
-    version_id = Column(BIGINT, ForeignKey("plugin_version.version_id"), index=True)
-
-    language = relationship("ProgrammingLanguage", back_populates="contexts")
-    trigger_type = relationship("TriggerType", back_populates="contexts")
-    version = relationship("PluginVersion", back_populates="contexts")
-    queries = relationship("Query", back_populates="context")
-
-
-class Telemetry(Base):
-    __tablename__ = "telemetry"
-    telemetry_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
-    time_since_last_completion = Column(Integer)
-    typing_speed = Column(Integer)
-    document_char_length = Column(Integer)
-    relative_document_position = Column(Float)
-
-    queries = relationship("Query", back_populates="telemetry")
-
-    __table_args__ = (Index("telemetry_id_index", "telemetry_id"),)
-
-
-class Session(Base):
-    __tablename__ = "session"
-    session_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
-    user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("user.user_id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    multi_file_contexts = Column(
-        Text, default="{}"
-    )  # JSON string of multi-file contexts
-    multi_file_context_changes = Column(
-        Text, default="{}"
-    )  # A list of changes to multi-file contexts
-    # Relationships
-    user = relationship("User", back_populates="sessions")
-    session_queries = relationship("SessionQuery", back_populates="session")
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "session_id", name="unique_user_session"),
-        Index("idx_session_user_id", "user_id"),
-    )
-
-
-class SessionQuery(Base):
-    __tablename__ = "session_queries"
-    session_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("session.session_id", ondelete="CASCADE"),
-        primary_key=True,
-        nullable=False,
-    )
-    query_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("query.query_id", ondelete="CASCADE"),
-        primary_key=True,
-        nullable=False,
-    )
-    multi_file_context_changes_indexes = Column(
-        Text, default="{}"
-    )  # JSON string of the upper limit indexes of context changes used for the query in the session
-
-    # Relationships
-    session = relationship("Session", back_populates="session_queries")
-    query = relationship("Query", back_populates="session_queries")
-
-    __table_args__ = (
-        UniqueConstraint("session_id", "query_id", name="unique_session_query"),
-        Index("idx_session_queries_query_id", "query_id"),
-    )
+#
+# class SessionQuery(Base):
+#     __tablename__ = "session_queries"
+#     session_id = Column(
+#         UUID(as_uuid=True),
+#         ForeignKey("session.session_id", ondelete="CASCADE"),
+#         primary_key=True,
+#         nullable=False,
+#     )
+#     query_id = Column(
+#         UUID(as_uuid=True),
+#         ForeignKey("query.query_id", ondelete="CASCADE"),
+#         primary_key=True,
+#         nullable=False,
+#     )
+#     multi_file_context_changes_indexes = Column(
+#         Text, default="{}"
+#     )  # JSON string of the upper limit indexes of context changes used for the query in the session
+#
+#     # Relationships
+#     session = relationship("Session", back_populates="session_queries")
+#     query = relationship("Query", back_populates="session_queries")
+#
+#     __table_args__ = (
+#         UniqueConstraint("session_id", "query_id", name="unique_session_query"),
+#         Index("idx_session_queries_query_id", "query_id"),
+#     )
