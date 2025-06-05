@@ -111,10 +111,10 @@ CREATE INDEX IF NOT EXISTS idx_session_user_id ON public.session (user_id);
 
 CREATE TABLE IF NOT EXISTS public.session_queries
 (
-    session_id uuid NOT NULL PRIMARY KEY,
+    session_id uuid NOT NULL,
     query_id uuid NOT NULL,
     multi_file_context_changes_indexes text,
-    CONSTRAINT unique_session_query UNIQUE (session_id, query_id)
+    PRIMARY KEY (session_id, query_id)
 );
 CREATE INDEX IF NOT EXISTS idx_session_queries_query_id ON public.session_queries (query_id);
 ----------------------------------------------------------------------------------

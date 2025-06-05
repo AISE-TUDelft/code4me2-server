@@ -57,7 +57,7 @@ def create_user(
         verification_result = verify_jwt_token(user_to_create.token)
         if (
             verification_result is None
-            or verification_result["email"] != user_to_create.email
+            or verification_result.get("email") != user_to_create.email
         ):
             return JsonResponseWithStatus(
                 status_code=401,

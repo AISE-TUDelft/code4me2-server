@@ -12,10 +12,6 @@ from database import db_schemas
 
 
 class SessionManager:
-    redis_client = None
-    session_token_expires_in_seconds: int = None
-    auth_token_expires_in_seconds: int = None
-
     def __init__(
         self,
         host: str,
@@ -28,6 +24,10 @@ class SessionManager:
         self.auth_token_expires_in_seconds = auth_token_expires_in_seconds
         try:
             self.redis_client.ping()
+            logging.log(
+                logging.INFO,
+                f"Connected to Redis server successfully on {host}:{port}.",
+            )
         except redis.exceptions.ConnectionError:
             raise Exception(
                 "Could not connect to Redis server. Please check your configuration."
@@ -47,6 +47,10 @@ class SessionManager:
             self.session_token_expires_in_seconds
             - 5,  # 5 seconds less to ensure the key is deleted before the hook
             "",
+        )
+        logging.log(
+            logging.INFO,
+            f"Session value: {self.redis_client.get(f'session:{session_token}')} stored.",
         )
 
     def delete_user_sessions(self, db: Session, user_id: uuid.UUID) -> None:

@@ -101,7 +101,6 @@ def update_multi_file_context(
     Update the context for a specific query ID.
     """
     logging.log(logging.INFO, f"Updating context for session: {session_token}")
-    db_session = app.get_db_session()
     session_manager = app.get_session_manager()
 
     try:

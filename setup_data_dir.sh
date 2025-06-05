@@ -15,6 +15,8 @@ mkdir -p $DATA_DIR/postgres_test
 mkdir -p $DATA_DIR/pgadmin
 mkdir -p $DATA_DIR/redis
 mkdir -p $DATA_DIR/website
+mkdir -p $DATA_DIR/redis_celery
+mkdir -p $DATA_DIR/celery_worker
 
 echo "Data directory structure created at $DATA_DIR"
 echo "You can now start the Docker environment with 'docker-compose up'"

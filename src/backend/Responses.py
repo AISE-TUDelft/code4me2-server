@@ -23,8 +23,19 @@ class ErrorResponse(BaseResponse, ABC):
 
 class JsonResponseWithStatus(JSONResponse):
     def __init__(self, content: BaseModel, status_code: int):
+        self.content = content
+        self.status_code = status_code
         # Convert the Pydantic model to a dict
         super().__init__(content=jsonable_encoder(content), status_code=status_code)
+
+    def dict(self) -> dict:
+        """
+        Convert the response content to a dictionary.
+        """
+        return {
+            "status_code": self.status_code,
+            "content": jsonable_encoder(self.content),
+        }
 
 
 # api/user/create

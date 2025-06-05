@@ -1,7 +1,7 @@
 import re
 from abc import ABC
 from enum import Enum
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
@@ -10,6 +10,7 @@ from backend.utils import Fakable, SerializableBaseModel
 
 
 class Provider(Enum):
+    no_provider = "no_provider"
     google = "google"
 
 
@@ -111,15 +112,24 @@ class TelemetryData(QueryBase):
     )
 
 
+class SessionQueryData(QueryBase):
+    session_id: UUID = Field(..., description="Session ID")
+    query_id: UUID = Field(..., description="Query ID")
+    multi_file_context_changes_indexes: Optional[Dict[str, int]] = Field(
+        default={},
+        description="Indexes of multi-file context changes for each file",
+    )
+
+
 # Updated CompletionRequest with nested structures
 class RequestCompletion(QueryBase):
     model_ids: List[int] = Field(..., description="Models to use for completion")
-    # context: ContextData = Field(..., description="Context data for completion")
-    context: Mapping[str, Any] = Field(..., description="Context data for completion")
-    telemetry: Mapping[str, Any] = Field(
-        ..., description="Telemetry data for completion"
-    )
-    # telemetry: TelemetryData = Field(..., description="Telemetry data for completion")
+    context: ContextData = Field(..., description="Context data for completion")
+    # context: Mapping[str, Any] = Field(..., description="Context data for completion")
+    # telemetry: Mapping[str, Any] = Field(
+    #     ..., description="Telemetry data for completion"
+    # )
+    telemetry: TelemetryData = Field(..., description="Telemetry data for completion")
 
 
 class CreateQuery(QueryBase):
@@ -130,8 +140,13 @@ class CreateQuery(QueryBase):
     server_version_id: int = Field(..., description="Server version ID", ge=0)
 
 
+class UpdateQuery(QueryBase):
+    total_serving_time: Optional[int] = Field(
+        None, description="Total serving time (ms)", ge=0
+    )
+
+
 class CreateGeneration(QueryBase):
-    query_id: UUID = Field(..., description="Query ID")
     model_id: int = Field(..., description="Model ID", ge=0)
     completion: str = Field(..., description="Generated code")
     generation_time: int = Field(..., description="Generation time (ms)", ge=0)
@@ -139,6 +154,12 @@ class CreateGeneration(QueryBase):
     was_accepted: bool = Field(..., description="Whether accepted by user")
     confidence: float = Field(..., description="Confidence score")
     logprobs: List[float] = Field(..., description="Token log probabilities")
+
+
+class UpdateGeneration(QueryBase):
+    was_accepted: Optional[bool] = Field(
+        None, description="Whether the generation was accepted by user"
+    )
 
 
 class FileContextChangeData(QueryBase):

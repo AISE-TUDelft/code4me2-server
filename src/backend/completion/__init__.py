@@ -29,7 +29,7 @@ class CompletionModels:
             )
         else:
             try:
-                self.__models[key] = TemplateCompletionModel(
+                self.__models[key] = TemplateCompletionModel.from_pretrained(
                     model_name=model_name, prompt_template=prompt_template.value
                 )
             except Exception as e:
@@ -47,6 +47,6 @@ class CompletionModels:
             return self.__models[key]
         else:
             logging.log(
-                logging.ERROR,
-                f"{model_name} with template {prompt_template.value} is not available! Make sure to first load the model.",
+                logging.INFO, f"Loading the {key} model since it's not preloaded..."
             )
+            self.load_model(model_name, prompt_template)

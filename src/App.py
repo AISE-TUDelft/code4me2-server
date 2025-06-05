@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 
 import Code4meV2Config
+from backend.celery_broker import CeleryBroker
 from backend.completion import CompletionModels
 from backend.session_manager import SessionManager
 from database import crud
@@ -29,10 +30,12 @@ class App:
             self.__db_session_factory: scoped_session = None
             self.__config: Code4meV2Config = None
             self.__session_manager: SessionManager = None
+            self.__celery_broker: CeleryBroker = None
             self.__completion_models = None
             self._initialized: bool = True  # Ensure __init__ is only called once
+            self.__setup(Code4meV2Config.Code4meV2Config())
 
-    def setup(self, config: Code4meV2Config) -> None:
+    def __setup(self, config: Code4meV2Config) -> None:
         """
         Sets up the database engine and session factory.
         """
@@ -42,7 +45,10 @@ class App:
             sessionmaker(autocommit=False, autoflush=False, bind=engine)
         )
         self.__config = config
-
+        self.__celery_broker = CeleryBroker(
+            host=config.celery_broker_host,
+            port=config.celery_broker_port,
+        )
         self.__session_manager = SessionManager(
             host=config.redis_host,
             port=config.redis_port,
@@ -91,6 +97,10 @@ class App:
             session = self.__db_session_factory()
             try:
                 yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
             finally:
                 session.close()
 
@@ -98,6 +108,15 @@ class App:
             raise RuntimeError("Database is not initialized. Call `App.setup` first.")
         with __get_db_session_unmanaged() as db_session:
             return db_session
+
+    def get_db_session_fresh(self):
+        """
+        Returns a new database session.
+        Caller is responsible for closing or using it with 'with' statement.
+        """
+        if self.__db_session_factory is None:
+            raise RuntimeError("Database is not initialized. Call `App.setup` first.")
+        return self.__db_session_factory()
 
     def get_config(self) -> Code4meV2Config:
         return self.__config
@@ -108,6 +127,9 @@ class App:
     def get_completion_models(self) -> CompletionModels:
         return self.__completion_models
 
+    def get_celery_broker(self) -> CeleryBroker:
+        return self.__celery_broker
+
     @classmethod
     def get_instance(cls) -> "App":
         if cls.__instance is None:
@@ -116,4 +138,5 @@ class App:
 
     def cleanup(self):
         self.__session_manager.cleanup(db=self.__db_session_factory())
+        self.__celery_broker.cleanup()
         self.__db_session_factory.remove()

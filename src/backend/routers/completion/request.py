@@ -1,15 +1,16 @@
-import json
 import logging
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
+from celery import chain, group
 from fastapi import APIRouter, Cookie, Depends
-from pydantic_core._pydantic_core import ValidationError
 
-import backend.completion as completion
-import database.crud as crud
+import celery_app.tasks.db_tasks as db_tasks
 import Queries
 from App import App
+from backend import completion
 from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,
@@ -18,10 +19,9 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from base_models import CompletionItem, CompletionResponseData
-from database import db_schemas
+from database import crud
+from database.utils import create_uuid
 from Queries import (
-    CreateGeneration,
-    CreateQuery,
     RequestCompletion,
 )
 
@@ -47,44 +47,114 @@ def request_completion(
     """
     Request code completions based on provided context.
     """
-    logging.log(logging.INFO, f"Completion request: {completion_request}")
+    overall_start = time.perf_counter()
+    logging.info(f"Completion request: {completion_request}")
     db_session = app.get_db_session()
     session_manager = app.get_session_manager()
     completion_models = app.get_completion_models()
+    config = app.get_config()
 
     try:
-        # Check if user is authenticated
+        t0 = time.perf_counter()
         user_dict = session_manager.get_session(session_token)
         if session_token is None or user_dict is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
+        t1 = time.perf_counter()
+        logging.info(f"Session check took {(t1 - t0) * 1000:.2f}ms")
 
-        telemetry_data = None
-        context_data = None
-        try:
-            telemetry_data = Queries.TelemetryData(**completion_request.telemetry)
-            context_data = Queries.ContextData(**completion_request.context)
-        except ValidationError as e:
-            return JsonResponseWithStatus(
-                status_code=422,
-                content=ErrorResponse(
-                    message="Invalid telemetry or context data format."
-                ),
+        t2 = time.perf_counter()
+        created_query_id = create_uuid()
+        multi_file_context = user_dict["data"].get("context")
+        if multi_file_context:
+            other_files_context = []
+            for file_name, context in multi_file_context.items():
+                if file_name != completion_request.context.file_name and (
+                    completion_request.context.context_files == ["*"]
+                    or file_name in completion_request.context.context_files
+                ):
+                    joined_context = "\n".join(context).strip()
+                    other_files_context.append(f"#{file_name}\n{joined_context}")
+
+            if other_files_context:
+                completion_request.context.prefix = (
+                    "Other files context:\n"
+                    + "\n".join(other_files_context)
+                    + "\n\n"
+                    + completion_request.context.prefix
+                )
+        t3 = time.perf_counter()
+        logging.info(f"Multi-file context processing took {(t3 - t2) * 1000:.2f}ms")
+
+        completions = []
+        add_generation_tasks = []
+
+        def handle_model_completion(model_id):
+            local_t0 = time.perf_counter()
+            model = crud.get_model_by_id(db_session, model_id)
+            if not model:
+                return None
+            local_t1 = time.perf_counter()
+
+            completion_model = completion_models.get_model(
+                model_name=model.model_name,
+                prompt_template=completion.Template.PREFIX_SUFFIX,
             )
-        created_context = crud.add_context(db_session, context_data)
-        created_telemetry = crud.add_telemetry(db_session, telemetry_data)
+            local_t2 = time.perf_counter()
+            completion_result = completion_model.invoke(
+                {
+                    "prefix": completion_request.context.prefix,
+                    "suffix": completion_request.context.suffix,
+                }
+            )
+            local_t3 = time.perf_counter()
 
-        # Create query record BEFORE completions
-        query_create = CreateQuery(
-            user_id=uuid.UUID(user_dict["user_id"]),
-            telemetry_id=created_telemetry.telemetry_id,
-            context_id=created_context.context_id,
-            total_serving_time=0,  # Will update this later
-            server_version_id=app.get_config().server_version_id,
-        )
-        created_query = crud.add_query(db_session, query_create)
+            logging.info(
+                f"Model {model_id} timing: "
+                f"DB={((local_t1 - local_t0) * 1000):.2f}ms, "
+                f"GetModel={((local_t2 - local_t1) * 1000):.2f}ms, "
+                f"Invoke={((local_t3 - local_t2) * 1000):.2f}ms"
+            )
+
+            add_generation_task = db_tasks.add_generation_task.si(
+                Queries.CreateGeneration(
+                    model_id=model_id,
+                    completion=completion_result["completion"],
+                    generation_time=completion_result["generation_time"],
+                    shown_at=[datetime.now().isoformat()],
+                    was_accepted=False,
+                    confidence=completion_result["confidence"],
+                    logprobs=completion_result["logprobs"],
+                ).dict(),
+                created_query_id,
+            )
+            add_generation_tasks.append(add_generation_task)
+
+            return CompletionItem(
+                model_id=model_id,
+                model_name=model.model_name,
+                completion=completion_result["completion"],
+                generation_time=completion_result["generation_time"],
+                confidence=completion_result["confidence"],
+            )
+
+        t4 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=config.thread_pool_max_workers) as executor:
+            future_to_model = {
+                executor.submit(handle_model_completion, model_id): model_id
+                for model_id in completion_request.model_ids
+            }
+            for future in as_completed(future_to_model):
+                result = future.result()
+                if result is not None:
+                    completions.append(result)
+        t5 = time.perf_counter()
+        logging.info(f"Model completion (threaded) took {(t5 - t4) * 1000:.2f}ms")
+
+        # Celery task prep
+        t6 = time.perf_counter()
         multi_file_context_changes_indexes = {}
         if user_dict["data"].get("context_changes"):
             multi_file_context_changes_indexes = {
@@ -93,105 +163,60 @@ def request_completion(
                 .get("context_changes")
                 .items()
             }
-        crud.add_session_query(
-            db_session,
-            db_schemas.SessionQuery(
+
+        add_session_query_task = db_tasks.add_session_query_task.si(
+            Queries.SessionQueryData(
                 session_id=session_token,
-                query_id=str(created_query.query_id),
-                multi_file_context_changes_indexes=json.dumps(
-                    multi_file_context_changes_indexes
-                ),
-            ),
-        )
-        # By changing prefix after crud operations we ensure that the users code base is not stored in the database for privacy reasons
-        # Check if multi file context is available and if so add to the context prefix
-        multi_file_context = user_dict["data"].get("context")
-        if multi_file_context:
-            other_files_context = []
-            for file_name, context in multi_file_context.items():
-                if file_name != context_data.file_name and (
-                    context_data.context_files == ["*"]
-                    or file_name in context_data.context_files
-                ):
-                    joined_context = "\n".join(context).strip()
-                    other_files_context.append(f"#{file_name}\n{joined_context}")
-
-            if other_files_context:
-                context_data.prefix = (
-                    "Other files context:\n"
-                    + "\n".join(other_files_context)
-                    + "\n\n"
-                    + context_data.prefix
-                )
-
-        # Get model completions
-        start_time = datetime.now()
-        completions = []
-
-        # TODO: parallelize the completion request for different models
-        for model_id in completion_request.model_ids:
-            # Get model
-            model = crud.get_model_by_id(db_session, model_id)
-            if not model:
-                continue
-
-            completion_model = completion_models.get_model(
-                model_name=model.model_name,
-                prompt_template=completion.Template.PREFIX_SUFFIX,
-            )
-            completion_result = completion_model.invoke(
-                {
-                    "prefix": context_data.prefix,
-                    "suffix": context_data.suffix,
-                }
-            )
-
-            # Create generation record
-            # TODO: check shown_at
-            generation_create = CreateGeneration(
-                query_id=created_query.query_id,
-                model_id=model_id,
-                completion=completion_result["completion"],
-                generation_time=completion_result["generation_time"],
-                shown_at=[start_time.isoformat()],
-                was_accepted=False,
-                confidence=completion_result["confidence"],
-                logprobs=completion_result["logprobs"],
-            )
-            crud.add_generation(db_session, generation_create)
-
-            # Add to response
-            completions.append(
-                CompletionItem(
-                    model_id=model_id,
-                    model_name=model.model_name,
-                    completion=completion_result["completion"],
-                    generation_time=completion_result["generation_time"],
-                    confidence=completion_result["confidence"],
-                )
-            )
-
-        # Calculate total serving time (after all models are processed)
-        end_time = datetime.now()
-        total_serving_time = int((end_time - start_time).total_seconds() * 1000)
-
-        # Update query with actual total_serving_time
-        crud.update_query_serving_time(
-            db_session, str(created_query.query_id), total_serving_time
+                query_id=created_query_id,
+                multi_file_context_changes_indexes=multi_file_context_changes_indexes,
+            ).dict()
         )
 
-        # Return completions (after processing all models)
+        created_context_id = create_uuid()
+        add_context_task = db_tasks.add_context_task.si(
+            completion_request.context.dict(), created_context_id
+        )
+        created_telemetry_id = create_uuid()
+        add_telemetry_task = db_tasks.add_telemetry_task.si(
+            completion_request.telemetry.dict(), created_telemetry_id
+        )
+
+        total_serving_time = int((time.perf_counter() - overall_start) * 1000)
+        add_query_task = db_tasks.add_query_task.si(
+            Queries.CreateQuery(
+                user_id=uuid.UUID(user_dict["user_id"]),
+                telemetry_id=created_telemetry_id,
+                context_id=created_context_id,
+                total_serving_time=total_serving_time,
+                server_version_id=app.get_config().server_version_id,
+            ).dict(),
+            created_query_id,
+        )
+
+        chain(
+            group(add_context_task, add_telemetry_task),
+            add_query_task,
+            group(add_session_query_task, *add_generation_tasks),
+        ).apply_async(queue="db")
+        t7 = time.perf_counter()
+        logging.info(f"Celery task prep and queuing took {(t7 - t6) * 1000:.2f}ms")
+
+        overall_end = time.perf_counter()
+        logging.info(
+            f"TOTAL serving time: {(overall_end - overall_start) * 1000:.2f}ms"
+        )
+
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
                 data=CompletionResponseData(
-                    query_id=created_query.query_id, completions=completions
+                    query_id=created_query_id, completions=completions
                 ),
             ),
         )
 
     except Exception as e:
-        logging.log(logging.ERROR, f"Error generating completions: {str(e)}")
+        logging.error(f"Error processing completion request: {str(e)}")
         db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,

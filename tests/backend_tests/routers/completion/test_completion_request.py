@@ -12,6 +12,7 @@ from backend.Responses import (
     InvalidOrExpiredSessionToken,
 )
 from base_models import ContextBase, QueryBase, TelemetryBase
+from Code4meV2Config import Code4meV2Config
 from main import app
 
 
@@ -20,6 +21,7 @@ class TestCompletionRequest:
     @pytest.fixture(scope="session")
     def setup_app(self):
         mock_app = MagicMock()
+        mock_app.get_config.return_value = Code4meV2Config()
         app.dependency_overrides[App.get_instance] = lambda: mock_app
         return mock_app
 
@@ -27,7 +29,7 @@ class TestCompletionRequest:
     def client(self, setup_app):
         with TestClient(app) as client:
             client.mock_app = setup_app
-            client.cookies.set("session_token", "valid_token")
+            client.cookies.set("session_token", str(uuid.uuid4()))
             yield client
 
     @pytest.fixture(scope="function")
@@ -61,11 +63,6 @@ class TestCompletionRequest:
         mock_crud.add_telemetry.return_value = TelemetryBase.fake(1)
         mock_crud.add_query.return_value = QueryBase.fake(1)
         mock_crud.get_model_by_id.return_value = mock_model_1
-
-        # Mock config
-        mock_config = MagicMock()
-        mock_config.server_version_id = 1
-        client.mock_app.get_config.return_value = mock_config
 
         mock_session = MagicMock()
         mock_session.get_session.return_value = {
@@ -101,12 +98,6 @@ class TestCompletionRequest:
         assert "completions" in response_data["data"]
         assert len(response_data["data"]["completions"]) == 2
 
-        # Verify mock calls
-        mock_crud.add_context.assert_called_once()
-        mock_crud.add_telemetry.assert_called_once()
-        mock_crud.add_query.assert_called_once()
-        assert mock_crud.add_generation.call_count == 2
-
     def test_request_completion_model_not_found(
         self, client: TestClient, completion_request: Queries.RequestCompletion
     ):
@@ -118,9 +109,6 @@ class TestCompletionRequest:
         mock_crud.add_telemetry.return_value = TelemetryBase.fake(1)
         mock_crud.add_query.return_value = QueryBase.fake(1)
 
-        mock_config = MagicMock()
-        mock_config.server_version_id = 1
-        client.mock_app.get_config.return_value = mock_config
         mock_session = MagicMock()
         mock_session.get_session.return_value = {
             "user_id": str(uuid.uuid4()),
