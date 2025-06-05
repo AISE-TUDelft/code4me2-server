@@ -85,3 +85,25 @@ def add_ground_truth_task(ground_truth_data: dict):
         except Exception:
             db.rollback()
             raise
+
+
+@celery.task
+def send_verification_email_task(user_id: str, user_email: str, user_name: str):
+    """
+    Celery task to send verification email
+    """
+    from backend.email_utils import send_verification_email
+    from database.utils import create_uuid
+
+    # Generate verification token
+    verification_token = create_uuid()
+
+    # Store token in Redis with user_id as value
+    app = App.get_instance()
+    redis_client = app.get_session_manager().redis_client
+
+    # Set token to expire in 24 hours (86400 seconds)
+    redis_client.setex(f"email_verification:{verification_token}", 86400, user_id)
+
+    # Send verification email
+    send_verification_email(user_email, user_name, verification_token)

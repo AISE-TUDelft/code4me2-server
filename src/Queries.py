@@ -123,46 +123,10 @@ class AuthenticateUserOAuth(QueryBase):
     token: str = Field(..., description="OAuth token in JWT format")
 
 
-class CreateConfig(QueryBase):
-    config_data: str = Field(..., description="Configuration data as JSON string")
-
-
-# class ContextData(QueryBase):
-#     prefix: str = Field(..., description="Code before cursor")
-#     suffix: str = Field(..., description="Code after cursor")
-#     # TODO make things optional
-#     file_name: str = Field(..., description="File name")
-#     # TODO maybe we can change trigger type to enum since it doesn't update that frequently
-#     language_id: Optional[int] = Field(
-#         default=1, description="Programming language ID", ge=0
-#     )
-#     trigger_type_id: Optional[int] = Field(
-#         default=1, description="Trigger type ID", ge=0
-#     )
-#     version_id: Optional[int] = Field(default=1, description="Plugin version ID", ge=0)
-#     context_files: Optional[list[str]] = Field(
-#         default=[],
-#         description="List of context files to include upon completion. "
-#         "If ['*'] is passed, all files will be included. "
-#         "If empty list is passed, no files will be included.",
-#     )
-# class TelemetryData(QueryBase):
-#     time_since_last_completion: int = Field(
-#         ..., description="Time since last completion (ms)", ge=0
-#     )
-#     typing_speed: int = Field(..., description="Typing speed (chars per minute)", ge=0)
-#     document_char_length: int = Field(
-#         ..., description="Document length in characters", ge=0
-#     )
-#     relative_document_position: float = Field(
-#         ..., description="Cursor position as fraction of document"
-#     )
-
-
 class ContextData(QueryBase):
     prefix: str = Field(..., description="Code before cursor")
     suffix: str = Field(..., description="Code after cursor")
-    file_name: str = Field(..., description="File name")
+    file_name: Optional[str] = Field(..., description="File name")
     selected_text: Optional[str] = Field("", description="Selected text in editor")
     context_files: Optional[List[str]] = Field(
         [], description="Context files to consider"
