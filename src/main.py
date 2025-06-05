@@ -16,16 +16,35 @@ logging.basicConfig(
     level=logging.INFO,  # Set the logging level (e.g., DEBUG, INFO, WARNING, ERROR)
     format="%(asctime)s - %(levelname)s - %(message)s",  # Define the log message format
     handlers=[logging.StreamHandler()],  # Output logs to the console
+    force=True,
 )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic (if any) can go here
+    if not config.test_mode:
+        logging.log(logging.INFO, "Starting the server and initializing resources...")
+        _app = App()
+        _app.get_celery_broker().register_pubsubs()
+        yield
+        # Shutdown logic
+        logging.warning("Shutting down the server and cleaning up resources...")
+        _app.cleanup()
+    else:
+        yield
+
+
 app = FastAPI(
     title="Code4Me V2 API",
     description="The complete API for Code4Me V2",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 config = Code4meV2Config()
-if not config.test_mode:
-    App().setup(config)
+# if not config.test_mode:
+#     App().setup(config)
 
 # Configure CORS
 app.add_middleware(
@@ -54,15 +73,6 @@ app.add_middleware(
 # app = FastAPI()
 # app.add_middleware(SimpleRateLimiter)
 app.include_router(router, prefix="/api")
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup logic (if any) can go here
-    yield
-    # Shutdown logic
-    logging.warning("Shutting down the server and cleaning up resources...")
-    App.get_instance().cleanup()
 
 
 if __name__ == "__main__":

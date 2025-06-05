@@ -1,4 +1,4 @@
-import logging
+import json
 import uuid
 from datetime import datetime
 from typing import Optional, Type, Union
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 import Queries as Queries
 from database import db_schemas
-from database.utils import hash_password, verify_password
+from database.utils import create_uuid, hash_password, verify_password
 
 
 # READ operation
@@ -45,7 +45,7 @@ def create_user(
 
     db.add(db_user)
     db.commit()
-    db.refresh(db_user)
+    # db.refresh(db_user)
     return db_user
 
 
@@ -72,10 +72,12 @@ def update_user(
 
 
 # Context Operations
-def add_context(db: Session, context: Queries.ContextData) -> db_schemas.Context:
+def add_context(
+    db: Session, context: Queries.ContextData, context_id: str = None
+) -> db_schemas.Context:
     """Create a new context record"""
     db_context = db_schemas.Context(
-        context_id=uuid.uuid4(),
+        context_id=uuid.UUID(context_id) if context_id is not None else create_uuid(),
         prefix=context.prefix,
         suffix=context.suffix,
         language_id=context.language_id,
@@ -84,17 +86,19 @@ def add_context(db: Session, context: Queries.ContextData) -> db_schemas.Context
     )
     db.add(db_context)
     db.commit()
-    db.refresh(db_context)
+    # db.refresh(db_context)
     return db_context
 
 
 # Telemetry operations
 def add_telemetry(
-    db: Session, telemetry: Queries.TelemetryData
+    db: Session, telemetry: Queries.TelemetryData, telemetry_id: str = None
 ) -> db_schemas.Telemetry:
     """Create a new telemetry record"""
     db_telemetry = db_schemas.Telemetry(
-        telemetry_id=uuid.uuid4(),
+        telemetry_id=(
+            uuid.UUID(telemetry_id) if telemetry_id is not None else create_uuid()
+        ),
         time_since_last_completion=telemetry.time_since_last_completion,
         typing_speed=telemetry.typing_speed,
         document_char_length=telemetry.document_char_length,
@@ -102,32 +106,36 @@ def add_telemetry(
     )
     db.add(db_telemetry)
     db.commit()
-    db.refresh(db_telemetry)
+    # db.refresh(db_telemetry)
     return db_telemetry
 
 
 # Query operations
-def add_query(db: Session, query: Queries.CreateQuery) -> db_schemas.Query:
+def add_query(
+    db: Session, query: Queries.CreateQuery, query_id: str
+) -> db_schemas.Query:
     """Create a new query record"""
     db_query = db_schemas.Query(
-        query_id=uuid.uuid4(),
-        user_id=str(query.user_id),
-        telemetry_id=str(query.telemetry_id),
-        context_id=str(query.context_id),
+        query_id=uuid.UUID(query_id) if query_id is not None else create_uuid(),
+        user_id=query.user_id,
+        telemetry_id=query.telemetry_id,
+        context_id=query.context_id,
         timestamp=datetime.now().isoformat(),
         total_serving_time=query.total_serving_time,
         server_version_id=query.server_version_id,
     )
     db.add(db_query)
     db.commit()
-    db.refresh(db_query)
+    # db.refresh(db_query)
     return db_query
 
 
 def get_query_by_id(db: Session, query_id: str) -> Optional[Type[db_schemas.Query]]:
     """Get query by ID"""
     return (
-        db.query(db_schemas.Query).filter(db_schemas.Query.query_id == query_id).first()
+        db.query(db_schemas.Query)
+        .filter(db_schemas.Query.query_id == uuid.UUID(query_id))
+        .first()
     )
 
 
@@ -143,6 +151,16 @@ def update_query_serving_time(
     return query
 
 
+def update_query(db: Session, query_id: str, query: Queries.UpdateQuery) -> bool:
+    """Update an existing query"""
+    result = (
+        db.query(db_schemas.Query)
+        .filter(db_schemas.Query.query_id == uuid.UUID(query_id))
+        .update(query.dict())
+    )
+    return result > 0
+
+
 def remove_query_by_user_id(db: Session, user_id: str) -> bool:
     """Remove all queries by user ID"""
     result = (
@@ -154,11 +172,13 @@ def remove_query_by_user_id(db: Session, user_id: str) -> bool:
 
 # Generation operations
 def add_generation(
-    db: Session, generation: Queries.CreateGeneration
+    db: Session, generation: Queries.CreateGeneration, generation_id: str = None
 ) -> db_schemas.HadGeneration:
     """Create a new generation record"""
     db_generation = db_schemas.HadGeneration(
-        query_id=str(generation.query_id),
+        query_id=(
+            uuid.UUID(generation_id) if generation_id is not None else create_uuid()
+        ),
         model_id=generation.model_id,
         completion=generation.completion,
         generation_time=generation.generation_time,
@@ -169,7 +189,7 @@ def add_generation(
     )
     db.add(db_generation)
     db.commit()
-    db.refresh(db_generation)
+    # db.refresh(db_generation)
     return db_generation
 
 
@@ -207,8 +227,24 @@ def update_generation_acceptance(
     if db_generation:
         db_generation.was_accepted = was_accepted
         db.commit()
-        db.refresh(db_generation)
+        # db.refresh(db_generation)
     return db_generation
+
+
+def update_generation(
+    db: Session, query_id: str, model_id: int, generation: Queries.UpdateGeneration
+):
+    """Update an existing generation"""
+    result = (
+        db.query(db_schemas.HadGeneration)
+        .filter(
+            db_schemas.HadGeneration.query_id == query_id,
+            db_schemas.HadGeneration.model_id == model_id,
+        )
+        .update(generation.dict())
+    )
+    db.commit()
+    return result > 0
 
 
 def get_model_by_id(db: Session, model_id: int) -> Optional[db_schemas.ModelName]:
@@ -221,17 +257,17 @@ def get_model_by_id(db: Session, model_id: int) -> Optional[db_schemas.ModelName
 
 
 def add_ground_truth(
-    db: Session, ground_truth_data: Queries.CreateGroundTruth
+    db: Session, ground_truth: Queries.CreateGroundTruth
 ) -> db_schemas.GroundTruth:
     """Create a ground truth record"""
     db_ground_truth = db_schemas.GroundTruth(
-        query_id=str(ground_truth_data.query_id),
-        truth_timestamp=ground_truth_data.truth_timestamp,
-        ground_truth=ground_truth_data.ground_truth,
+        query_id=str(ground_truth.query_id),
+        truth_timestamp=ground_truth.truth_timestamp,
+        ground_truth=ground_truth.ground_truth,
     )
     db.add(db_ground_truth)
     db.commit()
-    db.refresh(db_ground_truth)
+    # db.refresh(db_ground_truth)
     return db_ground_truth
 
     #
@@ -857,7 +893,7 @@ def delete_session_by_id(db: Session, session_id: str) -> None:
 def add_session(db: Session, session: db_schemas.Session) -> None:
     db.add(session)
     db.commit()
-    db.refresh(session)
+    # db.refresh(session)
 
 
 def remove_session_by_user_id(db: Session, user_id: str) -> bool:
@@ -871,16 +907,22 @@ def remove_session_by_user_id(db: Session, user_id: str) -> bool:
     return result > 0
 
 
-def add_session_query(db: Session, session_query: db_schemas.SessionQuery) -> None:
-    logging.log(logging.INFO, "Add session query is called")
-    db.add(session_query)
+def add_session_query(db: Session, session_query: Queries.SessionQueryData) -> None:
+    db_session_query = db_schemas.SessionQuery(
+        session_id=session_query.session_id,
+        query_id=session_query.query_id,
+        multi_file_context_changes_indexes=json.dumps(
+            session_query.multi_file_context_changes_indexes
+        ),
+    )
+    db.add(db_session_query)
     db.commit()
-    db.refresh(session_query)
+    # db.refresh(db_session_query)
 
 
 def create_session(db: Session, user_id: str) -> db_schemas.Session:
     session = db_schemas.Session(session_id=uuid.uuid4(), user_id=user_id)
     db.add(session)
     db.commit()
-    db.refresh(session)
+    # db.refresh(session)
     return session

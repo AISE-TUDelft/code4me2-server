@@ -1,3 +1,5 @@
+import os
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -33,6 +35,9 @@ class Code4meV2Config(BaseSettings):
 
     redis_host: str = Field(alias="REDIS_HOST", frozen=True)
     redis_port: int = Field(alias="REDIS_PORT", frozen=True)
+    celery_broker_host: str = Field(alias="CELERY_BROKER_HOST", frozen=True)
+    celery_broker_port: int = Field(alias="CELERY_BROKER_PORT", frozen=True)
+
     backend_host: str = Field(alias="REACT_APP_BACKEND_HOST", frozen=True)
     backend_port: int = Field(alias="REACT_APP_BACKEND_PORT", frozen=True)
     react_app_google_client_id: str = Field(
@@ -49,3 +54,22 @@ class Code4meV2Config(BaseSettings):
     preload_models: bool = Field(alias="PRELOAD_MODELS", frozen=True)
     debug_mode: bool = Field(alias="DEBUG_MODE", frozen=True)
     test_mode: bool = Field(alias="TEST_MODE", frozen=True)
+
+    # Model configuration parameters
+    model_cache_dir: str = Field(
+        alias="MODEL_CACHE_DIR", default=os.path.join(".", ".cache"), frozen=True
+    )
+    model_max_new_tokens: int = Field(
+        alias="MODEL_MAX_NEW_TOKENS", default=128, frozen=True
+    )
+    model_use_cache: bool = Field(alias="MODEL_USE_CACHE", default=True, frozen=True)
+    model_num_beams: int = Field(alias="MODEL_NUM_BEAMS", default=1, frozen=True)
+    model_use_compile: bool = Field(
+        alias="MODEL_USE_COMPILE", default=False, frozen=True
+    )
+    model_warmup: bool = Field(alias="MODEL_WARMUP", default=False, frozen=True)
+
+    # Thread pool configuration
+    thread_pool_max_workers: int = Field(
+        alias="THREAD_POOL_MAX_WORKERS", default=5, frozen=True
+    )
