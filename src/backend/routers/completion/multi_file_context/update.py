@@ -1,12 +1,13 @@
 import logging
 from copy import copy, deepcopy
-from typing import Dict, List
+from typing import Dict, List, Union
 
 from fastapi import APIRouter, Cookie, Depends
 
 from App import App
 from backend.Responses import (
     ErrorResponse,
+    InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
     MultiFileContextUpdateError,
@@ -86,7 +87,9 @@ def update_multi_file_context_changes_in_session(
     response_model=MultiFileContextUpdatePostResponse,
     responses={
         "200": {"model": MultiFileContextUpdatePostResponse},
-        "401": {"model": InvalidOrExpiredSessionToken},
+        "401": {
+            "model": Union[InvalidOrExpiredSessionToken, InvalidOrExpiredProjectToken]
+        },
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": MultiFileContextUpdateError},
@@ -96,24 +99,54 @@ def update_multi_file_context(
     context_update: UpdateMultiFileContext,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie("session_token"),
+    project_token: str = Cookie("project_token"),
 ) -> JsonResponseWithStatus:
     """
     Update the context for a specific query ID.
     """
-    logging.log(logging.INFO, f"Updating context for session: {session_token}")
+    logging.info(f"Updating context for session: {session_token}")
     redis_manager = app.get_redis_manager()
 
     try:
-        # Check if user is authenticated
-        user_dict = redis_manager.get_session(session_token)
-        if session_token is None or user_dict is None:
+        # Get session info from Redis
+        session_info = redis_manager.get("session_token", session_token)
+        if session_token is None or session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
 
+        # Get auth token from session info and then get user_id from auth token
+        auth_token = session_info.get("auth_token")
+        if not auth_token:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+
+        auth_info = redis_manager.get("auth_token", auth_token)
+        if auth_info is None:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+
+        user_id = auth_info.get("user_id")
+        if not user_id:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+
+        # Validate project token
+        project_info = redis_manager.get("project_token", project_token)
+        if project_info is None:
+            return JsonResponseWithStatus(
+                status_code=401, content=InvalidOrExpiredProjectToken()
+            )
+
         # Update the context with the new content
-        existing_context = user_dict["data"].get("context", {})
+        existing_context = project_info.get("multi_file_contexts", {})
         updated_context = update_multi_file_context_in_session(
             existing_context, context_update.context_updates
         )
@@ -121,19 +154,19 @@ def update_multi_file_context(
         # Remove the files that their new content are empty
         for file in copy(list(updated_context.keys())):
             if not updated_context[file]:
-                logging.log(logging.WARNING, f"Removing {file} context")
+                logging.warning(f"Removing {file} context")
                 del updated_context[file]
 
-        # Store the updated context in the session
-        user_dict["data"]["context"] = updated_context
+        # Store the updated context in the project_info
+        project_info["multi_file_contexts"] = updated_context
 
-        existing_context_changes = user_dict["data"].get("context_changes", {})
+        existing_context_changes = project_info.get("multi_file_context_changes", {})
         updated_context_changes = update_multi_file_context_changes_in_session(
             existing_context_changes, context_update.context_updates
         )
-        user_dict["data"]["context_changes"] = updated_context_changes
+        project_info["multi_file_context_changes"] = updated_context_changes
 
-        redis_manager.update_session(session_token, user_dict)
+        redis_manager.set("project_token", project_token, project_info)
 
         return JsonResponseWithStatus(
             status_code=200,
@@ -142,7 +175,7 @@ def update_multi_file_context(
             ),
         )
     except Exception as e:
-        logging.log(logging.ERROR, f"Error updating context: {e}")
+        logging.error(f"Error updating context: {e}")
         return JsonResponseWithStatus(
             status_code=500, content=MultiFileContextUpdateError()
         )

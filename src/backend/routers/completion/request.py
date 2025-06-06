@@ -16,7 +16,6 @@ from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,
     GenerateCompletionsError,
-    InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
@@ -36,7 +35,7 @@ router = APIRouter()
     response_model=CompletionPostResponse,
     responses={
         "200": {"model": CompletionPostResponse},
-        "401": {"model": InvalidOrExpiredAuthToken},
+        "401": {"model": InvalidOrExpiredSessionToken},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": GenerateCompletionsError},
@@ -45,7 +44,7 @@ router = APIRouter()
 def request_completion(
     completion_request: RequestCompletion,
     app: App = Depends(App.get_instance),
-    auth_token: str = Cookie("auth_token"),
+    session_token: str = Cookie("session_token"),
     project_token: str = Cookie("project_token"),
 ) -> JsonResponseWithStatus:
     """
@@ -61,29 +60,36 @@ def request_completion(
 
     try:
         t0 = time.perf_counter()
-        auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
-            return JsonResponseWithStatus(
-                status_code=401, content=InvalidOrExpiredAuthToken()
-            )
-        session_token = auth_info.get("session_token", "")
-        user_id = auth_info.get("user_id", "")
 
-        session_info = redis_manager.get("session_token", session_token)
         # Validate session token
-        if session_token == "" or session_info is None:
+        session_info = redis_manager.get("session_token", session_token)
+        if session_token is None or session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
 
+        # Get user_id and auth_token from session info
+        user_id = session_info.get("user_id")
+        auth_token = session_info.get("auth_token")
+
+        # Validate project token
         project_info = redis_manager.get("project_token", project_token)
         if project_info is None:
             return JsonResponseWithStatus(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
+
+        # Verify project is linked to this session
+        session_projects = session_info.get("project_tokens", [])
+        if project_token not in session_projects:
+            return JsonResponseWithStatus(
+                status_code=401, content=InvalidOrExpiredProjectToken()
+            )
+
         t1 = time.perf_counter()
         logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
+
         multi_file_contexts = json.loads(project_info.get("multi_file_contexts", "{}"))
         multi_file_context_changes = json.loads(
             project_info.get("multi_file_context_changes", "{}")
@@ -144,6 +150,7 @@ def request_completion(
 
             add_generation_task = db_tasks.add_generation_task.si(
                 Queries.CreateGeneration(
+                    meta_query_id=created_query_id,
                     model_id=model_id,
                     completion=completion_result["completion"],
                     generation_time=completion_result["generation_time"],

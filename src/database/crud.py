@@ -481,6 +481,16 @@ def get_generation_by_meta_query_and_model(
     )
 
 
+def get_generations_by_meta_query_id(
+    db: Session, meta_query_id: str
+) -> list[db_schemas.HadGeneration]:
+    return (
+        db.query(db_schemas.HadGeneration)
+        .filter(db_schemas.HadGeneration.meta_query_id == uuid.UUID(meta_query_id))
+        .all()
+    )
+
+
 # Model operations
 def create_model(db: Session, model: Queries.CreateModel) -> db_schemas.ModelName:
     db_model = db_schemas.ModelName(
