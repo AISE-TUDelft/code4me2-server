@@ -36,7 +36,6 @@ router = APIRouter()
         "429": {"model": ErrorResponse},
         "500": {"model": CreateUserError},
     },
-    tags=["Create User"],
 )
 def create_user(
     user_to_create: Union[Queries.CreateUser, Queries.CreateUserOauth],

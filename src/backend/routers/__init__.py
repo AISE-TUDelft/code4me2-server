@@ -10,7 +10,7 @@ router = APIRouter()
 router.include_router(session_router, prefix="/session", tags=["Session"])
 router.include_router(project_router, prefix="/project", tags=["Project"])
 router.include_router(user_router, prefix="/user", tags=["User"])
-router.include_router(completion_router, prefix="/completion", tags=["Completion"])
+router.include_router(completion_router, prefix="/completion")
 router.include_router(ws_routers, prefix="/ws", tags=["WebSocket"])
 
 

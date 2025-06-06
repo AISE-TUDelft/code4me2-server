@@ -35,7 +35,6 @@ router = APIRouter()
         429: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
-    tags=["Acquire session"],
 )
 def acquire_session(
     app: App = Depends(App.get_instance),

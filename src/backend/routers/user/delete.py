@@ -38,7 +38,6 @@ router = APIRouter()
         "429": {"model": ErrorResponse},
         "500": {"model": DeleteUserError},
     },
-    tags=["Delete User"],
 )
 def delete_user(
     delete_data: bool = Query(False, description="Delete user's data"),

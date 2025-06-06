@@ -39,7 +39,6 @@ router = APIRouter()
         429: {"model": ErrorResponse},
         500: {"model": UpdateUserError},
     },
-    tags=["Update User"],
 )
 def update_user(
     user_to_update: Queries.UpdateUser,

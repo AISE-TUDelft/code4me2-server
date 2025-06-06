@@ -6,12 +6,10 @@ from .delete import router as delete_router
 from .update import router as update_router
 
 router = APIRouter()
-router.include_router(create_router, prefix="/create", tags=["Create"])
-router.include_router(update_router, prefix="/update", tags=["Update"])
-router.include_router(delete_router, prefix="/delete", tags=["Delete"])
-router.include_router(
-    authenticate_router, prefix="/authenticate", tags=["Authenticate"]
-)
+router.include_router(create_router, prefix="/create")
+router.include_router(update_router, prefix="/update")
+router.include_router(delete_router, prefix="/delete")
+router.include_router(authenticate_router, prefix="/authenticate")
 
 # for filename in os.listdir(os.path.dirname(__file__)):
 #     if filename.endswith(".py") and filename != "__init__.py":

@@ -56,7 +56,6 @@ def acquire_auth_token(
         "429": {"model": ErrorResponse},
         "500": {"model": AuthenticateUserError},
     },
-    tags=["Authentication"],
 )
 def authenticate_user(
     user_to_authenticate: Union[AuthenticateUserEmailPassword, AuthenticateUserOAuth],

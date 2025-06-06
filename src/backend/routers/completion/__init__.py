@@ -6,9 +6,9 @@ from .multi_file_context import router as multi_file_context_router
 from .request import router as request_router
 
 router = APIRouter()
-router.include_router(request_router, prefix="/request", tags=["Request Completion"])
-router.include_router(feedback_router, prefix="/feedback", tags=["Completion Feedback"])
-router.include_router(get_router, prefix="", tags=["Get Completions"])
+router.include_router(request_router, prefix="/request", tags=["Completion"])
+router.include_router(feedback_router, prefix="/feedback", tags=["Completion"])
+router.include_router(get_router, prefix="", tags=["Completion"])
 router.include_router(
     multi_file_context_router, prefix="/multi-file-context", tags=["Multi File Context"]
 )

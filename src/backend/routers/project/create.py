@@ -30,7 +30,6 @@ router = APIRouter()
         "429": {"model": ErrorResponse},
         "500": {"model": CreateProjectError},
     },
-    tags=["Create Project"],
 )
 def create_project(
     project_to_create: Queries.CreateProject,

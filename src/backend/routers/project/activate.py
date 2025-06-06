@@ -32,7 +32,6 @@ router = APIRouter()
         "429": {"model": ErrorResponse},
         "500": {"model": ActivateProjectError},
     },
-    tags=["Activate Project"],
 )
 def activate_project(
     activate_project_request: Queries.ActivateProject,
