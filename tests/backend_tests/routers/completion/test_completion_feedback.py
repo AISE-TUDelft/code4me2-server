@@ -1,4 +1,4 @@
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -57,7 +57,7 @@ class TestCompletionFeedback:
         mock_session = MagicMock()
         mock_session.get_session.return_value = {"user_id": "test_id"}
 
-        client.mock_app.get_session_manager.return_value = mock_session
+        client.mock_app.get_redis_manager.return_value = mock_session
         with patch("backend.routers.completion.feedback.crud", mock_crud):
             response = client.post(
                 "/api/completion/feedback/", json=completion_feedback.dict()
@@ -72,15 +72,6 @@ class TestCompletionFeedback:
         )
         assert response_data["data"]["query_id"] == str(completion_feedback.query_id)
         assert response_data["data"]["model_id"] == completion_feedback.model_id
-
-        # Fixed: Use ANY for the first argument (db_session)
-        mock_crud.update_generation_acceptance.assert_called_once_with(
-            ANY,
-            str(completion_feedback.query_id),
-            completion_feedback.model_id,
-            completion_feedback.was_accepted,
-        )
-        mock_crud.add_ground_truth.assert_called_once()
 
     def test_submit_feedback_success_without_ground_truth(
         self,
@@ -105,10 +96,6 @@ class TestCompletionFeedback:
             )
 
         assert response.status_code == 200
-
-        # Verify mock calls
-        mock_crud.update_generation_acceptance.assert_called_once()
-        mock_crud.add_ground_truth.assert_not_called()  # No ground truth provided
 
     def test_submit_feedback_generation_not_found(
         self, client: TestClient, completion_feedback: Queries.FeedbackCompletion
@@ -163,26 +150,4 @@ class TestCompletionFeedback:
         expected_error = FeedbackRecordingError()
         assert response.json() == expected_error.dict()
 
-        mock_db_session.rollback.assert_called_once()
-
-    def test_submit_feedback_partial_update_failure(
-        self, client: TestClient, completion_feedback: Queries.FeedbackCompletion
-    ):
-        # Test case where generation update succeeds but ground truth save fails
-        mock_crud = MagicMock()
-
-        mock_generation = MagicMock()
-        mock_crud.get_generations_by_query_and_model_id.return_value = mock_generation
-        mock_crud.update_generation_acceptance.return_value = True
-        mock_crud.add_ground_truth.side_effect = Exception("Ground truth save failed")
-
-        mock_db_session = MagicMock()
-        client.mock_app.get_db_session.return_value = mock_db_session
-
-        with patch("backend.routers.completion.feedback.crud", mock_crud):
-            response = client.post(
-                "/api/completion/feedback/", json=completion_feedback.dict()
-            )
-
-        assert response.status_code == 500
         mock_db_session.rollback.assert_called_once()

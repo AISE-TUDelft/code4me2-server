@@ -11,8 +11,8 @@ from backend.Responses import (
     InvalidEmailOrPassword,
     InvalidOrExpiredJWTToken,
 )
-from base_models import UserBase
 from main import app
+from response_models import UserBase
 
 
 class TestAuthenticate:
@@ -47,7 +47,7 @@ class TestAuthenticate:
         mock_crud.get_user_by_email_password.return_value = mock_user
 
         auth_token = "dummy_auth_token"
-        client.mock_app.get_session_manager.return_value.create_auth_token.return_value = (
+        client.mock_app.get_redis_manager.return_value.create_auth_token.return_value = (
             auth_token
         )
 
@@ -87,7 +87,7 @@ class TestAuthenticate:
         mock_verify_jwt_token = MagicMock(return_value={"email": mock_user.email})
         auth_token = "dummy_auth_token"
         client.mock_app.get_db_session.return_value = MagicMock()
-        client.mock_app.get_session_manager.return_value.create_auth_token.return_value = (
+        client.mock_app.get_redis_manager.return_value.create_auth_token.return_value = (
             auth_token
         )
 

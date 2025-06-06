@@ -1,16 +1,16 @@
 from sqlalchemy import (
     ARRAY,
-    BIGINT,
+    BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
-    Float,
+    Double,
     ForeignKey,
-    Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
-    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -20,415 +20,295 @@ from .db import Base
 
 class Config(Base):
     __tablename__ = "config"
-    config_id = Column(BIGINT, primary_key=True, nullable=False, autoincrement=True)
-    config_data = Column(Text, nullable=False)  # JSON string
+    __table_args__ = {"schema": "public"}
 
-    # Relationships
-    users = relationship("User", back_populates="config")
+    config_id = Column(BigInteger, primary_key=True)
+    config_data = Column(Text, nullable=False)
 
 
 class User(Base):
     __tablename__ = "user"
-    __table_args__ = {"extend_existing": True}
-    user_id = Column(UUID(as_uuid=True), unique=True, primary_key=True, nullable=False)
+    __table_args__ = {"schema": "public"}
+
+    user_id = Column(UUID(as_uuid=True), primary_key=True)
     joined_at = Column(DateTime(timezone=True), nullable=False)
     email = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
     password = Column(String, nullable=False)
     is_oauth_signup = Column(Boolean, default=False)
     verified = Column(Boolean, default=False)
-    config_id = Column(BIGINT, ForeignKey("config.config_id"), nullable=False)
-    preference = Column(Text, nullable=True)  # JSON string
+    config_id = Column(
+        BigInteger, ForeignKey("public.config.config_id"), nullable=False
+    )
+    preference = Column(Text)
+    auth_token = Column(UUID(as_uuid=True), nullable=True)
 
-    # Relationships with proper cascade configurations
-    config = relationship("Config", back_populates="users")
-    metaqueries = relationship(
-        "MetaQuery",
-        back_populates="user",
-        cascade="save-update, merge",
-        passive_deletes=True,
-    )
-    project_users = relationship(
-        "ProjectUser",
-        back_populates="user",
-        cascade="all, delete",
-        passive_deletes=True,
-    )
-    sessions = relationship(
-        "Session", back_populates="user", cascade="all, delete", passive_deletes=True
-    )
-    chats = relationship(
-        "Chat", back_populates="user", cascade="all, delete", passive_deletes=True
-    )
+    config = relationship("Config")
 
 
 class ModelName(Base):
     __tablename__ = "model_name"
-    model_id = Column(BIGINT, primary_key=True, nullable=False, autoincrement=True)
-    model_name = Column(Text, nullable=False)
-    is_instructionTuned = Column(Boolean, nullable=False, default=False)
+    __table_args__ = {"schema": "public"}
 
-    had_generations = relationship("HadGeneration", back_populates="model")
+    model_id = Column(BigInteger, primary_key=True)
+    model_name = Column(Text, nullable=False)
+    is_instruction_tuned = Column(Boolean, default=False, nullable=False)
 
 
 class PluginVersion(Base):
     __tablename__ = "plugin_version"
-    version_id = Column(BIGINT, primary_key=True, nullable=False, autoincrement=True)
+    __table_args__ = {"schema": "public"}
+
+    version_id = Column(BigInteger, primary_key=True)
     version_name = Column(Text, nullable=False)
     ide_type = Column(Text, nullable=False)
     description = Column(Text)
 
-    contextual_telemetries = relationship(
-        "ContextualTelemetry", back_populates="version"
-    )
-
 
 class TriggerType(Base):
     __tablename__ = "trigger_type"
-    trigger_type_id = Column(
-        BIGINT, primary_key=True, nullable=False, autoincrement=True
-    )
-    trigger_type_name = Column(Text, nullable=False)
+    __table_args__ = {"schema": "public"}
 
-    contextual_telemetries = relationship(
-        "ContextualTelemetry", back_populates="trigger_type"
-    )
+    trigger_type_id = Column(BigInteger, primary_key=True)
+    trigger_type_name = Column(Text, nullable=False)
 
 
 class ProgrammingLanguage(Base):
     __tablename__ = "programming_language"
-    language_id = Column(BIGINT, primary_key=True, nullable=False, autoincrement=True)
-    language_name = Column(Text, nullable=False)
+    __table_args__ = {"schema": "public"}
 
-    contextual_telemetries = relationship(
-        "ContextualTelemetry", back_populates="language"
-    )
+    language_id = Column(BigInteger, primary_key=True)
+    language_name = Column(Text, nullable=False)
 
 
 class Context(Base):
     __tablename__ = "context"
-    context_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    __table_args__ = {"schema": "public"}
+
+    context_id = Column(UUID(as_uuid=True), primary_key=True)
     prefix = Column(Text)
     suffix = Column(Text)
     file_name = Column(Text)
     selected_text = Column(Text)
 
-    metaqueries = relationship("MetaQuery", back_populates="context")
-
 
 class ContextualTelemetry(Base):
     __tablename__ = "contextual_telemetry"
-    contextual_telemetry_id = Column(
-        UUID(as_uuid=True), primary_key=True, nullable=False
+    __table_args__ = {"schema": "public"}
+
+    contextual_telemetry_id = Column(UUID(as_uuid=True), primary_key=True)
+    version_id = Column(
+        BigInteger, ForeignKey("public.plugin_version.version_id"), nullable=False
     )
-    version_id = Column(BIGINT, ForeignKey("plugin_version.version_id"), nullable=False)
     trigger_type_id = Column(
-        BIGINT, ForeignKey("trigger_type.trigger_type_id"), nullable=False
+        BigInteger, ForeignKey("public.trigger_type.trigger_type_id"), nullable=False
     )
     language_id = Column(
-        BIGINT, ForeignKey("programming_language.language_id"), nullable=False
+        BigInteger,
+        ForeignKey("public.programming_language.language_id"),
+        nullable=False,
     )
-    file_path = Column(Text, nullable=True)
-    caret_line = Column(Integer, nullable=True)
-    document_char_length = Column(Integer, nullable=True)
-    relative_document_position = Column(Float, nullable=True)
-
-    # Relationships
-    version = relationship("PluginVersion", back_populates="contextual_telemetries")
-    trigger_type = relationship("TriggerType", back_populates="contextual_telemetries")
-    language = relationship(
-        "ProgrammingLanguage", back_populates="contextual_telemetries"
-    )
-    metaqueries = relationship("MetaQuery", back_populates="contextual_telemetry")
+    file_path = Column(Text)
+    caret_line = Column(Integer)
+    document_char_length = Column(Integer)
+    relative_document_position = Column(Double)
 
 
 class BehavioralTelemetry(Base):
     __tablename__ = "behavioral_telemetry"
-    behavioral_telemetry_id = Column(
-        UUID(as_uuid=True), primary_key=True, nullable=False
-    )
-    time_since_last_shown = Column(Integer, nullable=True)  # milliseconds
-    time_since_last_accepted = Column(Integer, nullable=True)  # milliseconds
-    typing_speed = Column(Integer, nullable=True)
+    __table_args__ = {"schema": "public"}
 
-    # Relationships
-    metaqueries = relationship("MetaQuery", back_populates="behavioral_telemetry")
+    behavioral_telemetry_id = Column(UUID(as_uuid=True), primary_key=True)
+    time_since_last_shown = Column(BigInteger)
+    time_since_last_accepted = Column(BigInteger)
+    typing_speed = Column(Double)
 
 
 class Project(Base):
     __tablename__ = "project"
-    project_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    __table_args__ = {"schema": "public"}
+
+    project_id = Column(UUID(as_uuid=True), primary_key=True)
     project_name = Column(String, nullable=False)
-    multi_file_contexts = Column(Text, default="{}")  # JSON string
-    multi_file_context_changes = Column(Text, default="{}")  # JSON string
+    multi_file_contexts = Column(Text, default="{}")
+    multi_file_context_changes = Column(Text, default="{}")
     created_at = Column(DateTime(timezone=True), nullable=False)
 
-    # Relationships with proper cascade configurations
-    project_users = relationship(
-        "ProjectUser",
-        back_populates="project",
-        cascade="all, delete",
-        passive_deletes=True,
-    )
     sessions = relationship(
-        "Session", back_populates="project", cascade="all, delete", passive_deletes=True
-    )
-    chats = relationship(
-        "Chat", back_populates="project", cascade="all, delete", passive_deletes=True
-    )
-    metaqueries = relationship(
-        "MetaQuery",
-        back_populates="project",
-        cascade="all, delete",
-        passive_deletes=True,
+        "Session", secondary="public.session_projects", back_populates="projects"
     )
 
 
 class ProjectUser(Base):
     __tablename__ = "project_users"
+    __table_args__ = {"schema": "public"}
+
     project_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project.project_id", ondelete="CASCADE"),
+        ForeignKey("public.project.project_id", ondelete="CASCADE"),
         primary_key=True,
-        nullable=False,
     )
     user_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("user.user_id", ondelete="CASCADE"),
+        ForeignKey("public.user.user_id", ondelete="CASCADE"),
         primary_key=True,
-        nullable=False,
     )
-    # role = Column(String, nullable=True, default="member")  # owner, member, viewer, etc.
     joined_at = Column(DateTime(timezone=True), nullable=False)
-
-    # Relationships
-    project = relationship("Project", back_populates="project_users")
-    user = relationship("User", back_populates="project_users")
-
-    __table_args__ = (
-        UniqueConstraint("project_id", "user_id", name="unique_project_user"),
-    )
 
 
 class Session(Base):
     __tablename__ = "session"
-    session_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    __table_args__ = {"schema": "public"}
+
+    session_id = Column(UUID(as_uuid=True), primary_key=True)
     user_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("user.user_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    project_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("project.project_id", ondelete="CASCADE"),
+        ForeignKey("public.user.user_id", ondelete="SET NULL"),
         nullable=False,
     )
     start_time = Column(DateTime(timezone=True), nullable=False)
-    end_time = Column(DateTime(timezone=True), nullable=True)
+    end_time = Column(DateTime(timezone=True))
 
-    # Relationships
-    user = relationship("User", back_populates="sessions")
-    project = relationship("Project", back_populates="sessions")
-    metaqueries = relationship(
-        "MetaQuery",
-        back_populates="session",
-        cascade="all, delete",
-        passive_deletes=True,
+    projects = relationship(
+        "Project", secondary="public.session_projects", back_populates="sessions"
     )
 
-    __table_args__ = (
-        Index("idx_session_user_id", "user_id"),
-        Index("idx_session_project_id", "project_id"),
+
+class SessionProject(Base):
+    __tablename__ = "session_projects"
+    __table_args__ = {"schema": "public"}
+
+    session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.session.session_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.project.project_id", ondelete="CASCADE"),
+        primary_key=True,
     )
 
 
 class Chat(Base):
     __tablename__ = "chat"
-    chat_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    __table_args__ = {"schema": "public"}
+
+    chat_id = Column(UUID(as_uuid=True), primary_key=True)
     project_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project.project_id", ondelete="CASCADE"),
+        ForeignKey("public.project.project_id", ondelete="CASCADE"),
         nullable=False,
     )
     user_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("user.user_id", ondelete="CASCADE"),
+        ForeignKey("public.user.user_id", ondelete="SET NULL"),
         nullable=False,
     )
     title = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
 
-    # Relationships with proper cascade configurations
-    project = relationship("Project", back_populates="chats")
-    user = relationship("User", back_populates="chats")
-    chat_queries = relationship(
-        "ChatQuery", back_populates="chat", cascade="all, delete", passive_deletes=True
-    )
-
-    __table_args__ = (
-        Index("idx_chat_project_id", "project_id"),
-        Index("idx_chat_user_id", "user_id"),
-    )
-
 
 class MetaQuery(Base):
-    __tablename__ = "metaquery"
-    metaquery_id = Column(UUID(as_uuid=True), primary_key=True, nullable=False)
+    __tablename__ = "meta_query"
+    __table_args__ = (
+        CheckConstraint("query_type IN ('chat', 'completion')"),
+        {"schema": "public"},
+    )
+
+    meta_query_id = Column(UUID(as_uuid=True), primary_key=True)
     user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("user.user_id", ondelete="SET NULL"),
-        nullable=True,
+        UUID(as_uuid=True), ForeignKey("public.user.user_id", ondelete="SET NULL")
     )
     contextual_telemetry_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("contextual_telemetry.contextual_telemetry_id"),
+        ForeignKey("public.contextual_telemetry.contextual_telemetry_id"),
         nullable=False,
     )
     behavioral_telemetry_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("behavioral_telemetry.behavioral_telemetry_id"),
+        ForeignKey("public.behavioral_telemetry.behavioral_telemetry_id"),
         nullable=False,
     )
     context_id = Column(
-        UUID(as_uuid=True), ForeignKey("context.context_id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("public.context.context_id"), nullable=False
     )
     session_id = Column(
-        UUID(as_uuid=True), ForeignKey("session.session_id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("public.session.session_id"), nullable=False
     )
     project_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project.project_id", ondelete="CASCADE"),
+        ForeignKey("public.project.project_id", ondelete="CASCADE"),
         nullable=False,
     )
-    multifile_context_changes_indexes = Column(Text, default="{}")  # JSON string
+    multi_file_context_changes_indexes = Column(Text, default="{}")
     timestamp = Column(DateTime(timezone=True), nullable=False)
-    total_serving_time = Column(Integer, nullable=True)
-    server_version_id = Column(BIGINT, nullable=True)
-    query_type = Column(String, nullable=False)  # 'chat' or 'completion'
-
-    # Relationships with proper cascade configurations
-    user = relationship("User", back_populates="metaqueries")
-    contextual_telemetry = relationship(
-        "ContextualTelemetry", back_populates="metaqueries"
-    )
-    behavioral_telemetry = relationship(
-        "BehavioralTelemetry", back_populates="metaqueries"
-    )
-    context = relationship("Context", back_populates="metaqueries")
-    project = relationship("Project", back_populates="metaqueries")
-    session = relationship("Session", back_populates="metaqueries")
-    had_generations = relationship(
-        "HadGeneration",
-        back_populates="metaquery",
-        cascade="all, delete",
-        passive_deletes=True,
-    )
-
-    __table_args__ = (
-        Index("idx_metaquery_user_id", "user_id"),
-        Index("idx_metaquery_project_id", "project_id"),
-        Index("idx_metaquery_session_id", "session_id"),
-        Index("idx_metaquery_type", "query_type"),
-    )
-
-    __mapper_args__ = {
-        "polymorphic_identity": "base",
-        "polymorphic_on": query_type,
-    }
+    total_serving_time = Column(Integer)
+    server_version_id = Column(BigInteger)
+    query_type = Column(String, nullable=False)
 
 
-class CompletionQuery(MetaQuery):
-    __tablename__ = "completionquery"
-    metaquery_id = Column(
+class CompletionQuery(Base):
+    __tablename__ = "completion_query"
+    __table_args__ = {"schema": "public"}
+
+    meta_query_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("metaquery.metaquery_id", ondelete="CASCADE"),
+        ForeignKey("public.meta_query.meta_query_id", ondelete="CASCADE"),
         primary_key=True,
-        nullable=False,
     )
 
-    # Relationships with proper cascade configurations
-    ground_truths = relationship(
-        "GroundTruth",
-        back_populates="completion_query",
-        cascade="all, delete",
-        passive_deletes=True,
-    )
 
-    __mapper_args__ = {
-        "polymorphic_identity": "completion",
-    }
+class ChatQuery(Base):
+    __tablename__ = "chat_query"
+    __table_args__ = {"schema": "public"}
 
-
-class ChatQuery(MetaQuery):
-    __tablename__ = "chatquery"
-    metaquery_id = Column(
+    meta_query_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("metaquery.metaquery_id", ondelete="CASCADE"),
+        ForeignKey("public.meta_query.meta_query_id", ondelete="CASCADE"),
         primary_key=True,
-        nullable=False,
     )
     chat_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("chat.chat_id", ondelete="CASCADE"),
+        ForeignKey("public.chat.chat_id", ondelete="CASCADE"),
         nullable=False,
     )
-    web_enabled = Column(Boolean, nullable=False, default=False)
-
-    # Relationships
-    chat = relationship("Chat", back_populates="chat_queries")
-
-    __table_args__ = (Index("idx_chatquery_chat_id", "chat_id"),)
-
-    __mapper_args__ = {
-        "polymorphic_identity": "chat",
-    }
+    web_enabled = Column(Boolean, default=False, nullable=False)
 
 
 class HadGeneration(Base):
     __tablename__ = "had_generation"
-    metaquery_id = Column(
+    __table_args__ = (
+        PrimaryKeyConstraint("meta_query_id", "model_id"),
+        {"schema": "public"},
+    )
+
+    meta_query_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("metaquery.metaquery_id", ondelete="CASCADE"),
-        primary_key=True,
-        nullable=False,
+        ForeignKey("public.meta_query.meta_query_id", ondelete="CASCADE"),
     )
-    model_id = Column(
-        BIGINT, ForeignKey("model_name.model_id"), primary_key=True, nullable=False
-    )
+    model_id = Column(BigInteger, ForeignKey("public.model_name.model_id"))
     completion = Column(Text, nullable=False)
     generation_time = Column(Integer, nullable=False)
     shown_at = Column(ARRAY(DateTime(timezone=True)), nullable=False)
     was_accepted = Column(Boolean, nullable=False)
-    confidence = Column(Float, nullable=False)
-    logprobs = Column(ARRAY(Float), nullable=False)
-
-    metaquery = relationship("MetaQuery", back_populates="had_generations")
-    model = relationship("ModelName", back_populates="had_generations")
-
-    __table_args__ = (Index("idx_metaquery_id_model_id", "metaquery_id", "model_id"),)
+    confidence = Column(Double, nullable=False)
+    logprobs = Column(ARRAY(Double), nullable=False)
 
 
 class GroundTruth(Base):
     __tablename__ = "ground_truth"
-    completionquery_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("completionquery.metaquery_id", ondelete="CASCADE"),
-        primary_key=True,
-        nullable=False,
-    )
-    truth_timestamp = Column(DateTime(timezone=True), primary_key=True, nullable=False)
-    ground_truth = Column(Text, nullable=False)
-
-    completion_query = relationship("CompletionQuery", back_populates="ground_truths")
-
     __table_args__ = (
-        Index(
-            "idx_completionquery_id_truth_timestamp",
-            "completionquery_id",
-            "truth_timestamp",
-        ),
+        PrimaryKeyConstraint("completion_query_id", "truth_timestamp"),
+        {"schema": "public"},
     )
+
+    completion_query_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.completion_query.meta_query_id", ondelete="CASCADE"),
+    )
+    truth_timestamp = Column(DateTime(timezone=True), nullable=False)
+    ground_truth = Column(Text, nullable=False)
 
 
 #

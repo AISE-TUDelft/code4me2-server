@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, Cookie, Depends
 
 import database.crud as crud
+import Queries
 from App import App
 from backend.Responses import (
     CompletionFeedbackPostResponse,
@@ -13,8 +14,8 @@ from backend.Responses import (
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
 )
-from base_models import FeedbackResponseData
-from Queries import CreateGroundTruth, FeedbackCompletion
+from celery_app.tasks import db_tasks
+from response_models import ResponseFeedbackResponseData
 
 router = APIRouter()
 
@@ -32,7 +33,7 @@ router = APIRouter()
     },
 )
 def submit_completion_feedback(
-    feedback: FeedbackCompletion,
+    feedback: Queries.FeedbackCompletion,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie("session_token"),
 ) -> JsonResponseWithStatus:
@@ -41,9 +42,9 @@ def submit_completion_feedback(
     """
     logging.log(logging.INFO, f"Completion feedback: {feedback}")
     db_session = app.get_db_session()
-    session_manager = app.get_session_manager()
+    redis_manager = app.get_redis_manager()
     try:
-        user_dict = session_manager.get_session(session_token)
+        user_dict = redis_manager.get_session(session_token)
         if session_token is None or user_dict is None:
             return JsonResponseWithStatus(
                 status_code=401,
@@ -61,23 +62,32 @@ def submit_completion_feedback(
             )
 
         # Update generation status
-        crud.update_generation_acceptance(
-            db_session, str(feedback.query_id), feedback.model_id, feedback.was_accepted
+        db_tasks.update_generation_task.apply_async(
+            args=[
+                str(feedback.query_id),
+                feedback.model_id,
+                Queries.UpdateGeneration(was_accepted=feedback.was_accepted).dict(),
+            ],
+            queue="db",
         )
 
         # If ground truth is provided, save it
         if feedback.ground_truth:
-            ground_truth_create = CreateGroundTruth(
-                query_id=feedback.query_id,
-                truth_timestamp=datetime.now().isoformat(),
-                ground_truth=feedback.ground_truth,
+            db_tasks.add_ground_truth_task.apply_async(
+                args=[
+                    Queries.CreateGroundTruth(
+                        query_id=feedback.query_id,
+                        truth_timestamp=datetime.now().isoformat(),
+                        ground_truth=feedback.ground_truth,
+                    ).dict()
+                ],
+                queue="db",
             )
-            crud.add_ground_truth(db_session, ground_truth_create)
 
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionFeedbackPostResponse(
-                data=FeedbackResponseData(
+                data=ResponseFeedbackResponseData(
                     query_id=feedback.query_id, model_id=feedback.model_id
                 ),
             ),

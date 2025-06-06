@@ -1,7 +1,7 @@
 import re
 from abc import ABC
 from enum import Enum
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
@@ -10,6 +10,7 @@ from backend.utils import Fakable, SerializableBaseModel
 
 
 class Provider(Enum):
+    no_provider = "no_provider"
     google = "google"
 
 
@@ -66,6 +67,50 @@ class CreateUserOauth(CreateUser):
     )
 
 
+class UpdateUser(QueryBase):
+    name: Optional[str] = Field(
+        None, description="User's new name", min_length=3, max_length=50
+    )
+    email: Optional[EmailStr] = Field(None, description="New email of user")
+    previous_password: Optional[SecretStr] = Field(
+        None, description="Previous password of user"
+    )
+    password: Optional[SecretStr] = Field(None, description="New password of user")
+    preference: Optional[str] = Field(
+        None, description="Updated user preferences as JSON string"
+    )
+    config_id: Optional[int] = Field(None, description="New configuration ID", ge=1)
+    verified: Optional[bool] = Field(None, description="Whether user verified or not")
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: SecretStr) -> SecretStr:
+        """
+        Validate the password to ensure it meets the criteria:
+        - At least 8 characters long
+        - Contains at least one uppercase letter
+        - Contains at least one lowercase letter
+        - Contains at least one digit
+        """
+        pattern = r"^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)\S{8,}$"
+        password_value = v.get_secret_value()
+        if not password_value:
+            raise ValueError("Password cannot be empty")
+        elif not re.match(pattern, password_value):
+            raise ValueError(
+                "Password must be at least 8 characters long, "
+                "contain at least one uppercase letter, "
+                "one lowercase letter, and one digit."
+            )
+        return v
+
+
+class DeleteUser(QueryBase):
+    delete_data: Optional[bool] = Field(
+        default=False, description="Whether to delete user data or just the account"
+    )
+
+
 class AuthenticateUserEmailPassword(QueryBase):
     email: EmailStr = Field(..., description="User's email address")
     password: SecretStr = Field(..., description="User's password")
@@ -74,17 +119,6 @@ class AuthenticateUserEmailPassword(QueryBase):
 class AuthenticateUserOAuth(QueryBase):
     provider: Provider = Field(..., description="OAuth provider")
     token: str = Field(..., description="OAuth token in JWT format")
-
-
-class UpdateUser(QueryBase):
-    # should we get user_id?
-    name: Optional[str] = Field(
-        None, description="User's new name", min_length=3, max_length=50
-    )
-    preference: Optional[str] = Field(
-        None, description="Updated user preferences as JSON string"
-    )
-    config_id: Optional[int] = Field(None, description="New configuration ID", ge=1)
 
 
 class CreateConfig(QueryBase):
@@ -128,6 +162,9 @@ class ContextData(QueryBase):
     suffix: Optional[str] = Field(None, description="Code after cursor")
     file_name: Optional[str] = Field(None, description="File name")
     selected_text: Optional[str] = Field(None, description="Selected text in editor")
+    context_files: Optional[List[str]] = Field(
+        None, description="Context files to consider"
+    )
 
 
 class ContextualTelemetryData(QueryBase):
@@ -158,11 +195,11 @@ class BehavioralTelemetryData(QueryBase):
 
 class RequestCompletion(QueryBase):
     model_ids: List[int] = Field(..., description="Models to use for completion")
-    context: Mapping[str, Any] = Field(..., description="Context data for completion")
-    contextual_telemetry: Mapping[str, Any] = Field(
+    context: ContextData = Field(..., description="Context data for completion")
+    contextual_telemetry: ContextualTelemetryData = Field(
         ..., description="Contextual telemetry data"
     )
-    behavioral_telemetry: Mapping[str, Any] = Field(
+    behavioral_telemetry: BehavioralTelemetryData = Field(
         ..., description="Behavioral telemetry data"
     )
     # telemetry: Mapping[str, Any] = Field(
@@ -181,7 +218,7 @@ class CreateCompletionQuery(QueryBase):
     context_id: UUID = Field(..., description="Context record ID")
     session_id: UUID = Field(..., description="Session ID")
     project_id: UUID = Field(..., description="Project ID")
-    multifile_context_changes_indexes: Optional[str] = Field(
+    multi_file_context_changes_indexes: Optional[str] = Field(
         default="{}", description="Context change indexes as JSON"
     )
     total_serving_time: Optional[int] = Field(
@@ -204,7 +241,7 @@ class CreateChatQuery(QueryBase):
     session_id: UUID = Field(..., description="Session ID")
     project_id: UUID = Field(..., description="Project ID")
     chat_id: UUID = Field(..., description="Chat ID")
-    multifile_context_changes_indexes: Optional[str] = Field(
+    multi_file_context_changes_indexes: Optional[str] = Field(
         default="{}", description="Context change indexes as JSON"
     )
     total_serving_time: Optional[int] = Field(
@@ -219,7 +256,7 @@ class CreateChatQuery(QueryBase):
 
 
 class CreateGeneration(QueryBase):
-    metaquery_id: UUID = Field(..., description="MetaQuery ID")
+    meta_query_id: UUID = Field(..., description="Meta Query ID")
     model_id: int = Field(..., description="Model ID", ge=0)
     completion: str = Field(..., description="Generated code/text")
     generation_time: int = Field(..., description="Generation time (ms)", ge=0)
@@ -227,6 +264,12 @@ class CreateGeneration(QueryBase):
     was_accepted: bool = Field(..., description="Whether accepted by user")
     confidence: float = Field(..., description="Confidence score")
     logprobs: List[float] = Field(..., description="Token log probabilities")
+
+
+class UpdateGeneration(QueryBase):
+    was_accepted: Optional[bool] = Field(
+        None, description="Whether the generation was accepted by user"
+    )
 
 
 class FileContextChangeData(QueryBase):
@@ -246,14 +289,14 @@ class UpdateMultiFileContext(QueryBase):
 
 # consider refactoring
 class FeedbackCompletion(QueryBase):
-    metaquery_id: UUID = Field(..., description="MetaQuery ID")
+    meta_query_id: UUID = Field(..., description="Meta Query ID")
     model_id: int = Field(..., description="Model ID", ge=0)
     was_accepted: bool = Field(..., description="Whether completion was accepted")
     ground_truth: Optional[str] = Field(None, description="Actual code if available")
 
 
 class CreateGroundTruth(QueryBase):
-    completionquery_id: UUID = Field(..., description="CompletionQuery ID")
+    completion_query_id: UUID = Field(..., description="CompletionQuery ID")
     ground_truth: str = Field(..., description="Ground truth code")
     # truth_timestamp: str = Field(..., description="Timestamp of ground truth")
 
@@ -272,13 +315,13 @@ class CreateProject(QueryBase):
 
 class UpdateProject(QueryBase):
     project_name: Optional[str] = Field(
-        None, description="Updated project name", min_length=1, max_length=100
+        default=None, description="Updated project name", min_length=1, max_length=100
     )
     multi_file_contexts: Optional[str] = Field(
-        None, description="Updated multi-file contexts as JSON"
+        default=None, description="Updated multi-file contexts as JSON"
     )
     multi_file_context_changes: Optional[str] = Field(
-        None, description="Updated context changes as JSON"
+        default=None, description="Updated context changes as JSON"
     )
 
 
@@ -289,8 +332,8 @@ class AddUserToProject(QueryBase):
 
 
 # TODO check naming consistency
-class ActivateSession(QueryBase):
-    session_token: str = Field(..., description="Session token to activate")
+class ActivateProject(QueryBase):
+    project_token: str = Field(..., description="Project token to activate")
 
 
 # TODO check naming consistency
@@ -300,8 +343,6 @@ class DeactivateSession(QueryBase):
 
 class CreateSession(QueryBase):
     user_id: UUID = Field(..., description="User ID")
-    project_id: UUID = Field(..., description="Project ID")
-    # Should start_time be given?
 
 
 class UpdateSession(QueryBase):
@@ -309,15 +350,9 @@ class UpdateSession(QueryBase):
     end_time: Optional[str] = Field(None, description="Session end time")
 
 
-class DeleteUser(QueryBase):
-    delete_data: Optional[bool] = Field(
-        default=False, description="Whether to delete user data or just the account"
-    )
-
-
 class CreateModel(QueryBase):
     model_name: str = Field(..., description="Model name")
-    is_instructionTuned: Optional[bool] = Field(
+    is_instruction_tuned: Optional[bool] = Field(
         default=False, description="Whether model is instruction-tuned"
     )
 
@@ -335,12 +370,20 @@ class CreateChat(QueryBase):
 
 
 class UpdateGenerationAcceptance(QueryBase):
-    metaquery_id: UUID = Field(..., description="MetaQuery ID")
+    meta_query_id: UUID = Field(..., description="Meta Query ID")
     model_id: int = Field(..., description="Model ID", ge=0)
     was_accepted: bool = Field(..., description="Whether completion was accepted")
 
 
-if __name__ == "__main__":
-    fake_update_multi_file_context = UpdateMultiFileContext.fake(1)
-    res = fake_update_multi_file_context.dict()
-    print(res)
+class CreateSessionProject(QueryBase):
+    session_id: UUID = Field(..., description="Session ID")
+    project_id: UUID = Field(..., description="Project ID")
+
+
+# class SessionQueryData(QueryBase):
+#     session_id: UUID = Field(..., description="Session ID")
+#     query_id: UUID = Field(..., description="Query ID")
+#     multi_file_context_changes_indexes: Optional[Dict[str, int]] = Field(
+#         default={},
+#         description="Indexes of multi-file context changes for each file",
+#     )

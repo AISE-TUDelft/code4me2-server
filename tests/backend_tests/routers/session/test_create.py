@@ -31,9 +31,9 @@ class TestCreateSession:
         fake_user_id = "123"
         fake_session_id = "abc-session"
 
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = fake_user_id
-        mock_session_manager.update_session.return_value = None
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = fake_user_id
+        mock_redis_manager.update_session.return_value = None
 
         mock_config = MagicMock()
         mock_config.session_token_expires_in_seconds = 3600
@@ -43,7 +43,7 @@ class TestCreateSession:
         mock_created_session = MagicMock()
         mock_created_session.session_id = fake_session_id
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_config.return_value = mock_config
         client.mock_app.get_db_session.return_value = mock_db_session
 
@@ -58,10 +58,10 @@ class TestCreateSession:
         assert response.json() == CreateSessionPostResponse()
 
     def test_create_session_invalid_token(self, client):
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = None
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = None
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
 
         response = client.post("/api/session/create")
 
@@ -69,12 +69,12 @@ class TestCreateSession:
         assert response.json() == InvalidOrExpiredAuthToken()
 
     def test_create_session_internal_error(self, client):
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.side_effect = Exception(
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.side_effect = Exception(
             "DB failure"
         )
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
 
         response = client.post("/api/session/create")
 

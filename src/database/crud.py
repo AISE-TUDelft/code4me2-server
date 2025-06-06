@@ -6,23 +6,10 @@ from sqlalchemy.orm import Session
 
 import Queries as Queries
 from database import db_schemas
-from database.utils import hash_password, verify_password
+from database.utils import create_uuid, hash_password, verify_password
 
 
 # User
-def get_user_by_email(db: Session, email: str) -> Optional[Type[db_schemas.User]]:
-    return db.query(db_schemas.User).filter(db_schemas.User.email == email).first()
-
-
-def get_user_by_email_password(
-    db: Session, email: str, password: str
-) -> Optional[Type[db_schemas.User]]:
-    user = db.query(db_schemas.User).filter(db_schemas.User.email == email).first()
-    if user and verify_password(user.password, password):
-        return user
-    return None
-
-
 def create_user(
     db: Session, user: Union[Queries.CreateUser, Queries.CreateUserOauth]
 ) -> db_schemas.User:
@@ -42,7 +29,6 @@ def create_user(
 
     db.add(db_user)
     db.commit()
-    db.refresh(db_user)
     return db_user
 
 
@@ -50,39 +36,37 @@ def get_user_by_id(db: Session, user_id: uuid.UUID) -> Optional[db_schemas.User]
     return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
 
 
-def remove_user_by_id(db: Session, user_id: uuid.UUID) -> bool:
-    result = (
-        db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
-    )
-    db.commit()
-    return result > 0
+def get_user_by_email(db: Session, email: str) -> Optional[Type[db_schemas.User]]:
+    return db.query(db_schemas.User).filter(db_schemas.User.email == email).first()
 
 
-def delete_user_cascade(db: Session, user_id: uuid.UUID) -> bool:
-    """
-    Properly delete user with all cascading relationships
-    Uses SQLAlchemy ORM cascades for proper cleanup
-    """
-    user = get_user_by_id(db, user_id)
-    if not user:
-        return False
+def get_user_by_email_password(
+    db: Session, email: str, password: str
+) -> Optional[db_schemas.User]:
+    user = db.query(db_schemas.User).filter(db_schemas.User.email == email).first()
+    if user and verify_password(str(user.password), password):
+        return user
+    return None
 
-    try:
-        # SQLAlchemy will handle cascades with proper relationship config
-        db.delete(user)
-        db.commit()
-        return True
-    except Exception as e:
-        db.rollback()
-        raise e
+
+def get_user_by_id_password(db: Session, user_id: uuid.UUID, password: str):
+    user = db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
+    if user and verify_password(str(user.password), password):
+        return user
+    return None
 
 
 def update_user(
     db: Session, user_id: uuid.UUID, user_to_update: Queries.UpdateUser
 ) -> db_schemas.User:
     # Get all the data and manually filter out None values
-    all_data = user_to_update.dict()
-    update_data = {key: value for key, value in all_data.items() if value is not None}
+    update_data = {
+        key: value
+        for key, value in user_to_update.dict().items()
+        if value is not None and key != "previous_password"
+    }
+    if update_data.get("password"):
+        update_data["password"] = hash_password(update_data["password"])
 
     if not update_data:
         # No fields to update, just return the existing user
@@ -91,10 +75,18 @@ def update_user(
         )
 
     db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).update(
-        update_data
+        update_data  # type: ignore
     )
     db.commit()
     return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
+
+
+def delete_user_by_id(db: Session, user_id: uuid.UUID) -> bool:
+    result = (
+        db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
+    )
+    db.commit()
+    return result > 0
 
 
 # def update_user(db: Session, user_id: uuid.UUID, user_update: Queries.UpdateUser) -> Optional[db_schemas.User]:
@@ -126,9 +118,11 @@ def update_user(
 #     return db_context
 
 
-def create_context(db: Session, context: Queries.ContextData) -> db_schemas.Context:
+def create_context(
+    db: Session, context: Queries.ContextData, context_id: str = ""
+) -> db_schemas.Context:
     db_context = db_schemas.Context(
-        context_id=uuid.uuid4(),
+        context_id=uuid.UUID(context_id) if context_id == "" else create_uuid(),
         prefix=context.prefix,
         suffix=context.suffix,
         file_name=context.file_name,
@@ -136,7 +130,7 @@ def create_context(db: Session, context: Queries.ContextData) -> db_schemas.Cont
     )
     db.add(db_context)
     db.commit()
-    db.refresh(db_context)
+    # db.refresh(db_context)
     return db_context
 
 
@@ -183,7 +177,7 @@ def create_contextual_telemetry(
     )
     db.add(db_telemetry)
     db.commit()
-    db.refresh(db_telemetry)
+    # db.refresh(db_telemetry)
     return db_telemetry
 
 
@@ -272,19 +266,19 @@ def get_behavioral_telemetry_by_id(
 def create_completion_query(
     db: Session, query: Queries.CreateCompletionQuery
 ) -> db_schemas.CompletionQuery:
-    metaquery_id = uuid.uuid4()
+    meta_query_id = uuid.uuid4()
 
     # Create the completion query directly using joined table inheritance
-    # This will automatically create both the metaquery and completionquery records
+    # This will automatically create both the meta query and completion_query records
     db_completion_query = db_schemas.CompletionQuery(
-        metaquery_id=metaquery_id,
+        meta_query_id=meta_query_id,
         user_id=query.user_id,
         contextual_telemetry_id=query.contextual_telemetry_id,
         behavioral_telemetry_id=query.behavioral_telemetry_id,
         context_id=query.context_id,
         session_id=query.session_id,
         project_id=query.project_id,
-        multifile_context_changes_indexes=query.multifile_context_changes_indexes,
+        multi_file_context_changes_indexes=query.multi_file_context_changes_indexes,
         timestamp=datetime.now(),
         total_serving_time=query.total_serving_time,
         server_version_id=query.server_version_id,
@@ -300,19 +294,19 @@ def create_completion_query(
 def create_chat_query(
     db: Session, query: Queries.CreateChatQuery
 ) -> db_schemas.ChatQuery:
-    metaquery_id = uuid.uuid4()
+    meta_query_id = uuid.uuid4()
 
     # Create the chat query directly using joined table inheritance
-    # This will automatically create both the metaquery and chatquery records
+    # This will automatically create both the meta_query and chat_query records
     db_chat_query = db_schemas.ChatQuery(
-        metaquery_id=metaquery_id,
+        meta_query_id=meta_query_id,
         user_id=query.user_id,
         contextual_telemetry_id=query.contextual_telemetry_id,
         behavioral_telemetry_id=query.behavioral_telemetry_id,
         context_id=query.context_id,
         session_id=query.session_id,
         project_id=query.project_id,
-        multifile_context_changes_indexes=query.multifile_context_changes_indexes,
+        multi_file_context_changes_indexes=query.multi_file_context_changes_indexes,
         timestamp=datetime.now(),
         total_serving_time=query.total_serving_time,
         server_version_id=query.server_version_id,
@@ -327,32 +321,32 @@ def create_chat_query(
     return db_chat_query
 
 
-def get_metaquery_by_id(
-    db: Session, metaquery_id: uuid.UUID
+def get_meta_query_by_id(
+    db: Session, meta_query_id: uuid.UUID
 ) -> Optional[db_schemas.MetaQuery]:
     return (
         db.query(db_schemas.MetaQuery)
-        .filter(db_schemas.MetaQuery.metaquery_id == metaquery_id)
+        .filter(db_schemas.MetaQuery.meta_query_id == meta_query_id)
         .first()
     )
 
 
 def get_completion_query_by_id(
-    db: Session, metaquery_id: uuid.UUID
+    db: Session, meta_query_id: uuid.UUID
 ) -> Optional[db_schemas.CompletionQuery]:
     return (
         db.query(db_schemas.CompletionQuery)
-        .filter(db_schemas.CompletionQuery.metaquery_id == metaquery_id)
+        .filter(db_schemas.CompletionQuery.meta_query_id == meta_query_id)
         .first()
     )
 
 
 def get_chat_query_by_id(
-    db: Session, metaquery_id: uuid.UUID
+    db: Session, meta_query_id: uuid.UUID
 ) -> Optional[db_schemas.ChatQuery]:
     return (
         db.query(db_schemas.ChatQuery)
-        .filter(db_schemas.ChatQuery.metaquery_id == metaquery_id)
+        .filter(db_schemas.ChatQuery.meta_query_id == meta_query_id)
         .first()
     )
 
@@ -367,16 +361,16 @@ def get_chat_queries_for_chat(
     )
 
 
-def delete_metaquery_cascade(db: Session, metaquery_id: uuid.UUID) -> bool:
+def delete_meta_query_cascade(db: Session, meta_query_id: uuid.UUID) -> bool:
     """
-    Properly delete metaquery with all cascading relationships
+    Properly delete meta_query with all cascading relationships
     """
-    metaquery = get_metaquery_by_id(db, metaquery_id)
-    if not metaquery:
+    meta_query = get_meta_query_by_id(db, meta_query_id)
+    if not meta_query:
         return False
 
     try:
-        db.delete(metaquery)
+        db.delete(meta_query)
         db.commit()
         return True
     except Exception as e:
@@ -435,7 +429,7 @@ def create_generation(
     shown_at_datetimes = [datetime.fromisoformat(ts) for ts in generation.shown_at]
 
     db_generation = db_schemas.HadGeneration(
-        metaquery_id=generation.metaquery_id,
+        meta_query_id=generation.meta_query_id,
         model_id=generation.model_id,
         completion=generation.completion,
         generation_time=generation.generation_time,
@@ -446,16 +440,16 @@ def create_generation(
     )
     db.add(db_generation)
     db.commit()
-    db.refresh(db_generation)
+    # db.refresh(db_generation)
     return db_generation
 
 
-def get_generations_by_metaquery(
-    db: Session, metaquery_id: uuid.UUID
+def get_generations_by_meta_query(
+    db: Session, meta_query_id: uuid.UUID
 ) -> list[db_schemas.HadGeneration]:
     return (
         db.query(db_schemas.HadGeneration)
-        .filter(db_schemas.HadGeneration.metaquery_id == metaquery_id)
+        .filter(db_schemas.HadGeneration.meta_query_id == meta_query_id)
         .all()
     )
 
@@ -464,23 +458,23 @@ def update_generation_acceptance(
     db: Session, update_data: Queries.UpdateGenerationAcceptance
 ) -> Optional[db_schemas.HadGeneration]:
     """Update generation acceptance status"""
-    generation = get_generation_by_metaquery_and_model(
-        db, update_data.metaquery_id, update_data.model_id
+    generation = get_generation_by_meta_query_and_model(
+        db, update_data.meta_query_id, update_data.model_id
     )
     if generation:
-        generation.was_accepted = update_data.was_accepted
+        setattr(generation, "was_accepted", update_data.was_accepted)
         db.commit()
         db.refresh(generation)
     return generation
 
 
-def get_generation_by_metaquery_and_model(
-    db: Session, metaquery_id: uuid.UUID, model_id: int
+def get_generation_by_meta_query_and_model(
+    db: Session, meta_query_id: uuid.UUID, model_id: int
 ) -> Optional[db_schemas.HadGeneration]:
     return (
         db.query(db_schemas.HadGeneration)
         .filter(
-            db_schemas.HadGeneration.metaquery_id == metaquery_id,
+            db_schemas.HadGeneration.meta_query_id == meta_query_id,
             db_schemas.HadGeneration.model_id == model_id,
         )
         .first()
@@ -491,12 +485,28 @@ def get_generation_by_metaquery_and_model(
 def create_model(db: Session, model: Queries.CreateModel) -> db_schemas.ModelName:
     db_model = db_schemas.ModelName(
         model_name=model.model_name,
-        is_instructionTuned=model.is_instructionTuned,
+        is_instruction_tuned=model.is_instruction_tuned,
     )
     db.add(db_model)
     db.commit()
     db.refresh(db_model)
     return db_model
+
+
+def update_generation(
+    db: Session, query_id: str, model_id: int, generation: Queries.UpdateGeneration
+):
+    """Update an existing generation"""
+    result = (
+        db.query(db_schemas.HadGeneration)
+        .filter(
+            db_schemas.HadGeneration.query_id == query_id,
+            db_schemas.HadGeneration.model_id == model_id,
+        )
+        .update(**generation.dict())
+    )
+    db.commit()
+    return result > 0
 
 
 def get_model_by_id(db: Session, model_id: int) -> Optional[db_schemas.ModelName]:
@@ -705,39 +715,38 @@ def create_session(db: Session, session: Queries.CreateSession) -> db_schemas.Se
     db_session = db_schemas.Session(
         session_id=uuid.uuid4(),
         user_id=session.user_id,
-        project_id=session.project_id,
-        start_time=datetime.now(),
+        start_time=datetime.now().isoformat(),
         end_time=None,
     )
     db.add(db_session)
     db.commit()
-    db.refresh(db_session)
+    # db.refresh(db_session)
     return db_session
+
+
+def create_session_project(
+    db: Session, session_project: Queries.CreateSessionProject
+) -> db_schemas.SessionProject:
+    db_session_project = db_schemas.SessionProject(
+        session_id=session_project.session_id, project_id=session_project.project_id
+    )
+
+    db.add(db_session_project)
+    db.commit()
+    return db_session_project
 
 
 def update_session(
     db: Session,
     session_id: uuid.UUID,
-    user_id: uuid.UUID,
     session_update: Queries.UpdateSession,
 ) -> Optional[db_schemas.Session]:
-    session = get_session_by_id(db, session_id, user_id)
-    if session:
-        if session_update.end_time:
-            session.end_time = datetime.fromisoformat(session_update.end_time)
+    session = get_session_by_id(db, session_id)
+    if session and session_update.end_time:
+        setattr(session, "end_time", datetime.fromisoformat(session_update.end_time))
         db.commit()
-        db.refresh(session)
+        # db.refresh(session)
     return session
-
-
-def get_sessions_for_project(
-    db: Session, project_id: uuid.UUID
-) -> list[db_schemas.Session]:
-    return (
-        db.query(db_schemas.Session)
-        .filter(db_schemas.Session.project_id == project_id)
-        .all()
-    )
 
 
 def get_sessions_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Session]:
@@ -747,25 +756,20 @@ def get_sessions_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Se
 
 
 def get_session_by_id(
-    db: Session, session_id: uuid.UUID, user_id: uuid.UUID
+    db: Session, session_id: uuid.UUID
 ) -> Optional[db_schemas.Session]:
     return (
         db.query(db_schemas.Session)
-        .filter(
-            db_schemas.Session.session_id == session_id,
-            db_schemas.Session.user_id == user_id,
-        )
+        .filter(db_schemas.Session.session_id == session_id)
         .first()
     )
 
 
-def delete_session_cascade(
-    db: Session, session_id: uuid.UUID, user_id: uuid.UUID
-) -> bool:
+def delete_session_cascade(db: Session, session_id: uuid.UUID) -> bool:
     """
     Properly delete session with all cascading relationships
     """
-    session = get_session_by_id(db, session_id, user_id)
+    session = get_session_by_id(db, session_id)
     if not session:
         return False
 
@@ -783,7 +787,7 @@ def create_ground_truth(
 ) -> db_schemas.GroundTruth:
     """Create a ground truth record"""
     db_ground_truth = db_schemas.GroundTruth(
-        completionquery_id=ground_truth.completionquery_id,
+        completion_query_id=ground_truth.completion_query_id,
         truth_timestamp=datetime.now(),
         ground_truth=ground_truth.ground_truth,
     )
@@ -794,11 +798,11 @@ def create_ground_truth(
 
 
 def get_ground_truths_for_completion(
-    db: Session, completionquery_id: uuid.UUID
+    db: Session, completion_query_id: uuid.UUID
 ) -> list[db_schemas.GroundTruth]:
     return (
         db.query(db_schemas.GroundTruth)
-        .filter(db_schemas.GroundTruth.completionquery_id == completionquery_id)
+        .filter(db_schemas.GroundTruth.completion_query_id == completion_query_id)
         .all()
     )
 

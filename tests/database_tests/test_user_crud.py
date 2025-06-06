@@ -59,9 +59,13 @@ def setup_reference_data(db_session):
     # Add models if they don't exist
     if db_session.query(db_schemas.ModelName).count() == 0:
         models = [
-            db_schemas.ModelName(model_name="deepseek-1.3b", is_instructionTuned=False),
-            db_schemas.ModelName(model_name="starcoder2-3b", is_instructionTuned=False),
-            db_schemas.ModelName(model_name="gpt-4-turbo", is_instructionTuned=True),
+            db_schemas.ModelName(
+                model_name="deepseek-1.3b", is_instruction_tuned=False
+            ),
+            db_schemas.ModelName(
+                model_name="starcoder2-3b", is_instruction_tuned=False
+            ),
+            db_schemas.ModelName(model_name="gpt-4-turbo", is_instruction_tuned=True),
         ]
         db_session.add_all(models)
 
@@ -482,7 +486,7 @@ def test_create_completion_query(
         context_id=context.context_id,
         session_id=test_session.session_id,
         project_id=test_project.project_id,
-        multifile_context_changes_indexes='{"index": 1}',
+        multi_file_context_changes_indexes='{"index": 1}',
         total_serving_time=150,
         server_version_id=1,
     )
@@ -490,13 +494,13 @@ def test_create_completion_query(
     created_query = crud.create_completion_query(db_session, query_data)
 
     assert created_query is not None
-    assert created_query.metaquery_id is not None
+    assert created_query.meta_query_id is not None
 
-    # Verify the metaquery was created correctly
-    metaquery = crud.get_metaquery_by_id(db_session, created_query.metaquery_id)
-    assert metaquery is not None
-    assert metaquery.query_type == "completion"
-    assert metaquery.user_id == test_user.user_id
+    # Verify the meta_query was created correctly
+    meta_query = crud.get_meta_query_by_id(db_session, created_query.meta_query_id)
+    assert meta_query is not None
+    assert meta_query.query_type == "completion"
+    assert meta_query.user_id == test_user.user_id
 
 
 def test_create_chat_query(
@@ -560,14 +564,14 @@ def test_create_chat_query(
     created_query = crud.create_chat_query(db_session, query_data)
 
     assert created_query is not None
-    assert created_query.metaquery_id is not None
+    assert created_query.meta_query_id is not None
     assert created_query.chat_id == chat.chat_id
     assert created_query.web_enabled is True
 
-    # Verify the metaquery was created correctly
-    metaquery = crud.get_metaquery_by_id(db_session, created_query.metaquery_id)
-    assert metaquery is not None
-    assert metaquery.query_type == "chat"
+    # Verify the meta_query was created correctly
+    meta_query = crud.get_meta_query_by_id(db_session, created_query.meta_query_id)
+    assert meta_query is not None
+    assert meta_query.query_type == "chat"
 
 
 # ============================================================================
@@ -623,7 +627,7 @@ def test_create_generation(
     # Create generation
     current_time = datetime.now().isoformat()
     generation_data = Queries.CreateGeneration(
-        metaquery_id=completion_query.metaquery_id,
+        meta_query_id=completion_query.meta_query_id,
         model_id=1,
         completion="def generate_test():\n    return 'Generated successfully!'",
         generation_time=50,
@@ -636,7 +640,7 @@ def test_create_generation(
     created_generation = crud.create_generation(db_session, generation_data)
 
     assert created_generation is not None
-    assert created_generation.metaquery_id == completion_query.metaquery_id
+    assert created_generation.meta_query_id == completion_query.meta_query_id
     assert created_generation.model_id == 1
     assert "Generated successfully!" in created_generation.completion
     assert created_generation.generation_time == 50
@@ -688,7 +692,7 @@ def test_update_generation_acceptance(
     generation = crud.create_generation(
         db_session,
         Queries.CreateGeneration(
-            metaquery_id=completion_query.metaquery_id,
+            meta_query_id=completion_query.meta_query_id,
             model_id=1,
             completion="def update_test():\n    return 'Updated!'",
             generation_time=60,
@@ -701,7 +705,7 @@ def test_update_generation_acceptance(
 
     # Update acceptance status
     update_data = Queries.UpdateGenerationAcceptance(
-        metaquery_id=completion_query.metaquery_id, model_id=1, was_accepted=True
+        meta_query_id=completion_query.meta_query_id, model_id=1, was_accepted=True
     )
 
     updated_generation = crud.update_generation_acceptance(db_session, update_data)
@@ -757,14 +761,14 @@ def test_create_ground_truth(
 
     # Create ground truth
     ground_truth_data = Queries.CreateGroundTruth(
-        completionquery_id=completion_query.metaquery_id,
+        completion_query_id=completion_query.meta_query_id,
         ground_truth="def ground_truth_test():\n    print('This is the actual code')\n    return True",
     )
 
     created_ground_truth = crud.create_ground_truth(db_session, ground_truth_data)
 
     assert created_ground_truth is not None
-    assert created_ground_truth.completionquery_id == completion_query.metaquery_id
+    assert created_ground_truth.completion_query_id == completion_query.meta_query_id
     assert "actual code" in created_ground_truth.ground_truth
 
 
@@ -828,7 +832,7 @@ def test_complete_workflow(
         generation = crud.create_generation(
             db_session,
             Queries.CreateGeneration(
-                metaquery_id=completion_query.metaquery_id,
+                meta_query_id=completion_query.meta_query_id,
                 model_id=model_id,
                 completion=f"def workflow_test():\n    result = model_{model_id}_output\n    return result",
                 generation_time=40 + model_id * 10,
@@ -843,7 +847,7 @@ def test_complete_workflow(
     crud.update_generation_acceptance(
         db_session,
         Queries.UpdateGenerationAcceptance(
-            metaquery_id=completion_query.metaquery_id, model_id=2, was_accepted=True
+            meta_query_id=completion_query.meta_query_id, model_id=2, was_accepted=True
         ),
     )
 
@@ -851,19 +855,19 @@ def test_complete_workflow(
     crud.create_ground_truth(
         db_session,
         Queries.CreateGroundTruth(
-            completionquery_id=completion_query.metaquery_id,
+            completion_query_id=completion_query.meta_query_id,
             ground_truth="def workflow_test():\n    result = calculate_workflow()\n    return result",
         ),
     )
 
     # 7. Verify everything exists
     retrieved_query = crud.get_completion_query_by_id(
-        db_session, completion_query.metaquery_id
+        db_session, completion_query.meta_query_id
     )
     assert retrieved_query is not None
 
-    generations = crud.get_generations_by_metaquery(
-        db_session, completion_query.metaquery_id
+    generations = crud.get_generations_by_meta_query(
+        db_session, completion_query.meta_query_id
     )
     assert len(generations) == 2
 
@@ -873,7 +877,7 @@ def test_complete_workflow(
     assert accepted_generations[0].model_id == 2
 
     ground_truths = crud.get_ground_truths_for_completion(
-        db_session, completion_query.metaquery_id
+        db_session, completion_query.meta_query_id
     )
     assert len(ground_truths) == 1
 
@@ -1043,10 +1047,10 @@ def test_cascade_deletions(db_session, test_user, test_project, test_session):
     assert deleted_chat is None
 
 
-def test_metaquery_cascade_deletion(
+def test_meta_query_cascade_deletion(
     db_session, test_user, test_project, test_session, setup_reference_data
 ):
-    """Test that metaquery deletion cascades properly to generations and ground truths"""
+    """Test that meta_query deletion cascades properly to generations and ground truths"""
 
     # Create context and telemetries
     context = crud.create_context(
@@ -1082,7 +1086,7 @@ def test_metaquery_cascade_deletion(
     generation = crud.create_generation(
         db_session,
         Queries.CreateGeneration(
-            metaquery_id=completion_query.metaquery_id,
+            meta_query_id=completion_query.meta_query_id,
             model_id=1,
             completion="def cascade_test():\n    return 'cascaded'",
             generation_time=50,
@@ -1097,37 +1101,37 @@ def test_metaquery_cascade_deletion(
     ground_truth = crud.create_ground_truth(
         db_session,
         Queries.CreateGroundTruth(
-            completionquery_id=completion_query.metaquery_id,
+            completion_query_id=completion_query.meta_query_id,
             ground_truth="def cascade_test():\n    return 'actual truth'",
         ),
     )
 
     # Verify everything exists
-    metaquery_id = completion_query.metaquery_id
+    meta_query_id = completion_query.meta_query_id
 
-    generations_before = crud.get_generations_by_metaquery(db_session, metaquery_id)
+    generations_before = crud.get_generations_by_meta_query(db_session, meta_query_id)
     assert len(generations_before) == 1
 
     ground_truths_before = crud.get_ground_truths_for_completion(
-        db_session, metaquery_id
+        db_session, meta_query_id
     )
     assert len(ground_truths_before) == 1
 
-    # Delete metaquery using cascade method
-    result = crud.delete_metaquery_cascade(db_session, metaquery_id)
+    # Delete meta_query using cascade method
+    result = crud.delete_meta_query_cascade(db_session, meta_query_id)
     assert result is True
 
-    # Verify metaquery is gone
-    deleted_metaquery = crud.get_metaquery_by_id(db_session, metaquery_id)
-    assert deleted_metaquery is None
+    # Verify meta_query is gone
+    deleted_meta_query = crud.get_meta_query_by_id(db_session, meta_query_id)
+    assert deleted_meta_query is None
 
     # Verify generations were cascaded
-    generations_after = crud.get_generations_by_metaquery(db_session, metaquery_id)
+    generations_after = crud.get_generations_by_meta_query(db_session, meta_query_id)
     assert len(generations_after) == 0
 
     # Verify ground truths were cascaded
     ground_truths_after = crud.get_ground_truths_for_completion(
-        db_session, metaquery_id
+        db_session, meta_query_id
     )
     assert len(ground_truths_after) == 0
 
@@ -1291,7 +1295,7 @@ def test_generation_acceptance_workflow(
         generation = crud.create_generation(
             db_session,
             Queries.CreateGeneration(
-                metaquery_id=completion_query.metaquery_id,
+                meta_query_id=completion_query.meta_query_id,
                 model_id=model_id,
                 completion=f"def test():\n    return {model_id}",
                 generation_time=50 + model_id * 10,
@@ -1307,13 +1311,13 @@ def test_generation_acceptance_workflow(
     crud.update_generation_acceptance(
         db_session,
         Queries.UpdateGenerationAcceptance(
-            metaquery_id=completion_query.metaquery_id, model_id=2, was_accepted=True
+            meta_query_id=completion_query.meta_query_id, model_id=2, was_accepted=True
         ),
     )
 
     # Verify acceptance
-    all_generations = crud.get_generations_by_metaquery(
-        db_session, completion_query.metaquery_id
+    all_generations = crud.get_generations_by_meta_query(
+        db_session, completion_query.meta_query_id
     )
     accepted_count = sum(1 for g in all_generations if g.was_accepted)
     assert accepted_count == 1
@@ -1420,7 +1424,7 @@ def test_large_text_fields(
     generation = crud.create_generation(
         db_session,
         Queries.CreateGeneration(
-            metaquery_id=completion_query.metaquery_id,
+            meta_query_id=completion_query.meta_query_id,
             model_id=1,
             completion=large_completion,
             generation_time=100,
@@ -1499,7 +1503,7 @@ def test_datetime_edge_cases(db_session, test_user, test_project, setup_referenc
     generation = crud.create_generation(
         db_session,
         Queries.CreateGeneration(
-            metaquery_id=completion_query.metaquery_id,
+            meta_query_id=completion_query.meta_query_id,
             model_id=1,
             completion="test completion",
             generation_time=50,
@@ -1690,19 +1694,19 @@ def test_polymorphic_query_inheritance(
     )
 
     # Test that we can retrieve both as MetaQueries
-    completion_meta = crud.get_metaquery_by_id(
-        db_session, completion_query.metaquery_id
+    completion_meta = crud.get_meta_query_by_id(
+        db_session, completion_query.meta_query_id
     )
-    chat_meta = crud.get_metaquery_by_id(db_session, chat_query.metaquery_id)
+    chat_meta = crud.get_meta_query_by_id(db_session, chat_query.meta_query_id)
 
     assert completion_meta.query_type == "completion"
     assert chat_meta.query_type == "chat"
 
     # Test that we can retrieve specific types
     specific_completion = crud.get_completion_query_by_id(
-        db_session, completion_query.metaquery_id
+        db_session, completion_query.meta_query_id
     )
-    specific_chat = crud.get_chat_query_by_id(db_session, chat_query.metaquery_id)
+    specific_chat = crud.get_chat_query_by_id(db_session, chat_query.meta_query_id)
 
     assert specific_completion is not None
     assert specific_chat is not None

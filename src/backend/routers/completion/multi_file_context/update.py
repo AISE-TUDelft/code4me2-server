@@ -101,12 +101,11 @@ def update_multi_file_context(
     Update the context for a specific query ID.
     """
     logging.log(logging.INFO, f"Updating context for session: {session_token}")
-    db_session = app.get_db_session()
-    session_manager = app.get_session_manager()
+    redis_manager = app.get_redis_manager()
 
     try:
         # Check if user is authenticated
-        user_dict = session_manager.get_session(session_token)
+        user_dict = redis_manager.get_session(session_token)
         if session_token is None or user_dict is None:
             return JsonResponseWithStatus(
                 status_code=401,
@@ -134,7 +133,7 @@ def update_multi_file_context(
         )
         user_dict["data"]["context_changes"] = updated_context_changes
 
-        session_manager.update_session(session_token, user_dict)
+        redis_manager.update_session(session_token, user_dict)
 
         return JsonResponseWithStatus(
             status_code=200,

@@ -10,8 +10,8 @@ from backend.Responses import (
     InvalidOrExpiredJWTToken,
     UserAlreadyExistsWithThisEmail,
 )
-from base_models import UserBase
 from main import app  # Adjust this import based on your project structure
+from response_models import UserBase
 
 
 class TestCreate:

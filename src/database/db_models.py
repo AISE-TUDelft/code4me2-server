@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from base_models import UserBase
+from response_models import UserBase
 
 # pydantic classes for the database models
 
@@ -222,7 +222,7 @@ class UserDB(UserBase):
 # # Model name models
 # class ModelNameBase(BaseModel):
 #     model_name: str
-#     is_instructionTuned: bool = False
+#     is_instruction_tuned: bool = False
 #
 #
 # class ModelName(ModelNameBase):
@@ -393,13 +393,13 @@ class UserDB(UserBase):
 #     context_id: UUID
 #     session_id: UUID
 #     project_id: UUID
-#     multifile_context_changes_indexes: str = "{}"
+#     multi_file_context_changes_indexes: str = "{}"
 #     total_serving_time: Optional[int] = None
 #     server_version_id: Optional[int] = None
 #
 #
 # class MetaQuery(MetaQueryBase):
-#     metaquery_id: UUID
+#     meta_query_id: UUID
 #     user_id: Optional[UUID] = None
 #     timestamp: datetime
 #     query_type: str
@@ -450,7 +450,7 @@ class UserDB(UserBase):
 #
 #
 # class HadGeneration(HadGenerationBase):
-#     metaquery_id: UUID
+#     meta_query_id: UUID
 #     model_id: int
 #
 #     class Config:
@@ -458,7 +458,7 @@ class UserDB(UserBase):
 #
 #
 # class HadGenerationCreate(HadGenerationBase):
-#     metaquery_id: UUID
+#     meta_query_id: UUID
 #     model_id: int
 #
 #
@@ -473,7 +473,7 @@ class UserDB(UserBase):
 #
 #
 # class GroundTruth(GroundTruthBase):
-#     completionquery_id: UUID
+#     completion_query_id: UUID
 #     truth_timestamp: datetime
 #
 #     class Config:
@@ -481,7 +481,7 @@ class UserDB(UserBase):
 #
 #
 # class GroundTruthCreate(GroundTruthBase):
-#     completionquery_id: UUID
+#     completion_query_id: UUID
 #
 #
 # # Trigger Type models

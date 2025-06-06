@@ -6,4 +6,5 @@ secrets
 **/__pycache__/
 .hypothesis
 .cache
-data/
+data
+.coverage

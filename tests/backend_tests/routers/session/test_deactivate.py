@@ -38,11 +38,11 @@ class TestDeactivateSession:
         session_token = deactivate_session_query.session_token
         fake_session_info = {"user_id": fake_user_id, "data": {}}
 
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = fake_user_id
-        mock_session_manager.get_session.return_value = fake_session_info
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = fake_user_id
+        mock_redis_manager.get_session.return_value = fake_session_info
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_db_session.return_value = MagicMock()
 
         response = client.put(
@@ -56,10 +56,10 @@ class TestDeactivateSession:
     def test_deactivate_session_invalid_auth_token(
         self, client, deactivate_session_query
     ):
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = None
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = None
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
 
         response = client.put(
             "/api/session/deactivate",
@@ -74,11 +74,11 @@ class TestDeactivateSession:
     ):
         fake_user_id = "user123"
 
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = fake_user_id
-        mock_session_manager.get_session.return_value = None
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = fake_user_id
+        mock_redis_manager.get_session.return_value = None
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_db_session.return_value = MagicMock()
 
         response = client.put(
@@ -90,12 +90,12 @@ class TestDeactivateSession:
         assert response.json() == InvalidOrExpiredSessionToken()
 
     def test_deactivate_session_internal_error(self, client, deactivate_session_query):
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.side_effect = Exception(
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.side_effect = Exception(
             "Unexpected error"
         )
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_db_session.return_value = MagicMock()
 
         response = client.put(

@@ -14,7 +14,7 @@ from backend.Responses import (
     QueryNotFoundError,
     RetrieveCompletionsError,
 )
-from base_models import CompletionItem, CompletionResponseData
+from response_models import ResponseCompletionItem, ResponseCompletionResponseData
 
 router = APIRouter()
 
@@ -40,13 +40,13 @@ def get_completions_by_query(
     """
     logging.log(logging.INFO, f"Getting completions for query: {query_id}")
     db_session = app.get_db_session()
-    session_manager = app.get_session_manager()
+    redis_manager = app.get_redis_manager()
 
     try:
         # TODO: We should change the structure of this function to also ask for user_id (it's better to define a new Query class for getting queries which has user_id and query_id) and then only return the queries of the current user
         # or we can simply change get_query_by_id to get_query_by_id_for_user to only return the queries of the current user. For now we can assume query_ids are unique and secure enough for each user.
         # Check if user is authenticated
-        user_dict = session_manager.get_session(session_token)
+        user_dict = redis_manager.get_session(session_token)
         if session_token is None or user_dict is None:
             return JsonResponseWithStatus(
                 status_code=401,
@@ -71,7 +71,7 @@ def get_completions_by_query(
             model = crud.get_model_by_id(db_session, generation.model_id)
 
             completions.append(
-                CompletionItem(
+                ResponseCompletionItem(
                     model_id=generation.model_id,
                     model_name=model.model_name if model else "Unknown Model",
                     completion=generation.completion,
@@ -83,7 +83,9 @@ def get_completions_by_query(
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
-                data=CompletionResponseData(query_id=query_id, completions=completions),
+                data=ResponseCompletionResponseData(
+                    query_id=query_id, completions=completions
+                ),
             ),
         )
 

@@ -87,7 +87,7 @@ class TestCompletionRoutes:
         mock_session = MagicMock()
         mock_session.get_session.return_value = {"user_id": "test_id"}
 
-        client.mock_app.get_session_manager.return_value = mock_session
+        client.mock_app.get_redis_manager.return_value = mock_session
         with patch(
             "backend.routers.completion.get.App.get_instance", return_value=mock_app
         ), patch(
@@ -129,7 +129,7 @@ class TestCompletionRoutes:
         mock_session = MagicMock()
         mock_session.get_session.return_value = {"user_id": "test_id"}
 
-        client.mock_app.get_session_manager.return_value = mock_session
+        client.mock_app.get_redis_manager.return_value = mock_session
 
         with patch(
             "backend.routers.completion.get.App.get_instance", return_value=mock_app

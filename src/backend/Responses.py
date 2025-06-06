@@ -1,15 +1,14 @@
 from abc import ABC
-from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from base_models import (
-    CompletionResponseData,
-    FeedbackResponseData,
+from response_models import (
+    ResponseCompletionResponseData,
+    ResponseFeedbackResponseData,
+    ResponseUser,
     SerializableBaseModel,
-    UserBase,
 )
 
 
@@ -23,8 +22,19 @@ class ErrorResponse(BaseResponse, ABC):
 
 class JsonResponseWithStatus(JSONResponse):
     def __init__(self, content: BaseModel, status_code: int):
+        self.content = content
+        self.status_code = status_code
         # Convert the Pydantic model to a dict
         super().__init__(content=jsonable_encoder(content), status_code=status_code)
+
+    def dict(self) -> dict:
+        """
+        Convert the response content to a dictionary.
+        """
+        return {
+            "status_code": self.status_code,
+            "content": jsonable_encoder(self.content),
+        }
 
 
 # api/user/create
@@ -32,7 +42,7 @@ class CreateUserPostResponse(BaseResponse):
     message: str = Field(
         default="User created successfully. Please check your email for verification."
     )
-    user_id: UUID = Field(..., description="Created user id")
+    user_id: str = Field(..., description="Created user id")
 
 
 class UserAlreadyExistsWithThisEmail(ErrorResponse):
@@ -43,9 +53,14 @@ class InvalidOrExpiredJWTToken(ErrorResponse):
     message: str = Field(default="Invalid or expired token!")
 
 
+class CreateUserError(ErrorResponse):
+    message: str = Field(default="Server failed to create a new user!")
+
+
 # api/user/authenticate
 class AuthenticateUserPostResponse(BaseResponse, ABC):
-    user: UserBase = Field(..., description="User details")  # Uncomment if needed
+    user: ResponseUser = Field(..., description="User details")  # Uncomment if needed
+    config: str = Field(..., description="Users config json string")
 
 
 class AuthenticateUserNormalPostResponse(AuthenticateUserPostResponse):
@@ -62,9 +77,17 @@ class InvalidEmailOrPassword(ErrorResponse):
     message: str = Field(default="Invalid email or password!")
 
 
+class AuthenticateUserError(ErrorResponse):
+    message: str = Field(default="Server failed to authenticate the user!")
+
+
 # /api/user/delete
 class DeleteUserDeleteResponse(BaseResponse):
     message: str = Field(default="User is deleted successfully.")
+
+
+class DeleteUserError(ErrorResponse):
+    message: str = Field(default="Server failed to delete the user!")
 
 
 class InvalidOrExpiredSessionToken(ErrorResponse):
@@ -84,7 +107,15 @@ class InvalidOrExpiredAuthToken(ErrorResponse):
 # /api/user/update
 class UpdateUserPutResponse(BaseResponse):
     message: str = Field(default="User is updated successfully.")
-    user: UserBase = Field(..., description="User details")  # Uncomment if needed
+    user: ResponseUser = Field(..., description="User details")  # Uncomment if needed
+
+
+class InvalidPreviousPassword(BaseResponse):
+    message: str = Field(default="Previous password is not correct!")
+
+
+class UpdateUserError(ErrorResponse):
+    message: str = Field(default="Server failed to update the user!")
 
 
 # /api/completion/request
@@ -92,7 +123,7 @@ class CompletionPostResponse(BaseResponse):
     message: str = Field(
         default="Completions generated successfully. Ready for display in your IDE."
     )
-    data: CompletionResponseData = Field(
+    data: ResponseCompletionResponseData = Field(
         ..., description="Generated code completions including query ID and suggestions"
     )
 
@@ -108,7 +139,7 @@ class GenerateCompletionsError(ErrorResponse):
 # /api/completion/feedback
 class CompletionFeedbackPostResponse(BaseResponse):
     message: str = Field(default="Feedback recorded successfully.")
-    data: FeedbackResponseData = Field(
+    data: ResponseFeedbackResponseData = Field(
         ..., description="Information about the recorded feedback"
     )
 
@@ -143,25 +174,28 @@ class MultiFileContextUpdateError(ErrorResponse):
     message: str = Field(default="Failed to update multi-file context.")
 
 
-# /api/session/create
-class CreateSessionPostResponse(BaseResponse):
-    message: str = Field(default="Session created successfully.")
+# /api/project/create
+class CreateProjectPostResponse(BaseResponse):
+    message: str = Field(default="Project created successfully.")
+    project_token: str = Field(..., description="Created project token.")
 
 
-class CreateSessionError(ErrorResponse):
+class CreateProjectError(ErrorResponse):
+    message: str = Field(default="Server failed to create a project!")
+
+
+# /api/project/activate
+class ActivateProjectPostResponse(BaseResponse):
+    message: str = Field(default="Project activated successfully.")
+
+
+class ActivateProjectError(ErrorResponse):
+    message: str = Field(default="Server failed to activate the project.")
+
+
+class InvalidOrExpiredProjectToken(ErrorResponse):
     message: str = Field(
-        default="Failed to create session. User not found or invalid data."
-    )
-
-
-# /api/session/activate
-class ActivateSessionPostResponse(BaseResponse):
-    message: str = Field(default="Session activated successfully.")
-
-
-class ActivateSessionError(ErrorResponse):
-    message: str = Field(
-        default="Failed to activate session. Session not found or expired."
+        default="Invalid or expired project token. Acquire a session token first."
     )
 
 
@@ -172,3 +206,10 @@ class DeactivateSessionPostResponse(BaseResponse):
 
 class DeactivateSessionError(ErrorResponse):
     message: str = Field(default="Failed to deactivate session.")
+
+
+############################################################
+# /api/session/get
+class AcquireSessionGetResponse(BaseResponse):
+    message: str = Field(default="Session acquired successfully")
+    session_token: str = Field(..., description="Session token")

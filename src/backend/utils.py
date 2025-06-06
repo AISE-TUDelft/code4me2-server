@@ -35,18 +35,48 @@ class SerializableBaseModel(BaseModel):
         data = {}
         # Iterate over the fields and convert fields to plain strings
         for field_name, value in self.__class__.model_fields.items():
-            if value.annotation is SecretStr:
-                data[field_name] = str(getattr(self, field_name).get_secret_value())
-            elif value.annotation is EmailStr:
-                data[field_name] = str(getattr(self, field_name))
-            elif "Enum" in str(type(value.annotation)):
-                data[field_name] = str(getattr(self, field_name).value)
-            elif value.annotation is UUID:
-                data[field_name] = str(getattr(self, field_name))
-            elif value.annotation is datetime:
-                data[field_name] = getattr(self, field_name).isoformat()
+            annotation = value.annotation
+            field_value = getattr(self, field_name)
+
+            # Handle Union types (e.g., Union[SecretStr, NoneType])
+            origin = getattr(annotation, "__origin__", None)
+            args = getattr(annotation, "__args__", ())
+
+            def is_type(typ, target):
+                try:
+                    return typ is target or (
+                        isinstance(typ, type) and issubclass(typ, target)
+                    )
+                except TypeError:
+                    return False
+
+            # Unwrap Union types
+            if origin is Union:
+                # Remove NoneType from Union
+                non_none_args = [arg for arg in args if arg is not type(None)]
+                if non_none_args:
+                    annotation = non_none_args[0]
+
+            if is_type(annotation, SecretStr):
+                data[field_name] = (
+                    str(field_value.get_secret_value())
+                    if field_value is not None
+                    else None
+                )
+            elif is_type(annotation, EmailStr):
+                data[field_name] = str(field_value) if field_value is not None else None
+            elif "Enum" in str(type(annotation)):
+                data[field_name] = (
+                    str(field_value.value) if field_value is not None else None
+                )
+            elif is_type(annotation, UUID):
+                data[field_name] = str(field_value) if field_value is not None else None
+            elif is_type(annotation, datetime):
+                data[field_name] = (
+                    field_value.isoformat() if field_value is not None else None
+                )
             else:
-                data[field_name] = iterable_to_dict(getattr(self, field_name))
+                data[field_name] = iterable_to_dict(field_value)
         return data
 
     def to_json(self) -> str:

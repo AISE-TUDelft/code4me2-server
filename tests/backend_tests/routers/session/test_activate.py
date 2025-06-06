@@ -41,14 +41,14 @@ class TestActivateSession:
             "data": {"context": {}, "context_changes": {}},
         }
 
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = fake_user_id
-        mock_session_manager.get_session.return_value = fake_session_info
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = fake_user_id
+        mock_redis_manager.get_session.return_value = fake_session_info
 
         mock_config = MagicMock()
         mock_config.session_token_expires_in_seconds = 3600
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_config.return_value = mock_config
         client.mock_app.get_db_session.return_value = MagicMock()
 
@@ -69,16 +69,16 @@ class TestActivateSession:
         session_model.multi_file_contexts = "{}"
         session_model.multi_file_context_changes = "{}"
 
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = fake_user_id
-        mock_session_manager.get_session.return_value = None
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = fake_user_id
+        mock_redis_manager.get_session.return_value = None
 
         mock_config = MagicMock()
         mock_config.session_token_expires_in_seconds = 3600
 
         mock_db_session = MagicMock()
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_config.return_value = mock_config
         client.mock_app.get_db_session.return_value = mock_db_session
 
@@ -96,10 +96,10 @@ class TestActivateSession:
         assert response.json() == ActivateSessionPostResponse()
 
     def test_activate_session_invalid_auth_token(self, client, activate_session_query):
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = None
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = None
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
 
         response = client.put(
             "/api/session/activate",
@@ -114,11 +114,11 @@ class TestActivateSession:
     ):
         fake_user_id = "user123"
 
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = fake_user_id
-        mock_session_manager.get_session.return_value = None
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = fake_user_id
+        mock_redis_manager.get_session.return_value = None
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_config.return_value = MagicMock()
         client.mock_app.get_db_session.return_value = MagicMock()
 
@@ -134,12 +134,12 @@ class TestActivateSession:
         assert response.json() == InvalidOrExpiredSessionToken()
 
     def test_activate_session_internal_error(self, client, activate_session_query):
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.side_effect = Exception(
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.side_effect = Exception(
             "Unexpected error"
         )
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_db_session.return_value = MagicMock()
 
         response = client.put(

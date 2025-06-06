@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS public."user"
     is_oauth_signup BOOLEAN DEFAULT FALSE,
     verified BOOLEAN DEFAULT FALSE,
     config_id BIGINT NOT NULL,
-    preference TEXT
+    preference TEXT,
+    auth_token uuid Null
 );
 
 -- Model name table with instruction tuning flag
@@ -26,7 +27,7 @@ CREATE TABLE IF NOT EXISTS public.model_name
 (
     model_id BIGSERIAL PRIMARY KEY,
     model_name text NOT NULL,
-    is_instructionTuned BOOLEAN NOT NULL DEFAULT FALSE
+    is_instruction_tuned BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- Plugin version table
@@ -79,9 +80,9 @@ CREATE TABLE IF NOT EXISTS public.contextual_telemetry
 CREATE TABLE IF NOT EXISTS public.behavioral_telemetry
 (
     behavioral_telemetry_id uuid NOT NULL PRIMARY KEY,
-    time_since_last_shown integer,
-    time_since_last_accepted integer,
-    typing_speed integer
+    time_since_last_shown BIGINT,
+    time_since_last_accepted BIGINT,
+    typing_speed double precision
 );
 
 -- Project table
@@ -104,13 +105,17 @@ CREATE TABLE IF NOT EXISTS public.project_users
 );
 
 -- Session table (individual user sessions within projects)
-CREATE TABLE IF NOT EXISTS public.session
-(
-    session_id uuid NOT NULL PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS public.session (
+    session_id uuid PRIMARY KEY,
     user_id uuid NOT NULL,
-    project_id uuid NOT NULL,
     start_time timestamp with time zone NOT NULL,
     end_time timestamp with time zone
+);
+
+CREATE TABLE IF NOT EXISTS public.session_projects (
+    session_id uuid NOT NULL,
+    project_id uuid NOT NULL,
+    PRIMARY KEY (session_id, project_id)
 );
 
 -- Chat table
@@ -124,40 +129,40 @@ CREATE TABLE IF NOT EXISTS public.chat
 );
 
 -- MetaQuery table (parent for chat and completion queries)
-CREATE TABLE IF NOT EXISTS public.metaquery
+CREATE TABLE IF NOT EXISTS public.meta_query
 (
-    metaquery_id uuid NOT NULL PRIMARY KEY,
+    meta_query_id uuid NOT NULL PRIMARY KEY,
     user_id uuid,
     contextual_telemetry_id uuid NOT NULL,
     behavioral_telemetry_id uuid NOT NULL,
     context_id uuid NOT NULL,
     session_id uuid NOT NULL,
     project_id uuid NOT NULL,
-    multifile_context_changes_indexes text DEFAULT '{}',
+    multi_file_context_changes_indexes text DEFAULT '{}',
     "timestamp" timestamp with time zone NOT NULL,
     total_serving_time integer,
     server_version_id BIGINT,
     query_type VARCHAR NOT NULL CHECK (query_type IN ('chat', 'completion'))
 );
 
--- CompletionQuery table (inherits from metaquery)
-CREATE TABLE IF NOT EXISTS public.completionquery
+-- CompletionQuery table (inherits from meta_query)
+CREATE TABLE IF NOT EXISTS public.completion_query
 (
-    metaquery_id uuid NOT NULL PRIMARY KEY
+    meta_query_id uuid NOT NULL PRIMARY KEY
 );
 
--- ChatQuery table (inherits from metaquery)
-CREATE TABLE IF NOT EXISTS public.chatquery
+-- ChatQuery table (inherits from meta_query)
+CREATE TABLE IF NOT EXISTS public.chat_query
 (
-    metaquery_id uuid NOT NULL PRIMARY KEY,
+    meta_query_id uuid NOT NULL PRIMARY KEY,
     chat_id uuid NOT NULL,
     web_enabled BOOLEAN NOT NULL DEFAULT FALSE
 );
 
--- Had generation table (now references metaquery)
+-- Had generation table (now references meta_query)
 CREATE TABLE IF NOT EXISTS public.had_generation
 (
-    metaquery_id uuid NOT NULL,
+    meta_query_id uuid NOT NULL,
     model_id BIGINT NOT NULL,
     completion text NOT NULL,
     generation_time integer NOT NULL,
@@ -165,16 +170,16 @@ CREATE TABLE IF NOT EXISTS public.had_generation
     was_accepted boolean NOT NULL,
     confidence double precision NOT NULL,
     logprobs double precision[] NOT NULL,
-    PRIMARY KEY (metaquery_id, model_id)
+    PRIMARY KEY (meta_query_id, model_id)
 );
 
--- Ground truth table (now references completionquery only)
+-- Ground truth table (now references completion_query only)
 CREATE TABLE IF NOT EXISTS public.ground_truth
 (
-    completionquery_id uuid NOT NULL,
+    completion_query_id uuid NOT NULL,
     truth_timestamp timestamp with time zone NOT NULL,
     ground_truth text NOT NULL,
-    PRIMARY KEY (completionquery_id, truth_timestamp)
+    PRIMARY KEY (completion_query_id, truth_timestamp)
 );
 
 -- Foreign Key Constraints
@@ -218,13 +223,7 @@ ALTER TABLE public.session
     ADD CONSTRAINT fk_session_user FOREIGN KEY (user_id)
     REFERENCES public."user" (user_id)
     ON UPDATE NO ACTION
-    ON DELETE CASCADE;
-
-ALTER TABLE public.session
-    ADD CONSTRAINT fk_session_project FOREIGN KEY (project_id)
-    REFERENCES public.project (project_id)
-    ON UPDATE NO ACTION
-    ON DELETE CASCADE;
+    ON DELETE SET NULL;
 
 ALTER TABLE public.chat
     ADD CONSTRAINT fk_chat_project FOREIGN KEY (project_id)
@@ -236,65 +235,65 @@ ALTER TABLE public.chat
     ADD CONSTRAINT fk_chat_user FOREIGN KEY (user_id)
     REFERENCES public."user" (user_id)
     ON UPDATE NO ACTION
-    ON DELETE CASCADE;
+    ON DELETE SET NULL;
 
-ALTER TABLE public.metaquery
-    ADD CONSTRAINT fk_metaquery_user FOREIGN KEY (user_id)
+ALTER TABLE public.meta_query
+    ADD CONSTRAINT fk_meta_query_user FOREIGN KEY (user_id)
     REFERENCES public."user" (user_id)
     ON UPDATE NO ACTION
     ON DELETE SET NULL;
 
-ALTER TABLE public.metaquery
-    ADD CONSTRAINT fk_metaquery_contextual_telemetry FOREIGN KEY (contextual_telemetry_id)
+ALTER TABLE public.meta_query
+    ADD CONSTRAINT fk_meta_query_contextual_telemetry FOREIGN KEY (contextual_telemetry_id)
     REFERENCES public.contextual_telemetry (contextual_telemetry_id)
     ON UPDATE NO ACTION
     ON DELETE NO ACTION;
 
-ALTER TABLE public.metaquery
-    ADD CONSTRAINT fk_metaquery_behavioral_telemetry FOREIGN KEY (behavioral_telemetry_id)
+ALTER TABLE public.meta_query
+    ADD CONSTRAINT fk_meta_query_behavioral_telemetry FOREIGN KEY (behavioral_telemetry_id)
     REFERENCES public.behavioral_telemetry (behavioral_telemetry_id)
     ON UPDATE NO ACTION
     ON DELETE NO ACTION;
 
-ALTER TABLE public.metaquery
-    ADD CONSTRAINT fk_metaquery_context FOREIGN KEY (context_id)
+ALTER TABLE public.meta_query
+    ADD CONSTRAINT fk_meta_query_context FOREIGN KEY (context_id)
     REFERENCES public.context (context_id)
     ON UPDATE NO ACTION
     ON DELETE NO ACTION;
 
-ALTER TABLE public.metaquery
-    ADD CONSTRAINT fk_metaquery_project FOREIGN KEY (project_id)
+ALTER TABLE public.meta_query
+    ADD CONSTRAINT fk_meta_query_project FOREIGN KEY (project_id)
     REFERENCES public.project (project_id)
     ON UPDATE NO ACTION
     ON DELETE CASCADE;
 
-ALTER TABLE public.metaquery
-    ADD CONSTRAINT fk_metaquery_session FOREIGN KEY (session_id)
+ALTER TABLE public.meta_query
+    ADD CONSTRAINT fk_meta_query_session FOREIGN KEY (session_id)
     REFERENCES public.session (session_id)
     ON UPDATE NO ACTION
     ON DELETE NO ACTION;
 
-ALTER TABLE public.completionquery
-    ADD CONSTRAINT fk_completionquery_metaquery FOREIGN KEY (metaquery_id)
-    REFERENCES public.metaquery (metaquery_id)
+ALTER TABLE public.completion_query
+    ADD CONSTRAINT fk_completion_query_meta_query FOREIGN KEY (meta_query_id)
+    REFERENCES public.meta_query (meta_query_id)
     ON UPDATE NO ACTION
     ON DELETE CASCADE;
 
-ALTER TABLE public.chatquery
-    ADD CONSTRAINT fk_chatquery_metaquery FOREIGN KEY (metaquery_id)
-    REFERENCES public.metaquery (metaquery_id)
+ALTER TABLE public.chat_query
+    ADD CONSTRAINT fk_chat_query_meta_query FOREIGN KEY (meta_query_id)
+    REFERENCES public.meta_query (meta_query_id)
     ON UPDATE NO ACTION
     ON DELETE CASCADE;
 
-ALTER TABLE public.chatquery
-    ADD CONSTRAINT fk_chatquery_chat FOREIGN KEY (chat_id)
+ALTER TABLE public.chat_query
+    ADD CONSTRAINT fk_chat_query_chat FOREIGN KEY (chat_id)
     REFERENCES public.chat (chat_id)
     ON UPDATE NO ACTION
     ON DELETE CASCADE;
 
 ALTER TABLE public.had_generation
-    ADD CONSTRAINT fk_had_generation_metaquery FOREIGN KEY (metaquery_id)
-    REFERENCES public.metaquery (metaquery_id)
+    ADD CONSTRAINT fk_had_generation_meta_query FOREIGN KEY (meta_query_id)
+    REFERENCES public.meta_query (meta_query_id)
     ON UPDATE NO ACTION
     ON DELETE CASCADE;
 
@@ -305,10 +304,22 @@ ALTER TABLE public.had_generation
     ON DELETE NO ACTION;
 
 ALTER TABLE public.ground_truth
-    ADD CONSTRAINT fk_ground_truth_completionquery FOREIGN KEY (completionquery_id)
-    REFERENCES public.completionquery (metaquery_id)
+    ADD CONSTRAINT fk_ground_truth_completion_query FOREIGN KEY (completion_query_id)
+    REFERENCES public.completion_query (meta_query_id)
     ON UPDATE NO ACTION
     ON DELETE CASCADE;
+    
+ALTER TABLE public.session_projects
+ADD CONSTRAINT fk_session
+FOREIGN KEY (session_id)
+REFERENCES public.session(session_id)
+ON DELETE CASCADE;
+
+ALTER TABLE public.session_projects
+ADD CONSTRAINT fk_project
+FOREIGN KEY (project_id)
+REFERENCES public.project(project_id)
+ON DELETE CASCADE;
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_user_email ON public."user" (email);
@@ -322,26 +333,27 @@ CREATE INDEX IF NOT EXISTS idx_project_users_project_id ON public.project_users 
 CREATE INDEX IF NOT EXISTS idx_project_users_user_id ON public.project_users (user_id);
 
 CREATE INDEX IF NOT EXISTS idx_session_user_id ON public.session (user_id);
-CREATE INDEX IF NOT EXISTS idx_session_project_id ON public.session (project_id);
+CREATE INDEX IF NOT EXISTS idx_session_projects_session_id ON public.session_projects (session_id);
+CREATE INDEX IF NOT EXISTS idx_session_projects_project_id ON public.session_projects (project_id);
 
 CREATE INDEX IF NOT EXISTS idx_chat_project_id ON public.chat (project_id);
 CREATE INDEX IF NOT EXISTS idx_chat_user_id ON public.chat (user_id);
 
-CREATE INDEX IF NOT EXISTS idx_metaquery_user_id ON public.metaquery (user_id);
-CREATE INDEX IF NOT EXISTS idx_metaquery_project_id ON public.metaquery (project_id);
-CREATE INDEX IF NOT EXISTS idx_metaquery_session_id ON public.metaquery (session_id);
-CREATE INDEX IF NOT EXISTS idx_metaquery_type ON public.metaquery (query_type);
+CREATE INDEX IF NOT EXISTS idx_meta_query_user_id ON public.meta_query (user_id);
+CREATE INDEX IF NOT EXISTS idx_meta_query_project_id ON public.meta_query (project_id);
+CREATE INDEX IF NOT EXISTS idx_meta_query_session_id ON public.meta_query (session_id);
+CREATE INDEX IF NOT EXISTS idx_meta_query_type ON public.meta_query (query_type);
 
-CREATE INDEX IF NOT EXISTS idx_chatquery_chat_id ON public.chatquery (chat_id);
+CREATE INDEX IF NOT EXISTS idx_chat_query_chat_id ON public.chat_query (chat_id);
 
-CREATE INDEX IF NOT EXISTS idx_had_generation_metaquery_model ON public.had_generation (metaquery_id, model_id);
+CREATE INDEX IF NOT EXISTS idx_had_generation_meta_query_model ON public.had_generation (meta_query_id, model_id);
 
-CREATE INDEX IF NOT EXISTS idx_ground_truth_completionquery_timestamp ON public.ground_truth (completionquery_id, truth_timestamp);
+CREATE INDEX IF NOT EXISTS idx_ground_truth_completion_query_timestamp ON public.ground_truth (completion_query_id, truth_timestamp);
 
 -- Insert default data
 INSERT INTO public.config (config_data) VALUES ('{"default": true, "version": "1.0"}');
 
-INSERT INTO public.model_name (model_name, is_instructionTuned) VALUES
+INSERT INTO public.model_name (model_name, is_instruction_tuned) VALUES
     ('deepseek-ai/deepseek-coder-1.3b-base', FALSE),
     ('bigcode/starcoder2-3b', FALSE),
     ('gpt-4-turbo', TRUE),
