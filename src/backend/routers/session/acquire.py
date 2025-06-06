@@ -65,7 +65,7 @@ def acquire_session(
     if not session_token:
         session_token = create_uuid()
         crud.create_session(
-            db_session, Queries.CreateSession(user_id=uuid.UUID(user_id))
+            db_session, Queries.CreateSession(user_id=uuid.UUID(user_id)), session_token
         )
         auth_info["session_token"] = session_token
 

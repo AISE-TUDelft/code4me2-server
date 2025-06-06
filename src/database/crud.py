@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 import Queries as Queries
 from database import db_schemas
-from database.utils import create_uuid, hash_password, verify_password
+from database.utils import hash_password, verify_password
 
 
 # User
@@ -122,7 +122,7 @@ def create_context(
     db: Session, context: Queries.ContextData, context_id: str = ""
 ) -> db_schemas.Context:
     db_context = db_schemas.Context(
-        context_id=uuid.UUID(context_id) if context_id == "" else create_uuid(),
+        context_id=uuid.uuid4() if context_id == "" else uuid.UUID(context_id),
         prefix=context.prefix,
         suffix=context.suffix,
         file_name=context.file_name,
@@ -130,7 +130,7 @@ def create_context(
     )
     db.add(db_context)
     db.commit()
-    # db.refresh(db_context)
+    db.refresh(db_context)
     return db_context
 
 
@@ -163,10 +163,10 @@ def get_context_by_id(
 
 
 def create_contextual_telemetry(
-    db: Session, telemetry: Queries.ContextualTelemetryData
+    db: Session, telemetry: Queries.ContextualTelemetryData, id: str = ""
 ) -> db_schemas.ContextualTelemetry:
     db_telemetry = db_schemas.ContextualTelemetry(
-        contextual_telemetry_id=uuid.uuid4(),
+        contextual_telemetry_id=uuid.uuid4() if id == "" else uuid.UUID(id),
         version_id=telemetry.version_id,
         trigger_type_id=telemetry.trigger_type_id,
         language_id=telemetry.language_id,
@@ -182,10 +182,10 @@ def create_contextual_telemetry(
 
 
 def create_behavioral_telemetry(
-    db: Session, telemetry: Queries.BehavioralTelemetryData
+    db: Session, telemetry: Queries.BehavioralTelemetryData, id: str = ""
 ) -> db_schemas.BehavioralTelemetry:
     db_telemetry = db_schemas.BehavioralTelemetry(
-        behavioral_telemetry_id=uuid.uuid4(),
+        behavioral_telemetry_id=uuid.uuid4() if id == "" else uuid.UUID(id),
         time_since_last_shown=telemetry.time_since_last_shown,
         time_since_last_accepted=telemetry.time_since_last_accepted,
         typing_speed=telemetry.typing_speed,
@@ -264,14 +264,12 @@ def get_behavioral_telemetry_by_id(
 
 # MetaQuery operations
 def create_completion_query(
-    db: Session, query: Queries.CreateCompletionQuery
+    db: Session, query: Queries.CreateCompletionQuery, id: str = ""
 ) -> db_schemas.CompletionQuery:
-    meta_query_id = uuid.uuid4()
-
     # Create the completion query directly using joined table inheritance
     # This will automatically create both the meta query and completion_query records
-    db_completion_query = db_schemas.CompletionQuery(
-        meta_query_id=meta_query_id,
+    db_meta_query = db_schemas.MetaQuery(
+        meta_query_id=uuid.uuid4() if id == "" else uuid.UUID(id),
         user_id=query.user_id,
         contextual_telemetry_id=query.contextual_telemetry_id,
         behavioral_telemetry_id=query.behavioral_telemetry_id,
@@ -285,8 +283,16 @@ def create_completion_query(
         query_type="completion",
     )
 
+    db_completion_query = db_schemas.CompletionQuery(
+        meta_query_id=db_meta_query.meta_query_id
+    )
+
+    # Set the fields specific to CompletionQuery
+    db.add(db_meta_query)
+    db.commit()
     db.add(db_completion_query)
     db.commit()
+    db.refresh(db_meta_query)
     db.refresh(db_completion_query)
     return db_completion_query
 
@@ -721,16 +727,18 @@ def delete_project_cascade(db: Session, project_id: uuid.UUID) -> bool:
 
 
 # New Session Operations
-def create_session(db: Session, session: Queries.CreateSession) -> db_schemas.Session:
+def create_session(
+    db: Session, session: Queries.CreateSession, id: str = ""
+) -> db_schemas.Session:
     db_session = db_schemas.Session(
-        session_id=uuid.uuid4(),
+        session_id=uuid.uuid4() if id == "" else uuid.UUID(id),
         user_id=session.user_id,
         start_time=datetime.now().isoformat(),
         end_time=None,
     )
     db.add(db_session)
     db.commit()
-    # db.refresh(db_session)
+    db.refresh(db_session)
     return db_session
 
 
