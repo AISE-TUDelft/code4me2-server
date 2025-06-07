@@ -48,7 +48,7 @@ def activate_project(
 
     """
     redis_manager = app.get_redis_manager()
-    db_project = app.get_db_session()
+    db_session = app.get_db_session()
     config = app.get_config()
     try:
         auth_info = redis_manager.get("auth_token", auth_token)
@@ -67,15 +67,12 @@ def activate_project(
             )
         project_token = activate_project_request.project_token
         project_info = redis_manager.get("project_token", project_token)
-        if project_info:
-            session_projects = session_info.get("project_tokens", [])
-            session_projects.append(project_token)
-            session_info["project_tokens"] = session_projects
-            redis_manager.set("session_token", session_token, session_info)
-        else:
+        logging.log(logging.INFO, f"Retrieved project info: {project_info}")
+
+        if not project_info:
             # The project is not in the redis, so we need to fetch it from the database if it exists there
             existing_project = crud.get_project_by_id(
-                db_project, uuid.UUID(project_token)
+                db_session, uuid.UUID(project_token)
             )
             if existing_project is None:
                 return JsonResponseWithStatus(
@@ -88,12 +85,21 @@ def activate_project(
                     project_token,
                     {
                         "session_tokens": [session_token],
-                        "multi_file_contexts": {},
-                        "multi_file_context_changes": {},
+                        "multi_file_contexts": existing_project.multi_file_contexts,
+                        "multi_file_context_changes": existing_project.multi_file_context_changes,
                     },
                 )
+        session_projects = session_info.get("project_tokens", [])
+        session_projects.append(project_token)
+        session_info["project_tokens"] = session_projects
+        redis_manager.set("session_token", session_token, session_info)
 
-        logging.log(logging.INFO, f"Retrieved project info: {project_info}")
+        crud.create_session_project(
+            db_session,
+            Queries.CreateSessionProject(
+                session_id=uuid.UUID(session_token), project_id=uuid.UUID(project_token)
+            ),
+        )
 
         response_obj = JsonResponseWithStatus(
             status_code=200, content=ActivateProjectPostResponse()
@@ -107,7 +113,7 @@ def activate_project(
         return response_obj
     except Exception as e:
         logging.log(logging.ERROR, f"Error activating project: {e}")
-        db_project.rollback()
+        db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,
             content=ActivateProjectError(),

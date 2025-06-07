@@ -1,6 +1,6 @@
 from abc import ABC
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator
@@ -68,9 +68,14 @@ class ResponseCompletionItem(ResponseBase):
     confidence: float = Field(..., description="Confidence score")
 
 
+class CompletionErrorItem(ResponseBase):
+    message: str = Field(default="Completion for model failed")
+    model_name: str = Field(..., description="Model name")
+
+
 class ResponseCompletionResponseData(ResponseBase):
     meta_query_id: UUID = Field(..., description="Meta Query ID")
-    completions: list[ResponseCompletionItem] = Field(
+    completions: list[Union[ResponseCompletionItem, CompletionErrorItem]] = Field(
         ..., description="Generated completions"
     )
 

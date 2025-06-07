@@ -81,6 +81,10 @@ class AuthenticateUserError(ErrorResponse):
     message: str = Field(default="Server failed to authenticate the user!")
 
 
+class ConfigNotFound(ErrorResponse):
+    message: str = Field(default="Config not found!")
+
+
 # /api/user/delete
 class DeleteUserDeleteResponse(BaseResponse):
     message: str = Field(default="User is deleted successfully.")
@@ -205,11 +209,27 @@ class DeactivateSessionPostResponse(BaseResponse):
 
 
 class DeactivateSessionError(ErrorResponse):
-    message: str = Field(default="Failed to deactivate session.")
+    message: str = Field(default="Server failed to deactivate session.")
 
 
 ############################################################
-# /api/session/get
+# /api/session/acquire
 class AcquireSessionGetResponse(BaseResponse):
     message: str = Field(default="Session acquired successfully")
     session_token: str = Field(..., description="Session token")
+
+
+class AcquireSessionError(BaseResponse):
+    message: str = Field(default="Server failed to acquire a session.")
+
+
+# /api/completion/feedback
+class NoAccessToProvideFeedbackError(ErrorResponse):
+    message: str = Field(
+        default="You are not allowed to provide feedback for this query."
+    )
+
+
+# /api/completion/get
+class NoAccessToGetQueryError(ErrorResponse):
+    message: str = Field(default="You do not have permission to access this query.")

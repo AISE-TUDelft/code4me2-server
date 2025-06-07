@@ -12,6 +12,7 @@ from backend.Responses import (
     AuthenticateUserNormalPostResponse,
     AuthenticateUserOAuthPostResponse,
     AuthenticateUserPostResponse,
+    ConfigNotFound,
     ErrorResponse,
     InvalidEmailOrPassword,
     InvalidOrExpiredJWTToken,
@@ -32,7 +33,8 @@ def acquire_auth_token(
     auth_token = None
     if user_auth_token is not None:
         auth_info = redis_manager.get(
-            "auth_token", str(user_auth_token), reset_exp=True
+            "auth_token",
+            str(user_auth_token),
         )
         if auth_info is not None:
             auth_token = str(user_auth_token)
@@ -42,6 +44,7 @@ def acquire_auth_token(
             "auth_token",
             auth_token,
             {"user_id": str(user_id), "session_token": ""},
+            force_reset_exp=True,
         )
     return auth_token
 
@@ -52,10 +55,12 @@ def acquire_auth_token(
     responses={
         "200": {"model": AuthenticateUserPostResponse},
         "401": {"model": Union[InvalidOrExpiredJWTToken, InvalidEmailOrPassword]},
+        "404": {"mode": ConfigNotFound},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": AuthenticateUserError},
     },
+    tags=["Authentication"],
 )
 def authenticate_user(
     user_to_authenticate: Union[AuthenticateUserEmailPassword, AuthenticateUserOAuth],
@@ -117,6 +122,12 @@ def authenticate_user(
             # Generate authentication token and create response with cookie
             auth_token = acquire_auth_token(found_user.auth_token, found_user.user_id, redis_manager)  # type: ignore
             setattr(found_user, "auth_token", uuid.UUID(auth_token))
+            config_data = crud.get_config_by_id(db_session, found_user.config_id)
+            if not config_data:
+                return JsonResponseWithStatus(
+                    status_code=404,
+                    content=ConfigNotFound(),
+                )
             response_obj = JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserOAuthPostResponse(
@@ -152,11 +163,17 @@ def authenticate_user(
             # Generate authentication token and create response with cookie
             auth_token = acquire_auth_token(found_user.auth_token, found_user.user_id, redis_manager)  # type: ignore
             setattr(found_user, "auth_token", uuid.UUID(auth_token))
+            config_data = crud.get_config_by_id(db_session, found_user.config_id)
+            if not config_data:
+                return JsonResponseWithStatus(
+                    status_code=404,
+                    content=ConfigNotFound(),
+                )
             response_obj = JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserNormalPostResponse(
                     user=ResponseUser.model_validate(found_user),
-                    config=found_user.config.config_data,
+                    config=config_data.config_data,
                 ),
             )
             # Set the auth token as an HttpOnly cookie with appropriate settings

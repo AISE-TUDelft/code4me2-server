@@ -1,3 +1,4 @@
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,7 +13,7 @@ from backend.Responses import (
     InvalidOrExpiredJWTToken,
 )
 from main import app
-from response_models import UserBase
+from response_models import ResponseUser
 
 
 class TestAuthenticate:
@@ -43,21 +44,20 @@ class TestAuthenticate:
         auth_email_query: Queries.AuthenticateUserEmailPassword,
     ):
         mock_crud = MagicMock()
-        mock_user = UserBase.fake(email=auth_email_query.email)
+        mock_user = ResponseUser.fake(email=auth_email_query.email)
         mock_crud.get_user_by_email_password.return_value = mock_user
-
-        auth_token = "dummy_auth_token"
+        mock_crud.get_config_by_id.return_value = {"config_data": "config1"}
+        auth_token = uuid.uuid4()
         client.mock_app.get_redis_manager.return_value.create_auth_token.return_value = (
             auth_token
         )
-
         with patch("backend.routers.user.authenticate.crud", mock_crud):
             response = client.post(
                 "/api/user/authenticate", json=auth_email_query.dict()
             )
             response_result = response.json()
-            response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response.status_code == 200
+            response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response_result == AuthenticateUserNormalPostResponse(user=mock_user)
             assert response.cookies.get("auth_token") == auth_token
 
@@ -81,11 +81,11 @@ class TestAuthenticate:
         self, client: TestClient, auth_oauth_query: Queries.AuthenticateUserOAuth
     ):
         mock_crud = MagicMock()
-        mock_user = UserBase.fake()
+        mock_user = ResponseUser.fake()
         mock_crud.get_user_by_email.return_value = mock_user
-
+        mock_crud.get_config_by_id.return_value = {"config_data": "config1"}
         mock_verify_jwt_token = MagicMock(return_value={"email": mock_user.email})
-        auth_token = "dummy_auth_token"
+        auth_token = uuid.uuid4()
         client.mock_app.get_db_session.return_value = MagicMock()
         client.mock_app.get_redis_manager.return_value.create_auth_token.return_value = (
             auth_token
@@ -99,8 +99,8 @@ class TestAuthenticate:
             )
 
             response_result = response.json()
-            response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response.status_code == 200
+            response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response_result == AuthenticateUserOAuthPostResponse(user=mock_user)
             assert response.cookies.get("auth_token") == auth_token
 

@@ -10,10 +10,15 @@ from backend.Responses import (
     ErrorResponse,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
+    NoAccessToGetQueryError,
     QueryNotFoundError,
     RetrieveCompletionsError,
 )
-from response_models import ResponseCompletionItem, ResponseCompletionResponseData
+from response_models import (
+    CompletionErrorItem,
+    ResponseCompletionItem,
+    ResponseCompletionResponseData,
+)
 
 router = APIRouter()
 
@@ -24,6 +29,7 @@ router = APIRouter()
     responses={
         "200": {"model": CompletionPostResponse},
         "401": {"model": InvalidOrExpiredSessionToken},
+        "403": {"model": NoAccessToGetQueryError},
         "404": {"model": QueryNotFoundError},
         "429": {"model": ErrorResponse},
         "500": {"model": RetrieveCompletionsError},
@@ -73,7 +79,7 @@ def get_completions_by_query(
             )
 
         # check if metaquery exists and if so if the user is the owner of the query
-        query = crud.get_meta_query_by_id(db_session, str(query_id))
+        query = crud.get_meta_query_by_id(db_session, query_id)
         if not query:
             return JsonResponseWithStatus(
                 status_code=404,
@@ -81,12 +87,9 @@ def get_completions_by_query(
             )
 
         # Convert user_id from string (Redis) to UUID for comparison with database user_id (UUID)
-        if query.user_id != UUID(user_id):
+        if str(query.user_id) != user_id:
             return JsonResponseWithStatus(
-                status_code=403,
-                content=ErrorResponse(
-                    message="You do not have permission to access this query."
-                ),
+                status_code=403, content=NoAccessToGetQueryError()
             )
 
         # Retrieve completions for the query
@@ -95,23 +98,28 @@ def get_completions_by_query(
         # Build response
         completions = []
         for generation in generations:
-            model = crud.get_model_by_id(db_session, generation.model_id)
+            model = crud.get_model_by_id(db_session, int(str(generation.model_id)))
 
-            completions.append(
-                ResponseCompletionItem(
-                    model_id=generation.model_id,
-                    model_name=model.model_name if model else "Unknown Model",
-                    completion=generation.completion,
-                    generation_time=generation.generation_time,
-                    confidence=generation.confidence,
+            if not model:
+                completions.append(
+                    CompletionErrorItem(model_name=f"Model ID: {generation.model_id}")
                 )
-            )
+            else:
+                completions.append(
+                    ResponseCompletionItem(
+                        model_id=int(str(generation.model_id)),
+                        model_name=str(model.model_name) if model else "Unknown Model",
+                        completion=str(generation.completion),
+                        generation_time=int(str(generation.generation_time)),
+                        confidence=float(str(generation.confidence)),
+                    )
+                )
 
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
                 data=ResponseCompletionResponseData(
-                    query_id=query_id, completions=completions
+                    meta_query_id=query_id, completions=completions
                 ),
             ),
         )

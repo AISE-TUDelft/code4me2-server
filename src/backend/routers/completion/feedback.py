@@ -1,5 +1,4 @@
 import logging
-from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends
 
@@ -13,6 +12,7 @@ from backend.Responses import (
     GenerationNotFoundError,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
+    NoAccessToProvideFeedbackError,
 )
 from celery_app.tasks import db_tasks
 from response_models import ResponseFeedbackResponseData
@@ -26,6 +26,7 @@ router = APIRouter()
     responses={
         "200": {"model": CompletionFeedbackPostResponse},
         "401": {"model": InvalidOrExpiredSessionToken},
+        "403": {"model": NoAccessToProvideFeedbackError},
         "404": {"model": GenerationNotFoundError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -75,7 +76,7 @@ def submit_completion_feedback(
             )
 
         # only allow feedback for queries that are for the current user
-        query = crud.get_meta_query_by_id(db_session, str(feedback.meta_query_id))
+        query = crud.get_meta_query_by_id(db_session, feedback.meta_query_id)
         if not query:
             return JsonResponseWithStatus(
                 status_code=404,
@@ -83,17 +84,15 @@ def submit_completion_feedback(
             )
 
         # Convert user_id from string (Redis) to UUID for comparison with database user_id (UUID)
-        if query.user_id != UUID(user_id):
+        if str(query.user_id) != user_id:
             return JsonResponseWithStatus(
                 status_code=403,
-                content=ErrorResponse(
-                    message="You are not allowed to provide feedback for this query."
-                ),
+                content=NoAccessToProvideFeedbackError(),
             )
 
         # Get the generation record
         generation = crud.get_generation_by_meta_query_and_model(
-            db_session, str(feedback.meta_query_id), feedback.model_id
+            db_session, feedback.meta_query_id, feedback.model_id
         )
 
         if not generation:

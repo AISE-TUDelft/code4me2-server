@@ -3,6 +3,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from typing import Union
 
 from celery import chain, group
 from fastapi import APIRouter, Cookie, Depends
@@ -15,16 +16,18 @@ from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,
     GenerateCompletionsError,
+    InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
 )
 from database import crud
 from database.utils import create_uuid
-from Queries import (
-    RequestCompletion,
+from response_models import (
+    CompletionErrorItem,
+    ResponseCompletionItem,
+    ResponseCompletionResponseData,
 )
-from response_models import ResponseCompletionItem, ResponseCompletionResponseData
 
 router = APIRouter()
 
@@ -34,14 +37,20 @@ router = APIRouter()
     response_model=CompletionPostResponse,
     responses={
         "200": {"model": CompletionPostResponse},
-        "401": {"model": InvalidOrExpiredSessionToken},
+        "401": {
+            "model": Union[
+                InvalidOrExpiredAuthToken,
+                InvalidOrExpiredSessionToken,
+                InvalidOrExpiredProjectToken,
+            ]
+        },
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": GenerateCompletionsError},
     },
 )
 def request_completion(
-    completion_request: RequestCompletion,
+    completion_request: Queries.RequestCompletion,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie("session_token"),
     project_token: str = Cookie("project_token"),
@@ -70,8 +79,22 @@ def request_completion(
 
         # Get user_id and auth_token from session info
         auth_token = session_info.get("auth_token")
-        user_id = redis_manager.get("auth_token", auth_token).get("user_id")
-
+        if not auth_token:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+        auth_info = redis_manager.get("auth_token", auth_token)
+        if auth_info is None:
+            return JsonResponseWithStatus(
+                status_code=401, content=InvalidOrExpiredAuthToken()
+            )
+        user_id = auth_info.get("user_id")
+        if not user_id:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
         # Validate project token
         project_info = redis_manager.get("project_token", project_token)
         if project_info is None:
@@ -122,7 +145,7 @@ def request_completion(
             local_t0 = time.perf_counter()
             model = crud.get_model_by_id(db_auth, model_id)
             if not model:
-                return None
+                return CompletionErrorItem(model_name=f"Model ID: {model_id}")
             local_t1 = time.perf_counter()
 
             completion_model = completion_models.get_model(
@@ -130,17 +153,8 @@ def request_completion(
                 prompt_template=completion.Template.PREFIX_SUFFIX,
             )
 
-            if not completion_model:
-                # wait for the model to be loaded by polling for a short time if not loaded return None
-                for _ in range(10):
-                    completion_model = completion_models.get_model(
-                        model_name=str(model.model_name),
-                        prompt_template=completion.Template.PREFIX_SUFFIX,
-                    )
-                    if completion_model:
-                        break
-                    time.sleep(0.2)
-
+            if completion_model is None:
+                return CompletionErrorItem(model_name=model)
             local_t2 = time.perf_counter()
             completion_result = completion_model.invoke(
                 {
@@ -159,7 +173,7 @@ def request_completion(
 
             add_generation_task = db_tasks.add_generation_task.si(
                 Queries.CreateGeneration(
-                    meta_query_id=created_query_id,
+                    meta_query_id=uuid.UUID(created_query_id),
                     model_id=model_id,
                     completion=completion_result["completion"],
                     generation_time=completion_result["generation_time"],
@@ -174,7 +188,7 @@ def request_completion(
 
             return ResponseCompletionItem(
                 model_id=model_id,
-                model_name=model.model_name,
+                model_name=str(model.model_name),
                 completion=completion_result["completion"],
                 generation_time=completion_result["generation_time"],
                 confidence=completion_result["confidence"],
@@ -202,15 +216,6 @@ def request_completion(
                 for file_name, changes in multi_file_context_changes.items()
             }
 
-        # TODO: Figure out what this was supposed to do
-        # add_auth_query_task = db_tasks.add_auth_query_task.si(
-        #     Queries.AuthQueryData(
-        #         auth_id=auth_token,
-        #         query_id=created_query_id,
-        #         multi_file_context_changes_indexes=multi_file_context_changes_indexes,
-        #     ).dict()
-        # )
-
         created_context_id = create_uuid()
         add_context_task = db_tasks.add_context_task.si(
             completion_request.context.dict(), created_context_id
@@ -228,11 +233,11 @@ def request_completion(
         add_query_task = db_tasks.add_completion_query_task.si(
             Queries.CreateCompletionQuery(
                 user_id=uuid.UUID(str(user_id)),
-                contextual_telemetry_id=created_contextual_telemetry_id,
-                behavioral_telemetry_id=created_behavioral_telemetry_id,
-                context_id=created_context_id,
-                session_id=session_token,
-                project_id=project_token,
+                contextual_telemetry_id=uuid.UUID(created_contextual_telemetry_id),
+                behavioral_telemetry_id=uuid.UUID(created_behavioral_telemetry_id),
+                context_id=uuid.UUID(created_context_id),
+                session_id=uuid.UUID(session_token),
+                project_id=uuid.UUID(project_token),
                 multi_file_context_changes_indexes=(
                     str(multi_file_context_changes_indexes)
                     if multi_file_context_changes_indexes
@@ -261,7 +266,7 @@ def request_completion(
             status_code=200,
             content=CompletionPostResponse(
                 data=ResponseCompletionResponseData(
-                    meta_query_id=created_query_id, completions=completions
+                    meta_query_id=uuid.UUID(created_query_id), completions=completions
                 ),
             ),
         )

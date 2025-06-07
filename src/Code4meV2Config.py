@@ -50,6 +50,9 @@ class Code4meV2Config(BaseSettings):
     session_token_expires_in_seconds: int = Field(
         alias="SESSION_TOKEN_EXPIRES_IN_SECONDS", frozen=True
     )
+    token_hook_activation_in_seconds: int = Field(
+        alias="TOKEN_HOOK_ACTIVATION_IN_SECONDS", frozen=True
+    )
 
     preload_models: bool = Field(alias="PRELOAD_MODELS", frozen=True)
     debug_mode: bool = Field(alias="DEBUG_MODE", frozen=True)

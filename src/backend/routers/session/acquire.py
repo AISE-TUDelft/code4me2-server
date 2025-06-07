@@ -15,6 +15,7 @@ from fastapi import APIRouter, Cookie, Depends
 import Queries
 from App import App
 from backend.Responses import (
+    AcquireSessionError,
     AcquireSessionGetResponse,
     ErrorResponse,
     InvalidOrExpiredAuthToken,
@@ -33,7 +34,7 @@ router = APIRouter()
         200: {"model": AcquireSessionGetResponse},
         401: {"model": InvalidOrExpiredAuthToken},
         429: {"model": ErrorResponse},
-        500: {"model": ErrorResponse},
+        500: {"model": AcquireSessionError},
     },
 )
 def acquire_session(
@@ -52,45 +53,54 @@ def acquire_session(
     config = app.get_config()
     db_session = app.get_db_session()
 
-    auth_info = redis_manager.get("auth_token", auth_token)
+    try:
+        auth_info = redis_manager.get("auth_token", auth_token)
+        if auth_info is None:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredAuthToken(),
+            )
 
-    if auth_info is None:
+        user_id = auth_info.get("user_id")
+        session_token = auth_info.get("session_token")
+        if not session_token or not redis_manager.get("session_token", session_token):
+            session_token = create_uuid()
+            crud.create_session(
+                db_session,
+                Queries.CreateSession(user_id=uuid.UUID(user_id)),
+                session_token,
+            )
+            auth_info["session_token"] = session_token
+
+            # Update auth_token with new session_token while preserving TTL
+            redis_manager.set("auth_token", auth_token, auth_info)
+
+            # Add session_token entry separately
+            redis_manager.set(
+                "session_token",
+                session_token,
+                {"auth_token": auth_token, "project_tokens": []},
+            )
+
+        response_obj = JsonResponseWithStatus(
+            status_code=200,
+            content=AcquireSessionGetResponse(session_token=session_token),
+        )
+        response_obj.set_cookie(
+            key="session_token",
+            value=session_token,
+            httponly=True,
+            samesite="lax",
+            expires=config.session_token_expires_in_seconds,
+        )
+        return response_obj
+    except Exception as e:
+        logging.log(logging.ERROR, f"Error acquiring a session: {e}")
+        db_session.rollback()
         return JsonResponseWithStatus(
-            status_code=401,
-            content=InvalidOrExpiredAuthToken(),
+            status_code=500,
+            content=AcquireSessionError(),
         )
-
-    user_id = auth_info.get("user_id")
-    session_token = auth_info.get("session_token")
-    if not session_token:
-        session_token = create_uuid()
-        crud.create_session(
-            db_session, Queries.CreateSession(user_id=uuid.UUID(user_id)), session_token
-        )
-        auth_info["session_token"] = session_token
-
-        # Update auth_token with new session_token while preserving TTL
-        redis_manager.set("auth_token", auth_token, auth_info)
-
-        # Add session_token entry separately
-        redis_manager.set(
-            "session_token",
-            session_token,
-            {"auth_token": auth_token, "project_tokens": []},
-        )
-
-    response_obj = JsonResponseWithStatus(
-        status_code=200,
-        content=AcquireSessionGetResponse(session_token=session_token),
-    )
-    response_obj.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        samesite="lax",
-        expires=config.session_token_expires_in_seconds,
-    )
-    return response_obj
 
 
 def __init__():

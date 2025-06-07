@@ -31,10 +31,12 @@ class SerializableBaseModel(BaseModel):
     when calling dict() or json() methods. Any model that extends this will inherit this functionality.
     """
 
-    def dict(self, *args, **kwargs) -> Dict[str, Any]:
+    def dict(self, exclude_unset=False, *args, **kwargs) -> Dict[str, Any]:
         data = {}
         # Iterate over the fields and convert fields to plain strings
         for field_name, value in self.__class__.model_fields.items():
+            if exclude_unset and getattr(self, field_name) is None:
+                continue
             annotation = value.annotation
             field_value = getattr(self, field_name)
 
@@ -78,9 +80,6 @@ class SerializableBaseModel(BaseModel):
             else:
                 data[field_name] = iterable_to_dict(field_value)
         return data
-
-    def to_json(self) -> str:
-        pass
 
     def json(self, *args, **kwargs) -> str:
         # Convert the model to JSON (a string)
@@ -163,3 +162,18 @@ def verify_jwt_token(token: str, provider: str = "google"):
             return {"email": email, "id_info": id_info}
     except ValueError:
         return None
+
+
+def recursive_json_loads(obj):
+    if isinstance(obj, str):
+        try:
+            loaded = json.loads(obj)
+            return recursive_json_loads(loaded)
+        except (json.JSONDecodeError, TypeError):
+            return obj
+    elif isinstance(obj, dict):
+        return {k: recursive_json_loads(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [recursive_json_loads(item) for item in obj]
+    else:
+        return obj

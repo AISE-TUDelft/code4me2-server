@@ -58,27 +58,21 @@ def get_user_by_id_password(db: Session, user_id: uuid.UUID, password: str):
 
 def update_user(
     db: Session, user_id: uuid.UUID, user_to_update: Queries.UpdateUser
-) -> db_schemas.User:
+) -> Optional[db_schemas.User]:
     # Get all the data and manually filter out None values
-    update_data = {
-        key: value
-        for key, value in user_to_update.dict().items()
-        if value is not None and key != "previous_password"
-    }
+    update_data = user_to_update.dict(exclude_unset=True)
+    update_data.pop("previous_password", None)
     if update_data.get("password"):
         update_data["password"] = hash_password(update_data["password"])
-
-    if not update_data:
-        # No fields to update, just return the existing user
-        return (
-            db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
-        )
-
-    db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).update(
-        update_data  # type: ignore
+    result = (
+        db.query(db_schemas.User)
+        .filter(db_schemas.User.user_id == user_id)
+        .update(update_data)  # type: ignore
     )
     db.commit()
-    return db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).first()
+    if result:
+        return get_user_by_id(db, user_id)
+    return None
 
 
 def delete_user_by_id(db: Session, user_id: uuid.UUID) -> bool:
@@ -87,17 +81,6 @@ def delete_user_by_id(db: Session, user_id: uuid.UUID) -> bool:
     )
     db.commit()
     return result > 0
-
-
-# def update_user(db: Session, user_id: uuid.UUID, user_update: Queries.UpdateUser) -> Optional[db_schemas.User]:
-#     user = get_user_by_id(db, user_id)
-#     if user:
-#         update_data = user_update.dict(exclude_unset=True)
-#         for field, value in update_data.items():
-#             setattr(user, field, value)
-#         db.commit()
-#         db.refresh(user)
-#     return user
 
 
 # Context Operations
@@ -460,18 +443,18 @@ def get_generations_by_meta_query(
     )
 
 
-def update_generation_acceptance(
-    db: Session, update_data: Queries.UpdateGenerationAcceptance
-) -> Optional[db_schemas.HadGeneration]:
-    """Update generation acceptance status"""
-    generation = get_generation_by_meta_query_and_model(
-        db, update_data.meta_query_id, update_data.model_id
-    )
-    if generation:
-        setattr(generation, "was_accepted", update_data.was_accepted)
-        db.commit()
-        db.refresh(generation)
-    return generation
+# def update_generation_acceptance(
+#     db: Session, update_data: Queries.UpdateGenerationAcceptance
+# ) -> Optional[db_schemas.HadGeneration]:
+#     """Update generation acceptance status"""
+#     generation = get_generation_by_meta_query_and_model(
+#         db, update_data.meta_query_id, update_data.model_id
+#     )
+#     if generation:
+#         setattr(generation, "was_accepted", update_data.was_accepted)
+#         db.commit()
+#         db.refresh(generation)
+#     return generation
 
 
 def get_generation_by_meta_query_and_model(
@@ -505,21 +488,22 @@ def create_model(db: Session, model: Queries.CreateModel) -> db_schemas.ModelNam
     )
     db.add(db_model)
     db.commit()
-    db.refresh(db_model)
+    # db.refresh(db_model)
     return db_model
 
 
 def update_generation(
     db: Session, query_id: str, model_id: int, generation: Queries.UpdateGeneration
-):
+) -> int:
     """Update an existing generation"""
+    update_data = generation.dict(exclude_unset=True)
     result = (
         db.query(db_schemas.HadGeneration)
         .filter(
             db_schemas.HadGeneration.query_id == query_id,
             db_schemas.HadGeneration.model_id == model_id,
         )
-        .update(**generation.dict())
+        .update(update_data)  # type: ignore
     )
     db.commit()
     return result > 0
@@ -564,14 +548,16 @@ def get_chat_by_id(db: Session, chat_id: uuid.UUID) -> Optional[db_schemas.Chat]
 def update_chat(
     db: Session, chat_id: uuid.UUID, chat_update: Queries.UpdateChat
 ) -> Optional[db_schemas.Chat]:
-    chat = get_chat_by_id(db, chat_id)
-    if chat:
-        update_data = chat_update.dict(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(chat, field, value)
-        db.commit()
-        db.refresh(chat)
-    return chat
+    update_data = chat_update.dict(exclude_unset=True)
+    result = (
+        db.query(db_schemas.Chat)
+        .filter(db_schemas.Chat.chat_id == chat_id)
+        .update(update_data)  # type: ignore
+    )
+    db.commit()
+    if result:
+        return get_chat_by_id(db, chat_id)
+    return None
 
 
 def get_chats_for_project(db: Session, project_id: uuid.UUID) -> list[db_schemas.Chat]:
@@ -650,14 +636,16 @@ def get_project_by_id(
 def update_project(
     db: Session, project_id: uuid.UUID, project_update: Queries.UpdateProject
 ) -> Optional[db_schemas.Project]:
-    project = get_project_by_id(db, project_id)
-    if project:
-        update_data = project_update.dict(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(project, field, value)
-        db.commit()
-        db.refresh(project)
-    return project
+    update_data = project_update.dict(exclude_unset=True)
+    result = (
+        db.query(db_schemas.Project)
+        .filter(db_schemas.Project.project_id == project_id)
+        .update(update_data)  # type: ignore
+    )
+    db.commit()
+    if result:
+        return get_project_by_id(db, project_id)
+    return None
 
 
 def get_projects_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Project]:

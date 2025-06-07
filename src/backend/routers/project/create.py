@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import Union
 
 from fastapi import APIRouter, Cookie, Depends
@@ -66,6 +67,12 @@ def create_project(
         # Create project
         created_project = crud.create_project(db_session, project_to_create)
         project_token = str(created_project.project_id)
+        crud.create_session_project(
+            db_session,
+            Queries.CreateSessionProject(
+                session_id=uuid.UUID(session_token), project_id=uuid.UUID(project_token)
+            ),
+        )
 
         redis_manager.set(
             "project_token",

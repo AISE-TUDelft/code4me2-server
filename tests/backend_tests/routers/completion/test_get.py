@@ -13,7 +13,7 @@ from backend.Responses import (
 from main import app
 
 
-class TestCompletionRoutes:
+class TestCompletionGet:
 
     @pytest.fixture(scope="session")
     def setup_app(self):

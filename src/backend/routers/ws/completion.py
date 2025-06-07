@@ -14,11 +14,13 @@ async def completions_websocket(
     websocket: WebSocket,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie("session_token"),
+    project_token: str = Cookie("project_token"),
 ):
     await websocket.accept()
     redis_manager = app.get_redis_manager()
-    user_data = redis_manager.get_session(session_token)
-    if session_token is None or user_data is None:
+    # Validate session token
+    session_info = redis_manager.get("session_token", session_token)
+    if session_token is None or session_info is None:
         logging.log(logging.INFO, f"Invalid or expired session token: {session_token}")
         await websocket.send_json(
             {"error": Responses.InvalidOrExpiredSessionToken().message}
@@ -26,6 +28,50 @@ async def completions_websocket(
         await websocket.close()
         return
 
+    # Get user_id and auth_token from session info
+    auth_token = session_info.get("auth_token")
+    if not auth_token:
+        logging.log(logging.INFO, f"Invalid or expired session token: {session_token}")
+        await websocket.send_json(
+            {"error": Responses.InvalidOrExpiredSessionToken().message}
+        )
+        await websocket.close()
+        return
+    auth_info = redis_manager.get("auth_token", auth_token)
+    if auth_info is None:
+        logging.log(logging.INFO, f"Invalid or expired auth token: {auth_token}")
+        await websocket.send_json(
+            {"error": Responses.InvalidOrExpiredAuthToken().message}
+        )
+        await websocket.close()
+        return
+    user_id = auth_info.get("user_id")
+    if not user_id:
+        logging.log(logging.INFO, f"Invalid or expired session token: {session_token}")
+        await websocket.send_json(
+            {"error": Responses.InvalidOrExpiredSessionToken().message}
+        )
+        await websocket.close()
+        return
+    # Validate project token
+    project_info = redis_manager.get("project_token", project_token)
+    if project_info is None:
+        logging.log(logging.INFO, f"Invalid or expired project token: {project_token}")
+        await websocket.send_json(
+            {"error": Responses.InvalidOrExpiredProjectToken().message}
+        )
+        await websocket.close()
+        return
+
+    # Verify project is linked to this session
+    session_projects = session_info.get("project_tokens", [])
+    if project_token not in session_projects:
+        logging.log(logging.INFO, f"Invalid or expired project token: {project_token}")
+        await websocket.send_json(
+            {"error": Responses.InvalidOrExpiredProjectToken().message}
+        )
+        await websocket.close()
+        return
     broker = app.get_celery_broker()
     connection_id = broker.register_new_connection(websocket)
     try:

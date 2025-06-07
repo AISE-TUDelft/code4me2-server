@@ -54,6 +54,8 @@ class App:
             port=config.redis_port,
             auth_token_expires_in_seconds=config.auth_token_expires_in_seconds,
             session_token_expires_in_seconds=config.session_token_expires_in_seconds,
+            token_hook_activation_in_seconds=config.token_hook_activation_in_seconds,
+            # TODO: Set whether to store multi file context on db or not
         )
         try:
             session_expiration_listener_thread = threading.Thread(
@@ -137,6 +139,6 @@ class App:
         return cls.__instance
 
     def cleanup(self):
-        self.__redis_manager.cleanup(db=self.__db_session_factory())
+        self.__redis_manager.cleanup(db_session=self.__db_session_factory())
         self.__celery_broker.cleanup()
         self.__db_session_factory.remove()

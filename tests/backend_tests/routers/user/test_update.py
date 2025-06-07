@@ -10,7 +10,7 @@ from backend.Responses import (
     UpdateUserPutResponse,
 )
 from main import app
-from response_models import UserBase
+from response_models import ResponseUser
 
 
 class TestUpdateUser:
@@ -36,7 +36,7 @@ class TestUpdateUser:
         self, client: TestClient, update_user_query: Queries.UpdateUser
     ):
         # Fake data
-        fake_updated_user = UserBase.fake()
+        fake_updated_user = ResponseUser.fake()
 
         # Mock dependencies
         mock_crud = MagicMock()

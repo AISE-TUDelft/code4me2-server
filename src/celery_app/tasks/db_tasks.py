@@ -5,7 +5,7 @@ from database import crud
 
 
 @celery.task
-def add_context_task(context_data: dict, context_id: str = None):
+def add_context_task(context_data: dict, context_id: str = None):  # type: ignore
     with App.get_instance().get_db_session_fresh() as db:
         try:
             context_query = Queries.ContextData(**context_data)
@@ -19,8 +19,8 @@ def add_context_task(context_data: dict, context_id: str = None):
 def add_telemetry_task(
     contextual_telemetry_data: dict,
     behavioral_telemetry_data: dict,
-    contextual_telemetry_id: str = None,
-    behavioral_telemetry_id: str = None,
+    contextual_telemetry_id: str = None,  # type: ignore
+    behavioral_telemetry_id: str = None,  # type: ignore
 ):
     with App.get_instance().get_db_session_fresh() as db:
         try:
@@ -42,7 +42,7 @@ def add_telemetry_task(
 
 
 @celery.task
-def add_completion_query_task(query_data: dict, query_id: str = None):
+def add_completion_query_task(query_data: dict, query_id: str = None):  # type: ignore
     with App.get_instance().get_db_session_fresh() as db:
         try:
             query_query = Queries.CreateCompletionQuery(**query_data)
@@ -53,18 +53,7 @@ def add_completion_query_task(query_data: dict, query_id: str = None):
 
 
 @celery.task
-def add_session_query_task(session_query_data: dict):
-    with App.get_instance().get_db_session_fresh() as db:
-        try:
-            session_query_query = Queries.SessionQueryData(**session_query_data)
-            crud.add_session_query(db=db, session_query=session_query_query)
-        except Exception:
-            db.rollback()
-            raise
-
-
-@celery.task
-def add_generation_task(generation_data: dict, generation_id: str = None):
+def add_generation_task(generation_data: dict, generation_id: str = None):  # type: ignore
     with App.get_instance().get_db_session_fresh() as db:
         try:
             generation_query = Queries.CreateGeneration(**generation_data)
@@ -88,22 +77,11 @@ def update_generation_task(query_id: str, model_id: int, generation_data: dict):
 
 
 @celery.task
-def update_query_task(query_id: str, query_data: dict):
-    with App.get_instance().get_db_session_fresh() as db:
-        try:
-            query_query = Queries.UpdateQuery(**query_data)
-            crud.update_query(db=db, query_id=query_id, query=query_query)
-        except Exception:
-            db.rollback()
-            raise
-
-
-@celery.task
 def add_ground_truth_task(ground_truth_data: dict):
     with App.get_instance().get_db_session_fresh() as db:
         try:
             ground_truth_query = Queries.CreateGroundTruth(**ground_truth_data)
-            crud.add_ground_truth(db=db, ground_truth=ground_truth_query)
+            crud.create_ground_truth(db=db, ground_truth=ground_truth_query)
         except Exception:
             db.rollback()
             raise
