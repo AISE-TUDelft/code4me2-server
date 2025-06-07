@@ -3,6 +3,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from typing import Union
 
 from celery import chain, group
 from fastapi import APIRouter, Cookie, Depends
@@ -15,14 +16,17 @@ from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,
     GenerateCompletionsError,
+    InvalidOrExpiredAuthToken,
+    InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
 )
-from base_models import CompletionItem, CompletionResponseData
 from database import crud
 from database.utils import create_uuid
-from Queries import (
-    RequestCompletion,
+from response_models import (
+    CompletionErrorItem,
+    ResponseCompletionItem,
+    ResponseCompletionResponseData,
 )
 
 router = APIRouter()
@@ -33,44 +37,91 @@ router = APIRouter()
     response_model=CompletionPostResponse,
     responses={
         "200": {"model": CompletionPostResponse},
-        "401": {"model": InvalidOrExpiredSessionToken},
+        "401": {
+            "model": Union[
+                InvalidOrExpiredAuthToken,
+                InvalidOrExpiredSessionToken,
+                InvalidOrExpiredProjectToken,
+            ]
+        },
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": GenerateCompletionsError},
     },
 )
 def request_completion(
-    completion_request: RequestCompletion,
+    completion_request: Queries.RequestCompletion,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie("session_token"),
+    project_token: str = Cookie("project_token"),
 ) -> JsonResponseWithStatus:
     """
     Request code completions based on provided context.
     """
     overall_start = time.perf_counter()
-    logging.info(f"Completion request: {completion_request}")
-    db_session = app.get_db_session()
-    session_manager = app.get_session_manager()
+    logging.info(f"Completion request: {completion_request.dict()}")
+
+    db_auth = app.get_db_session()
+    redis_manager = app.get_redis_manager()
     completion_models = app.get_completion_models()
     config = app.get_config()
 
     try:
         t0 = time.perf_counter()
-        user_dict = session_manager.get_session(session_token)
-        if session_token is None or user_dict is None:
+
+        # Validate session token
+        session_info = redis_manager.get("session_token", session_token)
+        if session_token is None or session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
-        t1 = time.perf_counter()
-        logging.info(f"Session check took {(t1 - t0) * 1000:.2f}ms")
 
+        # Get user_id and auth_token from session info
+        auth_token = session_info.get("auth_token")
+        if not auth_token:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+        auth_info = redis_manager.get("auth_token", auth_token)
+        if auth_info is None:
+            return JsonResponseWithStatus(
+                status_code=401, content=InvalidOrExpiredAuthToken()
+            )
+        user_id = auth_info.get("user_id")
+        if not user_id:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+        # Validate project token
+        project_info = redis_manager.get("project_token", project_token)
+        if project_info is None:
+            return JsonResponseWithStatus(
+                status_code=401, content=InvalidOrExpiredProjectToken()
+            )
+
+        # Verify project is linked to this session
+        session_projects = session_info.get("project_tokens", [])
+        if project_token not in session_projects:
+            return JsonResponseWithStatus(
+                status_code=401, content=InvalidOrExpiredProjectToken()
+            )
+
+        t1 = time.perf_counter()
+        logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
+
+        multi_file_contexts = project_info.get("multi_file_contexts", "{}")
+        multi_file_context_changes = project_info.get(
+            "multi_file_context_changes", "{}"
+        )
         t2 = time.perf_counter()
         created_query_id = create_uuid()
-        multi_file_context = user_dict["data"].get("context")
-        if multi_file_context:
+
+        if multi_file_contexts:
             other_files_context = []
-            for file_name, context in multi_file_context.items():
+            for file_name, context in multi_file_contexts.items():
                 if file_name != completion_request.context.file_name and (
                     completion_request.context.context_files == ["*"]
                     or file_name in completion_request.context.context_files
@@ -83,25 +134,27 @@ def request_completion(
                     "Other files context:\n"
                     + "\n".join(other_files_context)
                     + "\n\n"
-                    + completion_request.context.prefix
+                    + (completion_request.context.prefix or "")
                 )
         t3 = time.perf_counter()
         logging.info(f"Multi-file context processing took {(t3 - t2) * 1000:.2f}ms")
-
         completions = []
         add_generation_tasks = []
 
         def handle_model_completion(model_id):
             local_t0 = time.perf_counter()
-            model = crud.get_model_by_id(db_session, model_id)
+            model = crud.get_model_by_id(db_auth, model_id)
             if not model:
-                return None
+                return CompletionErrorItem(model_name=f"Model ID: {model_id}")
             local_t1 = time.perf_counter()
 
             completion_model = completion_models.get_model(
-                model_name=model.model_name,
+                model_name=str(model.model_name),
                 prompt_template=completion.Template.PREFIX_SUFFIX,
             )
+
+            if completion_model is None:
+                return CompletionErrorItem(model_name=model)
             local_t2 = time.perf_counter()
             completion_result = completion_model.invoke(
                 {
@@ -120,6 +173,7 @@ def request_completion(
 
             add_generation_task = db_tasks.add_generation_task.si(
                 Queries.CreateGeneration(
+                    meta_query_id=uuid.UUID(created_query_id),
                     model_id=model_id,
                     completion=completion_result["completion"],
                     generation_time=completion_result["generation_time"],
@@ -132,9 +186,9 @@ def request_completion(
             )
             add_generation_tasks.append(add_generation_task)
 
-            return CompletionItem(
+            return ResponseCompletionItem(
                 model_id=model_id,
-                model_name=model.model_name,
+                model_name=str(model.model_name),
                 completion=completion_result["completion"],
                 generation_time=completion_result["generation_time"],
                 confidence=completion_result["confidence"],
@@ -156,37 +210,39 @@ def request_completion(
         # Celery task prep
         t6 = time.perf_counter()
         multi_file_context_changes_indexes = {}
-        if user_dict["data"].get("context_changes"):
+        if multi_file_context_changes:
             multi_file_context_changes_indexes = {
                 file_name: len(changes)
-                for file_name, changes in user_dict["data"]
-                .get("context_changes")
-                .items()
+                for file_name, changes in multi_file_context_changes.items()
             }
-
-        add_session_query_task = db_tasks.add_session_query_task.si(
-            Queries.SessionQueryData(
-                session_id=session_token,
-                query_id=created_query_id,
-                multi_file_context_changes_indexes=multi_file_context_changes_indexes,
-            ).dict()
-        )
 
         created_context_id = create_uuid()
         add_context_task = db_tasks.add_context_task.si(
             completion_request.context.dict(), created_context_id
         )
-        created_telemetry_id = create_uuid()
+        created_contextual_telemetry_id = create_uuid()
+        created_behavioral_telemetry_id = create_uuid()
         add_telemetry_task = db_tasks.add_telemetry_task.si(
-            completion_request.telemetry.dict(), created_telemetry_id
+            completion_request.contextual_telemetry.dict(),
+            completion_request.behavioral_telemetry.dict(),
+            created_contextual_telemetry_id,
+            created_behavioral_telemetry_id,
         )
 
         total_serving_time = int((time.perf_counter() - overall_start) * 1000)
-        add_query_task = db_tasks.add_query_task.si(
-            Queries.CreateQuery(
-                user_id=uuid.UUID(user_dict["user_id"]),
-                telemetry_id=created_telemetry_id,
-                context_id=created_context_id,
+        add_query_task = db_tasks.add_completion_query_task.si(
+            Queries.CreateCompletionQuery(
+                user_id=uuid.UUID(str(user_id)),
+                contextual_telemetry_id=uuid.UUID(created_contextual_telemetry_id),
+                behavioral_telemetry_id=uuid.UUID(created_behavioral_telemetry_id),
+                context_id=uuid.UUID(created_context_id),
+                session_id=uuid.UUID(session_token),
+                project_id=uuid.UUID(project_token),
+                multi_file_context_changes_indexes=(
+                    str(multi_file_context_changes_indexes)
+                    if multi_file_context_changes_indexes
+                    else "{}"
+                ),
                 total_serving_time=total_serving_time,
                 server_version_id=app.get_config().server_version_id,
             ).dict(),
@@ -196,7 +252,7 @@ def request_completion(
         chain(
             group(add_context_task, add_telemetry_task),
             add_query_task,
-            group(add_session_query_task, *add_generation_tasks),
+            group(*add_generation_tasks),
         ).apply_async(queue="db")
         t7 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t7 - t6) * 1000:.2f}ms")
@@ -209,15 +265,15 @@ def request_completion(
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
-                data=CompletionResponseData(
-                    query_id=created_query_id, completions=completions
+                data=ResponseCompletionResponseData(
+                    meta_query_id=uuid.UUID(created_query_id), completions=completions
                 ),
             ),
         )
 
     except Exception as e:
         logging.error(f"Error processing completion request: {str(e)}")
-        db_session.rollback()
+        db_auth.rollback()
         return JsonResponseWithStatus(
             status_code=500,
             content=GenerateCompletionsError(),

@@ -6,10 +6,10 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 
-import Code4meV2Config
 from backend.celery_broker import CeleryBroker
 from backend.completion import CompletionModels
-from backend.session_manager import SessionManager
+from backend.redis_manager import RedisManager
+from Code4meV2Config import Code4meV2Config
 from database import crud
 
 
@@ -27,13 +27,13 @@ class App:
 
     def __init__(self):
         if not hasattr(self, "_initialized"):
-            self.__db_session_factory: scoped_session = None
-            self.__config: Code4meV2Config = None
-            self.__session_manager: SessionManager = None
-            self.__celery_broker: CeleryBroker = None
-            self.__completion_models = None
+            self.__db_session_factory: scoped_session = None  # type: ignore
+            self.__config: Code4meV2Config = None  # type: ignore
+            self.__redis_manager: RedisManager = None  # type: ignore
+            self.__celery_broker: CeleryBroker = None  # type: ignore
+            self.__completion_models: CompletionModels = None  # type: ignore
             self._initialized: bool = True  # Ensure __init__ is only called once
-            self.__setup(Code4meV2Config.Code4meV2Config())
+            self.__setup(Code4meV2Config())  # type: ignore
 
     def __setup(self, config: Code4meV2Config) -> None:
         """
@@ -49,15 +49,17 @@ class App:
             host=config.celery_broker_host,
             port=config.celery_broker_port,
         )
-        self.__session_manager = SessionManager(
+        self.__redis_manager = RedisManager(
             host=config.redis_host,
             port=config.redis_port,
             auth_token_expires_in_seconds=config.auth_token_expires_in_seconds,
             session_token_expires_in_seconds=config.session_token_expires_in_seconds,
+            token_hook_activation_in_seconds=config.token_hook_activation_in_seconds,
+            # TODO: Set whether to store multi file context on db or not
         )
         try:
             session_expiration_listener_thread = threading.Thread(
-                target=self.__session_manager.listen_for_expired_keys,
+                target=self.__redis_manager.listen_for_expired_keys,
                 args=(self.__db_session_factory(),),
                 daemon=True,
             )
@@ -73,12 +75,12 @@ class App:
             models = crud.get_all_model_names(self.get_db_session())
             for model in models:
                 # TODO: Remove the following lines when the code is run on the server with enough disk space since starcoder takes 12GB of memory
-                if model.model_name.startswith("bigcode/starcoder"):
+                if str(model.model_name).startswith("bigcode/starcoder"):
                     continue
 
                 logging.log(logging.INFO, f"Loading {model.model_name}...")
                 t0 = time.time()
-                self.__completion_models.load_model(model.model_name)
+                self.__completion_models.load_model(str(model.model_name))
                 logging.log(
                     logging.INFO,
                     f"{model.model_name} is setup in {time.time() - t0:.2f} seconds",
@@ -121,8 +123,8 @@ class App:
     def get_config(self) -> Code4meV2Config:
         return self.__config
 
-    def get_session_manager(self) -> SessionManager:
-        return self.__session_manager
+    def get_redis_manager(self) -> RedisManager:
+        return self.__redis_manager
 
     def get_completion_models(self) -> CompletionModels:
         return self.__completion_models
@@ -137,6 +139,6 @@ class App:
         return cls.__instance
 
     def cleanup(self):
-        self.__session_manager.cleanup(db=self.__db_session_factory())
+        self.__redis_manager.cleanup(db_session=self.__db_session_factory())
         self.__celery_broker.cleanup()
         self.__db_session_factory.remove()

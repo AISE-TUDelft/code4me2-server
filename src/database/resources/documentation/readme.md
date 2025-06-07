@@ -1,54 +1,138 @@
 ## Database Schema for Code4meV2
 
-**Note: image of database design available at the end of the document**
+**Note: This is the updated database design for Code4meV2 with chat support, project management, and enhanced telemetry tracking.**
+
+## Testing
+
+To test the crud operations on the database schema, make sure the test_db container on docker is running and run the test_user_crud.py file located in tests/database_tests
+
+## Database Schema Diagram
 
 ```mermaid
 erDiagram
+    CONFIG {
+        bigserial config_id PK
+        text config_data
+    }
+
     USER {
         uuid user_id PK
         timestamp joined_at
-        text email
-        text name
-        text password_hash
+        varchar email UK
+        varchar password
         boolean is_oauth_signup
-        verified boolean
+        boolean verified
+        bigint config_id FK
+        text preference
     }
-    
-    QUERY {
-        uuid query_id PK
-        uuid user_id
-        uuid telemetry_id
-        uuid context_id
-        int total_serving_time
+
+    PROJECT {
+        uuid project_id PK
+        varchar project_name
+        text multi_file_contexts
+        text multi_file_context_changes
+        timestamp created_at
+    }
+
+    PROJECT_USERS {
+        uuid project_id PK,FK
+        uuid user_id PK,FK
+        timestamp joined_at
+    }
+
+    SESSION {
+        uuid session_id PK
+        uuid user_id FK
+        uuid project_id FK
+        timestamp start_time
+        timestamp end_time
+    }
+
+    CHAT {
+        uuid chat_id PK
+        uuid project_id FK
+        uuid user_id FK
+        varchar title
+        timestamp created_at
+    }
+
+    CONTEXT {
+        uuid context_id PK
+        text prefix
+        text suffix
+        text file_name
+        text selected_text
+    }
+
+    CONTEXTUAL_TELEMETRY {
+        uuid contextual_telemetry_id PK
+        bigint version_id FK
+        bigint trigger_type_id FK
+        bigint language_id FK
+        text file_path
+        int caret_line
+        int document_char_length
+        double relative_document_position
+    }
+
+    BEHAVIORAL_TELEMETRY {
+        uuid behavioral_telemetry_id PK
+        int time_since_last_shown
+        int time_since_last_accepted
+        int typing_speed
+    }
+
+    METAQUERY {
+        uuid meta_query_id PK
+        uuid user_id FK
+        uuid contextual_telemetry_id FK
+        uuid behavioral_telemetry_id FK
+        uuid context_id FK
+        uuid session_id FK
+        uuid project_id FK
+        text multi_file_context_changes_indexes
         timestamp timestamp
-        serial server_version_id
+        int total_serving_time
+        bigint server_version_id
+        varchar query_type
     }
-    
+
+    COMPLETIONQUERY {
+        uuid meta_query_id PK,FK
+    }
+
+    CHATQUERY {
+        uuid meta_query_id PK,FK
+        uuid chat_id FK
+        boolean web_enabled
+    }
+
     MODEL_NAME {
-        serial model_id PK
+        bigserial model_id PK
         text model_name
+        boolean is_instruction_tuned
     }
-    
+
     PLUGIN_VERSION {
-        serial version_id PK
+        bigserial version_id PK
         text version_name
         text ide_type
         text description
     }
-    
+
     TRIGGER_TYPE {
-        serial trigger_type_id PK
+        bigserial trigger_type_id PK
         text trigger_type_name
     }
-    
+
     PROGRAMMING_LANGUAGE {
-        serial language_id PK
+        bigserial language_id PK
         text language_name
     }
-    
+
     HAD_GENERATION {
-        uuid query_id PK
-        bigint_unsigned model_id PK
+        uuid meta_query_id PK,FK
+        bigint model_id PK,FK
         text completion
         int generation_time
         timestamp[] shown_at
@@ -56,160 +140,260 @@ erDiagram
         double confidence
         double[] logprobs
     }
-    
+
     GROUND_TRUTH {
-        uuid query_id PK
+        uuid completion_query_id PK,FK
         timestamp truth_timestamp PK
         text ground_truth
     }
-    
-    CONTEXT {
-        uuid context_id PK
-        text prefix
-        text suffix
-        bigint_unsigned language_id
-        bigint_unsigned trigger_type_id
-        bigint_unsigned version_id
-    }
-    
-    TELEMETRY {
-        uuid telemetry_id PK
-        int time_since_last_completion
-        int typing_speed
-        int document_char_length
-        double relative_document_position
-    }
-    
-    USER ||--o{ QUERY : has
-    QUERY ||--o{ HAD_GENERATION : generates
-    QUERY ||--o{ GROUND_TRUTH : having
-    QUERY }o--|| TELEMETRY : uses
-    QUERY }o--|| CONTEXT : bound_by
-    CONTEXT }o--|| PROGRAMMING_LANGUAGE : written_in
-    CONTEXT }o--|| TRIGGER_TYPE : triggered_by
-    CONTEXT }o--|| PLUGIN_VERSION : using
-    HAD_GENERATION }o--|| MODEL_NAME : using
 
+    USER ||--|| CONFIG : uses
+    USER ||--o{ PROJECT_USERS : participates
+    PROJECT ||--o{ PROJECT_USERS : has
+    PROJECT ||--o{ SESSION : contains
+    PROJECT ||--o{ CHAT : hosts
+    USER ||--o{ SESSION : creates
+    USER ||--o{ CHAT : owns
+    USER ||--o{ METAQUERY : makes
 
+    CHAT ||--o{ CHATQUERY : contains
+
+    METAQUERY ||--|| CONTEXTUAL_TELEMETRY : tracks
+    METAQUERY ||--|| BEHAVIORAL_TELEMETRY : measures
+    METAQUERY ||--|| CONTEXT : uses
+    METAQUERY ||--|| PROJECT : belongs_to
+    METAQUERY ||--|| SESSION : within
+
+    METAQUERY ||--|| COMPLETIONQUERY : inherits
+    METAQUERY ||--|| CHATQUERY : inherits
+
+    CONTEXTUAL_TELEMETRY ||--|| PROGRAMMING_LANGUAGE : for_language
+    CONTEXTUAL_TELEMETRY ||--|| TRIGGER_TYPE : for_trigger
+    CONTEXTUAL_TELEMETRY ||--|| PLUGIN_VERSION : for_version
+
+    METAQUERY ||--o{ HAD_GENERATION : generates
+    HAD_GENERATION ||--|| MODEL_NAME : using
+
+    COMPLETIONQUERY ||--o{ GROUND_TRUTH : has_truth
 ```
 
-## Tables
-### `user`
-This table stores all registered users of the system, including both standard email/password users and OAuth-based signups. It is used for authentication, authorization, and account management.
+## Database Schema Details
 
-| Column Name       | Type      | Description                                                                |
-|-------------------|-----------|----------------------------------------------------------------------------|
-| `user_id`         | UUID      | Unique identifier for the user. **Primary Key**.                           |
-| `joined_at`       | TIMESTAMP | Timestamp indicating when the user account was created.                    |
-| `email`           | TEXT      | The user's email address.                                                 |
-| `name`            | TEXT      | The user's display name.                                                  |
-| `password_hash`   | TEXT      | A securely hashed version of the user's password.     |
-| `is_oauth_signup` | BOOLEAN   | Indicates whether the user registered via an OAuth provider.              |
-| `verified`        | BOOLEAN   | Flag showing whether the user's email or identity has been verified.      |
+### Core Tables
 
-### `version_id`
-This table contains the list of all the versions of the plugin that are available bound to the `ide_type`.
-The (optional) description field can be used to provide a brief description of the version and the changes that have been made in the version.
+#### `config`
 
-- **`version_id: SERIAL`** Unique identifier for the version. **Primary Key**.
-- `version_name: TEXT` Name of the (semantic) version.
-- `ide_type: TEXT` Type of the IDE for which the version is available.
-- `description: TEXT` Description of the version, *Optional*.
+Configuration settings shared across users.
 
-### `trigger_type`
-This table contains the list of all the trigger types that are available.
-The trigger types are used to determine the type of trigger that is used to generate the code.
+| Column        | Type      | Description        |
+| ------------- | --------- | ------------------ |
+| `config_id`   | BIGSERIAL | Primary key        |
+| `config_data` | TEXT      | JSON configuration |
 
-- **`trigger_type_id: SERIAL`** Unique identifier for the trigger type, **Primary Key**.
-- `trigger_type_name: TEXT` Name of the trigger type.
+#### `user`
 
-### `programming_language`
-This table contains the list of all the programming languages that are available.
-The programming languages are used to determine the language in which the code is generated.
+Enhanced user management with preferences.
 
-- **`language_id: SERIAL`** Unique identifier for the programming language, **Primary Key**.
-- `language_name: TEXT` Name of the programming language.
+| Column            | Type      | Description               |
+| ----------------- | --------- | ------------------------- |
+| `user_id`         | UUID      | Primary key               |
+| `joined_at`       | TIMESTAMP | Account creation time     |
+| `email`           | VARCHAR   | Unique email address      |
+| `name`            | VARCHAR   | Display name              |
+| `password`        | VARCHAR   | Hashed password (Argon2)  |
+| `is_oauth_signup` | BOOLEAN   | OAuth registration flag   |
+| `verified`        | BOOLEAN   | Email verification status |
+| `config_id`       | BIGINT    | FK to config              |
+| `preference`      | TEXT      | User preferences (JSON)   |
 
-### `model_name`
-This table contains the list of all the models that are available.
-The models are used to determine the model that is used to generate the code.
+#### `project`
 
-- **`model_id: SERIAL`** Unique identifier for the model, **Primary Key**.
-- `model_name: TEXT` Name of the model.
+Collaborative workspaces.
 
-### `query`
-This table contains the list of all the generations that have been requested.
-This table is the central table in the database and contains all the metadata related to the generation request.
+| Column                       | Type      | Description                    |
+| ---------------------------- | --------- | ------------------------------ |
+| `project_id`                 | UUID      | Primary key                    |
+| `project_name`               | VARCHAR   | Project name                   |
+| `multi_file_contexts`        | TEXT      | Multi-file context data (JSON) |
+| `multi_file_context_changes` | TEXT      | Context change tracking (JSON) |
+| `created_at`                 | TIMESTAMP | Creation time                  |
 
-###### Computed Server-Side
+#### `project_users`
 
-- **`query_id: UUID`** for the generation request, **Primary Key**.
-- `total_serving_time: INTEGER` total request processing time, in milliseconds.
-- `query_timestamp: TIMESTAMP` timestamp at which the query was made.
-- `telemetry_id: UUID` &rarr; [`telemetry`](#telemetry) ID for the telemetry used.
-- `context_id: UUID` &rarr; [`context`](#context) ID for the context used.
-- `server_version_id: BIGINT` &rarr; [`version_id`](#version_id) ID for the server version used.
+Many-to-many user-project relationships.
 
+| Column       | Type      | Description              |
+| ------------ | --------- | ------------------------ |
+| `project_id` | UUID      | PK, FK to project        |
+| `user_id`    | UUID      | PK, FK to user           |
+| `joined_at`  | TIMESTAMP | When user joined project |
 
-###### Computed Client-Side
+#### `session`
 
-- `user_id: UUID` &rarr; [`user`](#user) who requested the generation.
-- `timestamp: TIMESTAMP` timestamp at which the query was made.
+User sessions within projects.
 
-### `had_generation`
+| Column       | Type      | Description            |
+| ------------ | --------- | ---------------------- |
+| `session_id` | UUID      | Primary key            |
+| `user_id`    | UUID      | FK to user             |
+| `project_id` | UUID      | FK to project          |
+| `start_time` | TIMESTAMP | Session start          |
+| `end_time`   | TIMESTAMP | Session end (nullable) |
 
-This table contains all the completions that have been generated; the actual code as well as generation-related metadata. 
+#### `chat`
 
-###### Computed Server-Side
-- **`query_id: UUID`** &rarr; [`query`](#query) Unique identifier for the query, **Primary Key**. 
-- **`model_id: BIGINT`** &rarr; [`model_name`](#model_name) ID for the model used, **Primary Key**.
-- `completion: TEXT` The code that has been generated.
-- `generation_time: INTEGER` Time taken to generate the code, in milliseconds.
-- `confidence: FLOAT` Confidence of the model in the generated code.
-- `logprobs: FLOAT[]` Log probabilities of the generated tokens.
+Chat conversations in projects.
 
-###### Computed Client-Side (& MUTABLE)
+| Column       | Type      | Description      |
+| ------------ | --------- | ---------------- |
+| `chat_id`    | UUID      | Primary key      |
+| `project_id` | UUID      | FK to project    |
+| `user_id`    | UUID      | FK to chat owner |
+| `title`      | VARCHAR   | Chat title       |
+| `created_at` | TIMESTAMP | Creation time    |
 
-- `shown_at: TIMESTAMP[]` The times at which the completion was shown to the user.
-- `was_accepted: BOOLEAN` Whether the completion was accepted or not.
+### Query System (Polymorphic Inheritance)
 
-### `ground_truth`
-This table contains the ground truth for the completions that have been generated.
-The ground truth is the code that the user was actually looking for when they requested the completion.
+#### `meta_query`
 
-- **`query_id: UUID`** &rarr; [`query`](#query) Unique identifier for the generation request, **Primary Key**.
-- **`truth_timestamp: TIMESTAMP`** Timestamp at which the ground truth was provided, **Primary Key**.
-- `ground_truth_text: TEXT` The code that the user was actually looking for.
+Base table for all query types.
 
-### `context`
+| Column                               | Type      | Description                |
+| ------------------------------------ | --------- | -------------------------- |
+| `meta_query_id`                      | UUID      | Primary key                |
+| `user_id`                            | UUID      | FK to user (nullable)      |
+| `contextual_telemetry_id`            | UUID      | FK to contextual telemetry |
+| `behavioral_telemetry_id`            | UUID      | FK to behavioral telemetry |
+| `context_id`                         | UUID      | FK to context              |
+| `session_id`                         | UUID      | FK to session              |
+| `project_id`                         | UUID      | FK to project              |
+| `multi_file_context_changes_indexes` | TEXT      | Context changes (JSON)     |
+| `timestamp`                          | TIMESTAMP | Query time                 |
+| `total_serving_time`                 | INT       | Processing time (ms)       |
+| `server_version_id`                  | BIGINT    | Server version             |
+| `query_type`                         | VARCHAR   | 'completion' or 'chat'     |
 
-This table contains the context for the generation request.
+#### `completion_query`
 
-- **`context_id: UUID`** Unique identifier for the context, **Primary Key**.
-- `prefix: TEXT` The code that comes before the cursor position.
-- `suffix: TEXT` The code that comes after the cursor position.
-- `language_id: BIGINT` &rarr; [`programming_language`](#programming_language) ID for the language used.
-- `trigger_type_id: BIGINT` &rarr; [`trigger_type`](#trigger_type) ID for the trigger type used.
-- `version_id: BIGINT` &rarr; [`version_id`](#version_id) ID for the version used.
+Code completion queries.
 
-### `telemetry`
+| Column          | Type | Description          |
+| --------------- | ---- | -------------------- |
+| `meta_query_id` | UUID | PK, FK to meta_query |
 
-This table contains the telemetry data for the generation request.
+#### `chat_query`
 
-- **`telemetry_id: UUID`** Unique identifier for the telemetry data, **Primary Key**.
-- `time_since_last_completion: INTEGER` Time since the last completion, in milliseconds.
-- `typing_speed: INTEGER` Typing speed of the user at the time of the request.
-- `document_char_length: INTEGER` Length of the document.
-- `relative_document_position: DOUBLE` Relative position of the cursor in the document.
+Chat/conversation queries.
 
-## General Notes
-- The database has been designed in a way to enable modularity and scalability.
-  - With the given schema it becomes very simple to add new models, trigger types, IDE types, programming languages, and versions.
-  - The schema has been normalized to be in 3NF to minimize complications that might arise as the result of anomalies.
-  - The schema has been designed to be scalable and can be easily extended to include more tables and fields as required.
-- The database has been designed to favor OLTP operations over OLAP operations in order to provide a faster response time for the users.
-- The database has been designed to be used with a REST API.
+| Column          | Type    | Description          |
+| --------------- | ------- | -------------------- |
+| `meta_query_id` | UUID    | PK, FK to meta_query |
+| `chat_id`       | UUID    | FK to chat           |
+| `web_enabled`   | BOOLEAN | Web access enabled   |
 
-## Updates
-*The database as presented in the init_sql file is basically the base schema for the database. The database is subject to change in the future as the requirements of the project change.
+### Context & Telemetry
 
+#### `context`
+
+Code context information.
+
+| Column          | Type | Description        |
+| --------------- | ---- | ------------------ |
+| `context_id`    | UUID | Primary key        |
+| `prefix`        | TEXT | Code before cursor |
+| `suffix`        | TEXT | Code after cursor  |
+| `file_name`     | TEXT | File name          |
+| `selected_text` | TEXT | Selected text      |
+
+#### `contextual_telemetry`
+
+Environment and context data.
+
+| Column                       | Type   | Description                |
+| ---------------------------- | ------ | -------------------------- |
+| `contextual_telemetry_id`    | UUID   | Primary key                |
+| `version_id`                 | BIGINT | FK to plugin_version       |
+| `trigger_type_id`            | BIGINT | FK to trigger_type         |
+| `language_id`                | BIGINT | FK to programming_language |
+| `file_path`                  | TEXT   | File path                  |
+| `caret_line`                 | INT    | Cursor line number         |
+| `document_char_length`       | INT    | Document length            |
+| `relative_document_position` | DOUBLE | Cursor position (0.0-1.0)  |
+
+#### `behavioral_telemetry`
+
+User behavior data.
+
+| Column                     | Type | Description                     |
+| -------------------------- | ---- | ------------------------------- |
+| `behavioral_telemetry_id`  | UUID | Primary key                     |
+| `time_since_last_shown`    | INT  | Time since last completion (ms) |
+| `time_since_last_accepted` | INT  | Time since last acceptance (ms) |
+| `typing_speed`             | INT  | Typing speed (chars/min)        |
+
+### AI Generation & Results
+
+#### `had_generation`
+
+AI-generated content.
+
+| Column            | Type        | Description          |
+| ----------------- | ----------- | -------------------- |
+| `meta_query_id`   | UUID        | PK, FK to meta_query |
+| `model_id`        | BIGINT      | PK, FK to model_name |
+| `completion`      | TEXT        | Generated content    |
+| `generation_time` | INT         | Generation time (ms) |
+| `shown_at`        | TIMESTAMP[] | When shown to user   |
+| `was_accepted`    | BOOLEAN     | User acceptance      |
+| `confidence`      | DOUBLE      | Model confidence     |
+| `logprobs`        | DOUBLE[]    | Token probabilities  |
+
+#### `ground_truth`
+
+Actual user code for training.
+
+| Column                | Type      | Description                |
+| --------------------- | --------- | -------------------------- |
+| `completion_query_id` | UUID      | PK, FK to completion_query |
+| `truth_timestamp`     | TIMESTAMP | PK, when recorded          |
+| `ground_truth`        | TEXT      | Actual code                |
+
+### Reference Tables
+
+#### `model_name`, `plugin_version`, `trigger_type`, `programming_language`
+
+Reference data for models, IDE versions, trigger types, and programming languages.
+
+## Database Constraints & Integrity ✅
+
+### Foreign Key Constraints
+
+All foreign key relationships properly configured with appropriate cascade behavior:
+
+- **CASCADE**: `project_users`, `session`, `chat`, `meta_query`, `chat_query`, `had_generation`, `ground_truth`
+- **SET NULL**: `meta_query.user_id` (preserve queries when user deleted)
+- **RESTRICT**: Reference tables (config, model_name, etc.)
+
+### Indexes
+
+Performance indexes on:
+
+- All foreign keys
+- Frequently queried columns (email, project_id, user_id, session_id)
+- Composite indexes for generation lookup
+
+### Data Integrity
+
+- **Email uniqueness**: Enforced at database level
+- **Password validation**: Enforced at application level (Pydantic)
+- **UUID primary keys**: Prevent key collisions
+- **Timestamp tracking**: Automatic for creation times
+- **JSON validation**: Structured preferences and configuration
+
+### TODO for Production
+
+1. **SQLAlchemy Relationship Configuration**: Update relationship cascade settings in `db_schemas.py`
+2. **Connection Pooling**: Configure for production load
+3. **Backup Strategy**: Implement automated backups
+4. **Monitoring**: Add query performance monitoring
+5. **Migrations**: Set up schema migration system

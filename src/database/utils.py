@@ -2,7 +2,7 @@ import re
 import uuid
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHash, VerifyMismatchError
 
 ph = PasswordHasher()
 
@@ -38,5 +38,5 @@ def hash_password(password: str) -> str:
 def verify_password(hashed_password: str, input_password: str) -> bool:
     try:
         return ph.verify(hashed_password, input_password)
-    except VerifyMismatchError:
+    except (InvalidHash, VerifyMismatchError):
         return False

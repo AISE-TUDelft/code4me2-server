@@ -7,14 +7,18 @@ import database.crud as crud
 from App import App
 from backend.Responses import (
     CompletionPostResponse,
-    CompletionsNotFoundError,
     ErrorResponse,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
+    NoAccessToGetQueryError,
     QueryNotFoundError,
     RetrieveCompletionsError,
 )
-from base_models import CompletionItem, CompletionResponseData
+from response_models import (
+    CompletionErrorItem,
+    ResponseCompletionItem,
+    ResponseCompletionResponseData,
+)
 
 router = APIRouter()
 
@@ -25,6 +29,7 @@ router = APIRouter()
     responses={
         "200": {"model": CompletionPostResponse},
         "401": {"model": InvalidOrExpiredSessionToken},
+        "403": {"model": NoAccessToGetQueryError},
         "404": {"model": QueryNotFoundError},
         "429": {"model": ErrorResponse},
         "500": {"model": RetrieveCompletionsError},
@@ -38,57 +43,89 @@ def get_completions_by_query(
     """
     Get completions for a specific query ID.
     """
-    logging.log(logging.INFO, f"Getting completions for query: {query_id}")
+    logging.info(f"Getting completions for query: {query_id}")
     db_session = app.get_db_session()
-    session_manager = app.get_session_manager()
+    redis_manager = app.get_redis_manager()
 
     try:
-        # TODO: We should change the structure of this function to also ask for user_id (it's better to define a new Query class for getting queries which has user_id and query_id) and then only return the queries of the current user
-        # or we can simply change get_query_by_id to get_query_by_id_for_user to only return the queries of the current user. For now we can assume query_ids are unique and secure enough for each user.
-        # Check if user is authenticated
-        user_dict = session_manager.get_session(session_token)
-        if session_token is None or user_dict is None:
+        # Get session info from Redis
+        session_info = redis_manager.get("session_token", session_token)
+        if session_token is None or session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
-        # Check if query exists
-        query = crud.get_query_by_id(db_session, str(query_id))
-        if not query:
-            return JsonResponseWithStatus(status_code=404, content=QueryNotFoundError())
 
-        # Get all generations for this query
-        generations = crud.get_generations_by_query_id(db_session, str(query_id))
-        if not generations:
+        # Get auth token from session info and then get user_id from auth token
+        auth_token = session_info.get("auth_token")
+        if not auth_token:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+
+        auth_info = redis_manager.get("auth_token", auth_token)
+        if auth_info is None:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+
+        user_id = auth_info.get("user_id")
+        if not user_id:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+
+        # check if metaquery exists and if so if the user is the owner of the query
+        query = crud.get_meta_query_by_id(db_session, query_id)
+        if not query:
             return JsonResponseWithStatus(
                 status_code=404,
-                content=CompletionsNotFoundError(),
+                content=QueryNotFoundError(),
             )
+
+        # Convert user_id from string (Redis) to UUID for comparison with database user_id (UUID)
+        if str(query.user_id) != user_id:
+            return JsonResponseWithStatus(
+                status_code=403, content=NoAccessToGetQueryError()
+            )
+
+        # Retrieve completions for the query
+        generations = crud.get_generations_by_meta_query_id(db_session, str(query_id))
 
         # Build response
         completions = []
         for generation in generations:
-            model = crud.get_model_by_id(db_session, generation.model_id)
+            model = crud.get_model_by_id(db_session, int(str(generation.model_id)))
 
-            completions.append(
-                CompletionItem(
-                    model_id=generation.model_id,
-                    model_name=model.model_name if model else "Unknown Model",
-                    completion=generation.completion,
-                    generation_time=generation.generation_time,
-                    confidence=generation.confidence,
+            if not model:
+                completions.append(
+                    CompletionErrorItem(model_name=f"Model ID: {generation.model_id}")
                 )
-            )
+            else:
+                completions.append(
+                    ResponseCompletionItem(
+                        model_id=int(str(generation.model_id)),
+                        model_name=str(model.model_name) if model else "Unknown Model",
+                        completion=str(generation.completion),
+                        generation_time=int(str(generation.generation_time)),
+                        confidence=float(str(generation.confidence)),
+                    )
+                )
 
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
-                data=CompletionResponseData(query_id=query_id, completions=completions),
+                data=ResponseCompletionResponseData(
+                    meta_query_id=query_id, completions=completions
+                ),
             ),
         )
 
     except Exception as e:
-        logging.log(logging.ERROR, f"Error retrieving completions: {str(e)}")
+        logging.error(f"Error retrieving completions: {str(e)}")
         return JsonResponseWithStatus(
             status_code=500,
             content=RetrieveCompletionsError(),

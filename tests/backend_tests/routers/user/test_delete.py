@@ -30,12 +30,12 @@ class TestDeleteUser:
     def test_delete_user_success(self, client: TestClient):
         fake_user_id = uuid.uuid4()
 
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = fake_user_id
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = fake_user_id
 
         mock_db = MagicMock()
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_db_session.return_value = mock_db
 
         with (
@@ -54,18 +54,18 @@ class TestDeleteUser:
         mock_remove.assert_called_once_with(db=mock_db, user_id=fake_user_id)
         mock_remove_session.assert_called_once_with(db=mock_db, user_id=fake_user_id)
         mock_remove_query.assert_called_once_with(db=mock_db, user_id=fake_user_id)
-        mock_session_manager.delete_user_sessions.assert_called_once_with(
+        mock_redis_manager.delete_user_sessions.assert_called_once_with(
             db=mock_db, user_id=fake_user_id
         )
-        mock_session_manager.delete_user_auths.assert_called_once_with(
+        mock_redis_manager.delete_user_auths.assert_called_once_with(
             user_id=fake_user_id
         )
 
     def test_delete_user_invalid_auth_token(self, client: TestClient):
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = None
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = None
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
 
         response = client.delete("/api/user/delete")
 

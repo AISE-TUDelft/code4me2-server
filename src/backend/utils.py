@@ -31,26 +31,55 @@ class SerializableBaseModel(BaseModel):
     when calling dict() or json() methods. Any model that extends this will inherit this functionality.
     """
 
-    def dict(self, *args, **kwargs) -> Dict[str, Any]:
+    def dict(self, exclude_unset=False, *args, **kwargs) -> Dict[str, Any]:
         data = {}
         # Iterate over the fields and convert fields to plain strings
         for field_name, value in self.__class__.model_fields.items():
-            if value.annotation is SecretStr:
-                data[field_name] = str(getattr(self, field_name).get_secret_value())
-            elif value.annotation is EmailStr:
-                data[field_name] = str(getattr(self, field_name))
-            elif "Enum" in str(type(value.annotation)):
-                data[field_name] = str(getattr(self, field_name).value)
-            elif value.annotation is UUID:
-                data[field_name] = str(getattr(self, field_name))
-            elif value.annotation is datetime:
-                data[field_name] = getattr(self, field_name).isoformat()
-            else:
-                data[field_name] = iterable_to_dict(getattr(self, field_name))
-        return data
+            if exclude_unset and getattr(self, field_name) is None:
+                continue
+            annotation = value.annotation
+            field_value = getattr(self, field_name)
 
-    def to_json(self) -> str:
-        pass
+            # Handle Union types (e.g., Union[SecretStr, NoneType])
+            origin = getattr(annotation, "__origin__", None)
+            args = getattr(annotation, "__args__", ())
+
+            def is_type(typ, target):
+                try:
+                    return typ is target or (
+                        isinstance(typ, type) and issubclass(typ, target)
+                    )
+                except TypeError:
+                    return False
+
+            # Unwrap Union types
+            if origin is Union:
+                # Remove NoneType from Union
+                non_none_args = [arg for arg in args if arg is not type(None)]
+                if non_none_args:
+                    annotation = non_none_args[0]
+
+            if is_type(annotation, SecretStr):
+                data[field_name] = (
+                    str(field_value.get_secret_value())
+                    if field_value is not None
+                    else None
+                )
+            elif is_type(annotation, EmailStr):
+                data[field_name] = str(field_value) if field_value is not None else None
+            elif "Enum" in str(type(annotation)):
+                data[field_name] = (
+                    str(field_value.value) if field_value is not None else None
+                )
+            elif is_type(annotation, UUID):
+                data[field_name] = str(field_value) if field_value is not None else None
+            elif is_type(annotation, datetime):
+                data[field_name] = (
+                    field_value.isoformat() if field_value is not None else None
+                )
+            else:
+                data[field_name] = iterable_to_dict(field_value)
+        return data
 
     def json(self, *args, **kwargs) -> str:
         # Convert the model to JSON (a string)
@@ -133,3 +162,18 @@ def verify_jwt_token(token: str, provider: str = "google"):
             return {"email": email, "id_info": id_info}
     except ValueError:
         return None
+
+
+def recursive_json_loads(obj):
+    if isinstance(obj, str):
+        try:
+            loaded = json.loads(obj)
+            return recursive_json_loads(loaded)
+        except (json.JSONDecodeError, TypeError):
+            return obj
+    elif isinstance(obj, dict):
+        return {k: recursive_json_loads(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [recursive_json_loads(item) for item in obj]
+    else:
+        return obj

@@ -57,7 +57,7 @@ class TestUpdateMultiFileContext:
             "data": {"context": mock_existing_context}
         }
 
-        client.mock_app.get_session_manager.return_value = mock_session
+        client.mock_app.get_redis_manager.return_value = mock_session
         client.mock_app.get_db_session.return_value = MagicMock()
         response = client.post(
             "/api/completion/multi-file-context/update/", json=update_request.dict()
@@ -72,7 +72,7 @@ class TestUpdateMultiFileContext:
         mock_session = MagicMock()
         mock_session.get_session.return_value = None
 
-        client.mock_app.get_session_manager.return_value = mock_session
+        client.mock_app.get_redis_manager.return_value = mock_session
 
         response = client.post(
             "/api/completion/multi-file-context/update/", json=update_request.dict()
@@ -86,7 +86,7 @@ class TestUpdateMultiFileContext:
         mock_session = MagicMock()
         mock_session.get_session.side_effect = Exception("Internal error")
 
-        client.mock_app.get_session_manager.return_value = mock_session
+        client.mock_app.get_redis_manager.return_value = mock_session
 
         response = client.post(
             "/api/completion/multi-file-context/update/", json=update_request.dict()
