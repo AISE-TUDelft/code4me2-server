@@ -1,24 +1,52 @@
 import logging
+import uuid
 from typing import Union
 
 from fastapi import APIRouter, Depends
 
 import database.crud as crud
 from App import App
+from backend.redis_manager import RedisManager
 from backend.Responses import (
+    AuthenticateUserError,
     AuthenticateUserNormalPostResponse,
     AuthenticateUserOAuthPostResponse,
     AuthenticateUserPostResponse,
+    ConfigNotFound,
     ErrorResponse,
     InvalidEmailOrPassword,
     InvalidOrExpiredJWTToken,
     JsonResponseWithStatus,
 )
 from backend.utils import verify_jwt_token
-from base_models import UserBase
+from database.utils import create_uuid
 from Queries import AuthenticateUserEmailPassword, AuthenticateUserOAuth
+from response_models import ResponseUser
 
+# Initialize the FastAPI router for authentication endpoints
 router = APIRouter()
+
+
+def acquire_auth_token(
+    user_auth_token: uuid.UUID, user_id: uuid.UUID, redis_manager: RedisManager
+) -> str:
+    auth_token = None
+    if user_auth_token is not None:
+        auth_info = redis_manager.get(
+            "auth_token",
+            str(user_auth_token),
+        )
+        if auth_info is not None:
+            auth_token = str(user_auth_token)
+    if auth_token is None:
+        auth_token = create_uuid()
+        redis_manager.set(
+            "auth_token",
+            auth_token,
+            {"user_id": str(user_id), "session_token": ""},
+            force_reset_exp=True,
+        )
+    return auth_token
 
 
 @router.post(
@@ -27,9 +55,10 @@ router = APIRouter()
     responses={
         "200": {"model": AuthenticateUserPostResponse},
         "401": {"model": Union[InvalidOrExpiredJWTToken, InvalidEmailOrPassword]},
+        "404": {"mode": ConfigNotFound},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
-        "500": {"model": ErrorResponse},
+        "500": {"model": AuthenticateUserError},
     },
     tags=["Authentication"],
 )
@@ -38,87 +67,138 @@ def authenticate_user(
     app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
-    Authenticate a user
-    Note: There are some nuances to how this should be handled.
-    1. There is a possibility that the token field is JWT token for OAuth providers (this should be checked for)
-    1.1. Authentication should first check if the token is a JWT token
-    1.2. If it is a JWT token, then the validity of the token should be checked
-    1.3. If the token is valid, then the user should be authenticated using the token and allocated a session
-    1.4. The provider is always Google
-    2. The filed can also simply represent a password for a user.
-    3. The authentication should either return a JsonResponseWithStatus with content of UserAuthenticationPostResponse or a ErrorResponse
+    Authenticate a user via either OAuth (JWT token) or traditional email/password.
+
+    This endpoint supports two methods of authentication:
+    1. OAuth Authentication:
+       - The input contains a JWT token from an OAuth provider (Google).
+       - The token's validity is verified.
+       - If valid, the user is fetched by email from the database.
+       - A session auth token is created and returned as a cookie.
+    2. Email/Password Authentication:
+       - The input contains user email and password.
+       - Credentials are verified against the database.
+       - If valid, a session auth token is created and returned as a cookie.
+
+    Args:
+        user_to_authenticate: Union of OAuth token or email/password credentials.
+        app: FastAPI dependency to access the application context.
+
+    Returns:
+        JsonResponseWithStatus: A JSON response containing the authenticated user info
+        and a session auth token cookie on success, or an error response otherwise.
     """
-    # TODO: check for too many requests using session manager and return 429 if needed
-    logging.log(logging.INFO, f"Authenticating user ({user_to_authenticate})")
+    # Log the attempt to authenticate the user
+    logging.info(f"Authenticating user ({user_to_authenticate})")
+
+    # Retrieve dependencies for DB, session management, and config
     db_session = app.get_db_session()
-    session_manager = app.get_session_manager()
+    redis_manager = app.get_redis_manager()
     config = app.get_config()
 
-    if isinstance(user_to_authenticate, AuthenticateUserOAuth):
-        # OAuth Authentication
-        verification_result = verify_jwt_token(user_to_authenticate.token)
-        if verification_result is None:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredJWTToken(),
+    try:
+        # OAuth Authentication path
+        if isinstance(user_to_authenticate, AuthenticateUserOAuth):
+            # Verify the JWT token from the OAuth provider
+            verification_result = verify_jwt_token(user_to_authenticate.token)
+            if verification_result is None:
+                # Token invalid or expired
+                return JsonResponseWithStatus(
+                    status_code=401,
+                    content=InvalidOrExpiredJWTToken(),
+                )
+
+            # Retrieve the user by the email embedded in the JWT token
+            found_user = crud.get_user_by_email(
+                db_session, verification_result["email"]
             )
-        found_user = crud.get_user_by_email(db_session, verification_result["email"])
-        if not found_user:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredJWTToken(),
-            )
-        else:
-            authentication_token = session_manager.create_auth_token(found_user.user_id)
+            if not found_user:
+                # User with this email does not exist
+                return JsonResponseWithStatus(
+                    status_code=401,
+                    content=InvalidOrExpiredJWTToken(),
+                )
+
+            # Generate authentication token and create response with cookie
+            auth_token = acquire_auth_token(found_user.auth_token, found_user.user_id, redis_manager)  # type: ignore
+            setattr(found_user, "auth_token", uuid.UUID(auth_token))
+            config_data = crud.get_config_by_id(db_session, found_user.config_id)
+            if not config_data:
+                return JsonResponseWithStatus(
+                    status_code=404,
+                    content=ConfigNotFound(),
+                )
             response_obj = JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserOAuthPostResponse(
-                    user=UserBase.model_validate(found_user),
+                    user=ResponseUser.model_validate(found_user),
+                    config=found_user.config.config_data,
                 ),
             )
-
+            # Set the auth token as an HttpOnly cookie with appropriate settings
             response_obj.set_cookie(
                 key="auth_token",
-                value=authentication_token,
+                value=auth_token,
                 httponly=True,
                 samesite="lax",
                 expires=config.auth_token_expires_in_seconds,
             )
             return response_obj
 
-    else:
-        # Email/Password Authentication
-        found_user = crud.get_user_by_email_password(
-            db_session,
-            str(user_to_authenticate.email),
-            user_to_authenticate.password.get_secret_value(),
-        )
-        if not found_user:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidEmailOrPassword(),
-            )
+        # Email/Password Authentication path
         else:
-            authentication_token = session_manager.create_auth_token(found_user.user_id)
+            # Verify email and password against the database
+            found_user = crud.get_user_by_email_password(
+                db_session,
+                str(user_to_authenticate.email),
+                user_to_authenticate.password.get_secret_value(),
+            )
+            if not found_user:
+                # Credentials are invalid
+                return JsonResponseWithStatus(
+                    status_code=401,
+                    content=InvalidEmailOrPassword(),
+                )
+
+            # Generate authentication token and create response with cookie
+            auth_token = acquire_auth_token(found_user.auth_token, found_user.user_id, redis_manager)  # type: ignore
+            setattr(found_user, "auth_token", uuid.UUID(auth_token))
+            config_data = crud.get_config_by_id(db_session, found_user.config_id)
+            if not config_data:
+                return JsonResponseWithStatus(
+                    status_code=404,
+                    content=ConfigNotFound(),
+                )
             response_obj = JsonResponseWithStatus(
                 status_code=200,
                 content=AuthenticateUserNormalPostResponse(
-                    user=UserBase.model_validate(found_user),
+                    user=ResponseUser.model_validate(found_user),
+                    config=config_data.config_data,
                 ),
             )
+            # Set the auth token as an HttpOnly cookie with appropriate settings
             response_obj.set_cookie(
                 key="auth_token",
-                value=authentication_token,
+                value=auth_token,
                 httponly=True,
                 samesite="lax",
                 expires=config.auth_token_expires_in_seconds,
             )
             return response_obj
+    except Exception as e:
+        logging.error(f"Error processing user authentication request: {str(e)}")
+        db_session.rollback()
+        return JsonResponseWithStatus(
+            status_code=500,
+            content=AuthenticateUserError(),
+        )
 
 
 def __init__():
     """
-    This function is called when the module is imported.
-    It is used to initialize the module and import the router.
+    Module initializer placeholder.
+
+    This function is called automatically when the module is imported.
+    It can be used to perform module-level setup, if needed.
     """
     pass

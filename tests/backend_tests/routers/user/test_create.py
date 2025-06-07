@@ -10,8 +10,8 @@ from backend.Responses import (
     InvalidOrExpiredJWTToken,
     UserAlreadyExistsWithThisEmail,
 )
-from base_models import UserBase
 from main import app  # Adjust this import based on your project structure
+from response_models import ResponseUser
 
 
 class TestCreate:
@@ -42,7 +42,7 @@ class TestCreate:
     ):
         mock_crud = MagicMock()
         mock_crud.get_user_by_email.return_value = None  # Simulating no user found
-        fake_user = UserBase.fake(
+        fake_user = ResponseUser.fake(
             email=create_user_query.email,
             name=create_user_query.name,
             password=create_user_query.password,

@@ -9,8 +9,8 @@ from backend.Responses import (
     InvalidOrExpiredAuthToken,
     UpdateUserPutResponse,
 )
-from base_models import UserBase
 from main import app
+from response_models import ResponseUser
 
 
 class TestUpdateUser:
@@ -36,19 +36,19 @@ class TestUpdateUser:
         self, client: TestClient, update_user_query: Queries.UpdateUser
     ):
         # Fake data
-        fake_updated_user = UserBase.fake()
+        fake_updated_user = ResponseUser.fake()
 
         # Mock dependencies
         mock_crud = MagicMock()
         mock_crud.update_user.return_value = fake_updated_user
 
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = (
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = (
             fake_updated_user.user_id
         )
 
         client.mock_app.get_db_session.return_value = MagicMock()
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
 
         with patch("backend.routers.user.update.crud", mock_crud):
             response = client.put("/api/user/update", json=update_user_query.dict())
@@ -62,10 +62,10 @@ class TestUpdateUser:
 
     def test_update_user_invalid_session_token(self, client, update_user_query):
         # Mock session manager returns None
-        mock_session_manager = MagicMock()
-        mock_session_manager.get_user_id_by_auth_token.return_value = None
+        mock_redis_manager = MagicMock()
+        mock_redis_manager.get_user_id_by_auth_token.return_value = None
 
-        client.mock_app.get_session_manager.return_value = mock_session_manager
+        client.mock_app.get_redis_manager.return_value = mock_redis_manager
 
         response = client.put("/api/user/update", json=update_user_query.dict())
 

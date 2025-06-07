@@ -10,7 +10,6 @@ from App import App
 from backend.routers import router
 from Code4meV2Config import Code4meV2Config
 
-load_dotenv()
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,  # Set the logging level (e.g., DEBUG, INFO, WARNING, ERROR)
@@ -18,6 +17,9 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],  # Output logs to the console
     force=True,
 )
+
+load_dotenv()
+config = Code4meV2Config()
 
 
 @asynccontextmanager
@@ -41,11 +43,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
-config = Code4meV2Config()
-# if not config.test_mode:
-#     App().setup(config)
-
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -73,7 +70,6 @@ app.add_middleware(
 # app = FastAPI()
 # app.add_middleware(SimpleRateLimiter)
 app.include_router(router, prefix="/api")
-
 
 if __name__ == "__main__":
     uvicorn.run(

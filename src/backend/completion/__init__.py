@@ -50,3 +50,4 @@ class CompletionModels:
                 logging.INFO, f"Loading the {key} model since it's not preloaded..."
             )
             self.load_model(model_name, prompt_template)
+            return self.__models.get(key)
