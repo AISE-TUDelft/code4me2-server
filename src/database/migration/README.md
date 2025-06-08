@@ -25,7 +25,7 @@ python src/database/migration/migration_manager.py status
 
 **What happens during `init`:**
 1. Detects empty database
-2. Executes `init_test.sql` to create all tables and data
+2. Executes `init.sql` to create all tables and data
 3. Sets up Alembic tracking with baseline migration
 4. Marks current state as migration head
 
