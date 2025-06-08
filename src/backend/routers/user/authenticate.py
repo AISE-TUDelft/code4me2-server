@@ -89,7 +89,9 @@ def authenticate_user(
         and a session auth token cookie on success, or an error response otherwise.
     """
     # Log the attempt to authenticate the user
-    logging.info(f"Authenticating user ({user_to_authenticate})")
+    logging.info(
+        f"Authenticating user ({user_to_authenticate.dict(hide_secrets=True)})"
+    )
 
     # Retrieve dependencies for DB, session management, and config
     db_session = app.get_db_session()
@@ -122,7 +124,9 @@ def authenticate_user(
             # Generate authentication token and create response with cookie
             auth_token = acquire_auth_token(found_user.auth_token, found_user.user_id, redis_manager)  # type: ignore
             setattr(found_user, "auth_token", uuid.UUID(auth_token))
-            config_data = crud.get_config_by_id(db_session, found_user.config_id)
+            config_data = crud.get_config_by_id(
+                db_session, int(str(found_user.config_id))
+            )
             if not config_data:
                 return JsonResponseWithStatus(
                     status_code=404,
@@ -163,7 +167,9 @@ def authenticate_user(
             # Generate authentication token and create response with cookie
             auth_token = acquire_auth_token(found_user.auth_token, found_user.user_id, redis_manager)  # type: ignore
             setattr(found_user, "auth_token", uuid.UUID(auth_token))
-            config_data = crud.get_config_by_id(db_session, found_user.config_id)
+            config_data = crud.get_config_by_id(
+                db_session, int(str(found_user.config_id))
+            )
             if not config_data:
                 return JsonResponseWithStatus(
                     status_code=404,
@@ -173,7 +179,7 @@ def authenticate_user(
                 status_code=200,
                 content=AuthenticateUserNormalPostResponse(
                     user=ResponseUser.model_validate(found_user),
-                    config=config_data.config_data,
+                    config=str(config_data.config_data),
                 ),
             )
             # Set the auth token as an HttpOnly cookie with appropriate settings

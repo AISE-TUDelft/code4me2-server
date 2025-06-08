@@ -31,7 +31,9 @@ class SerializableBaseModel(BaseModel):
     when calling dict() or json() methods. Any model that extends this will inherit this functionality.
     """
 
-    def dict(self, exclude_unset=False, *args, **kwargs) -> Dict[str, Any]:
+    def dict(
+        self, exclude_unset=False, hide_secrets=False, *args, **kwargs
+    ) -> Dict[str, Any]:
         data = {}
         # Iterate over the fields and convert fields to plain strings
         for field_name, value in self.__class__.model_fields.items():
@@ -60,11 +62,14 @@ class SerializableBaseModel(BaseModel):
                     annotation = non_none_args[0]
 
             if is_type(annotation, SecretStr):
-                data[field_name] = (
-                    str(field_value.get_secret_value())
-                    if field_value is not None
-                    else None
-                )
+                if hide_secrets:
+                    data[field_name] = "*" * 8
+                else:
+                    data[field_name] = (
+                        str(field_value.get_secret_value())
+                        if field_value is not None
+                        else None
+                    )
             elif is_type(annotation, EmailStr):
                 data[field_name] = str(field_value) if field_value is not None else None
             elif "Enum" in str(type(annotation)):

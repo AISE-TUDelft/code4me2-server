@@ -32,7 +32,7 @@ class CreateUser(QueryBase):
     password: SecretStr = Field(
         ..., description="User's password (will be hashed)", min_length=8, max_length=50
     )
-    config_id: int = Field(..., description="Configuration ID to use", ge=1)
+    config_id: int = Field(..., description="Configuration ID to use", ge=0)
     preference: Optional[str] = Field(
         None, description="User preferences as JSON string"
     )
@@ -158,12 +158,12 @@ class CreateConfig(QueryBase):
 
 
 class ContextData(QueryBase):
-    prefix: Optional[str] = Field(None, description="Code before cursor")
-    suffix: Optional[str] = Field(None, description="Code after cursor")
-    file_name: Optional[str] = Field(None, description="File name")
-    selected_text: Optional[str] = Field(None, description="Selected text in editor")
+    prefix: str = Field(..., description="Code before cursor")
+    suffix: str = Field(..., description="Code after cursor")
+    file_name: str = Field(..., description="File name")
+    selected_text: Optional[str] = Field("", description="Selected text in editor")
     context_files: Optional[List[str]] = Field(
-        None, description="Context files to consider"
+        [], description="Context files to consider"
     )
 
 
@@ -196,19 +196,24 @@ class BehavioralTelemetryData(QueryBase):
 class RequestCompletion(QueryBase):
     model_ids: List[int] = Field(..., description="Models to use for completion")
     context: ContextData = Field(..., description="Context data for completion")
+    # context: Mapping[str, Any] = Field(..., description="Context data for completion")
+
     contextual_telemetry: ContextualTelemetryData = Field(
         ..., description="Contextual telemetry data"
     )
     behavioral_telemetry: BehavioralTelemetryData = Field(
         ..., description="Behavioral telemetry data"
     )
-    # telemetry: Mapping[str, Any] = Field(
+    # contextual_telemetry: Mapping[str,Any]= Field(
+    #     ..., description="Contextual telemetry data"
+    # )
+    # behavioral_telemetry: Mapping[str, Any] = Field(
     #     ..., description="Telemetry data for completion"
     # )
 
 
 class CreateCompletionQuery(QueryBase):
-    user_id: Optional[UUID] = Field(None, description="User ID")
+    user_id: UUID = Field(..., description="User ID")
     contextual_telemetry_id: UUID = Field(
         ..., description="Contextual telemetry record ID"
     )
@@ -218,8 +223,9 @@ class CreateCompletionQuery(QueryBase):
     context_id: UUID = Field(..., description="Context record ID")
     session_id: UUID = Field(..., description="Session ID")
     project_id: UUID = Field(..., description="Project ID")
-    multi_file_context_changes_indexes: Optional[str] = Field(
-        default="{}", description="Context change indexes as JSON"
+    multi_file_context_changes_indexes: Optional[Dict[str, int]] = Field(
+        default={},
+        description="Context change indexes as a dictionary of file names and their change index",
     )
     total_serving_time: Optional[int] = Field(
         None, description="Total serving time (ms)", ge=0
@@ -230,7 +236,7 @@ class CreateCompletionQuery(QueryBase):
 
 
 class CreateChatQuery(QueryBase):
-    user_id: Optional[UUID] = Field(None, description="User ID")
+    user_id: UUID = Field(..., description="User ID")
     contextual_telemetry_id: UUID = Field(
         ..., description="Contextual telemetry record ID"
     )
@@ -241,8 +247,9 @@ class CreateChatQuery(QueryBase):
     session_id: UUID = Field(..., description="Session ID")
     project_id: UUID = Field(..., description="Project ID")
     chat_id: UUID = Field(..., description="Chat ID")
-    multi_file_context_changes_indexes: Optional[str] = Field(
-        default="{}", description="Context change indexes as JSON"
+    multi_file_context_changes_indexes: Optional[Dict[str, int]] = Field(
+        default={},
+        description="Context change indexes as a dictionary of file names and their change index",
     )
     total_serving_time: Optional[int] = Field(
         None, description="Total serving time (ms)", ge=0
@@ -378,12 +385,3 @@ class UpdateGenerationAcceptance(QueryBase):
 class CreateSessionProject(QueryBase):
     session_id: UUID = Field(..., description="Session ID")
     project_id: UUID = Field(..., description="Project ID")
-
-
-# class SessionQueryData(QueryBase):
-#     session_id: UUID = Field(..., description="Session ID")
-#     query_id: UUID = Field(..., description="Query ID")
-#     multi_file_context_changes_indexes: Optional[Dict[str, int]] = Field(
-#         default={},
-#         description="Indexes of multi-file context changes for each file",
-#     )

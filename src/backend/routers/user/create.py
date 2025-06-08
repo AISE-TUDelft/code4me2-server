@@ -61,7 +61,9 @@ def create_user(
         5. Return appropriate response.
     """
     # Log the user creation attempt
-    logging.log(logging.INFO, f"Creating user: ({user_to_create})")
+    logging.log(
+        logging.INFO, f"Creating user: ({user_to_create.dict(hide_secrets=True)})"
+    )
     db_session = app.get_db_session()
 
     try:
