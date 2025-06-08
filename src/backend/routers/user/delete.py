@@ -28,7 +28,7 @@ router = APIRouter()
 
 
 @router.delete(
-    "/",
+    "",
     response_model=DeleteUserDeleteResponse,
     responses={
         "200": {"model": DeleteUserDeleteResponse},

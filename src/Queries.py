@@ -92,6 +92,8 @@ class UpdateUser(QueryBase):
         - Contains at least one lowercase letter
         - Contains at least one digit
         """
+        if v is None:
+            return v
         pattern = r"^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)\S{8,}$"
         password_value = v.get_secret_value()
         if not password_value:
@@ -312,12 +314,6 @@ class CreateProject(QueryBase):
     project_name: str = Field(
         ..., description="Project name", min_length=1, max_length=100
     )
-    multi_file_contexts: Optional[str] = Field(
-        default="{}", description="Multi-file contexts as JSON"
-    )
-    multi_file_context_changes: Optional[str] = Field(
-        default="{}", description="Context changes as JSON"
-    )
 
 
 class UpdateProject(QueryBase):
@@ -340,12 +336,7 @@ class AddUserToProject(QueryBase):
 
 # TODO check naming consistency
 class ActivateProject(QueryBase):
-    project_token: str = Field(..., description="Project token to activate")
-
-
-# TODO check naming consistency
-class DeactivateSession(QueryBase):
-    session_token: str = Field(..., description="Session token to deactivate")
+    project_id: UUID = Field(..., description="Project id to activate")
 
 
 class CreateSession(QueryBase):

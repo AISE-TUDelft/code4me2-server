@@ -33,7 +33,7 @@ router = APIRouter()
 
 
 @router.post(
-    "/",
+    "",
     response_model=CompletionPostResponse,
     responses={
         "200": {"model": CompletionPostResponse},

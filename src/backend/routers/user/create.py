@@ -26,7 +26,7 @@ router = APIRouter()
 
 
 @router.post(
-    "/",
+    "",
     response_model=CreateUserPostResponse,
     responses={
         "201": {"model": CreateUserPostResponse},
@@ -97,7 +97,7 @@ def create_user(
         return JsonResponseWithStatus(
             status_code=201,
             content=CreateUserPostResponse(
-                user_id=str(user.user_id),
+                user_id=user.user_id,
             ),
         )
     except Exception as e:

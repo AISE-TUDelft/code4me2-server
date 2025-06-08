@@ -65,10 +65,9 @@ def activate_project(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
-        project_token = activate_project_request.project_token
+        project_token = str(activate_project_request.project_id)
         project_info = redis_manager.get("project_token", project_token)
         logging.log(logging.INFO, f"Retrieved project info: {project_info}")
-
         if not project_info:
             # The project is not in the redis, so we need to fetch it from the database if it exists there
             existing_project = crud.get_project_by_id(

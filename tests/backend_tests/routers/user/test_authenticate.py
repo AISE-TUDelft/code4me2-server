@@ -7,8 +7,10 @@ from fastapi.testclient import TestClient
 import Queries
 from App import App
 from backend.Responses import (
+    AuthenticateUserError,
     AuthenticateUserNormalPostResponse,
     AuthenticateUserOAuthPostResponse,
+    ConfigNotFound,
     InvalidEmailOrPassword,
     InvalidOrExpiredJWTToken,
 )
@@ -46,19 +48,25 @@ class TestAuthenticate:
         mock_crud = MagicMock()
         mock_user = ResponseUser.fake(email=auth_email_query.email)
         mock_crud.get_user_by_email_password.return_value = mock_user
-        mock_crud.get_config_by_id.return_value = {"config_data": "config1"}
-        auth_token = uuid.uuid4()
-        client.mock_app.get_redis_manager.return_value.create_auth_token.return_value = (
-            auth_token
-        )
-        with patch("backend.routers.user.authenticate.crud", mock_crud):
+        mock_config = "config1"
+        mock_crud.get_config_by_id.return_value = MagicMock(config_data=mock_config)
+
+        auth_token = str(uuid.uuid4())
+
+        # Mock the acquire_auth_token function to return a fixed token
+        with patch(
+            "backend.routers.user.authenticate.acquire_auth_token",
+            return_value=auth_token,
+        ), patch("backend.routers.user.authenticate.crud", mock_crud):
             response = client.post(
                 "/api/user/authenticate", json=auth_email_query.dict()
             )
             response_result = response.json()
             assert response.status_code == 200
             response_result["user"]["password"] = mock_user.password.get_secret_value()
-            assert response_result == AuthenticateUserNormalPostResponse(user=mock_user)
+            assert response_result == AuthenticateUserNormalPostResponse(
+                user=mock_user, config=mock_config
+            )
             assert response.cookies.get("auth_token") == auth_token
 
     def test_authenticate_user_email_invalid(
@@ -83,15 +91,19 @@ class TestAuthenticate:
         mock_crud = MagicMock()
         mock_user = ResponseUser.fake()
         mock_crud.get_user_by_email.return_value = mock_user
-        mock_crud.get_config_by_id.return_value = {"config_data": "config1"}
+        mock_config = "config1"
+        mock_crud.get_config_by_id.return_value = MagicMock(config_data=mock_config)
         mock_verify_jwt_token = MagicMock(return_value={"email": mock_user.email})
-        auth_token = uuid.uuid4()
-        client.mock_app.get_db_session.return_value = MagicMock()
-        client.mock_app.get_redis_manager.return_value.create_auth_token.return_value = (
-            auth_token
-        )
 
-        with patch("backend.routers.user.authenticate.crud", mock_crud), patch(
+        auth_token = str(uuid.uuid4())
+
+        client.mock_app.get_db_session.return_value = MagicMock()
+        client.mock_app.get_redis_manager.return_value = MagicMock()
+
+        with patch(
+            "backend.routers.user.authenticate.acquire_auth_token",
+            return_value=auth_token,
+        ), patch("backend.routers.user.authenticate.crud", mock_crud), patch(
             "backend.routers.user.authenticate.verify_jwt_token", mock_verify_jwt_token
         ):
             response = client.post(
@@ -101,7 +113,9 @@ class TestAuthenticate:
             response_result = response.json()
             assert response.status_code == 200
             response_result["user"]["password"] = mock_user.password.get_secret_value()
-            assert response_result == AuthenticateUserOAuthPostResponse(user=mock_user)
+            assert response_result == AuthenticateUserOAuthPostResponse(
+                user=mock_user, config=mock_config
+            )
             assert response.cookies.get("auth_token") == auth_token
 
     def test_authenticate_user_oauth_invalid_token(
@@ -141,3 +155,46 @@ class TestAuthenticate:
         response = client.post("/api/user/authenticate", json={"email": "bad"})
         assert response.status_code == 422
         assert "detail" in response.json()
+
+    def test_authenticate_user_config_not_found(
+        self,
+        client: TestClient,
+        auth_email_query: Queries.AuthenticateUserEmailPassword,
+    ):
+        mock_crud = MagicMock()
+        mock_user = ResponseUser.fake(email=auth_email_query.email)
+        mock_crud.get_user_by_email_password.return_value = mock_user
+        # Simulate config not found
+        mock_crud.get_config_by_id.return_value = None
+
+        auth_token = str(uuid.uuid4())
+        mock_redis_manager = MagicMock()
+
+        # Mock the acquire_auth_token function to return a fixed token
+        with patch(
+            "backend.routers.user.authenticate.acquire_auth_token",
+            return_value=auth_token,
+        ), patch("backend.routers.user.authenticate.crud", mock_crud):
+            response = client.post(
+                "/api/user/authenticate", json=auth_email_query.dict()
+            )
+
+            assert response.status_code == 404
+            assert response.json() == ConfigNotFound()
+
+    def test_authenticate_user_server_error(
+        self,
+        client: TestClient,
+        auth_email_query: Queries.AuthenticateUserEmailPassword,
+    ):
+        mock_crud = MagicMock()
+        # Simulate a server error by raising an exception
+        mock_crud.get_user_by_email_password.side_effect = Exception("Database error")
+
+        with patch("backend.routers.user.authenticate.crud", mock_crud):
+            response = client.post(
+                "/api/user/authenticate", json=auth_email_query.dict()
+            )
+
+            assert response.status_code == 500
+            assert response.json() == AuthenticateUserError()

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import Queries
 from App import App
 from backend.Responses import (
+    CreateUserError,
     CreateUserPostResponse,
     InvalidOrExpiredJWTToken,
     UserAlreadyExistsWithThisEmail,
@@ -108,3 +109,41 @@ class TestCreate:
         assert (
             "detail" in response.json()
         )  # FastAPI should return validation error details
+
+    def test_create_user_oauth_email_mismatch(
+        self, client: TestClient, create_user_oauth_query: Queries.CreateUserOauth
+    ):
+        mock_crud = MagicMock()
+        mock_crud.get_user_by_email.return_value = None  # Simulating no user found
+
+        # Simulate JWT token verification returning a different email than the one in the request
+        mock_verify_jwt_token = MagicMock(
+            return_value={"email": "different_email@example.com"}
+        )
+
+        with (
+            patch("backend.routers.user.create.crud", mock_crud),
+            patch(
+                "backend.routers.user.create.verify_jwt_token", mock_verify_jwt_token
+            ),
+        ):
+            response = client.post(
+                "/api/user/create", json=create_user_oauth_query.dict()
+            )
+
+            assert response.status_code == 401
+            assert response.json() == InvalidOrExpiredJWTToken()
+
+    def test_create_user_server_error(
+        self, client: TestClient, create_user_query: Queries.CreateUser
+    ):
+        mock_crud = MagicMock()
+        mock_crud.get_user_by_email.return_value = None  # Simulating no user found
+        # Simulate a server error by raising an exception
+        mock_crud.create_user.side_effect = Exception("Database error")
+
+        with patch("backend.routers.user.create.crud", mock_crud):
+            response = client.post("/api/user/create", json=create_user_query.dict())
+
+            assert response.status_code == 500
+            assert response.json() == CreateUserError()

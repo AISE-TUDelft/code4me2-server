@@ -29,7 +29,7 @@ router = APIRouter()
 
 
 @router.put(
-    "/",
+    "",
     response_model=UpdateUserPutResponse,
     responses={
         201: {"model": UpdateUserPutResponse},

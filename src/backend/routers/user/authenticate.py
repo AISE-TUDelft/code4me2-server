@@ -136,7 +136,7 @@ def authenticate_user(
                 status_code=200,
                 content=AuthenticateUserOAuthPostResponse(
                     user=ResponseUser.model_validate(found_user),
-                    config=found_user.config.config_data,
+                    config=config_data.config_data,
                 ),
             )
             # Set the auth token as an HttpOnly cookie with appropriate settings

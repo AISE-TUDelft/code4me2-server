@@ -1,7 +1,7 @@
 import inspect
 import json
 from datetime import datetime
-from typing import Any, Dict, Union
+from typing import Any, Dict, Union, get_args, get_origin
 from uuid import UUID
 
 from google.auth.transport import requests
@@ -117,18 +117,39 @@ class Fakable:
             def get_constrained_field_value(
                 cls, annotation, field_meta: FieldMeta, *args, **kwargs
             ):
+                # Provide a valid SecretStr for password-related fields
                 if annotation is EmailStr:
                     return cls.__faker__.email()
-                elif annotation is SecretStr:
-                    return "ValidPassword123!"
+                elif annotation is SecretStr or field_meta.name in {
+                    "password",
+                    "previous_password",
+                }:
+                    return SecretStr("ValidPassword123!")
+
                 return super().get_constrained_field_value(
                     annotation, field_meta, *args, **kwargs
                 )
 
             @classmethod
             def get_field_value(cls, field_meta: FieldMeta, *args, **kwargs):
-                """Override to handle nested BaseModel objects"""
+                """Override to handle nested BaseModel objects and SecretStr fields"""
                 annotation = field_meta.annotation
+                # Handle SecretStr or Optional[SecretStr]
+                origin = get_origin(annotation)
+                args_ = get_args(annotation)
+                if (
+                    field_meta.name in ["password", "previous_password"]
+                    or annotation is SecretStr
+                    or (origin is Union and SecretStr in args_)
+                ):
+                    return SecretStr("ValidPassword123!")
+
+                if (
+                    field_meta.name == "email"
+                    and annotation is EmailStr
+                    or (origin is Union and EmailStr in args_)
+                ):
+                    return cls.__faker__.email()
 
                 # Handle nested BaseModel objects
                 if inspect.isclass(annotation) and issubclass(annotation, BaseModel):

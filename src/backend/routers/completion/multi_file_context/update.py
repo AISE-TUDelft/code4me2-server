@@ -83,7 +83,7 @@ def update_multi_file_context_changes_in_session(
 
 
 @router.post(
-    "/",
+    "",
     response_model=MultiFileContextUpdatePostResponse,
     responses={
         "200": {"model": MultiFileContextUpdatePostResponse},
