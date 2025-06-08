@@ -12,16 +12,12 @@ Place this file at: tests/database_tests/test_migration.py
 """
 
 import os
-import sys
-import uuid
 import subprocess
-import tempfile
+import sys
 from pathlib import Path
-from datetime import datetime
+
 import pytest
-from sqlalchemy import create_engine, text, inspect
-from sqlalchemy.exc import SQLAlchemyError
-from unittest.mock import Mock, patch
+from sqlalchemy import create_engine, text
 
 
 # === WINDOWS PATH FIX ===
@@ -44,7 +40,7 @@ def setup_project_paths():
     markers = [
         project_root / "run_tests.py",
         project_root / "src",
-        project_root / "alembic.ini"
+        project_root / "alembic.ini",
     ]
 
     found_markers = [marker for marker in markers if marker.exists()]
@@ -87,9 +83,8 @@ PROJECT_ROOT = setup_project_paths()
 # Now try imports with better error handling
 print(f"🔄 Attempting imports with project root: {PROJECT_ROOT}")
 try:
+    from database import crud
     from database.migration.migration_manager import MigrationManager
-    from database import db_schemas, crud
-    import Queries
 
     print("✅ All imports successful!")
 except ImportError as e:
@@ -121,25 +116,28 @@ class TestConfig:
     def get_database_url(cls):
         """Get database URL - configurable via environment variables."""
         # Check if we should use test database
-        use_test_db = os.getenv('USE_TEST_DB', 'true').lower() == 'true'
+        use_test_db = os.getenv("USE_TEST_DB", "true").lower() == "true"
 
         if use_test_db:
             # Use test database (default for tests)
-            return os.getenv('TEST_DATABASE_URL', 'postgresql://postgres:postgres@localhost:5433/test_db')
+            return os.getenv(
+                "TEST_DATABASE_URL",
+                "postgresql://postgres:postgres@localhost:5433/test_db",
+            )
         else:
             # Use main database from .env
-            db_user = os.getenv('DB_USER', 'postgres')
-            db_password = os.getenv('DB_PASSWORD', 'postgres')
-            db_host = os.getenv('DB_HOST', 'localhost')
-            db_port = os.getenv('DB_PORT', '2345')
-            db_name = os.getenv('DB_NAME', 'code4meV2')
+            db_user = os.getenv("DB_USER", "postgres")
+            db_password = os.getenv("DB_PASSWORD", "postgres")
+            db_host = os.getenv("DB_HOST", "localhost")
+            db_port = os.getenv("DB_PORT", "2345")
+            db_name = os.getenv("DB_NAME", "code4meV2")
 
-            return f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
+            return f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
     @classmethod
     def is_using_test_db(cls):
         """Check if we're using test database."""
-        return os.getenv('USE_TEST_DB', 'true').lower() == 'true'
+        return os.getenv("USE_TEST_DB", "true").lower() == "true"
 
     @classmethod
     def get_migration_script_path(cls):
@@ -153,7 +151,7 @@ class TestConfig:
             Path.cwd() / "src" / "database" / "migration" / "migration_manager.py",
         ]
 
-        print(f"🔍 Looking for migration script in:")
+        print("🔍 Looking for migration script in:")
         for path in possible_paths:
             print(f"  {path} - {'✅ EXISTS' if path.exists() else '❌ missing'}")
             if path.exists():
@@ -180,6 +178,7 @@ class TestConfig:
         """Run a migration command with proper Windows path handling."""
         try:
             import shlex
+
             migration_script = cls.get_migration_script_path()
 
             # Use shlex to properly handle quoted arguments (important for Windows paths with spaces)
@@ -187,13 +186,13 @@ class TestConfig:
 
             # Add --test flag if using test database
             if cls.is_using_test_db():
-                cmd_parts.insert(0, '--test')
+                cmd_parts.insert(0, "--test")
 
             # Build command with quoted paths for Windows
             cmd = [
-                      "python",
-                      str(migration_script)  # This handles spaces in paths
-                  ] + cmd_parts
+                "python",
+                str(migration_script),  # This handles spaces in paths
+            ] + cmd_parts
 
             print(f"🚀 Running command: {' '.join(cmd)}")
             print(f"🚀 Working directory: {PROJECT_ROOT}")
@@ -208,8 +207,8 @@ class TestConfig:
                 cwd=str(PROJECT_ROOT),  # Ensure we're in project root
                 env={
                     **os.environ,
-                    'PYTHONPATH': str(PROJECT_ROOT)  # Ensure Python can find modules
-                }
+                    "PYTHONPATH": str(PROJECT_ROOT),  # Ensure Python can find modules
+                },
             )
 
             success = result.returncode == 0
@@ -218,7 +217,7 @@ class TestConfig:
                 print(f"STDOUT: {result.stdout}")
                 print(f"STDERR: {result.stderr}")
             else:
-                print(f"✅ Command succeeded")
+                print("✅ Command succeeded")
 
             return success, result.stdout, result.stderr
 
@@ -230,10 +229,11 @@ class TestConfig:
     def count_tables(cls, engine):
         """Count tables in database."""
         with engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT COUNT(*) FROM information_schema.tables 
-                WHERE table_schema = 'public'
-            """))
+            result = conn.execute(
+                text(
+                    """SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'"""
+                )
+            )
             return result.scalar()
 
     @classmethod
@@ -262,7 +262,8 @@ def database_engine():
         return engine
     except Exception as e:
         db_type = "test" if TestConfig.is_using_test_db() else "main"
-        pytest.skip(f"""
+        pytest.skip(
+            f"""
 ❌ Database not available: {e}
 
 To fix this:
@@ -271,7 +272,8 @@ To fix this:
 3. Verify DATABASE_URL: {TestConfig.get_database_url()}
 
 Or set USE_TEST_DB=false to use main database, or USE_TEST_DB=true to use test database.
-        """)
+        """
+        )
 
 
 @pytest.fixture(scope="function")
@@ -289,10 +291,11 @@ def initialized_database(clean_database):
 
     success, stdout, stderr = TestConfig.run_migration_command("init")
     if not success:
-        print(f"❌ Database initialization failed")
+        print("❌ Database initialization failed")
         print(f"STDOUT: {stdout}")
         print(f"STDERR: {stderr}")
-        pytest.fail(f"""
+        pytest.fail(
+            f"""
 ❌ Failed to initialize {db_type} database:
 STDERR: {stderr}
 STDOUT: {stdout}
@@ -307,7 +310,8 @@ Make sure:
 1. migration_manager.py exists at the expected location
 2. Database is running: docker-compose up {'test_db' if TestConfig.is_using_test_db() else 'db'}
 3. All dependencies are installed: pip install -r requirements.txt
-        """)
+        """
+        )
     print(f"✅ {db_type.title()} database initialized successfully")
     yield clean_database
 
@@ -328,15 +332,21 @@ class TestDatabaseConnection:
             result = conn.execute(text("SELECT current_database()"))
             current_db = result.scalar()
 
-            expected_db = "test_db" if TestConfig.is_using_test_db() else os.getenv('DB_NAME', 'code4meV2')
-            assert current_db == expected_db, f"Expected {expected_db}, got {current_db}"
+            expected_db = (
+                "test_db"
+                if TestConfig.is_using_test_db()
+                else os.getenv("DB_NAME", "code4meV2")
+            )
+            assert (
+                current_db == expected_db
+            ), f"Expected {expected_db}, got {current_db}"
 
             db_type = "test" if TestConfig.is_using_test_db() else "main"
             print(f"✅ Connected to correct {db_type} database: {current_db}")
 
     def test_paths_are_correct(self):
         """Test that all paths are correctly detected on Windows."""
-        print(f"\n=== PATH VERIFICATION ===")
+        print("\n=== PATH VERIFICATION ===")
         print(f"Project root: {PROJECT_ROOT}")
         print(f"Project root exists: {PROJECT_ROOT.exists()}")
 
@@ -344,26 +354,32 @@ class TestDatabaseConnection:
         try:
             migration_script = TestConfig.get_migration_script_path()
             print(f"Migration script: {migration_script}")
-            assert migration_script.exists(), f"Migration script not found: {migration_script}"
+            assert (
+                migration_script.exists()
+            ), f"Migration script not found: {migration_script}"
         except FileNotFoundError as e:
             pytest.fail(f"Migration script path detection failed: {e}")
 
         # Test alembic config (with multiple possible locations)
         possible_alembic_configs = [
             PROJECT_ROOT / "alembic.ini",
-            PROJECT_ROOT / "src" / "alembic.ini"
+            PROJECT_ROOT / "src" / "alembic.ini",
         ]
 
         alembic_config = None
         for config_path in possible_alembic_configs:
-            print(f"Checking alembic config: {config_path} - {'✅' if config_path.exists() else '❌'}")
+            print(
+                f"Checking alembic config: {config_path} - {'✅' if config_path.exists() else '❌'}"
+            )
             if config_path.exists():
                 alembic_config = config_path
                 break
 
         if alembic_config is None:
             # This might be okay if alembic.ini is generated dynamically
-            print(f"⚠️  Warning: alembic.ini not found at expected locations: {possible_alembic_configs}")
+            print(
+                f"⚠️  Warning: alembic.ini not found at expected locations: {possible_alembic_configs}"
+            )
         else:
             print(f"✅ Found alembic.ini: {alembic_config}")
 
@@ -371,7 +387,9 @@ class TestDatabaseConnection:
         """Test that all required imports work."""
         # These should work now that we fixed the paths
         assert MigrationManager is not None
-        assert hasattr(crud, 'get_config_by_id'), "crud module should have expected functions"
+        assert hasattr(
+            crud, "get_config_by_id"
+        ), "crud module should have expected functions"
         print("✅ All imports working correctly")
 
 
@@ -384,7 +402,7 @@ class TestMigrationManagerUnit:
             use_test_db = TestConfig.is_using_test_db()
             manager = MigrationManager(use_test_db=use_test_db)
             assert manager is not None
-            assert hasattr(manager, 'check_database_connection')
+            assert hasattr(manager, "check_database_connection")
 
             db_type = "test" if use_test_db else "main"
             print(f"✅ MigrationManager created successfully for {db_type} database")
@@ -401,9 +419,9 @@ class TestMigrationManagerUnit:
         assert url == expected_url, f"Expected {expected_url}, got {url}"
 
         if use_test_db:
-            assert 'test_db' in url
+            assert "test_db" in url
         else:
-            expected_db = os.getenv('DB_NAME', 'code4meV2')
+            expected_db = os.getenv("DB_NAME", "code4meV2")
             assert expected_db in url
 
         print(f"✅ Database URL correct: {url}")
@@ -419,7 +437,7 @@ class TestMigrationManagerUnit:
         # Look in multiple locations
         possible_configs = [
             PROJECT_ROOT / "alembic.ini",
-            PROJECT_ROOT / "src" / "alembic.ini"
+            PROJECT_ROOT / "src" / "alembic.ini",
         ]
 
         config_found = False
@@ -434,7 +452,9 @@ class TestMigrationManagerUnit:
         if not config_found:
             # Don't fail the test, just warn - alembic.ini might be generated
             print(f"⚠️  Warning: alembic.ini not found in: {possible_configs}")
-            print("This might be okay if alembic.ini is generated by the migration system")
+            print(
+                "This might be okay if alembic.ini is generated by the migration system"
+            )
 
 
 class TestMigrationCommands:
@@ -444,7 +464,8 @@ class TestMigrationCommands:
         """Test migration help command works."""
         success, stdout, stderr = TestConfig.run_migration_command("--help")
         if not success:
-            pytest.fail(f"""
+            pytest.fail(
+                f"""
 ❌ Migration help command failed:
 STDOUT: {stdout}
 STDERR: {stderr}
@@ -454,7 +475,8 @@ This suggests the migration script itself has issues. Check:
 1. Python syntax in migration_manager.py
 2. Required dependencies are installed
 3. The script is executable with: python migration_manager.py --help
-            """)
+            """
+            )
         assert "usage:" in stdout.lower()
         print("✅ Help command works")
 
@@ -495,7 +517,7 @@ class TestDebugInfo:
 
     def test_debug_paths(self):
         """Show all detected paths for debugging."""
-        print(f"\n=== DEBUG PATH INFO (WINDOWS) ===")
+        print("\n=== DEBUG PATH INFO (WINDOWS) ===")
         print(f"Current working directory: {Path.cwd()}")
         print(f"Test file location: {Path(__file__)}")
         print(f"Detected project root: {PROJECT_ROOT}")
@@ -509,7 +531,7 @@ class TestDebugInfo:
         print(f"Python path (first 3): {sys.path[:3]}")
 
         # Show what files exist in project root
-        print(f"\nFiles in project root:")
+        print("\nFiles in project root:")
         try:
             for item in sorted(PROJECT_ROOT.iterdir())[:10]:  # First 10 items
                 print(f"  {item.name} ({'dir' if item.is_dir() else 'file'})")
@@ -518,7 +540,7 @@ class TestDebugInfo:
 
     def test_environment_info(self):
         """Show environment information."""
-        print(f"\n=== ENVIRONMENT INFO ===")
+        print("\n=== ENVIRONMENT INFO ===")
         print(f"Python executable: {sys.executable}")
         print(f"Python version: {sys.version}")
         print(f"Platform: {sys.platform}")
@@ -548,7 +570,7 @@ class TestBasicOperations:
         print(f"✅ Init created {table_count} tables in {db_type} database")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     """Run tests directly with proper setup."""
     print(f"🚀 Running tests from: {Path(__file__)}")
     print(f"🚀 Project root: {PROJECT_ROOT}")
@@ -560,10 +582,12 @@ if __name__ == '__main__':
 
     import pytest
 
-    pytest.main([
-        __file__,
-        '-v',
-        '--tb=short',
-        f'--rootdir={PROJECT_ROOT}',
-        '-s'  # Don't capture output so we can see our debug prints
-    ])
+    pytest.main(
+        [
+            __file__,
+            "-v",
+            "--tb=short",
+            f"--rootdir={PROJECT_ROOT}",
+            "-s",  # Don't capture output so we can see our debug prints
+        ]
+    )

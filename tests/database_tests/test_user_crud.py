@@ -148,15 +148,12 @@ def test_project(db_session, test_user):
 @pytest.fixture(scope="function")
 def test_session(db_session, test_user, test_project):
     """Create a test session with project association"""
-    session_data = Queries.CreateSession(
-        user_id=test_user.user_id
-    )
+    session_data = Queries.CreateSession(user_id=test_user.user_id)
     created_session = crud.create_session(db_session, session_data)
 
     # Create session-project association
     session_project_data = Queries.CreateSessionProject(
-        session_id=created_session.session_id,
-        project_id=test_project.project_id
+        session_id=created_session.session_id, project_id=test_project.project_id
     )
     crud.create_session_project(db_session, session_project_data)
 
@@ -305,9 +302,7 @@ def test_get_projects_for_user(db_session, test_user, test_project):
 
 def test_create_and_get_session(db_session, test_user, test_project):
     """Test creating and retrieving a session"""
-    session_data = Queries.CreateSession(
-        user_id=test_user.user_id
-    )
+    session_data = Queries.CreateSession(user_id=test_user.user_id)
 
     created_session = crud.create_session(db_session, session_data)
 
@@ -446,7 +441,7 @@ def test_create_behavioral_telemetry(db_session):
 
 
 def test_create_completion_query(
-        db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, setup_reference_data
 ):
     """Test creating a completion query"""
     # Create context
@@ -507,7 +502,7 @@ def test_create_completion_query(
 
 
 def test_create_chat_query(
-        db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, setup_reference_data
 ):
     """Test creating a chat query"""
     # Create chat
@@ -583,7 +578,7 @@ def test_create_chat_query(
 
 
 def test_create_generation(
-        db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, setup_reference_data
 ):
     """Test creating a generation record"""
     # Create completion query first
@@ -652,9 +647,11 @@ def test_create_generation(
     assert created_generation.confidence == 0.85
 
 
-@pytest.mark.skip(reason="Function update_generation_acceptance needs to be implemented in crud.py")
+@pytest.mark.skip(
+    reason="Function update_generation_acceptance needs to be implemented in crud.py"
+)
 def test_update_generation_acceptance(
-        db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, setup_reference_data
 ):
     """Test updating generation acceptance status - REQUIRES IMPLEMENTATION"""
     # This test is skipped until update_generation_acceptance is implemented
@@ -668,7 +665,7 @@ def test_update_generation_acceptance(
 
 
 def test_create_ground_truth(
-        db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, setup_reference_data
 ):
     """Test creating a ground truth record"""
     # Create completion query first
@@ -726,7 +723,7 @@ def test_create_ground_truth(
 
 
 def test_complete_workflow(
-        db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, setup_reference_data
 ):
     """Test a complete workflow from context creation to generation"""
     # 1. Create context
@@ -1047,7 +1044,7 @@ def test_empty_and_null_values(db_session, test_config):
 
 
 def test_large_text_fields(
-        db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, setup_reference_data
 ):
     """Test handling of large text content"""
 
@@ -1235,7 +1232,7 @@ def test_json_field_validation(db_session, test_config):
 
 
 def test_bulk_operations_performance(
-        db_session, test_user, test_project, setup_reference_data
+    db_session, test_user, test_project, setup_reference_data
 ):
     """Test performance with larger datasets"""
 
@@ -1310,7 +1307,7 @@ def test_bulk_operations_performance(
 
 
 def test_polymorphic_query_inheritance(
-        db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, setup_reference_data
 ):
     """Test that polymorphic inheritance works correctly"""
 

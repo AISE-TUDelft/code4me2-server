@@ -13,18 +13,19 @@ Usage:
 - Future changes: standard migration workflow
 """
 
+import argparse
 import os
 import sys
-import argparse
 from pathlib import Path
-from sqlalchemy import create_engine, text
-from alembic.config import Config
+
 from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
 
 # Set up paths
 current_dir = Path(__file__).parent  # src/database/migration
 project_root = current_dir.parent.parent.parent  # project root
-src_dir = project_root / 'src'
+src_dir = project_root / "src"
 sys.path.insert(0, str(src_dir))
 
 
@@ -33,14 +34,16 @@ class MigrationManager:
 
     def __init__(self, use_test_db=False):
         self.project_root = project_root
-        self.alembic_cfg_path = self.project_root / 'alembic.ini'
+        self.alembic_cfg_path = self.project_root / "alembic.ini"
         self.use_test_db = use_test_db
 
         # Choose init SQL file based on database type
         if use_test_db:
-            self.init_sql_path = self.project_root / 'src' / 'database' / 'init_test.sql'
+            self.init_sql_path = (
+                self.project_root / "src" / "database" / "init_test.sql"
+            )
         else:
-            self.init_sql_path = self.project_root / 'src' / 'database' / 'init.sql'
+            self.init_sql_path = self.project_root / "src" / "database" / "init.sql"
 
         if not self.alembic_cfg_path.exists():
             print(f"alembic.ini not found at {self.alembic_cfg_path}")
@@ -53,16 +56,19 @@ class MigrationManager:
         """Get database URL from environment variables."""
         if self.use_test_db:
             # Use test database for testing
-            return os.getenv('TEST_DATABASE_URL', 'postgresql://postgres:postgres@localhost:5433/test_db')
+            return os.getenv(
+                "TEST_DATABASE_URL",
+                "postgresql://postgres:postgres@localhost:5433/test_db",
+            )
 
         # Use main database from .env
-        db_user = os.getenv('DB_USER', 'postgres')
-        db_password = os.getenv('DB_PASSWORD', 'postgres')
-        db_host = os.getenv('DB_HOST', 'localhost')
-        db_port = os.getenv('DB_PORT', '2345')
-        db_name = os.getenv('DB_NAME', 'code4meV2')
+        db_user = os.getenv("DB_USER", "postgres")
+        db_password = os.getenv("DB_PASSWORD", "postgres")
+        db_host = os.getenv("DB_HOST", "localhost")
+        db_port = os.getenv("DB_PORT", "2345")
+        db_name = os.getenv("DB_NAME", "code4meV2")
 
-        return f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
+        return f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
     def check_database_connection(self) -> bool:
         """Check if database connection works."""
@@ -85,12 +91,11 @@ class MigrationManager:
             engine = create_engine(self.get_database_url())
             with engine.connect() as conn:
                 # Check if any of our main tables exist
-                result = conn.execute(text("""
-                    SELECT COUNT(*) 
-                    FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name IN ('user', 'config', 'model_name')
-                """))
+                result = conn.execute(
+                    text(
+                        """SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('user', 'config', 'model_name')"""
+                    )
+                )
                 table_count = result.scalar()
                 return table_count > 0
         except Exception:
@@ -101,13 +106,11 @@ class MigrationManager:
         try:
             engine = create_engine(self.get_database_url())
             with engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = 'public' 
-                        AND table_name = 'alembic_version'
+                result = conn.execute(
+                    text(
+                        """SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'alembic_version')"""
                     )
-                """))
+                )
                 return result.scalar()
         except Exception:
             return False
@@ -152,7 +155,7 @@ class MigrationManager:
             command.revision(
                 self.alembic_cfg,
                 message=f"Baseline migration from {init_file_name}",
-                autogenerate=False  # Create empty migration
+                autogenerate=False,  # Create empty migration
             )
 
             # Mark as current state
@@ -212,11 +215,7 @@ class MigrationManager:
 
         try:
             self.alembic_cfg.set_main_option("sqlalchemy.url", self.get_database_url())
-            command.revision(
-                self.alembic_cfg,
-                message=message,
-                autogenerate=True
-            )
+            command.revision(self.alembic_cfg, message=message, autogenerate=True)
             print("Migration created")
         except Exception as e:
             print(f"Error: {e}")
@@ -276,11 +275,11 @@ class MigrationManager:
             try:
                 engine = create_engine(self.get_database_url())
                 with engine.connect() as conn:
-                    result = conn.execute(text("""
-                        SELECT COUNT(*) 
-                        FROM information_schema.tables 
-                        WHERE table_schema = 'public'
-                    """))
+                    result = conn.execute(
+                        text(
+                            """SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public'"""
+                        )
+                    )
                     table_count = result.scalar()
                     print(f"Tables: {table_count}")
             except Exception:
@@ -296,7 +295,9 @@ class MigrationManager:
             try:
                 engine = create_engine(self.get_database_url())
                 with engine.connect() as conn:
-                    result = conn.execute(text("SELECT version_num FROM alembic_version"))
+                    result = conn.execute(
+                        text("SELECT version_num FROM alembic_version")
+                    )
                     version = result.scalar()
                     print(f"Current version: {version}")
             except Exception:
@@ -332,19 +333,25 @@ class MigrationManager:
 def main():
     """CLI interface."""
     parser = argparse.ArgumentParser(description="Hybrid Migration Manager")
-    parser.add_argument('--test', action='store_true', help='Use test database instead of main database')
-    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    parser.add_argument(
+        "--test", action="store_true", help="Use test database instead of main database"
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
 
-    subparsers.add_parser('init', help='Initialize migration system (auto-detects first run)')
-    subparsers.add_parser('status', help='Show system status')
+    subparsers.add_parser(
+        "init", help="Initialize migration system (auto-detects first run)"
+    )
+    subparsers.add_parser("status", help="Show system status")
 
-    create_parser = subparsers.add_parser('create', help='Create migration')
-    create_parser.add_argument('message', help='Migration message')
+    create_parser = subparsers.add_parser("create", help="Create migration")
+    create_parser.add_argument("message", help="Migration message")
 
-    subparsers.add_parser('migrate', help='Apply migrations (auto-initializes if needed)')
-    subparsers.add_parser('current', help='Show current revision')
-    subparsers.add_parser('history', help='Show migration history')
-    subparsers.add_parser('reset', help='Reset database and reinitialize')
+    subparsers.add_parser(
+        "migrate", help="Apply migrations (auto-initializes if needed)"
+    )
+    subparsers.add_parser("current", help="Show current revision")
+    subparsers.add_parser("history", help="Show migration history")
+    subparsers.add_parser("reset", help="Reset database and reinitialize")
 
     args = parser.parse_args()
 
@@ -354,21 +361,21 @@ def main():
 
     manager = MigrationManager(use_test_db=args.test)
 
-    if args.command == 'init':
+    if args.command == "init":
         manager.init_migrations()
-    elif args.command == 'status':
+    elif args.command == "status":
         manager.status()
-    elif args.command == 'create':
+    elif args.command == "create":
         manager.create_migration(args.message)
-    elif args.command == 'migrate':
+    elif args.command == "migrate":
         manager.migrate()
-    elif args.command == 'current':
+    elif args.command == "current":
         manager.current()
-    elif args.command == 'history':
+    elif args.command == "history":
         manager.history()
-    elif args.command == 'reset':
+    elif args.command == "reset":
         manager.reset()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

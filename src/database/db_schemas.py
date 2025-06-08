@@ -7,11 +7,11 @@ from sqlalchemy import (
     DateTime,
     Double,
     ForeignKey,
+    Index,
     Integer,
     PrimaryKeyConstraint,
     String,
     Text,
-    Index,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -30,9 +30,9 @@ class Config(Base):
 class User(Base):
     __tablename__ = "user"
     __table_args__ = (
-        Index('idx_user_email', 'email'),
-        Index('idx_user_config_id', 'config_id'),
-        {"schema": "public"}
+        Index("idx_user_email", "email"),
+        Index("idx_user_config_id", "config_id"),
+        {"schema": "public"},
     )
 
     user_id = Column(UUID(as_uuid=True), primary_key=True)
@@ -40,8 +40,8 @@ class User(Base):
     email = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
     password = Column(String, nullable=False)
-    is_oauth_signup = Column(Boolean, server_default='false', default=False)
-    verified = Column(Boolean, server_default='false', default=False)
+    is_oauth_signup = Column(Boolean, server_default="false", default=False)
+    verified = Column(Boolean, server_default="false", default=False)
     config_id = Column(
         BigInteger, ForeignKey("public.config.config_id"), nullable=False
     )
@@ -56,7 +56,9 @@ class ModelName(Base):
 
     model_id = Column(BigInteger, primary_key=True)
     model_name = Column(Text, nullable=False)
-    is_instruction_tuned = Column(Boolean, server_default='false', nullable=False, default=False)
+    is_instruction_tuned = Column(
+        Boolean, server_default="false", nullable=False, default=False
+    )
 
 
 class PluginVersion(Base):
@@ -99,10 +101,10 @@ class Context(Base):
 class ContextualTelemetry(Base):
     __tablename__ = "contextual_telemetry"
     __table_args__ = (
-        Index('idx_ctxt_telemetry_version_id', 'version_id'),
-        Index('idx_ctxt_telemetry_trigger_type_id', 'trigger_type_id'),
-        Index('idx_ctxt_telemetry_language_id', 'language_id'),
-        {"schema": "public"}
+        Index("idx_ctxt_telemetry_version_id", "version_id"),
+        Index("idx_ctxt_telemetry_trigger_type_id", "trigger_type_id"),
+        Index("idx_ctxt_telemetry_language_id", "language_id"),
+        {"schema": "public"},
     )
 
     contextual_telemetry_id = Column(UUID(as_uuid=True), primary_key=True)
@@ -139,8 +141,8 @@ class Project(Base):
 
     project_id = Column(UUID(as_uuid=True), primary_key=True)
     project_name = Column(String, nullable=False)
-    multi_file_contexts = Column(Text, server_default='{}', default='{}')
-    multi_file_context_changes = Column(Text, server_default='{}', default='{}')
+    multi_file_contexts = Column(Text, server_default="{}", default="{}")
+    multi_file_context_changes = Column(Text, server_default="{}", default="{}")
     created_at = Column(DateTime(timezone=True), nullable=False)
 
     # Many-to-many relationship with sessions
@@ -152,9 +154,9 @@ class Project(Base):
 class ProjectUser(Base):
     __tablename__ = "project_users"
     __table_args__ = (
-        Index('idx_project_users_project_id', 'project_id'),
-        Index('idx_project_users_user_id', 'user_id'),
-        {"schema": "public"}
+        Index("idx_project_users_project_id", "project_id"),
+        Index("idx_project_users_user_id", "user_id"),
+        {"schema": "public"},
     )
 
     project_id = Column(
@@ -172,10 +174,7 @@ class ProjectUser(Base):
 
 class Session(Base):
     __tablename__ = "session"
-    __table_args__ = (
-        Index('idx_session_user_id', 'user_id'),
-        {"schema": "public"}
-    )
+    __table_args__ = (Index("idx_session_user_id", "user_id"), {"schema": "public"})
 
     session_id = Column(UUID(as_uuid=True), primary_key=True)
     user_id = Column(
@@ -195,9 +194,9 @@ class Session(Base):
 class SessionProject(Base):
     __tablename__ = "session_projects"
     __table_args__ = (
-        Index('idx_session_projects_session_id', 'session_id'),
-        Index('idx_session_projects_project_id', 'project_id'),
-        {"schema": "public"}
+        Index("idx_session_projects_session_id", "session_id"),
+        Index("idx_session_projects_project_id", "project_id"),
+        {"schema": "public"},
     )
 
     session_id = Column(
@@ -215,9 +214,9 @@ class SessionProject(Base):
 class Chat(Base):
     __tablename__ = "chat"
     __table_args__ = (
-        Index('idx_chat_project_id', 'project_id'),
-        Index('idx_chat_user_id', 'user_id'),
-        {"schema": "public"}
+        Index("idx_chat_project_id", "project_id"),
+        Index("idx_chat_user_id", "user_id"),
+        {"schema": "public"},
     )
 
     chat_id = Column(UUID(as_uuid=True), primary_key=True)
@@ -239,10 +238,10 @@ class MetaQuery(Base):
     __tablename__ = "meta_query"
     __table_args__ = (
         CheckConstraint("query_type IN ('chat', 'completion')"),
-        Index('idx_meta_query_user_id', 'user_id'),
-        Index('idx_meta_query_project_id', 'project_id'),
-        Index('idx_meta_query_session_id', 'session_id'),
-        Index('idx_meta_query_type', 'query_type'),
+        Index("idx_meta_query_user_id", "user_id"),
+        Index("idx_meta_query_project_id", "project_id"),
+        Index("idx_meta_query_session_id", "session_id"),
+        Index("idx_meta_query_type", "query_type"),
         {"schema": "public"},
     )
 
@@ -271,7 +270,7 @@ class MetaQuery(Base):
         ForeignKey("public.project.project_id", ondelete="CASCADE"),
         nullable=False,
     )
-    multi_file_context_changes_indexes = Column(Text, server_default='{}', default='{}')
+    multi_file_context_changes_indexes = Column(Text, server_default="{}", default="{}")
     timestamp = Column(DateTime(timezone=True), nullable=False)
     total_serving_time = Column(Integer)
     server_version_id = Column(BigInteger)
@@ -291,10 +290,7 @@ class CompletionQuery(Base):
 
 class ChatQuery(Base):
     __tablename__ = "chat_query"
-    __table_args__ = (
-        Index('idx_chat_query_chat_id', 'chat_id'),
-        {"schema": "public"}
-    )
+    __table_args__ = (Index("idx_chat_query_chat_id", "chat_id"), {"schema": "public"})
 
     meta_query_id = Column(
         UUID(as_uuid=True),
@@ -306,14 +302,14 @@ class ChatQuery(Base):
         ForeignKey("public.chat.chat_id", ondelete="CASCADE"),
         nullable=False,
     )
-    web_enabled = Column(Boolean, server_default='false', nullable=False, default=False)
+    web_enabled = Column(Boolean, server_default="false", nullable=False, default=False)
 
 
 class HadGeneration(Base):
     __tablename__ = "had_generation"
     __table_args__ = (
         PrimaryKeyConstraint("meta_query_id", "model_id"),
-        Index('idx_had_generation_meta_query_model', 'meta_query_id', 'model_id'),
+        Index("idx_had_generation_meta_query_model", "meta_query_id", "model_id"),
         {"schema": "public"},
     )
 
@@ -334,7 +330,11 @@ class GroundTruth(Base):
     __tablename__ = "ground_truth"
     __table_args__ = (
         PrimaryKeyConstraint("completion_query_id", "truth_timestamp"),
-        Index('idx_ground_truth_completion_query_timestamp', 'completion_query_id', 'truth_timestamp'),
+        Index(
+            "idx_ground_truth_completion_query_timestamp",
+            "completion_query_id",
+            "truth_timestamp",
+        ),
         {"schema": "public"},
     )
 
