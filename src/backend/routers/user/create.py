@@ -76,7 +76,10 @@ def create_user(
                 content=UserAlreadyExistsWithThisEmail(),
             )
         # If OAuth, verify the provided JWT token
-        if isinstance(user_to_create, Queries.CreateUserOauth):
+        if (
+            isinstance(user_to_create, Queries.CreateUserOauth)
+            and not user_to_create.token == ""
+        ):
             verification_result = verify_jwt_token(user_to_create.token)
             if (
                 verification_result is None
