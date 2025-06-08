@@ -55,7 +55,7 @@ def acquire_auth_token(
     responses={
         "200": {"model": AuthenticateUserPostResponse},
         "401": {"model": Union[InvalidOrExpiredJWTToken, InvalidEmailOrPassword]},
-        "404": {"mode": ConfigNotFound},
+        "404": {"model": ConfigNotFound},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": AuthenticateUserError},
