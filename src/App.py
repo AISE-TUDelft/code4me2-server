@@ -92,7 +92,9 @@ class App:
             for model in models:
                 logging.log(logging.INFO, f"Loading {model.model_name}...")
                 t0 = time.time()
-                self.__completion_models.load_model(str(model.model_name))
+                self.__completion_models.load_model(
+                    str(model.model_name), config=config
+                )
                 logging.log(
                     logging.INFO,
                     f"{model.model_name} is setup in {time.time() - t0:.2f} seconds",

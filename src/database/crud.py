@@ -578,6 +578,47 @@ def get_chats_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Chat]
     return db.query(db_schemas.Chat).filter(db_schemas.Chat.user_id == user_id).all()
 
 
+def get_chat_history(db: Session, chat_id: uuid.UUID) -> list[tuple]:
+    """
+    Get the complete chat history for a specific chat ID.
+    Returns a list of tuples containing (meta_query, context, generations)
+    ordered by timestamp.
+    """
+    # Get all chat queries for this chat
+    chat_queries = get_chat_queries_for_chat(db, chat_id)
+
+    # Get the chat metadata
+    chat = get_chat_by_id(db, chat_id)
+    if not chat:
+        return []
+
+    # Build the history
+    history = []
+    for chat_query in chat_queries:
+        # Get the meta query
+        meta_query = get_meta_query_by_id(db, chat_query.meta_query_id)
+        if not meta_query:
+            continue
+
+        # Get the context (contains user message)
+        context = get_context_by_id(db, meta_query.context_id)
+        if not context:
+            continue
+
+        # Get all generations for this query
+        generations = get_generations_by_meta_query_id(
+            db, str(meta_query.meta_query_id)
+        )
+
+        # Add to history
+        history.append((meta_query, context, generations))
+
+    # Sort by timestamp
+    history.sort(key=lambda x: x[0].timestamp)
+
+    return history
+
+
 def delete_chat_cascade(db: Session, chat_id: uuid.UUID) -> bool:
     """
     Properly delete chat with all cascading relationships

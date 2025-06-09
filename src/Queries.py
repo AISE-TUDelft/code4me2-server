@@ -8,7 +8,6 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
 
 from backend.utils import Fakable, SerializableBaseModel
-from response_models import ChatMessageRole
 
 
 class Provider(Enum):
@@ -184,10 +183,16 @@ class RequestCompletion(QueryBase):
     # )
 
 
+class QueryChatMessageRole(Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
 class RequestChatCompletion(QueryBase):
     model_ids: List[int] = Field(..., description="Models to use for chat completion")
     chat_id: UUID = Field(..., description="Chat ID")
-    messages: List[Tuple[ChatMessageRole, str]] = Field(
+    messages: List[Tuple[QueryChatMessageRole, str]] = Field(
         ..., description="Chat messages as a list of tuples"
     )
     context: ContextData = Field(..., description="Context data for completion")
@@ -206,11 +211,11 @@ class RequestChatCompletion(QueryBase):
     def to_langchain_messages(self) -> List[BaseMessage]:
         messages = []
         for role, content in self.messages:
-            if role == ChatMessageRole.USER:
+            if role == QueryChatMessageRole.USER:
                 messages.append(HumanMessage(content=content))
-            elif role == ChatMessageRole.ASSISTANT:
+            elif role == QueryChatMessageRole.ASSISTANT:
                 messages.append(AIMessage(content=content))
-            elif role == ChatMessageRole.SYSTEM:
+            elif role == QueryChatMessageRole.SYSTEM:
                 messages.append(SystemMessage(content=content))
             else:
                 raise ValueError(f"Unknown message role: {role}")

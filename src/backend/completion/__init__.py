@@ -13,6 +13,7 @@ class Template(Enum):
 class CompletionModels:
     _instance = None
     __models = {}
+    __config = None
 
     def __new__(cls):
         if cls._instance is None:
@@ -20,8 +21,15 @@ class CompletionModels:
         return cls._instance
 
     def load_model(
-        self, model_name: str, prompt_template: Template = Template.PREFIX_SUFFIX
+        self,
+        model_name: str,
+        config=None,
+        prompt_template: Template = Template.PREFIX_SUFFIX,
     ) -> None:
+        if self.__config is None:
+            if config is None:
+                raise ValueError("Configuration must be provided to load models.")
+            self.__config = config
         if "instruct" in model_name.lower():
             key = f"{model_name}:instruct"
         else:
@@ -33,15 +41,22 @@ class CompletionModels:
             )
         else:
             try:
+                logging.info(
+                    f"Loading model with cache directory: {config.model_cache_dir}"
+                )
+
                 if "instruct" in model_name.lower():
                     self.__models[key] = ChatCompletionModel(
                         model_name=model_name,
                         temperature=0.8,
                         max_new_tokens=512,
+                        cache_dir=config.model_cache_dir,  # Explicit cache dir
                     )
                 else:
-                    self.__models[key] = ChatCompletionModel.from_pretrained(
-                        model_name=model_name, prompt_template=prompt_template.value
+                    self.__models[key] = TemplateCompletionModel.from_pretrained(
+                        model_name=model_name,
+                        prompt_template=prompt_template.value,
+                        config=config,  # Pass the config explicitly
                     )
             except Exception as e:
                 logging.log(logging.ERROR, e)
@@ -53,7 +68,10 @@ class CompletionModels:
     def get_model(
         self, model_name: str, prompt_template: Template = Template.PREFIX_SUFFIX
     ) -> Optional[Union[TemplateCompletionModel, ChatCompletionModel]]:
-        key = f"{model_name}:{prompt_template.value}"
+        if "instruct" in model_name.lower():
+            key = f"{model_name}:instruct"
+        else:
+            key = f"{model_name}:{prompt_template.value}"
         if key in self.__models:
             return self.__models[key]
         else:

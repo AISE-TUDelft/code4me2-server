@@ -355,7 +355,7 @@ INSERT INTO public.config (config_data) VALUES ('{"default": true, "version": "1
 
 INSERT INTO public.model_name (model_name, is_instruction_tuned) VALUES
     ('deepseek-ai/deepseek-coder-1.3b-base', FALSE),
-    ('bigcode/starcoder2-3b', FALSE),
+--     ('bigcode/starcoder2-3b', FALSE),
     ('mistralai/Ministral-8B-Instruct-2410', TRUE);
 
 INSERT INTO public.programming_language (language_name) VALUES
