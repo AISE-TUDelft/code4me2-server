@@ -10,6 +10,7 @@ from backend.Responses import (
     InvalidOrExpiredAuthToken,
     JsonResponseWithStatus,
 )
+from celery_app.tasks.db_tasks import send_verification_email_task
 from Queries import UpdateUser
 
 router = APIRouter()
@@ -53,7 +54,7 @@ def check_verification(
     except AttributeError:
         # If user_info is not a dict, it means the token is invalid or expired
         return JsonResponseWithStatus(
-            status_code=400,
+            status_code=401,
             content=ErrorResponse(message="Invalid or expired auth token."),
         )
 
@@ -123,7 +124,6 @@ def resend_verification_email(
         )
 
     # Send verification email
-    from celery_app.tasks.db_tasks import send_verification_email_task
 
     send_verification_email_task.delay(str(user.user_id), str(user.email), user.name)
 
@@ -238,6 +238,6 @@ def verify_email(
     except Exception as e:
         logging.error(f"Error verifying email: {str(e)}")
         return JsonResponseWithStatus(
-            status_code=400,
+            status_code=500,
             content=ErrorResponse(message=f"Failed to verify email: {str(e)}"),
         )
