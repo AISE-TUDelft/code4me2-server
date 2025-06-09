@@ -1,8 +1,3 @@
-"""
-This module defines the FastAPI router for user creation endpoints.
-It handles user registration, including both standard and OAuth-based flows.
-"""
-
 import logging
 from typing import Union
 
@@ -94,7 +89,12 @@ def create_user(
         # Create the user in the database
         user = crud.create_user(db_session, user_to_create)
 
-        # TODO: Send verification email to the user
+        # Send verification email
+        from celery_app.tasks.db_tasks import send_verification_email_task
+
+        send_verification_email_task.delay(
+            str(user.user_id), str(user.email), user.name
+        )
 
         # Return success response with the new user's ID
         return JsonResponseWithStatus(

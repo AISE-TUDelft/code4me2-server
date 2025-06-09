@@ -76,3 +76,12 @@ class Code4meV2Config(BaseSettings):
     thread_pool_max_workers: int = Field(
         alias="THREAD_POOL_MAX_WORKERS", default=5, frozen=True
     )
+
+    # Email configuration
+    email_host: str = Field(alias="EMAIL_HOST", frozen=True)
+    email_port: int = Field(alias="EMAIL_PORT", frozen=True)
+    email_username: str = Field(alias="EMAIL_USERNAME", frozen=True)
+    email_password: str = Field(alias="EMAIL_PASSWORD", frozen=True)
+    email_use_tls: bool = Field(alias="EMAIL_USE_TLS", frozen=True)
+    email_from: str = Field(alias="EMAIL_FROM", frozen=True)
+    verification_url: str = Field(alias="VERIFICATION_URL", frozen=True)

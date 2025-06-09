@@ -621,8 +621,6 @@ def create_project(db: Session, project: Queries.CreateProject) -> db_schemas.Pr
     db_project = db_schemas.Project(
         project_id=uuid.uuid4(),
         project_name=project.project_name,
-        multi_file_contexts=project.multi_file_contexts,
-        multi_file_context_changes=project.multi_file_context_changes,
         created_at=datetime.now(),
     )
     db.add(db_project)

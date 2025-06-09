@@ -1,7 +1,9 @@
 import Queries
 from App import App
+from backend.email_utils import send_verification_email
 from celery_app.celery_app import celery
 from database import crud
+from database.utils import create_uuid
 
 
 @celery.task
@@ -85,3 +87,24 @@ def add_ground_truth_task(ground_truth_data: dict):
         except Exception:
             db.rollback()
             raise
+
+
+@celery.task
+def send_verification_email_task(user_id: str, user_email: str, user_name: str):
+    """
+    Celery task to send verification email
+    """
+    # Generate verification token
+    verification_token = create_uuid()
+
+    # Store token in Redis with user_id as value
+    app = App.get_instance()
+    app.get_redis_manager().set(
+        "email_verification",
+        verification_token,
+        {"user_id": user_id},
+        force_reset_exp=True,
+    )
+
+    # Send verification email
+    send_verification_email(user_email, user_name, verification_token)
