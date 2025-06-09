@@ -39,6 +39,8 @@ argon2-cffi~=21.1.0
 SQLAlchemy~=2.0.30
 psycopg_binary~=3.2.1
 psycopg2-binary~=2.9.9
+
+alembic>=1.13.1
 # -----------------------
 # Auth & Security
 # -----------------------

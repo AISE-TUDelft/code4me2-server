@@ -107,13 +107,17 @@ CREATE TABLE IF NOT EXISTS public.project_users
 -- Session table (individual user sessions within projects)
 CREATE TABLE IF NOT EXISTS public.session
 (
-    session_id uuid NOT NULL PRIMARY KEY,
+    session_id uuid PRIMARY KEY,
     user_id uuid NOT NULL,
-    project_id uuid NOT NULL,
     start_time timestamp with time zone NOT NULL,
     end_time timestamp with time zone
 );
 
+CREATE TABLE IF NOT EXISTS public.session_projects (
+    session_id uuid NOT NULL,
+    project_id uuid NOT NULL,
+    PRIMARY KEY (session_id, project_id)
+);
 -- Chat table
 CREATE TABLE IF NOT EXISTS public.chat
 (
@@ -219,13 +223,7 @@ ALTER TABLE public.session
     ADD CONSTRAINT fk_session_user FOREIGN KEY (user_id)
     REFERENCES public."user" (user_id)
     ON UPDATE NO ACTION
-    ON DELETE CASCADE;
-
-ALTER TABLE public.session
-    ADD CONSTRAINT fk_session_project FOREIGN KEY (project_id)
-    REFERENCES public.project (project_id)
-    ON UPDATE NO ACTION
-    ON DELETE CASCADE;
+    ON DELETE SET NULL;
 
 ALTER TABLE public.chat
     ADD CONSTRAINT fk_chat_project FOREIGN KEY (project_id)
@@ -237,7 +235,7 @@ ALTER TABLE public.chat
     ADD CONSTRAINT fk_chat_user FOREIGN KEY (user_id)
     REFERENCES public."user" (user_id)
     ON UPDATE NO ACTION
-    ON DELETE CASCADE;
+    ON DELETE SET NULL ;
 
 ALTER TABLE public.meta_query
     ADD CONSTRAINT fk_meta_query_user FOREIGN KEY (user_id)
@@ -311,6 +309,18 @@ ALTER TABLE public.ground_truth
     ON UPDATE NO ACTION
     ON DELETE CASCADE;
 
+ALTER TABLE public.session_projects
+    ADD CONSTRAINT fk_session
+    FOREIGN KEY (session_id)
+    REFERENCES public.session(session_id)
+    ON DELETE CASCADE;
+
+ALTER TABLE public.session_projects
+    ADD CONSTRAINT fk_project
+    FOREIGN KEY (project_id)
+    REFERENCES public.project(project_id)
+    ON DELETE CASCADE;
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_user_email ON public."user" (email);
 CREATE INDEX IF NOT EXISTS idx_user_config_id ON public."user" (config_id);
@@ -323,7 +333,8 @@ CREATE INDEX IF NOT EXISTS idx_project_users_project_id ON public.project_users 
 CREATE INDEX IF NOT EXISTS idx_project_users_user_id ON public.project_users (user_id);
 
 CREATE INDEX IF NOT EXISTS idx_session_user_id ON public.session (user_id);
-CREATE INDEX IF NOT EXISTS idx_session_project_id ON public.session (project_id);
+CREATE INDEX IF NOT EXISTS idx_session_projects_session_id ON public.session_projects (session_id);
+CREATE INDEX IF NOT EXISTS idx_session_projects_project_id ON public.session_projects (project_id);
 
 CREATE INDEX IF NOT EXISTS idx_chat_project_id ON public.chat (project_id);
 CREATE INDEX IF NOT EXISTS idx_chat_user_id ON public.chat (user_id);

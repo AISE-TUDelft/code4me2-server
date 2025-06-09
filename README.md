@@ -150,14 +150,14 @@ The Code4me V2 platform utilizes a PostgreSQL database with a comprehensive sche
 
 ### Database Documentation References
 
-| Component                   | File Location                                                                                      | Description                             |
-| --------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| **Database Documentation**  | [`src/database/resources/documentation/readme.md`](src/database/resources/documentation/readme.md) | Database documentation                  |
-| **Schema Definition**       | [`src/database/db_schemas.py`](src/database/db_schemas.py)                                         | SQLAlchemy ORM models and relationships |
-| **Database Initialization** | [`src/database/init.sql`](src/database/init.sql)                                                   | Complete schema creation and seed data  |
-| **Test Schema**             | [`src/database/init_test.sql`](src/database/init_test.sql)                                         | Test database schema setup              |
-| **CRUD Operations**         | [`src/database/crud.py`](src/database/crud.py)                                                     | Database operation functions            |
-| **Utilities**               | [`src/database/utils.py`](src/database/utils.py)                                                   | Password hashing and validation         |
+| Component                   | File Location                                                                                   | Description                             |
+| --------------------------- |-------------------------------------------------------------------------------------------------| --------------------------------------- |
+| **Database Documentation**  | [`src/database/resources/documentation/README.md`](src/database/resources/documentation/README) | Database documentation                  |
+| **Schema Definition**       | [`src/database/db_schemas.py`](src/database/db_schemas.py)                                      | SQLAlchemy ORM models and relationships |
+| **Database Initialization** | [`src/database/init.sql`](src/database/init.sql)                                                | Complete schema creation and seed data  |
+| **Test Schema**             | [`src/database/init_test.sql`](src/database/init_test.sql)                                      | Test database schema setup              |
+| **CRUD Operations**         | [`src/database/crud.py`](src/database/crud.py)                                                  | Database operation functions            |
+| **Utilities**               | [`src/database/utils.py`](src/database/utils.py)                                                | Password hashing and validation         |
 
 ---
 

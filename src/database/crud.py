@@ -285,9 +285,8 @@ def create_chat_query(
 ) -> db_schemas.ChatQuery:
     meta_query_id = uuid.uuid4()
 
-    # Create the chat query directly using joined table inheritance
-    # This will automatically create both the meta_query and chat_query records
-    db_chat_query = db_schemas.ChatQuery(
+    # Step 1: Create MetaQuery first with all the main fields
+    db_meta_query = db_schemas.MetaQuery(
         meta_query_id=meta_query_id,
         user_id=query.user_id,
         contextual_telemetry_id=query.contextual_telemetry_id,
@@ -300,12 +299,21 @@ def create_chat_query(
         total_serving_time=query.total_serving_time,
         server_version_id=query.server_version_id,
         query_type="chat",
+    )
+
+    # Step 2: Create ChatQuery with ONLY its specific fields
+    db_chat_query = db_schemas.ChatQuery(
+        meta_query_id=meta_query_id,
         chat_id=query.chat_id,
         web_enabled=query.web_enabled,
     )
 
+    # Step 3: Save both to database
+    db.add(db_meta_query)
+    db.commit()
     db.add(db_chat_query)
     db.commit()
+    db.refresh(db_meta_query)
     db.refresh(db_chat_query)
     return db_chat_query
 
