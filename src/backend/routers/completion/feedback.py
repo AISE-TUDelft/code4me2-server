@@ -1,4 +1,5 @@
 import logging
+from typing import Union
 
 from fastapi import APIRouter, Cookie, Depends
 
@@ -10,6 +11,8 @@ from backend.Responses import (
     ErrorResponse,
     FeedbackRecordingError,
     GenerationNotFoundError,
+    InvalidOrExpiredAuthToken,
+    InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
     NoAccessToProvideFeedbackError,
@@ -21,11 +24,17 @@ router = APIRouter()
 
 
 @router.post(
-    "/",
+    "",
     response_model=CompletionFeedbackPostResponse,
     responses={
         "200": {"model": CompletionFeedbackPostResponse},
-        "401": {"model": InvalidOrExpiredSessionToken},
+        "401": {
+            "model": Union[
+                InvalidOrExpiredSessionToken,
+                InvalidOrExpiredAuthToken,
+                InvalidOrExpiredProjectToken,
+            ]
+        },
         "403": {"model": NoAccessToProvideFeedbackError},
         "404": {"model": GenerationNotFoundError},
         "422": {"model": ErrorResponse},
@@ -37,6 +46,7 @@ def submit_completion_feedback(
     feedback: Queries.FeedbackCompletion,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie("session_token"),
+    project_token: str = Cookie("project_token"),
 ) -> JsonResponseWithStatus:
     """
     Submit feedback on a generated completion.
@@ -46,6 +56,7 @@ def submit_completion_feedback(
     redis_manager = app.get_redis_manager()
     try:
         # Get session info from Redis
+        # Validate session token
         session_info = redis_manager.get("session_token", session_token)
         if session_token is None or session_info is None:
             return JsonResponseWithStatus(
@@ -53,26 +64,36 @@ def submit_completion_feedback(
                 content=InvalidOrExpiredSessionToken(),
             )
 
-        # Get auth token from session info and then get user_id from auth token
+        # Get user_id and auth_token from session info
         auth_token = session_info.get("auth_token")
         if not auth_token:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
-
         auth_info = redis_manager.get("auth_token", auth_token)
         if auth_info is None:
             return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
+                status_code=401, content=InvalidOrExpiredAuthToken()
             )
-
         user_id = auth_info.get("user_id")
         if not user_id:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
+            )
+        # Validate project token
+        project_info = redis_manager.get("project_token", project_token)
+        if project_info is None:
+            return JsonResponseWithStatus(
+                status_code=401, content=InvalidOrExpiredProjectToken()
+            )
+
+        # Verify project is linked to this session
+        session_projects = session_info.get("project_tokens", [])
+        if project_token not in session_projects:
+            return JsonResponseWithStatus(
+                status_code=401, content=InvalidOrExpiredProjectToken()
             )
 
         # only allow feedback for queries that are for the current user
@@ -84,6 +105,9 @@ def submit_completion_feedback(
             )
 
         # Convert user_id from string (Redis) to UUID for comparison with database user_id (UUID)
+        print(str(query.user_id))
+        print(user_id)
+        print(str(query.user_id) != user_id)
         if str(query.user_id) != user_id:
             return JsonResponseWithStatus(
                 status_code=403,

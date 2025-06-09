@@ -33,7 +33,7 @@ router = APIRouter()
 
 
 @router.post(
-    "/",
+    "",
     response_model=CompletionPostResponse,
     responses={
         "200": {"model": CompletionPostResponse},
@@ -112,10 +112,8 @@ def request_completion(
         t1 = time.perf_counter()
         logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
 
-        multi_file_contexts = project_info.get("multi_file_contexts", "{}")
-        multi_file_context_changes = project_info.get(
-            "multi_file_context_changes", "{}"
-        )
+        multi_file_contexts = project_info.get("multi_file_contexts", {})
+        multi_file_context_changes = project_info.get("multi_file_context_changes", {})
         t2 = time.perf_counter()
         created_query_id = create_uuid()
 
@@ -170,6 +168,9 @@ def request_completion(
                 f"GetModel={((local_t2 - local_t1) * 1000):.2f}ms, "
                 f"Invoke={((local_t3 - local_t2) * 1000):.2f}ms"
             )
+
+            # Used for test mode
+            # completion_result = {"completion":"test", "generation_time":100,"confidence":0.8, "logprobs":[0.2,0.5]}
 
             add_generation_task = db_tasks.add_generation_task.si(
                 Queries.CreateGeneration(
@@ -238,11 +239,7 @@ def request_completion(
                 context_id=uuid.UUID(created_context_id),
                 session_id=uuid.UUID(session_token),
                 project_id=uuid.UUID(project_token),
-                multi_file_context_changes_indexes=(
-                    str(multi_file_context_changes_indexes)
-                    if multi_file_context_changes_indexes
-                    else "{}"
-                ),
+                multi_file_context_changes_indexes=multi_file_context_changes_indexes,
                 total_serving_time=total_serving_time,
                 server_version_id=app.get_config().server_version_id,
             ).dict(),

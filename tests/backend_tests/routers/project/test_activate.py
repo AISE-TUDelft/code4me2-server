@@ -1,3 +1,4 @@
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,42 +28,35 @@ class TestActivateProject:
     def client(self, setup_app):
         with TestClient(app) as client:
             client.mock_app = setup_app
-            client.cookies.set("auth_token", "valid_token")
+            client.cookies.set("auth_token", str(uuid.uuid4()))
             yield client
 
     @pytest.fixture
     def fake_activate_project(self):
-        # Assuming Queries.ActivateProject has a .fake() method
         return Queries.ActivateProject.fake()
 
     @pytest.fixture
     def fake_session_token(self):
-        import uuid
-
         return str(uuid.uuid4())
 
     @pytest.fixture
     def fake_user_id(self):
-        import uuid
-
         return str(uuid.uuid4())
 
     @pytest.fixture
     def fake_project_token(self):
-        import uuid
-
         return str(uuid.uuid4())
 
     def test_activate_project_success(
         self, client, fake_activate_project, fake_session_token, fake_user_id
     ):
         # Use the project_token from the fake input
-        project_token = fake_activate_project.project_token
+        project_token = fake_activate_project.project_id
 
         # Setup redis and db mocks
         mock_redis_manager = MagicMock()
         mock_redis_manager.get.side_effect = lambda key, token: {
-            ("auth_token", "valid_token"): {
+            ("auth_token", client.cookies.get("auth_token")): {
                 "session_token": fake_session_token,
                 "user_id": fake_user_id,
             },
@@ -86,11 +80,11 @@ class TestActivateProject:
             return_value=mock_project,
         ), patch("backend.routers.project.activate.crud.create_session_project"):
             response = client.put(
-                "/api/project/activate", json=fake_activate_project.model_dump()
+                "/api/project/activate", json=fake_activate_project.dict()
             )
-
+        print(response.json())
         assert response.status_code == 200
-        assert response.cookies.get("project_token") == project_token
+        assert response.cookies.get("project_token") == str(project_token)
         assert response.json() == ActivateProjectPostResponse()
 
     def test_activate_project_invalid_auth_token(self, client):
@@ -99,7 +93,7 @@ class TestActivateProject:
         client.mock_app.get_redis_manager.return_value = mock_redis_manager
 
         response = client.put(
-            "/api/project/activate", json={"project_token": "dummy-token"}
+            "/api/project/activate", json={"project_id": str(uuid.uuid4())}
         )
         assert response.status_code == 401
         assert response.json() == InvalidOrExpiredAuthToken()
@@ -109,7 +103,7 @@ class TestActivateProject:
     ):
         mock_redis_manager = MagicMock()
         mock_redis_manager.get.side_effect = lambda key, token: {
-            ("auth_token", "valid_token"): {
+            ("auth_token", client.cookies.get("auth_token")): {
                 "session_token": fake_session_token,
                 "user_id": fake_user_id,
             },
@@ -118,7 +112,7 @@ class TestActivateProject:
         client.mock_app.get_redis_manager.return_value = mock_redis_manager
 
         response = client.put(
-            "/api/project/activate", json={"project_token": "dummy-token"}
+            "/api/project/activate", json={"project_id": str(uuid.uuid4())}
         )
         assert response.status_code == 401
         assert response.json() == InvalidOrExpiredSessionToken()
@@ -128,7 +122,7 @@ class TestActivateProject:
     ):
         mock_redis_manager = MagicMock()
         mock_redis_manager.get.side_effect = lambda key, token: {
-            ("auth_token", "valid_token"): {
+            ("auth_token", client.cookies.get("auth_token")): {
                 "session_token": fake_session_token,
                 "user_id": fake_user_id,
             },
@@ -142,7 +136,7 @@ class TestActivateProject:
             "backend.routers.project.activate.crud.get_project_by_id", return_value=None
         ):
             response = client.put(
-                "/api/project/activate", json={"project_token": fake_project_token}
+                "/api/project/activate", json={"project_id": fake_project_token}
             )
 
         assert response.status_code == 401
@@ -155,7 +149,7 @@ class TestActivateProject:
         client.mock_app.get_db_session.return_value = MagicMock()
 
         response = client.put(
-            "/api/project/activate", json={"project_token": "dummy-token"}
+            "/api/project/activate", json={"project_id": str(uuid.uuid4())}
         )
         assert response.status_code == 500
         assert response.json() == ActivateProjectError()

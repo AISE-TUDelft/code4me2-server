@@ -3,7 +3,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 
 from backend.celery_broker import CeleryBroker
@@ -44,11 +44,26 @@ class App:
         self.__db_session_factory = scoped_session(
             sessionmaker(autocommit=False, autoflush=False, bind=engine)
         )
+        # Check if the database allows requests
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))  # Properly wrapped SQL statement
+                logging.log(
+                    logging.INFO, f"Connected to database {database_url} successfully."
+                )
+        except Exception as e:
+            logging.log(logging.ERROR, f"Failed to connect to the database: {e}")
+            raise RuntimeError(
+                f"Database {database_url} is not accessible. Please check the configuration."
+            )
+
         self.__config = config
+
         self.__celery_broker = CeleryBroker(
             host=config.celery_broker_host,
             port=config.celery_broker_port,
         )
+
         self.__redis_manager = RedisManager(
             host=config.redis_host,
             port=config.redis_port,
@@ -57,6 +72,7 @@ class App:
             token_hook_activation_in_seconds=config.token_hook_activation_in_seconds,
             # TODO: Set whether to store multi file context on db or not
         )
+
         try:
             session_expiration_listener_thread = threading.Thread(
                 target=self.__redis_manager.listen_for_expired_keys,

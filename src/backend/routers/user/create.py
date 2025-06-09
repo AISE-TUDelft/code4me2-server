@@ -26,7 +26,7 @@ router = APIRouter()
 
 
 @router.post(
-    "/",
+    "",
     response_model=CreateUserPostResponse,
     responses={
         "201": {"model": CreateUserPostResponse},
@@ -61,7 +61,9 @@ def create_user(
         5. Return appropriate response.
     """
     # Log the user creation attempt
-    logging.log(logging.INFO, f"Creating user: ({user_to_create})")
+    logging.log(
+        logging.INFO, f"Creating user: ({user_to_create.dict(hide_secrets=True)})"
+    )
     db_session = app.get_db_session()
 
     try:
@@ -74,7 +76,10 @@ def create_user(
                 content=UserAlreadyExistsWithThisEmail(),
             )
         # If OAuth, verify the provided JWT token
-        if isinstance(user_to_create, Queries.CreateUserOauth):
+        if (
+            isinstance(user_to_create, Queries.CreateUserOauth)
+            and not user_to_create.token == ""
+        ):
             verification_result = verify_jwt_token(user_to_create.token)
             if (
                 verification_result is None
@@ -95,7 +100,7 @@ def create_user(
         return JsonResponseWithStatus(
             status_code=201,
             content=CreateUserPostResponse(
-                user_id=str(user.user_id),
+                user_id=user.user_id,
             ),
         )
     except Exception as e:

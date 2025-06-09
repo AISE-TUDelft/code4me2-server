@@ -1,3 +1,4 @@
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -6,15 +7,15 @@ from fastapi.testclient import TestClient
 import Queries
 from App import App
 from backend.Responses import (
-    CompletionFeedbackPostResponse,
     FeedbackRecordingError,
     GenerationNotFoundError,
+    InvalidOrExpiredSessionToken,
+    NoAccessToProvideFeedbackError,
 )
 from main import app
 
 
 class TestCompletionFeedback:
-
     @pytest.fixture(scope="session")
     def setup_app(self):
         mock_app = MagicMock()
@@ -25,129 +26,144 @@ class TestCompletionFeedback:
     def client(self, setup_app):
         with TestClient(app) as client:
             client.mock_app = setup_app
-            client.cookies.set("session_token", "valid_token")
+            client.cookies.set("session_token", "valid_session_token")
+            client.cookies.set("project_token", "valid_project_token")
             yield client
 
     @pytest.fixture(scope="function")
     def completion_feedback(self):
-        """Generate fake completion feedback"""
         return Queries.FeedbackCompletion.fake(
             was_accepted=True,
             ground_truth="def actual_implementation():\n    return 42",
         )
 
-    @pytest.fixture(scope="function")
-    def completion_feedback_no_ground_truth(self):
-        """Generate fake completion feedback without ground truth"""
-        return Queries.FeedbackCompletion.fake(was_accepted=False, ground_truth=None)
+    def setup_redis_and_db(self, client, user_id="test_user"):
+        mock_redis = MagicMock()
+        client.mock_app.get_redis_manager.return_value = mock_redis
+        mock_redis.get.side_effect = lambda prefix, token: {
+            ("session_token", "valid_session_token"): {
+                "auth_token": "valid_auth_token",
+                "project_tokens": ["valid_project_token"],
+            },
+            ("auth_token", "valid_auth_token"): {"user_id": user_id},
+            ("project_token", "valid_project_token"): {"project_id": "xyz"},
+        }.get((prefix, token))
 
-    def test_submit_feedback_success_with_ground_truth(
-        self, client: TestClient, completion_feedback: Queries.FeedbackCompletion
+        mock_db = MagicMock()
+        client.mock_app.get_db_session.return_value = mock_db
+        return mock_db, mock_redis
+
+    @patch("backend.routers.completion.feedback.db_tasks")
+    @patch("backend.routers.completion.feedback.crud")
+    def test_feedback_success(
+        self, mock_crud, mock_db_tasks, client, completion_feedback
     ):
-        # Setup mocks
-        mock_crud = MagicMock()
+        mock_user_id = str(uuid.uuid4())
+        self.setup_redis_and_db(client, user_id=mock_user_id)
+        mock_crud.get_meta_query_by_id.return_value = MagicMock(user_id=mock_user_id)
+        mock_crud.get_generation_by_meta_query_and_model.return_value = MagicMock()
 
-        # Mock generation exists
-        mock_generation = MagicMock()
-        mock_generation.query_id = completion_feedback.query_id
-        mock_generation.model_id = completion_feedback.model_id
-        mock_crud.get_generations_by_query_and_model_id.return_value = mock_generation
-
-        client.mock_app.get_db_session.return_value = MagicMock()
-        mock_session = MagicMock()
-        mock_session.get_session.return_value = {"user_id": "test_id"}
-
-        client.mock_app.get_redis_manager.return_value = mock_session
-        with patch("backend.routers.completion.feedback.crud", mock_crud):
-            response = client.post(
-                "/api/completion/feedback/", json=completion_feedback.dict()
-            )
-
-        assert response.status_code == 200
-        response_data = response.json()
-
-        assert (
-            response_data["message"]
-            == CompletionFeedbackPostResponse.model_fields["message"].default
+        response = client.post(
+            "/api/completion/feedback/",
+            json=completion_feedback.dict(),
         )
-        assert response_data["data"]["query_id"] == str(completion_feedback.query_id)
-        assert response_data["data"]["model_id"] == completion_feedback.model_id
-
-    def test_submit_feedback_success_without_ground_truth(
-        self,
-        client: TestClient,
-        completion_feedback_no_ground_truth: Queries.FeedbackCompletion,
-    ):
-        # Setup mocks
-        mock_crud = MagicMock()
-
-        # Mock generation exists
-        mock_generation = MagicMock()
-        mock_crud.get_generations_by_query_and_model_id.return_value = mock_generation
-
-        client.mock_app.get_db_session.return_value = MagicMock()
-        mock_session = MagicMock()
-        mock_session.get_session.return_value = {"user_id": "test_id"}
-
-        with patch("backend.routers.completion.feedback.crud", mock_crud):
-            response = client.post(
-                "/api/completion/feedback/",
-                json=completion_feedback_no_ground_truth.dict(),
-            )
 
         assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["meta_query_id"] == str(completion_feedback.meta_query_id)
+        assert data["model_id"] == completion_feedback.model_id
 
-    def test_submit_feedback_generation_not_found(
-        self, client: TestClient, completion_feedback: Queries.FeedbackCompletion
+        mock_db_tasks.update_generation_task.apply_async.assert_called_once()
+        mock_db_tasks.add_ground_truth_task.apply_async.assert_called_once()
+
+    @patch("backend.routers.completion.feedback.db_tasks")
+    @patch("backend.routers.completion.feedback.crud")
+    def test_feedback_success_without_ground_truth(
+        self, mock_crud, mock_db_tasks, client, completion_feedback
     ):
-        mock_crud = MagicMock()
-        mock_crud.get_generations_by_query_and_model_id.return_value = None
-        client.mock_app.get_db_session.return_value = MagicMock()
-        mock_session = MagicMock()
-        mock_session.get_session.return_value = {"user_id": "test_id"}
+        feedback = completion_feedback
+        feedback.ground_truth = None
+        mock_user_id = str(uuid.uuid4())
+        self.setup_redis_and_db(client, user_id=mock_user_id)
 
-        with patch("backend.routers.completion.feedback.crud", mock_crud):
-            response = client.post(
-                "/api/completion/feedback/", json=completion_feedback.dict()
-            )
+        mock_crud.get_meta_query_by_id.return_value = MagicMock(user_id=mock_user_id)
+        mock_crud.get_generation_by_meta_query_and_model.return_value = MagicMock()
 
+        response = client.post("/api/completion/feedback/", json=feedback.dict())
+
+        assert response.status_code == 200
+        mock_db_tasks.update_generation_task.apply_async.assert_called_once()
+        mock_db_tasks.add_ground_truth_task.apply_async.assert_not_called()
+
+    @patch("backend.routers.completion.feedback.crud")
+    def test_feedback_query_not_found(self, mock_crud, client, completion_feedback):
+        self.setup_redis_and_db(client)
+        mock_crud.get_meta_query_by_id.return_value = None
+
+        response = client.post(
+            "/api/completion/feedback/", json=completion_feedback.dict()
+        )
         assert response.status_code == 404
-        expected_error = GenerationNotFoundError()
-        assert response.json() == expected_error.dict()
+        assert response.json() == GenerationNotFoundError().dict()
 
-    def test_submit_feedback_invalid_payload(self, client: TestClient):
-        # Test with invalid data
-        invalid_payload = {
-            "query_id": "not-a-uuid",  # Invalid UUID
-            "model_id": "not-an-int",  # Invalid integer
-            "was_accepted": "not-a-bool",  # Invalid boolean
-        }
+    @patch("backend.routers.completion.feedback.crud")
+    def test_feedback_no_access(self, mock_crud, client, completion_feedback):
+        self.setup_redis_and_db(client, user_id="wrong_user")
 
-        response = client.post("/api/completion/feedback/", json=invalid_payload)
-        assert response.status_code == 422
-        assert "detail" in response.json()
+        mock_query = MagicMock(user_id="different_user")
+        mock_crud.get_meta_query_by_id.return_value = mock_query
 
-    def test_submit_feedback_database_error(
-        self, client: TestClient, completion_feedback: Queries.FeedbackCompletion
-    ):
-        mock_crud = MagicMock()
-        mock_crud.get_generations_by_query_and_model_id.side_effect = Exception(
-            "Database error"
+        response = client.post(
+            "/api/completion/feedback/", json=completion_feedback.dict()
         )
+        assert response.status_code == 403
+        assert response.json() == NoAccessToProvideFeedbackError().dict()
 
-        mock_db_session = MagicMock()
-        client.mock_app.get_db_session.return_value = mock_db_session
-        mock_session = MagicMock()
-        mock_session.get_session.return_value = {"user_id": "test_id"}
+    @patch("backend.routers.completion.feedback.crud")
+    def test_feedback_generation_missing(self, mock_crud, client, completion_feedback):
+        mock_user_id = str(uuid.uuid4())
+        self.setup_redis_and_db(client, user_id=mock_user_id)
 
-        with patch("backend.routers.completion.feedback.crud", mock_crud):
-            response = client.post(
-                "/api/completion/feedback/", json=completion_feedback.dict()
-            )
+        mock_crud.get_meta_query_by_id.return_value = MagicMock(user_id=mock_user_id)
+        mock_crud.get_generation_by_meta_query_and_model.return_value = None
 
+        response = client.post(
+            "/api/completion/feedback/", json=completion_feedback.dict()
+        )
+        assert response.status_code == 404
+        assert response.json() == GenerationNotFoundError().dict()
+
+    def test_invalid_session_token(self, client, completion_feedback):
+        mock_redis = MagicMock()
+        mock_redis.get.return_value = None
+        client.mock_app.get_redis_manager.return_value = mock_redis
+
+        response = client.post(
+            "/api/completion/feedback/", json=completion_feedback.dict()
+        )
+        assert response.status_code == 401
+        assert response.json() == InvalidOrExpiredSessionToken().dict()
+
+    @patch("backend.routers.completion.feedback.crud")
+    def test_feedback_db_error(self, mock_crud, client, completion_feedback):
+        mock_user_id = str(uuid.uuid4())
+        mock_db, _ = self.setup_redis_and_db(client, user_id=mock_user_id)
+
+        mock_crud.get_meta_query_by_id.side_effect = Exception("DB crash")
+
+        response = client.post(
+            "/api/completion/feedback/", json=completion_feedback.dict()
+        )
         assert response.status_code == 500
+        assert response.json() == FeedbackRecordingError().dict()
 
-        expected_error = FeedbackRecordingError()
-        assert response.json() == expected_error.dict()
+        mock_db.rollback.assert_called_once()
 
-        mock_db_session.rollback.assert_called_once()
+    def test_feedback_invalid_payload(self, client):
+        invalid = {
+            "meta_query_id": "not-uuid",
+            "model_id": "abc",
+            "was_accepted": "nope",
+        }
+        response = client.post("/api/completion/feedback/", json=invalid)
+        assert response.status_code == 422

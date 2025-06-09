@@ -1,4 +1,5 @@
 from abc import ABC
+from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -42,7 +43,7 @@ class CreateUserPostResponse(BaseResponse):
     message: str = Field(
         default="User created successfully. Please check your email for verification."
     )
-    user_id: str = Field(..., description="Created user id")
+    user_id: UUID = Field(..., description="Created user id")
 
 
 class UserAlreadyExistsWithThisEmail(ErrorResponse):

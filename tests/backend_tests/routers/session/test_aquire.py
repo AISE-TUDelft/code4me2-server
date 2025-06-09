@@ -55,7 +55,6 @@ class TestAcquireSession:
             "backend.routers.session.acquire.create_uuid",
             return_value=fake_session_token,
         ):
-
             response = client.get("/api/session/acquire")  # adjust URL as needed
 
         assert response.status_code == 200

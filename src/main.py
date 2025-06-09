@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 
 load_dotenv()
-config = Code4meV2Config()
+config = Code4meV2Config()  # type: ignore
 
 
 @asynccontextmanager
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     if not config.test_mode:
         logging.log(logging.INFO, "Starting the server and initializing resources...")
         _app = App()
-        _app.get_celery_broker().register_pubsubs()
+        # Removed explicit call to register_pubsubs - now happens lazily when WebSocket connections are established
         yield
         # Shutdown logic
         logging.warning("Shutting down the server and cleaning up resources...")
