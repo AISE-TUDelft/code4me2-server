@@ -169,6 +169,16 @@ class RetrieveCompletionsError(ErrorResponse):
     message: str = Field(default="Failed to retrieve completions.")
 
 
+# /api/chat/request
+class GenerateChatCompletionsError(ErrorResponse):
+    message: str = Field(default="Failed to generate chat completions.")
+
+
+# /api/chat/get
+class RetrieveChatCompletionsError(ErrorResponse):
+    message: str = Field(default="Failed to retrieve chat completions.")
+
+
 # /api/completion/multi-file-context/update
 class MultiFileContextUpdatePostResponse(BaseResponse):
     message: str = Field(default="Multi-file context updated successfully.")

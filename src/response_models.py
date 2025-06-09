@@ -1,6 +1,7 @@
 from abc import ABC
 from datetime import datetime
-from typing import Optional, Union
+from enum import Enum
+from typing import List, Optional, Union
 from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator
@@ -99,7 +100,57 @@ class ContextualTelemetry(Queries.ContextualTelemetryData):
     )
 
 
-class ResopnseBehavioralTelemetry(Queries.BehavioralTelemetryData):
+class ResponseBehavioralTelemetry(Queries.BehavioralTelemetryData):
     behavioral_telemetry_id: UUID = Field(
         ..., description="Behavioral telemetry record ID"
     )
+
+
+class ChatMessageRole(str, Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+class ChatMessageItem(ResponseBase):
+    """Represents a single message in a chat conversation"""
+
+    role: ChatMessageRole = Field(..., description="Role of the message sender")
+    content: str = Field(..., description="Content of the message")
+    timestamp: datetime = Field(..., description="When the message was sent")
+    meta_query_id: Optional[UUID] = Field(
+        None, description="Associated query ID if any"
+    )
+
+
+class ChatCompletionItem(ResponseBase):
+    """Represents a single model completion in a chat conversation"""
+
+    model_id: int = Field(..., description="Model ID", ge=0)
+    model_name: str = Field(..., description="Model name")
+    completion: str = Field(..., description="Generated text")
+    generation_time: int = Field(..., description="Generation time", ge=0)
+    confidence: float = Field(..., description="Confidence score")
+    was_accepted: bool = Field(..., description="Whether the completion was accepted")
+
+
+class ChatCompletionErrorItem(ResponseBase):
+    message: str = Field(default="Chat completion for model failed")
+    model_name: str = Field(..., description="Model name")
+
+
+class ChatHistoryItem(ResponseBase):
+    """Represents a single turn in the chat conversation"""
+
+    user_message: ChatMessageItem = Field(..., description="User's message")
+    assistant_responses: List[Union[ChatCompletionItem, ChatCompletionErrorItem]] = (
+        Field(..., description="Assistant's responses from different models")
+    )
+
+
+class ChatHistoryResponse(ResponseBase):
+    """Response containing the entire chat history"""
+
+    chat_id: UUID = Field(..., description="Chat ID")
+    title: str = Field(..., description="Chat title")
+    history: List[ChatHistoryItem] = Field(..., description="Chat conversation history")
