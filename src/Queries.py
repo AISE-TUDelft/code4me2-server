@@ -123,6 +123,10 @@ class AuthenticateUserOAuth(QueryBase):
     token: str = Field(..., description="OAuth token in JWT format")
 
 
+class CreateConfig(QueryBase):
+    config_data: str = Field(..., description="Configuration data as JSON string")
+
+
 class ContextData(QueryBase):
     prefix: str = Field(..., description="Code before cursor")
     suffix: str = Field(..., description="Code after cursor")

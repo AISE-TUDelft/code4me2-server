@@ -48,6 +48,8 @@ class RedisManager:
             return self.session_token_expires_in_seconds
         elif type == "project_token":
             return -1
+        elif type == "email_verification":
+            return 86400
         else:
             return 3600
 
