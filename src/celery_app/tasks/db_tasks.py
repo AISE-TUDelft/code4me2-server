@@ -65,6 +65,17 @@ def add_completion_query_task(query_data: dict, query_id: str = None):  # type: 
 
 
 @celery.task
+def add_chat_query_task(query_data: dict, query_id: str = None):  # type: ignore
+    with App.get_instance().get_db_session_fresh() as db:
+        try:
+            query_query = Queries.CreateChatQuery(**query_data)
+            crud.create_chat_query(db=db, query=query_query)
+        except Exception:
+            db.rollback()
+            raise
+
+
+@celery.task
 def add_generation_task(generation_data: dict, generation_id: str = None):  # type: ignore
     with App.get_instance().get_db_session_fresh() as db:
         try:

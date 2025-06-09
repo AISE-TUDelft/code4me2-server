@@ -81,7 +81,7 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
 
     # model loading configuration
     stop_sequences: List[str] = Field(default_factory=list)
-    cache_dir: str = Field(default=os.path.join("../chat", ".cache"))
+    cache_dir: str = Field(default="../chat/.cache")
     trust_remote_code: bool = True
     device_map: str = "auto"
 
