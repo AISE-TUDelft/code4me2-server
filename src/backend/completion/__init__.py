@@ -1,7 +1,8 @@
 import logging
 from enum import Enum
-from typing import Optional
+from typing import Optional, Union
 
+from backend.completion.ChatCompletionModel import ChatCompletionModel
 from backend.completion.TemplateCompletionModel import TemplateCompletionModel
 
 
@@ -21,17 +22,27 @@ class CompletionModels:
     def load_model(
         self, model_name: str, prompt_template: Template = Template.PREFIX_SUFFIX
     ) -> None:
-        key = f"{model_name}:{prompt_template.value}"
+        if "instruct" in model_name.lower():
+            key = f"{model_name}:instruct"
+        else:
+            key = f"{model_name}:{prompt_template.value}"
         if key in self.__models:
             logging.log(
                 logging.INFO,
-                f"{model_name} with template {prompt_template.value} is already loaded",
+                f"Model {key} is already loaded, skipping loading process.",
             )
         else:
             try:
-                self.__models[key] = TemplateCompletionModel.from_pretrained(
-                    model_name=model_name, prompt_template=prompt_template.value
-                )
+                if "instruct" in model_name.lower():
+                    self.__models[key] = ChatCompletionModel(
+                        model_name=model_name,
+                        temperature=0.8,
+                        max_new_tokens=512,
+                    )
+                else:
+                    self.__models[key] = ChatCompletionModel.from_pretrained(
+                        model_name=model_name, prompt_template=prompt_template.value
+                    )
             except Exception as e:
                 logging.log(logging.ERROR, e)
                 logging.log(
@@ -41,7 +52,7 @@ class CompletionModels:
 
     def get_model(
         self, model_name: str, prompt_template: Template = Template.PREFIX_SUFFIX
-    ) -> Optional[TemplateCompletionModel]:
+    ) -> Optional[Union[TemplateCompletionModel, ChatCompletionModel]]:
         key = f"{model_name}:{prompt_template.value}"
         if key in self.__models:
             return self.__models[key]
