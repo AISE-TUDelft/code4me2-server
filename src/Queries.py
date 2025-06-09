@@ -1,13 +1,16 @@
 import re
 from abc import ABC
 from enum import Enum
+from typing import Dict, List, Optional, Tuple
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
 
 from backend.utils import Fakable, SerializableBaseModel
 from database.db_schemas import DEFAULT_USER_PREFERENCE
+from response_models import ChatMessageRole
 
 
 class Provider(Enum):
@@ -182,6 +185,39 @@ class RequestCompletion(QueryBase):
         default=DEFAULT_USER_PREFERENCE.get("store_behavioral_telemetry"),
         description="Whether to store behavioral telemetry in database",
     )
+
+
+class RequestChatCompletion(QueryBase):
+    model_ids: List[int] = Field(..., description="Models to use for chat completion")
+    chat_id: UUID = Field(..., description="Chat ID")
+    messages: List[Tuple[ChatMessageRole, str]] = Field(
+        ..., description="Chat messages as a list of tuples"
+    )
+    context: ContextData = Field(..., description="Context data for completion")
+    contextual_telemetry: Optional[ContextualTelemetryData] = Field(
+        None, description="Contextual telemetry data"
+    )
+    behavioral_telemetry: Optional[BehavioralTelemetryData] = Field(
+        None, description="Behavioral telemetry data"
+    )
+    web_enabled: Optional[bool] = Field(
+        default=False, description="Whether web access is enabled"
+    )
+
+    # convert the messages to a list of sequential messages using langchain apis
+    # which would use SystemMessage, HumanMessage, AIMessage
+    def to_langchain_messages(self) -> List[BaseMessage]:
+        messages = []
+        for role, content in self.messages:
+            if role == ChatMessageRole.USER:
+                messages.append(HumanMessage(content=content))
+            elif role == ChatMessageRole.ASSISTANT:
+                messages.append(AIMessage(content=content))
+            elif role == ChatMessageRole.SYSTEM:
+                messages.append(SystemMessage(content=content))
+            else:
+                raise ValueError(f"Unknown message role: {role}")
+        return messages
 
 
 class CreateCompletionQuery(QueryBase):

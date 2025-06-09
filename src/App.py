@@ -90,10 +90,6 @@ class App:
             logging.log(logging.INFO, "Preloading llm models...")
             models = crud.get_all_model_names(self.get_db_session())
             for model in models:
-                # TODO: Remove the following lines when the code is run on the server with enough disk space since starcoder takes 12GB of memory
-                if str(model.model_name).startswith("bigcode/starcoder"):
-                    continue
-
                 logging.log(logging.INFO, f"Loading {model.model_name}...")
                 t0 = time.time()
                 self.__completion_models.load_model(str(model.model_name))
