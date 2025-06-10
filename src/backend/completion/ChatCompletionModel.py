@@ -20,16 +20,6 @@ from pydantic import BaseModel, Field
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 
-def _check_gpu_availability() -> bool:
-    """
-    Check if a GPU is available for model inference.
-
-    Returns:
-        bool: True if a GPU is available, False otherwise.
-    """
-    return torch.cuda.is_available() and torch.cuda.device_count() > 0
-
-
 class ChatCompletionModel(BaseChatModel, BaseModel):
     """
     A LangChain-compatible chat model that uses HuggingFace transformers for local text generation.
@@ -105,6 +95,16 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
     # Internal model instances
     model: Any = Field(default=None)
     tokenizer: Any = Field(default=None)
+
+    @staticmethod
+    def _check_gpu_availability() -> bool:
+        """
+        Check if a GPU is available for model inference.
+
+        Returns:
+            bool: True if a GPU is available, False otherwise.
+        """
+        return torch.cuda.is_available() and torch.cuda.device_count() > 0
 
     def __init__(self, **data: Any):
         """
