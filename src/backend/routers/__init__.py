@@ -14,7 +14,7 @@ router.include_router(completion_router, prefix="/completion")
 router.include_router(ws_routers, prefix="/ws", tags=["WebSocket"])
 
 
-@router.get("/ping")
+@router.api_route("/ping", methods=["GET", "HEAD"])
 def ping():
     return {"Status": "Ok"}
 
