@@ -32,6 +32,9 @@ ENV PATH=/opt/conda/bin:$PATH
 # Create a Conda environment with Python 3.10
 RUN conda create -y -n myenv python=3.10 && conda clean -a -y
 
+# install hugggingfacehub cli for logging in to the huggingface hub
+RUN /bin/bash -c "source activate myenv && conda install -y -c conda-forge huggingface_hub[cli] && conda clean -a -y"
+
 # set the working directory
 WORKDIR /app
 
