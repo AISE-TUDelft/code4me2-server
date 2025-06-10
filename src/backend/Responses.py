@@ -234,3 +234,7 @@ class NoAccessToProvideFeedbackError(ErrorResponse):
 # /api/completion/get
 class NoAccessToGetQueryError(ErrorResponse):
     message: str = Field(default="You do not have permission to access this query.")
+
+
+class TooManyRequests(ErrorResponse):
+    message: str = Field(default="Too many requests. Please try again later.")

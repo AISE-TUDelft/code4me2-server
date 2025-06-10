@@ -138,16 +138,26 @@ class RedisManager:
                         multi_file_context_changes = project_dict.get(
                             "multi_file_context_changes", {}
                         )
-                        crud.update_project(
-                            db_session,
-                            uuid.UUID(token),
-                            Queries.UpdateProject(
-                                multi_file_contexts=json.dumps(multi_file_contexts),
-                                multi_file_context_changes=json.dumps(
-                                    multi_file_context_changes
+
+                        # Check if there exists a user of this project which has not allowed us to store context don't store the context
+                        project_users = crud.get_project_users(db_session, token)
+                        allowed_to_store_context = True
+                        for user_project in project_users:
+                            user = crud.get_user_by_id(db_session, user_project.user_id)
+                            if user and not json.loads(user.preference).get(
+                                "store_context", False
+                            ):
+                                allowed_to_store_context = False
+                                break
+                        if allowed_to_store_context:
+                            crud.update_project(
+                                db_session,
+                                uuid.UUID(token),
+                                Queries.UpdateProject(
+                                    multi_file_contexts=multi_file_contexts,
+                                    multi_file_context_changes=multi_file_context_changes,
                                 ),
-                            ),
-                        )
+                            )
                     self.__redis_client.delete(key)
 
     def listen_for_expired_keys(self, db_session: Session):
@@ -170,7 +180,7 @@ class RedisManager:
                         self.delete("auth_token", token, db_session)
                 except Exception as e:
                     logging.error(
-                        f"Exception occured when trying to expire {expired_key} in redis: {e}"
+                        f"Exception occurred when trying to expire {expired_key} in redis: {e}"
                     )
 
     def cleanup(self, db_session: Session):

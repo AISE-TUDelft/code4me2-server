@@ -20,6 +20,7 @@ class ResponseUser(Queries.CreateUser):
     verified: bool = Field(
         ..., description="Whether the user's email has been verified"
     )
+    preference: str = Field(..., description="Users preference for data management")
     auth_token: Optional[UUID] = Field(
         default=None, description="Last auth token used to login"
     )

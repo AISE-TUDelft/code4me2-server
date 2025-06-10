@@ -22,12 +22,12 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from database import crud
-from database.utils import create_uuid
 from response_models import (
     CompletionErrorItem,
     ResponseCompletionItem,
     ResponseCompletionResponseData,
 )
+from utils import create_uuid, extract_secrets, redact_secrets
 
 router = APIRouter()
 
@@ -109,12 +109,54 @@ def request_completion(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
 
+        # Prepare tasks based on user preferences
+        created_context_id = None
+        add_context_task = None
+        if completion_request.store_context:
+            created_context_id = create_uuid()
+            add_context_task = db_tasks.add_context_task.si(
+                completion_request.context.dict(), created_context_id
+            )
+        created_contextual_telemetry_id = None
+        add_contextual_telemetry_task = None
+        if completion_request.store_contextual_telemetry:
+            created_contextual_telemetry_id = create_uuid()
+            add_contextual_telemetry_task = db_tasks.add_contextual_telemetry_task.si(
+                completion_request.contextual_telemetry.dict(),
+                created_contextual_telemetry_id,
+            )
+        created_behavioral_telemetry_id = None
+        add_behavioral_telemetry_task = None
+        if completion_request.store_behavioral_telemetry:
+            created_behavioral_telemetry_id = create_uuid()
+            add_behavioral_telemetry_task = db_tasks.add_behavioral_telemetry_task.si(
+                completion_request.behavioral_telemetry.dict(),
+                created_behavioral_telemetry_id,
+            )
         t1 = time.perf_counter()
         logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
 
+        t2 = time.perf_counter()
+        # Redact secrets from context
+        secrets = extract_secrets(
+            completion_request.context.prefix
+            + "\n"
+            + completion_request.context.suffix,
+            file_name=str(completion_request.context.file_name),
+        )
+        completion_request.context.prefix = redact_secrets(
+            completion_request.context.prefix, secrets
+        )
+        completion_request.context.suffix = redact_secrets(
+            completion_request.context.suffix, secrets
+        )
+
+        t3 = time.perf_counter()
+        logging.info(f"Context secret redaction took {(t3 - t2) * 1000:.2f}ms")
+
         multi_file_contexts = project_info.get("multi_file_contexts", {})
         multi_file_context_changes = project_info.get("multi_file_context_changes", {})
-        t2 = time.perf_counter()
+
         created_query_id = create_uuid()
 
         if multi_file_contexts:
@@ -134,8 +176,14 @@ def request_completion(
                     + "\n\n"
                     + (completion_request.context.prefix or "")
                 )
-        t3 = time.perf_counter()
-        logging.info(f"Multi-file context processing took {(t3 - t2) * 1000:.2f}ms")
+        multi_file_context_changes_indexes = {}
+        if multi_file_context_changes:
+            multi_file_context_changes_indexes = {
+                file_name: len(changes)
+                for file_name, changes in multi_file_context_changes.items()
+            }
+        t4 = time.perf_counter()
+        logging.info(f"Multi-file context processing took {(t4 - t3) * 1000:.2f}ms")
         completions = []
         add_generation_tasks = []
 
@@ -170,11 +218,10 @@ def request_completion(
             )
 
             # Used for test mode
-            # completion_result = {"completion":"test", "generation_time":100,"confidence":0.8, "logprobs":[0.2,0.5]}
+            # completion_result = {"completion": "test", "generation_time": 100, "confidence": 0.8, "logprobs": [0.2, 0.5]}
 
             add_generation_task = db_tasks.add_generation_task.si(
                 Queries.CreateGeneration(
-                    meta_query_id=uuid.UUID(created_query_id),
                     model_id=model_id,
                     completion=completion_result["completion"],
                     generation_time=completion_result["generation_time"],
@@ -195,7 +242,6 @@ def request_completion(
                 confidence=completion_result["confidence"],
             )
 
-        t4 = time.perf_counter()
         with ThreadPoolExecutor(max_workers=config.thread_pool_max_workers) as executor:
             future_to_model = {
                 executor.submit(handle_model_completion, model_id): model_id
@@ -209,50 +255,49 @@ def request_completion(
         logging.info(f"Model completion (threaded) took {(t5 - t4) * 1000:.2f}ms")
 
         # Celery task prep
-        t6 = time.perf_counter()
-        multi_file_context_changes_indexes = {}
-        if multi_file_context_changes:
-            multi_file_context_changes_indexes = {
-                file_name: len(changes)
-                for file_name, changes in multi_file_context_changes.items()
-            }
-
-        created_context_id = create_uuid()
-        add_context_task = db_tasks.add_context_task.si(
-            completion_request.context.dict(), created_context_id
-        )
-        created_contextual_telemetry_id = create_uuid()
-        created_behavioral_telemetry_id = create_uuid()
-        add_telemetry_task = db_tasks.add_telemetry_task.si(
-            completion_request.contextual_telemetry.dict(),
-            completion_request.behavioral_telemetry.dict(),
-            created_contextual_telemetry_id,
-            created_behavioral_telemetry_id,
-        )
-
-        total_serving_time = int((time.perf_counter() - overall_start) * 1000)
         add_query_task = db_tasks.add_completion_query_task.si(
             Queries.CreateCompletionQuery(
                 user_id=uuid.UUID(str(user_id)),
-                contextual_telemetry_id=uuid.UUID(created_contextual_telemetry_id),
-                behavioral_telemetry_id=uuid.UUID(created_behavioral_telemetry_id),
-                context_id=uuid.UUID(created_context_id),
+                contextual_telemetry_id=(
+                    uuid.UUID(created_contextual_telemetry_id)
+                    if created_contextual_telemetry_id
+                    else None
+                ),
+                behavioral_telemetry_id=(
+                    uuid.UUID(created_behavioral_telemetry_id)
+                    if created_behavioral_telemetry_id
+                    else None
+                ),
+                context_id=(
+                    uuid.UUID(created_context_id) if created_context_id else None
+                ),
                 session_id=uuid.UUID(session_token),
                 project_id=uuid.UUID(project_token),
                 multi_file_context_changes_indexes=multi_file_context_changes_indexes,
-                total_serving_time=total_serving_time,
+                total_serving_time=int((time.perf_counter() - overall_start) * 1000),
                 server_version_id=app.get_config().server_version_id,
             ).dict(),
             created_query_id,
         )
 
+        # Filter out None tasks
+        pre_query_tasks = list(
+            filter(
+                None,
+                [
+                    add_context_task,
+                    add_contextual_telemetry_task,
+                    add_behavioral_telemetry_task,
+                ],
+            )
+        )
         chain(
-            group(add_context_task, add_telemetry_task),
+            group(*pre_query_tasks) if pre_query_tasks else None,
             add_query_task,
             group(*add_generation_tasks),
         ).apply_async(queue="db")
-        t7 = time.perf_counter()
-        logging.info(f"Celery task prep and queuing took {(t7 - t6) * 1000:.2f}ms")
+        t6 = time.perf_counter()
+        logging.info(f"Celery task prep and queuing took {(t6 - t5) * 1000:.2f}ms")
 
         overall_end = time.perf_counter()
         logging.info(

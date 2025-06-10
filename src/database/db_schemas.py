@@ -17,6 +17,12 @@ from sqlalchemy.orm import relationship
 
 from .db import Base
 
+DEFAULT_USER_PREFERENCE = {
+    "store_context": False,
+    "store_contextual_telemetry": True,
+    "store_behavioral_telemetry": True,
+}
+
 
 class Config(Base):
     __tablename__ = "config"
@@ -162,9 +168,7 @@ class Session(Base):
 
     session_id = Column(UUID(as_uuid=True), primary_key=True)
     user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("public.user.user_id", ondelete="SET NULL"),
-        nullable=False,
+        UUID(as_uuid=True), ForeignKey("public.user.user_id", ondelete="SET NULL")
     )
     start_time = Column(DateTime(timezone=True), nullable=False)
     end_time = Column(DateTime(timezone=True))
@@ -203,7 +207,6 @@ class Chat(Base):
     user_id = Column(
         UUID(as_uuid=True),
         ForeignKey("public.user.user_id", ondelete="SET NULL"),
-        nullable=False,
     )
     title = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
@@ -223,16 +226,12 @@ class MetaQuery(Base):
     contextual_telemetry_id = Column(
         UUID(as_uuid=True),
         ForeignKey("public.contextual_telemetry.contextual_telemetry_id"),
-        nullable=False,
     )
     behavioral_telemetry_id = Column(
         UUID(as_uuid=True),
         ForeignKey("public.behavioral_telemetry.behavioral_telemetry_id"),
-        nullable=False,
     )
-    context_id = Column(
-        UUID(as_uuid=True), ForeignKey("public.context.context_id"), nullable=False
-    )
+    context_id = Column(UUID(as_uuid=True), ForeignKey("public.context.context_id"))
     session_id = Column(
         UUID(as_uuid=True), ForeignKey("public.session.session_id"), nullable=False
     )

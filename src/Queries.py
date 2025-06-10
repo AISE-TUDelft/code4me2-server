@@ -1,12 +1,13 @@
 import re
 from abc import ABC
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
 
 from backend.utils import Fakable, SerializableBaseModel
+from database.db_schemas import DEFAULT_USER_PREFERENCE
 
 
 class Provider(Enum):
@@ -33,9 +34,6 @@ class CreateUser(QueryBase):
         ..., description="User's password (will be hashed)", min_length=8, max_length=50
     )
     config_id: int = Field(..., description="Configuration ID to use", ge=0)
-    preference: Optional[str] = Field(
-        None, description="User preferences as JSON string"
-    )
 
     @field_validator("password")
     @classmethod
@@ -76,8 +74,8 @@ class UpdateUser(QueryBase):
         None, description="Previous password of user"
     )
     password: Optional[SecretStr] = Field(None, description="New password of user")
-    preference: Optional[str] = Field(
-        None, description="Updated user preferences as JSON string"
+    preference: Optional[Dict[str, Any]] = Field(
+        None, description="Updated user preferences as a dictionary"
     )
     config_id: Optional[int] = Field(None, description="New configuration ID", ge=1)
     verified: Optional[bool] = Field(None, description="Whether user verified or not")
@@ -198,31 +196,35 @@ class BehavioralTelemetryData(QueryBase):
 class RequestCompletion(QueryBase):
     model_ids: List[int] = Field(..., description="Models to use for completion")
     context: ContextData = Field(..., description="Context data for completion")
-    # context: Mapping[str, Any] = Field(..., description="Context data for completion")
-
+    store_context: Optional[bool] = Field(
+        default=DEFAULT_USER_PREFERENCE.get("store_context"),
+        description="Whether to store context data in database",
+    )
     contextual_telemetry: ContextualTelemetryData = Field(
         ..., description="Contextual telemetry data"
+    )
+    store_contextual_telemetry: Optional[bool] = Field(
+        default=DEFAULT_USER_PREFERENCE.get("store_contextual_telemetry"),
+        description="Whether to store contextual telemetry in database",
     )
     behavioral_telemetry: BehavioralTelemetryData = Field(
         ..., description="Behavioral telemetry data"
     )
-    # contextual_telemetry: Mapping[str,Any]= Field(
-    #     ..., description="Contextual telemetry data"
-    # )
-    # behavioral_telemetry: Mapping[str, Any] = Field(
-    #     ..., description="Telemetry data for completion"
-    # )
+    store_behavioral_telemetry: Optional[bool] = Field(
+        default=DEFAULT_USER_PREFERENCE.get("store_behavioral_telemetry"),
+        description="Whether to store behavioral telemetry in database",
+    )
 
 
 class CreateCompletionQuery(QueryBase):
     user_id: UUID = Field(..., description="User ID")
-    contextual_telemetry_id: UUID = Field(
-        ..., description="Contextual telemetry record ID"
+    contextual_telemetry_id: Optional[UUID] = Field(
+        None, description="Contextual telemetry record ID"
     )
-    behavioral_telemetry_id: UUID = Field(
-        ..., description="Behavioral telemetry record ID"
+    behavioral_telemetry_id: Optional[UUID] = Field(
+        None, description="Behavioral telemetry record ID"
     )
-    context_id: UUID = Field(..., description="Context record ID")
+    context_id: Optional[UUID] = Field(None, description="Context record ID")
     session_id: UUID = Field(..., description="Session ID")
     project_id: UUID = Field(..., description="Project ID")
     multi_file_context_changes_indexes: Optional[Dict[str, int]] = Field(
@@ -265,7 +267,6 @@ class CreateChatQuery(QueryBase):
 
 
 class CreateGeneration(QueryBase):
-    meta_query_id: UUID = Field(..., description="Meta Query ID")
     model_id: int = Field(..., description="Model ID", ge=0)
     completion: str = Field(..., description="Generated code/text")
     generation_time: int = Field(..., description="Generation time (ms)", ge=0)
@@ -320,15 +321,15 @@ class UpdateProject(QueryBase):
     project_name: Optional[str] = Field(
         default=None, description="Updated project name", min_length=1, max_length=100
     )
-    multi_file_contexts: Optional[str] = Field(
+    multi_file_contexts: Optional[Dict[str, List[str]]] = Field(
         default=None, description="Updated multi-file contexts as JSON"
     )
-    multi_file_context_changes: Optional[str] = Field(
-        default=None, description="Updated context changes as JSON"
+    multi_file_context_changes: Optional[Dict[str, List[FileContextChangeData]]] = (
+        Field(default=None, description="Updated context changes as JSON")
     )
 
 
-class AddUserToProject(QueryBase):
+class CreateUserProject(QueryBase):
     project_id: UUID = Field(..., description="Project ID")
     user_id: UUID = Field(..., description="User ID")
     # role: Optional[str] = Field(default="member", description="User role in project")

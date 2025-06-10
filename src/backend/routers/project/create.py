@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 @router.post(
-    "/",
+    "",
     response_model=CreateProjectPostResponse,
     responses={
         "201": {"model": CreateProjectPostResponse},
@@ -71,6 +71,12 @@ def create_project(
             db_session,
             Queries.CreateSessionProject(
                 session_id=uuid.UUID(session_token), project_id=uuid.UUID(project_token)
+            ),
+        )
+        crud.create_user_project(
+            db_session,
+            Queries.CreateUserProject(
+                project_id=uuid.UUID(project_token), user_id=user_id
             ),
         )
 

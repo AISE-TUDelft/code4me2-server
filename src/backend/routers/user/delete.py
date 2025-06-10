@@ -79,7 +79,6 @@ def delete_user(
                 status_code=404,
                 content=UserNotFoundError(),
             )
-        # TODO check this later
         redis_manager.delete("auth_token", auth_token, db_session)
 
         # If delete_data flag is True, also delete user-related data from the database
@@ -88,14 +87,7 @@ def delete_user(
                 logging.INFO,
                 f"Deleting user data for user ID: {user_id}",
             )
-            # TODO check this later
-            # crud.delete_project_cascade
-            # crud.delete_context
-            # crud.delete_meta_query_cascade
-            # crud.delete_behavioural_telemetry
-            # crud.delete_had_generation
-            # crud.delete_contextual_telemetry
-            # crud.delete_chat_cascade
+            crud.delete_user_full_wipe_out(db=db_session, user_id=uuid.UUID(user_id))
 
         # Remove the user account
         crud.delete_user_by_id(db=db_session, user_id=user_id)

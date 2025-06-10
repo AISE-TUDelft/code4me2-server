@@ -17,9 +17,13 @@ class Code4meV2Config(BaseSettings):
         alias="MAX_FAILED_SESSION_ATTEMPTS", frozen=True
     )
     server_version_id: int = Field(alias="SERVER_VERSION_ID", frozen=True)
-    max_request_rate: int = Field(
-        alias="MAX_REQUEST_RATE", frozen=True
-    )  # maximum amount of requests that are allowed per hour per user -> 1000 would indicate 1000 requests per hour
+    default_max_request_rate_per_hour: int = Field(
+        alias="DEFAULT_MAX_REQUEST_RATE_PER_HOUR", frozen=True
+    )
+    max_request_rate_per_hour_config: dict = Field(
+        alias="MAX_REQUEST_RATE_PER_HOUR_CONFIG", frozen=True
+    )
+
     db_password: str = Field(alias="DB_PASSWORD", frozen=True)
     db_host: str = Field(alias="DB_HOST", frozen=True)
     db_user: str = Field(alias="DB_USER", frozen=True)
