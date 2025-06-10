@@ -176,3 +176,9 @@ class ChatHistoryResponsePage(ResponseBase):
     items: List[ChatHistoryResponse] = Field(
         ..., description="List of chat history responses"
     )
+
+
+class DeleteChatSuccessResponse:
+    """Success response for chat deletion"""
+
+    message: str = "Chat deleted successfully"

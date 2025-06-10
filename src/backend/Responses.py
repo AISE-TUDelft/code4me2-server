@@ -249,3 +249,11 @@ class NoAccessToGetQueryError(ErrorResponse):
 
 class TooManyRequests(ErrorResponse):
     message: str = Field(default="Too many requests. Please try again later.")
+
+
+########################################
+# /api/chat/delete
+class DeleteChatError(ErrorResponse):
+    """Error response for chat deletion failure"""
+
+    message: str = "Failed to delete chat"
