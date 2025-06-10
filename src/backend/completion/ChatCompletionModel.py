@@ -249,6 +249,11 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
         for msg in messages:
             if isinstance(msg, SystemMessage):
                 formatted += f"{self.system_prefix} {msg.content}\n"
+                formatted += """
+                Before you answer, please provide a very short 3-6 word title for the user's question.
+                Place the summary in the tag in in a set of [Title] tags.
+                Example: [Title] How to use Python? [/Title]
+                """
             elif isinstance(msg, HumanMessage):
                 formatted += f"{self.user_prefix} {msg.content}\n"
             elif isinstance(msg, AIMessage):
