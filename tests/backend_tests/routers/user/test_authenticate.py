@@ -1,3 +1,4 @@
+import json
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -48,7 +49,7 @@ class TestAuthenticate:
         mock_crud = MagicMock()
         mock_user = ResponseUser.fake(email=auth_email_query.email)
         mock_crud.get_user_by_email_password.return_value = mock_user
-        mock_config = "config1"
+        mock_config = '{"config1":true}'
         mock_crud.get_config_by_id.return_value = MagicMock(config_data=mock_config)
 
         auth_token = str(uuid.uuid4())
@@ -65,7 +66,7 @@ class TestAuthenticate:
             assert response.status_code == 200
             response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response_result == AuthenticateUserNormalPostResponse(
-                user=mock_user, config=mock_config
+                user=mock_user, config=json.loads(mock_config)
             )
             assert response.cookies.get("auth_token") == auth_token
 
@@ -91,7 +92,7 @@ class TestAuthenticate:
         mock_crud = MagicMock()
         mock_user = ResponseUser.fake()
         mock_crud.get_user_by_email.return_value = mock_user
-        mock_config = "config1"
+        mock_config = '{"config1":true}'
         mock_crud.get_config_by_id.return_value = MagicMock(config_data=mock_config)
         mock_verify_jwt_token = MagicMock(return_value={"email": mock_user.email})
 
@@ -114,7 +115,7 @@ class TestAuthenticate:
             assert response.status_code == 200
             response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response_result == AuthenticateUserOAuthPostResponse(
-                user=mock_user, config=mock_config
+                user=mock_user, config=json.loads(mock_config)
             )
             assert response.cookies.get("auth_token") == auth_token
 

@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 from typing import Union
@@ -136,7 +137,7 @@ def authenticate_user(
                 status_code=200,
                 content=AuthenticateUserOAuthPostResponse(
                     user=ResponseUser.model_validate(found_user),
-                    config=config_data.config_data,
+                    config=json.loads(str(config_data.config_data)),
                 ),
             )
             # Set the auth token as an HttpOnly cookie with appropriate settings
@@ -178,7 +179,7 @@ def authenticate_user(
                 status_code=200,
                 content=AuthenticateUserNormalPostResponse(
                     user=ResponseUser.model_validate(found_user),
-                    config=str(config_data.config_data),
+                    config=json.loads(str(config_data.config_data)),
                 ),
             )
             # Set the auth token as an HttpOnly cookie with appropriate settings

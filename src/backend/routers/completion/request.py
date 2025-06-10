@@ -109,6 +109,24 @@ def request_completion(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
 
+        t1 = time.perf_counter()
+        logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
+        # Redact secrets from context
+        secrets = extract_secrets(
+            completion_request.context.prefix
+            + "\n"
+            + completion_request.context.suffix,
+            file_name=str(completion_request.context.file_name),
+        )
+        completion_request.context.prefix = redact_secrets(
+            completion_request.context.prefix, secrets
+        )
+        completion_request.context.suffix = redact_secrets(
+            completion_request.context.suffix, secrets
+        )
+        t2 = time.perf_counter()
+        logging.info(f"Context secret redaction took {(t2 - t1) * 1000:.2f}ms")
+
         # Prepare tasks based on user preferences
         created_context_id = None
         add_context_task = None
@@ -133,26 +151,11 @@ def request_completion(
                 completion_request.behavioral_telemetry.dict(),
                 created_behavioral_telemetry_id,
             )
-        t1 = time.perf_counter()
-        logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
-
-        t2 = time.perf_counter()
-        # Redact secrets from context
-        secrets = extract_secrets(
-            completion_request.context.prefix
-            + "\n"
-            + completion_request.context.suffix,
-            file_name=str(completion_request.context.file_name),
-        )
-        completion_request.context.prefix = redact_secrets(
-            completion_request.context.prefix, secrets
-        )
-        completion_request.context.suffix = redact_secrets(
-            completion_request.context.suffix, secrets
-        )
 
         t3 = time.perf_counter()
-        logging.info(f"Context secret redaction took {(t3 - t2) * 1000:.2f}ms")
+        logging.info(
+            f"Preparing celery tasks based on user preferences took {(t3 - t2) * 1000:.2f}ms"
+        )
 
         multi_file_contexts = project_info.get("multi_file_contexts", {})
         multi_file_context_changes = project_info.get("multi_file_context_changes", {})
