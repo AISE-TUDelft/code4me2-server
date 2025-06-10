@@ -16,7 +16,7 @@ router.include_router(ws_routers, prefix="/ws", tags=["WebSocket"])
 
 @router.get("/ping")
 def ping():
-    return {"status": "ok"}
+    return {"Status": "Ok"}
 
 
 # for folder in filter(
