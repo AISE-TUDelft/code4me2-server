@@ -154,3 +154,13 @@ class ChatHistoryResponse(ResponseBase):
     chat_id: UUID = Field(..., description="Chat ID")
     title: str = Field(..., description="Chat title")
     history: List[ChatHistoryItem] = Field(..., description="Chat conversation history")
+
+
+class ChatHistoryResponsePage(ResponseBase):
+    """A glorified list of chat history responses with pagination"""
+
+    page: int = Field(..., description="Current page number")
+    per_page: int = Field(..., description="Number of records per page")
+    items: List[ChatHistoryResponse] = Field(
+        ..., description="List of chat history responses"
+    )

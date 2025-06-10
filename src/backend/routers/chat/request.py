@@ -58,6 +58,14 @@ def request_chat_completion(
 ) -> JsonResponseWithStatus:
     """
     Request chat completions based on provided messages.
+
+    The contract here is that the request always contains all the history of the chat as well
+
+    We do this because it could be that the user modifies the chat history in the frontend
+    and we want to ensure that the chat completions are based on the latest state of the chat.
+
+    Take the case where the user edits a message in the chat history midway through a chat.
+    We don't want to be generating a completion based on the old state of the chat.
     """
     overall_start = time.perf_counter()
     logging.info(f"Chat completion request: {chat_completion_request.dict()}")
@@ -325,62 +333,3 @@ def request_chat_completion(
             status_code=500,
             content=GenerateChatCompletionsError(),
         )
-
-
-def get_chat_history_response(db, chat_id, user_id):
-    """Helper function to build chat history response"""
-    # Get chat metadata
-    chat = crud.get_chat_by_id(db, chat_id)
-    if not chat:
-        return None
-
-    # Check if user has access to this chat
-    if str(chat.user_id) != user_id:
-        return None
-
-    # Get chat history
-    history_data = crud.get_chat_history(db, chat_id)
-
-    # Build response
-    history_items = []
-    for meta_query, context, generations in history_data:
-        # Extract user message from context
-        # For chat, we store the user message in the prefix field
-        user_message = ChatMessageItem(
-            role=ChatMessageRole.USER,
-            content=context.prefix,
-            timestamp=meta_query.timestamp,
-            meta_query_id=meta_query.meta_query_id,
-        )
-
-        # Process assistant responses
-        assistant_responses = []
-        for generation in generations:
-            model = crud.get_model_by_id(db, int(str(generation.model_id)))
-
-            if not model:
-                assistant_responses.append(
-                    ChatCompletionErrorItem(
-                        model_name=f"Model ID: {generation.model_id}"
-                    )
-                )
-            else:
-                assistant_responses.append(
-                    ChatCompletionItem(
-                        model_id=int(str(generation.model_id)),
-                        model_name=str(model.model_name),
-                        completion=str(generation.completion),
-                        generation_time=int(str(generation.generation_time)),
-                        confidence=float(str(generation.confidence)),
-                        was_accepted=bool(generation.was_accepted),
-                    )
-                )
-
-        # Add to history
-        history_items.append(
-            ChatHistoryItem(
-                user_message=user_message, assistant_responses=assistant_responses
-            )
-        )
-
-    return ChatHistoryResponse(chat_id=chat_id, title=chat.title, history=history_items)
