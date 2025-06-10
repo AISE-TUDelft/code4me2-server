@@ -28,35 +28,14 @@ config = Code4meV2Config()  # type: ignore
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic (if any) can go here
     if not config.test_mode:
         logging.log(logging.INFO, "Starting the server and initializing resources...")
         _app = App()
         yield
-        # Shutdown logic
         logging.warning("Shutting down the server and cleaning up resources...")
         _app.cleanup()
     else:
         yield
-
-
-app = FastAPI(
-    title="Code4Me V2 API",
-    description="The complete API for Code4Me V2",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "*",
-        # f"{config.website_host}:{config.website_port}"
-    ],  # Allow specific origin
-    allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods
-    allow_headers=["*"],  # Allow all headers
-)
 
 
 class SimpleRateLimiter(BaseHTTPMiddleware):
@@ -90,16 +69,26 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-app.add_middleware(SimpleRateLimiter)
+app = FastAPI(
+    title="Code4Me V2 API",
+    description="The complete API for Code4Me V2",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+if not config.test_mode:
+    app.add_middleware(SimpleRateLimiter)
 app.include_router(router, prefix="/api")
 
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=config.backend_port,
-        reload=config.test_mode,
-        reload_excludes=[
-            "src/website/**",
-        ],
+        host=config.server_host,
+        port=config.server_port,
     )
