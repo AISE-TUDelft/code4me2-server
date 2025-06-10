@@ -42,7 +42,7 @@ def delete_chat(
     chat_id: UUID,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie("session_token"),
-    project_token: str = Cookie("project_token", default=None),
+    project_token: str = Cookie("project_token"),
 ) -> JsonResponseWithStatus:
     """
     Delete a specific chat by its ID.

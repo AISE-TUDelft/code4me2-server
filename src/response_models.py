@@ -178,7 +178,7 @@ class ChatHistoryResponsePage(ResponseBase):
     )
 
 
-class DeleteChatSuccessResponse:
+class DeleteChatSuccessResponse(ResponseBase):
     """Success response for chat deletion"""
 
     message: str = "Chat deleted successfully"
