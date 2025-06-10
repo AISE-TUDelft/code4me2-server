@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS public."user"
     verified BOOLEAN DEFAULT FALSE,
     config_id BIGINT NOT NULL,
     preference TEXT,
-    auth_token uuid Null
+    auth_token uuid NULL
 );
 
 -- Model name table with instruction tuning flag
@@ -310,16 +310,16 @@ ALTER TABLE public.ground_truth
     ON DELETE CASCADE;
     
 ALTER TABLE public.session_projects
-ADD CONSTRAINT fk_session
-FOREIGN KEY (session_id)
-REFERENCES public.session(session_id)
-ON DELETE CASCADE;
+    ADD CONSTRAINT fk_session
+    FOREIGN KEY (session_id)
+    REFERENCES public.session(session_id)
+    ON DELETE CASCADE;
 
 ALTER TABLE public.session_projects
-ADD CONSTRAINT fk_project
-FOREIGN KEY (project_id)
-REFERENCES public.project(project_id)
-ON DELETE CASCADE;
+    ADD CONSTRAINT fk_project
+    FOREIGN KEY (project_id)
+    REFERENCES public.project(project_id)
+    ON DELETE CASCADE;
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_user_email ON public."user" (email);

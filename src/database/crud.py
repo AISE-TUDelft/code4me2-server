@@ -380,27 +380,37 @@ def create_completion_query(
 def create_chat_query(
     db: Session, query: Queries.CreateChatQuery, id: str = ""
 ) -> db_schemas.ChatQuery:
-    # Create the chat query directly using joined table inheritance
-    # This will automatically create both the meta_query and chat_query records
+    meta_query_id = uuid.uuid4()
+
+    # Step 1: Create MetaQuery first with all the main fields
+    db_meta_query = db_schemas.MetaQuery(
+        meta_query_id=meta_query_id,
+        user_id=query.user_id,
+        contextual_telemetry_id=query.contextual_telemetry_id,
+        behavioral_telemetry_id=query.behavioral_telemetry_id,
+        context_id=query.context_id,
+        session_id=query.session_id,
+        project_id=query.project_id,
+        multi_file_context_changes_indexes=query.multi_file_context_changes_indexes,
+        timestamp=datetime.now(),
+        total_serving_time=query.total_serving_time,
+        server_version_id=query.server_version_id,
+        query_type="chat",
+    )
+
+    # Step 2: Create ChatQuery with ONLY its specific fields
     db_chat_query = db_schemas.ChatQuery(
-        meta_query_id=uuid.uuid4() if id == "" else uuid.UUID(id),
-        # user_id=query.user_id,
-        # contextual_telemetry_id=query.contextual_telemetry_id,
-        # behavioral_telemetry_id=query.behavioral_telemetry_id,
-        # context_id=query.context_id,
-        # session_id=query.session_id,
-        # project_id=query.project_id,
-        # multi_file_context_changes_indexes=query.multi_file_context_changes_indexes,
-        # timestamp=datetime.now(),
-        # total_serving_time=query.total_serving_time,
-        # server_version_id=query.server_version_id,
-        # query_type="chat",
+        meta_query_id=meta_query_id,
         chat_id=query.chat_id,
         web_enabled=query.web_enabled,
     )
 
+    # Step 3: Save both to database
+    db.add(db_meta_query)
+    db.commit()
     db.add(db_chat_query)
     db.commit()
+    db.refresh(db_meta_query)
     db.refresh(db_chat_query)
     return db_chat_query
 
