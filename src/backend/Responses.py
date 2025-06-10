@@ -244,3 +244,11 @@ class NoAccessToProvideFeedbackError(ErrorResponse):
 # /api/completion/get
 class NoAccessToGetQueryError(ErrorResponse):
     message: str = Field(default="You do not have permission to access this query.")
+
+
+########################################
+# /api/chat/delete
+class DeleteChatError(ErrorResponse):
+    """Error response for chat deletion failure"""
+
+    message: str = "Failed to delete chat"
