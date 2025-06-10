@@ -61,8 +61,11 @@ def redact_secrets(text: str, secrets: list[str]) -> str:
     """
     Redact secrets in the given text using various detectors.
     """
-    pattern = re.compile("|".join(re.escape(secret) for secret in secrets))
-    return pattern.sub("<hidden>", text)
+    if secrets:
+        pattern = re.compile("|".join(re.escape(secret) for secret in secrets))
+        return pattern.sub("<hidden>", text)
+    else:
+        return text
 
 
 def create_uuid(version: int = 4) -> str:
@@ -79,9 +82,11 @@ def create_uuid(version: int = 4) -> str:
 
 
 #
-# if __name__ == "__main__":
-#     file_content = "secret_key = 'AKIAIOSFODNN7EXAMPLE'\npassword= 'mypassword123'\n"+ "normal_code = 1\n"*300
-#
+if __name__ == "__main__":
+    file_content = "a = 10"
+    print(redact_secrets(file_content, extract_secrets(file_content)))
+    # file_content = "secret_key = 'AKIAIOSFODNN7EXAMPLE'\npassword= 'mypassword123'\n"+ "normal_code = 1\n"*300
+
 #     redacted_file_content = ""
 #     attempts = 100
 #
