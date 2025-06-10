@@ -85,6 +85,7 @@ services:
         "/bin/bash",
         "-c",
         "source activate myenv &&
+        huggingface-cli login --token $HF_TOKEN &&
         celery -A celery_app.celery_app worker --loglevel=info -E -Q llm,db --concurrency=1 --prefetch-multiplier=1",
       ]
     deploy:
@@ -109,6 +110,7 @@ services:
       - PYTHONMULTIPROCESSING_START_METHOD=spawn
       - TOKENIZERS_PARALLELISM=false
       - OMP_NUM_THREADS=1
+      - HF_TOKEN=${HF_TOKEN}
     volumes:
       - .:/app
     healthcheck:
@@ -128,7 +130,11 @@ services:
     build: .
     container_name: backend
     command:
-      ["/bin/bash", "-c", "source activate myenv && python /app/src/main.py"]
+      [
+        "/bin/bash",
+        "-c",
+        "source activate myenv && huggingface-cli login --token $HF_TOKEN && python /app/src/main.py",
+      ]
     deploy:
       resources:
         reservations:
@@ -153,6 +159,7 @@ services:
       - WEBSITE_HOST=website
       - WEBSITE_PORT=3000
       - PYTHONPATH=/app/src
+      - HF_TOKEN=${HF_TOKEN}
     depends_on:
       db:
         condition: service_healthy
