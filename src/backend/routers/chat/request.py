@@ -264,11 +264,39 @@ def request_chat_completion(
         #     db_auth, chat_completion_request.chat_id, user_id
         # )
 
+        # check if the content of any of the chat completions contains a [Title], [/Title] tag pair
+        title_found = None
+        for completion_item in chat_completions:
+            if isinstance(completion_item, ChatCompletionItem):
+                if (
+                    "[Title]" in completion_item.completion
+                    and "[/Title]" in completion_item.completion
+                ):
+                    start_index = completion_item.completion.index("[Title]") + len(
+                        "[Title]"
+                    )
+                    end_index = completion_item.completion.index("[/Title]")
+                    title_found = completion_item.completion[
+                        start_index:end_index
+                    ].strip()
+                    completion_item.completion = (
+                        completion_item.completion[: start_index - (len("[Title]"))]
+                        + completion_item.completion[end_index + (len("[/Title]")) :]
+                    )
+
         return JsonResponseWithStatus(
             status_code=200,
             content=ChatHistoryResponse(
                 chat_id=chat_completion_request.chat_id,
-                title="Some Random Returned Title",
+                # either include the found title or put the first 3 words of the first chat completion as title with ...
+                title=(
+                    title_found
+                    or (
+                        chat_completion_request.context.prefix.split(" ")[0:3] + ["..."]
+                    )[0]
+                    if chat_completions
+                    else "Chat History"
+                ),
                 history=[
                     ChatHistoryItem(
                         user_message=ChatMessageItem(

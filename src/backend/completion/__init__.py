@@ -50,7 +50,7 @@ class CompletionModels:
                     self.__models[key] = ChatCompletionModel(
                         model_name=model_name,
                         temperature=0.8,
-                        max_new_tokens=10,
+                        max_new_tokens=256,
                         cache_dir=config.model_cache_dir,  # Explicit cache dir
                     )
                 else:
