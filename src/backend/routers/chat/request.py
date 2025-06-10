@@ -129,6 +129,7 @@ def request_chat_completion(
             # Get chat completion model
             chat_completion_model = completion_models.get_model(
                 model_name=str(model.model_name),
+                config=app.get_config(),
             )
 
             if chat_completion_model is None:
@@ -192,6 +193,13 @@ def request_chat_completion(
                 result = future.result()
                 if result is not None:
                     chat_completions.append(result)
+                else:
+                    chat_completions.append(
+                        ChatCompletionErrorItem(
+                            model_name=f"{future_to_model[future]}",
+                            message="Model completion failed",
+                        )
+                    )
         t5 = time.perf_counter()
         logging.info(f"Model completion (threaded) took {(t5 - t4) * 1000:.2f}ms")
 
@@ -252,13 +260,27 @@ def request_chat_completion(
         )
 
         # Get updated chat history
-        chat_history = get_chat_history_response(
-            db_auth, chat_completion_request.chat_id, user_id
-        )
+        # chat_history = get_chat_history_response(
+        #     db_auth, chat_completion_request.chat_id, user_id
+        # )
 
         return JsonResponseWithStatus(
             status_code=200,
-            content=chat_history,
+            content=ChatHistoryResponse(
+                chat_id=chat_completion_request.chat_id,
+                title="Some Random Returned Title",
+                history=[
+                    ChatHistoryItem(
+                        user_message=ChatMessageItem(
+                            role=ChatMessageRole.USER,
+                            content=chat_completion_request.context.prefix,
+                            timestamp=datetime.fromtimestamp(overall_start),
+                            meta_query_id=uuid.UUID(created_query_id),
+                        ),
+                        assistant_responses=chat_completions,
+                    )
+                ],
+            ),
         )
 
     except Exception as e:

@@ -4,6 +4,7 @@ from typing import Optional, Union
 
 from backend.completion.ChatCompletionModel import ChatCompletionModel
 from backend.completion.TemplateCompletionModel import TemplateCompletionModel
+from Code4meV2Config import Code4meV2Config
 
 
 class Template(Enum):
@@ -49,7 +50,7 @@ class CompletionModels:
                     self.__models[key] = ChatCompletionModel(
                         model_name=model_name,
                         temperature=0.8,
-                        max_new_tokens=512,
+                        max_new_tokens=10,
                         cache_dir=config.model_cache_dir,  # Explicit cache dir
                     )
                 else:
@@ -66,7 +67,10 @@ class CompletionModels:
                 )
 
     def get_model(
-        self, model_name: str, prompt_template: Template = Template.PREFIX_SUFFIX
+        self,
+        model_name: str,
+        prompt_template: Template = Template.PREFIX_SUFFIX,
+        config: Code4meV2Config = None,
     ) -> Optional[Union[TemplateCompletionModel, ChatCompletionModel]]:
         if "instruct" in model_name.lower():
             key = f"{model_name}:instruct"
@@ -78,5 +82,7 @@ class CompletionModels:
             logging.log(
                 logging.INFO, f"Loading the {key} model since it's not preloaded..."
             )
-            self.load_model(model_name, prompt_template)
+            self.load_model(
+                model_name=model_name, config=config, prompt_template=prompt_template
+            )
             return self.__models.get(key)
