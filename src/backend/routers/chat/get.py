@@ -49,7 +49,7 @@ def get_chat_history(
     app: App = Depends(App.get_instance),
     page_number: int = 1,
     session_token: str = Cookie("session_token"),
-    project_token: str = Cookie("project_token", default=None),
+    project_token: str = Cookie("project_token"),
 ) -> JsonResponseWithStatus:
     """
     Get the complete chat history for
