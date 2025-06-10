@@ -380,7 +380,7 @@ def create_completion_query(
 def create_chat_query(
     db: Session, query: Queries.CreateChatQuery, id: str = ""
 ) -> db_schemas.ChatQuery:
-    meta_query_id = uuid.uuid4()
+    meta_query_id = uuid.uuid4() if id == "" else uuid.UUID(id)
 
     # Step 1: Create MetaQuery first with all the main fields
     db_meta_query = db_schemas.MetaQuery(
@@ -391,7 +391,9 @@ def create_chat_query(
         context_id=query.context_id,
         session_id=query.session_id,
         project_id=query.project_id,
-        multi_file_context_changes_indexes=query.multi_file_context_changes_indexes,
+        multi_file_context_changes_indexes=json.dumps(
+            query.multi_file_context_changes_indexes
+        ),
         timestamp=datetime.now(),
         total_serving_time=query.total_serving_time,
         server_version_id=query.server_version_id,
@@ -632,9 +634,21 @@ def get_all_models(db: Session) -> list[db_schemas.ModelName]:
 
 
 # Chat operations
-def create_chat(db: Session, chat: Queries.CreateChat, id: str = "") -> db_schemas.Chat:
+def create_chat(db: Session, chat: Queries.CreateChat, chat_id: str) -> db_schemas.Chat:
+    # check if chat_id is already present in the database or not
+    chat_uuid = uuid.UUID(chat_id) if isinstance(chat_id, str) else chat_id
+    if existing_chat := get_chat_by_id(db, chat_uuid):
+        if (
+            existing_chat.user_id != chat.user_id
+            or existing_chat.project_id != chat.project_id
+        ):
+            raise ValueError("Chat ID already exists with different project/user.")
+        else:
+            # If chat already exists, just return it
+            return existing_chat
+
     db_chat = db_schemas.Chat(
-        chat_id=uuid.uuid4() if id == "" else uuid.UUID(id),
+        chat_id=chat_uuid if chat_id else uuid.uuid4(),
         project_id=chat.project_id,
         user_id=chat.user_id,
         title=chat.title,
