@@ -119,7 +119,7 @@ def request_chat_completion(
         chat_completions = []
         add_generation_tasks = []
 
-        def handle_model_completion(model_id):
+        def handle_model_completion(model_id, created_query_id_provided):
             local_t0 = time.perf_counter()
             model = crud.get_model_by_id(db_auth, model_id)
             if not model:
@@ -157,10 +157,9 @@ def request_chat_completion(
             )
 
             # Create generation task
-            created_query_id = create_uuid()
             add_generation_task = db_tasks.add_generation_task.si(
                 Queries.CreateGeneration(
-                    meta_query_id=uuid.UUID(created_query_id),
+                    meta_query_id=uuid.UUID(created_query_id_provided),
                     model_id=model_id,
                     completion=completion_result["completion"],
                     generation_time=completion_result["generation_time"],
@@ -169,7 +168,7 @@ def request_chat_completion(
                     confidence=completion_result.get("confidence", 0.0),
                     logprobs=completion_result.get("logprobs", []),
                 ).dict(),
-                created_query_id,
+                created_query_id_provided,
             )
             add_generation_tasks.append(add_generation_task)
 
@@ -184,9 +183,18 @@ def request_chat_completion(
 
         # Process models in parallel
         t4 = time.perf_counter()
+
+        # Create necessary IDs (this it put here to ensure the same ids are used in the generation tasks)
+        created_query_id = create_uuid()
+        created_context_id = create_uuid()
+        created_contextual_telemetry_id = create_uuid()
+        created_behavioral_telemetry_id = create_uuid()
+
         with ThreadPoolExecutor(max_workers=config.thread_pool_max_workers) as executor:
             future_to_model = {
-                executor.submit(handle_model_completion, model_id): model_id
+                executor.submit(
+                    handle_model_completion, model_id, created_query_id
+                ): model_id
                 for model_id in chat_completion_request.model_ids
             }
             for future in as_completed(future_to_model):
@@ -206,12 +214,6 @@ def request_chat_completion(
         # Celery task preparation
         t6 = time.perf_counter()
 
-        # Create necessary IDs
-        created_query_id = create_uuid()
-        created_context_id = create_uuid()
-        created_contextual_telemetry_id = create_uuid()
-        created_behavioral_telemetry_id = create_uuid()
-
         # Create context task
         add_context_task = db_tasks.add_context_task.si(
             chat_completion_request.context.dict(), created_context_id
@@ -225,8 +227,37 @@ def request_chat_completion(
             created_behavioral_telemetry_id,
         )
 
+        # check if the content of any of the chat completions contains a [Title], [/Title] tag pair
+        title_found = None
+        for completion_item in chat_completions:
+            if isinstance(completion_item, ChatCompletionItem):
+                if (
+                    "[Title]" in completion_item.completion
+                    and "[/Title]" in completion_item.completion
+                ):
+                    start_index = completion_item.completion.index("[Title]") + len(
+                        "[Title]"
+                    )
+                    end_index = completion_item.completion.index("[/Title]")
+                    title_found = completion_item.completion[
+                        start_index:end_index
+                    ].strip()
+                    completion_item.completion = (
+                        completion_item.completion[: start_index - (len("[Title]"))]
+                        + completion_item.completion[end_index + (len("[/Title]")) :]
+                    )
+
         # Calculate total serving time
         total_serving_time = int((time.perf_counter() - overall_start) * 1000)
+
+        add_chat_task = db_tasks.get_or_create_chat_task.si(
+            Queries.CreateChat(
+                user_id=uuid.UUID(str(user_id)),
+                project_id=uuid.UUID(project_token),
+                title=title_found or "Untitled Chat",
+            ).dict(),
+            chat_completion_request.chat_id,
+        )
 
         # Create chat query task
         add_chat_query_task = db_tasks.add_chat_query_task.si(
@@ -248,6 +279,7 @@ def request_chat_completion(
         # Chain tasks
         chain(
             group(add_context_task, add_telemetry_task),
+            add_chat_task,
             add_chat_query_task,
             group(*add_generation_tasks),
         ).apply_async(queue="db")
@@ -258,31 +290,6 @@ def request_chat_completion(
         logging.info(
             f"TOTAL serving time: {(overall_end - overall_start) * 1000:.2f}ms"
         )
-
-        # Get updated chat history
-        # chat_history = get_chat_history_response(
-        #     db_auth, chat_completion_request.chat_id, user_id
-        # )
-
-        # check if the content of any of the chat completions contains a [Title], [/Title] tag pair
-        title_found = None
-        for completion_item in chat_completions:
-            if isinstance(completion_item, ChatCompletionItem):
-                if (
-                    "[Title]" in completion_item.completion
-                    and "[/Title]" in completion_item.completion
-                ):
-                    start_index = completion_item.completion.index("[Title]") + len(
-                        "[Title]"
-                    )
-                    end_index = completion_item.completion.index("[/Title]")
-                    title_found = completion_item.completion[
-                        start_index:end_index
-                    ].strip()
-                    completion_item.completion = (
-                        completion_item.completion[: start_index - (len("[Title]"))]
-                        + completion_item.completion[end_index + (len("[/Title]")) :]
-                    )
 
         return JsonResponseWithStatus(
             status_code=200,
