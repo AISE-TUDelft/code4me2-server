@@ -683,11 +683,52 @@ def get_chats_for_project(db: Session, project_id: uuid.UUID) -> list[db_schemas
     )
 
 
+def get_project_chat_history(
+    db: Session, project_id: uuid.UUID, user_id: uuid.UUID, page_number: int = 1
+) -> list[
+    tuple[
+        db_schemas.Chat,
+        tuple[db_schemas.MetaQuery, db_schemas.Context, list[db_schemas.HadGeneration]],
+    ]
+]:
+    """
+    Get the chat history for a specific project and user.
+    Returns a list of chats ordered by creation date.
+    """
+    chats = (
+        db.query(db_schemas.Chat)
+        .filter(
+            db_schemas.Chat.project_id == project_id, db_schemas.Chat.user_id == user_id
+        )
+        .order_by(db_schemas.Chat.created_at.desc())
+        .offset((page_number - 1) * 10)
+        .limit(10)
+        .all()
+    )
+
+    if not chats:
+        return []
+
+    history_page = []
+
+    # per chat, get the entire chat history
+    for chat in chats:
+        information = get_chat_history(db, chat.chat_id)
+        if information:
+            history_page.append((chat, information))
+
+    return history_page
+
+
 def get_chats_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Chat]:
     return db.query(db_schemas.Chat).filter(db_schemas.Chat.user_id == user_id).all()
 
 
-def get_chat_history(db: Session, chat_id: uuid.UUID) -> list[tuple]:
+def get_chat_history(
+    db: Session, chat_id: uuid.UUID
+) -> list[
+    tuple[db_schemas.MetaQuery, db_schemas.Context, list[db_schemas.HadGeneration]]
+]:
     """
     Get the complete chat history for a specific chat ID.
     Returns a list of tuples containing (meta_query, context, generations)
