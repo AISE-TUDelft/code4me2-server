@@ -52,8 +52,8 @@ router = APIRouter()
 def request_completion(
     completion_request: Queries.RequestCompletion,
     app: App = Depends(App.get_instance),
-    session_token: str = Cookie("session_token"),
-    project_token: str = Cookie("project_token"),
+    session_token: str = Cookie(""),
+    project_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Request code completions based on provided context.
@@ -71,7 +71,7 @@ def request_completion(
 
         # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_token is None or session_info is None:
+        if session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),

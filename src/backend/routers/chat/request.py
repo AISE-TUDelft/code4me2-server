@@ -53,8 +53,8 @@ router = APIRouter()
 def request_chat_completion(
     chat_completion_request: Queries.RequestChatCompletion,
     app: App = Depends(App.get_instance),
-    session_token: str = Cookie("session_token"),
-    project_token: str = Cookie("project_token"),
+    session_token: str = Cookie(""),
+    project_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Request chat completions based on provided messages.
@@ -81,7 +81,7 @@ def request_chat_completion(
 
         # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_token is None or session_info is None:
+        if session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),

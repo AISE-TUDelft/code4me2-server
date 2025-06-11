@@ -99,8 +99,8 @@ def update_multi_file_context_changes_in_session(
 def update_multi_file_context(
     context_update: UpdateMultiFileContext,
     app: App = Depends(App.get_instance),
-    session_token: str = Cookie("session_token"),
-    project_token: str = Cookie("project_token"),
+    session_token: str = Cookie(""),
+    project_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Update the context for a specific query ID.
@@ -111,7 +111,7 @@ def update_multi_file_context(
     try:
         # Get session info from Redis
         session_info = redis_manager.get("session_token", session_token)
-        if session_token is None or session_info is None:
+        if session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),

@@ -41,7 +41,7 @@ router = APIRouter()
 )
 def delete_user(
     delete_data: bool = Query(False, description="Delete user's data"),
-    auth_token: str = Cookie("auth_token"),
+    auth_token: str = Cookie(""),
     app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
@@ -64,7 +64,7 @@ def delete_user(
         auth_info = redis_manager.get("auth_token", auth_token)
 
         # If the token is invalid or missing, return a 401 error
-        if auth_info is None:
+        if auth_info is None or not auth_info.get("user_id"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredAuthToken(),
