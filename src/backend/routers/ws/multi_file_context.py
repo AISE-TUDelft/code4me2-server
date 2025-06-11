@@ -13,14 +13,14 @@ router = APIRouter()
 async def multi_file_context_websocket(
     websocket: WebSocket,
     app: App = Depends(App.get_instance),
-    session_token: str = Cookie("session_token"),
-    project_token: str = Cookie("project_token"),
+    session_token: str = Cookie(""),
+    project_token: str = Cookie(""),
 ):
     await websocket.accept()
     redis_manager = app.get_redis_manager()
     # Validate session token
     session_info = redis_manager.get("session_token", session_token)
-    if session_token is None or session_info is None:
+    if session_info is None:
         logging.log(logging.INFO, f"Invalid or expired session token: {session_token}")
         await websocket.send_json(
             {"error": Responses.InvalidOrExpiredSessionToken().message}

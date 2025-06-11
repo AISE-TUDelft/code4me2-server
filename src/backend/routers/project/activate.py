@@ -36,7 +36,7 @@ router = APIRouter()
 def activate_project(
     activate_project_request: Queries.ActivateProject,
     app: App = Depends(App.get_instance),
-    auth_token: str = Cookie("auth_token"),
+    auth_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Activates the project by following these steps:
@@ -60,7 +60,7 @@ def activate_project(
         user_id = auth_info.get("user_id", "")
         session_info = redis_manager.get("session_token", session_token)
         # Validate session token
-        if session_token == "" or session_info is None:
+        if not session_token or session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),

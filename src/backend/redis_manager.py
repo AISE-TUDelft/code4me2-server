@@ -76,7 +76,7 @@ class RedisManager:
             self.__redis_client.set(key, json_info, keepttl=True)
 
     def get(self, type: str, token: str, reset_exp: bool = False) -> Optional[dict]:
-        if token is None:
+        if not token:
             return None
         data = self.__redis_client.get(f"{type}:{token}")
         if data:

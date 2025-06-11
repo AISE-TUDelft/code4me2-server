@@ -196,11 +196,11 @@ class RequestChatCompletion(QueryBase):
         ..., description="Chat messages as a list of tuples"
     )
     context: ContextData = Field(..., description="Context data for completion")
-    contextual_telemetry: Optional[ContextualTelemetryData] = Field(
-        None, description="Contextual telemetry data"
+    contextual_telemetry: ContextualTelemetryData = Field(
+        ..., description="Contextual telemetry data"
     )
-    behavioral_telemetry: Optional[BehavioralTelemetryData] = Field(
-        None, description="Behavioral telemetry data"
+    behavioral_telemetry: BehavioralTelemetryData = Field(
+        ..., description="Behavioral telemetry data"
     )
     web_enabled: Optional[bool] = Field(
         default=False, description="Whether web access is enabled"

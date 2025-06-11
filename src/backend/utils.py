@@ -1,6 +1,7 @@
 import inspect
 import json
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, Union, get_args, get_origin
 from uuid import UUID
 
@@ -21,6 +22,10 @@ def iterable_to_dict(obj: Any) -> Dict[str, Any]:
         return [iterable_to_dict(item) for item in obj]
     elif isinstance(obj, dict):
         return {key: iterable_to_dict(value) for key, value in obj.items()}
+    elif isinstance(obj, tuple):
+        return tuple(iterable_to_dict(item) for item in obj)
+    elif isinstance(obj, Enum):
+        return str(obj.value)
     else:
         return obj
 

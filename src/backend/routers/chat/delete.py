@@ -34,6 +34,7 @@ router = APIRouter()
         },
         "403": {"model": NoAccessToGetQueryError},
         "404": {"model": QueryNotFoundError},
+        "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": DeleteChatError},
     },
@@ -41,8 +42,8 @@ router = APIRouter()
 def delete_chat(
     chat_id: UUID,
     app: App = Depends(App.get_instance),
-    session_token: str = Cookie("session_token"),
-    project_token: str = Cookie("project_token"),
+    session_token: str = Cookie(""),
+    project_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Delete a specific chat by its ID.
@@ -56,7 +57,7 @@ def delete_chat(
         # Get session info from Redis
         # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_token is None or session_info is None:
+        if session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),

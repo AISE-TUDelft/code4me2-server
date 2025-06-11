@@ -41,6 +41,7 @@ router = APIRouter()
         },
         "403": {"model": NoAccessToGetQueryError},
         "404": {"model": QueryNotFoundError},
+        "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": RetrieveChatCompletionsError},
     },
@@ -48,14 +49,14 @@ router = APIRouter()
 def get_chat_history(
     app: App = Depends(App.get_instance),
     page_number: int = 1,
-    session_token: str = Cookie("session_token"),
-    project_token: str = Cookie("project_token"),
+    session_token: str = Cookie(""),
+    project_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Get the complete chat history for
     """
     logging.info(
-        f"attempting to retrieve {page_number} page of chat history of the user's project"
+        f"Attempting to retrieve {page_number} page of chat history of the user's project"
     )
     db_session = app.get_db_session()
     redis_manager = app.get_redis_manager()
@@ -64,7 +65,7 @@ def get_chat_history(
         # Get session info from Redis
         # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_token is None or session_info is None:
+        if session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
