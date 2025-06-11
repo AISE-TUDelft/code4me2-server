@@ -219,6 +219,10 @@ def request_completion(
                 f"GetModel={((local_t2 - local_t1) * 1000):.2f}ms, "
                 f"Invoke={((local_t3 - local_t2) * 1000):.2f}ms"
             )
+            completion_result["completion"] = redact_secrets(
+                completion_request["completion"],
+                extract_secrets(completion_request["completion"], file_name),
+            )
 
             # Used for test mode
             # completion_result = {"completion": "test", "generation_time": 100, "confidence": 0.8, "logprobs": [0.2, 0.5]}
