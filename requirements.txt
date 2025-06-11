@@ -45,7 +45,7 @@ alembic>=1.13.1
 
 pgvector~=0.2.4
 sentence-transformers~=2.2.0
-numpy~=1.21.0
+numpy>=1.26.2
 
 # -----------------------
 # Auth & Security
