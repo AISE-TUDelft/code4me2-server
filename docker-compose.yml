@@ -28,6 +28,7 @@ services:
       - ${PGADMIN_PORT}:80
     volumes:
       - .:/app
+      - ${DATA_DIR}/pgadmin:/var/lib/pgadmin
     environment:
       - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
       - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
@@ -111,8 +112,10 @@ services:
       - TOKENIZERS_PARALLELISM=false
       - OMP_NUM_THREADS=1
       - HF_TOKEN=${HF_TOKEN}
+      - HF_HOME=/app/hf_cache
     volumes:
       - .:/app
+      - ${DATA_DIR}/hf:/app/hf_cache
     healthcheck:
       test:
         [
@@ -148,6 +151,7 @@ services:
       - "8008:8008"
     volumes:
       - .:/app
+      - ${DATA_DIR}/hf:/app/hf_cache
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
       - REDIS_HOST=redis
@@ -160,6 +164,7 @@ services:
       - WEBSITE_PORT=3000
       - PYTHONPATH=/app/src
       - HF_TOKEN=${HF_TOKEN}
+      - HF_HOME=/app/hf_cache
     depends_on:
       db:
         condition: service_healthy
