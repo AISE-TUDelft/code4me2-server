@@ -344,3 +344,42 @@ class UpdateGenerationAcceptance(QueryBase):
 class CreateSessionProject(QueryBase):
     session_id: UUID = Field(..., description="Session ID")
     project_id: UUID = Field(..., description="Project ID")
+
+
+class CreateDocumentation(QueryBase):
+    content: str = Field(..., description="Documentation content", min_length=1)
+    language: str = Field(
+        ..., description="Programming language or type", min_length=1, max_length=50
+    )
+
+
+class UpdateDocumentation(QueryBase):
+    content: Optional[str] = Field(
+        None, description="Updated documentation content", min_length=1
+    )
+    language: Optional[str] = Field(
+        None, description="Updated programming language", min_length=1, max_length=50
+    )
+
+
+class SearchDocumentation(QueryBase):
+    query_text: str = Field(
+        ..., description="Text to search for similar documentation", min_length=1
+    )
+    language: Optional[str] = Field(None, description="Filter by programming language")
+    limit: Optional[int] = Field(
+        default=10, description="Maximum number of results", ge=1, le=100
+    )
+    similarity_threshold: Optional[float] = Field(
+        default=0.5, description="Minimum similarity score", ge=0.0, le=1.0
+    )
+
+
+class DocumentationResponse(QueryBase):
+    documentation_id: int = Field(..., description="Documentation ID")
+    content: str = Field(..., description="Documentation content")
+    language: str = Field(..., description="Programming language")
+    similarity_score: Optional[float] = Field(
+        None, description="Similarity score (only for search results)"
+    )
+    created_at: Optional[str] = Field(None, description="Creation timestamp")
