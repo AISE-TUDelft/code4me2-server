@@ -17,6 +17,7 @@ mkdir -p $DATA_DIR/redis
 mkdir -p $DATA_DIR/website
 mkdir -p $DATA_DIR/redis_celery
 mkdir -p $DATA_DIR/celery_worker
+mkdir -p $DATA_DIR/hf
 
 echo "Data directory structure created at $DATA_DIR"
 echo "You can now start the Docker environment with 'docker-compose up'"
