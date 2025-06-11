@@ -1,4 +1,5 @@
 from abc import ABC
+from typing import Any, Dict
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
@@ -61,7 +62,7 @@ class CreateUserError(ErrorResponse):
 # api/user/authenticate
 class AuthenticateUserPostResponse(BaseResponse, ABC):
     user: ResponseUser = Field(..., description="User details")  # Uncomment if needed
-    config: str = Field(..., description="Users config json string")
+    config: Dict[str, Any] = Field(..., description="Users config json string")
 
 
 class AuthenticateUserNormalPostResponse(AuthenticateUserPostResponse):
@@ -234,3 +235,7 @@ class NoAccessToProvideFeedbackError(ErrorResponse):
 # /api/completion/get
 class NoAccessToGetQueryError(ErrorResponse):
     message: str = Field(default="You do not have permission to access this query.")
+
+
+class TooManyRequests(ErrorResponse):
+    message: str = Field(default="Too many requests. Please try again later.")

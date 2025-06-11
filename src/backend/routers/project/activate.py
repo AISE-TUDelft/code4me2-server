@@ -21,7 +21,7 @@ router = APIRouter()
 
 
 @router.put(
-    "/",
+    "",
     response_model=ActivateProjectPostResponse,
     responses={
         "200": {"model": ActivateProjectPostResponse},
@@ -93,12 +93,25 @@ def activate_project(
         session_info["project_tokens"] = session_projects
         redis_manager.set("session_token", session_token, session_info)
 
-        crud.create_session_project(
-            db_session,
-            Queries.CreateSessionProject(
-                session_id=uuid.UUID(session_token), project_id=uuid.UUID(project_token)
-            ),
-        )
+        if not crud.get_session_project(
+            db_session, uuid.UUID(session_token), uuid.UUID(project_token)
+        ):
+            crud.create_session_project(
+                db_session,
+                Queries.CreateSessionProject(
+                    session_id=uuid.UUID(session_token),
+                    project_id=uuid.UUID(project_token),
+                ),
+            )
+        if not crud.get_user_project(
+            db_session, uuid.UUID(user_id), uuid.UUID(project_token)
+        ):
+            crud.create_user_project(
+                db_session,
+                Queries.CreateUserProject(
+                    project_id=uuid.UUID(project_token), user_id=uuid.UUID(user_id)
+                ),
+            )
 
         response_obj = JsonResponseWithStatus(
             status_code=200, content=ActivateProjectPostResponse()

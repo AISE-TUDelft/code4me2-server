@@ -7,7 +7,7 @@ import redis
 import redis.exceptions
 from fastapi import WebSocket
 
-from database.utils import create_uuid
+from utils import create_uuid
 
 
 class CeleryBroker:

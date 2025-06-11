@@ -46,7 +46,7 @@ class TestDeleteUser:
         client.mock_app.get_db_session.return_value = mock_db
 
         with patch("backend.routers.user.delete.crud", mock_crud):
-            response = client.delete("/api/user/delete", params={"delete_data": True})
+            response = client.delete("/api/user/delete")
 
         assert response.status_code == 200
         assert response.json() == DeleteUserDeleteResponse()

@@ -137,7 +137,7 @@ services:
               device_ids: ["0"]
               capabilities: [gpu]
     expose:
-      - ${REACT_APP_BACKEND_PORT}
+      - ${SERVER_PORT}
     ports:
       - "8008:8008"
     volumes:
@@ -166,7 +166,7 @@ services:
           "CMD",
           "wget",
           "--spider",
-          "http://localhost:${REACT_APP_BACKEND_PORT}/docs",
+          "http://${SERVER_HOST}:${SERVER_PORT}/api/ping",
         ]
       start_interval: 0s
       interval: 60s

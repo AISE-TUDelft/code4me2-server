@@ -1,12 +1,28 @@
+import json
 import uuid
 from datetime import datetime
 from typing import Optional, Type, Union
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHash, VerifyMismatchError
 from sqlalchemy.orm import Session
 
 import Queries as Queries
 from database import db_schemas
-from database.utils import hash_password, verify_password
+from database.db_schemas import DEFAULT_USER_PREFERENCE
+
+ph = PasswordHasher()
+
+
+def hash_password(password: str) -> str:
+    return ph.hash(password)
+
+
+def verify_password(hashed_password: str, input_password: str) -> bool:
+    try:
+        return ph.verify(hashed_password, input_password)
+    except (InvalidHash, VerifyMismatchError):
+        return False
 
 
 # User
@@ -22,7 +38,7 @@ def create_user(
         password=hash_password(user.password.get_secret_value()),
         # configure default preference and config upon creation
         config_id=user.config_id,
-        preference=user.preference,
+        preference=json.dumps(DEFAULT_USER_PREFERENCE),
         is_oauth_signup=isinstance(user, Queries.CreateUserOauth),
         verified=False,
     )
@@ -60,10 +76,13 @@ def update_user(
     db: Session, user_id: uuid.UUID, user_to_update: Queries.UpdateUser
 ) -> Optional[db_schemas.User]:
     # Get all the data and manually filter out None values
-    update_data = user_to_update.dict(exclude_unset=True)
+    update_data = user_to_update.dict(exclude_unset=True, to_json_values=True)
     update_data.pop("previous_password", None)
     if update_data.get("password"):
         update_data["password"] = hash_password(update_data["password"])
+    if update_data.get("preference"):
+        preference = DEFAULT_USER_PREFERENCE | json.loads(update_data["preference"])
+        update_data["preference"] = json.dumps(preference)
     result = (
         db.query(db_schemas.User)
         .filter(db_schemas.User.user_id == user_id)
@@ -83,8 +102,84 @@ def delete_user_by_id(db: Session, user_id: uuid.UUID) -> bool:
     return result > 0
 
 
-# Context Operations
+def delete_user_full_wipe_out(db: Session, user_id: uuid.UUID):
+    meta_queries = (
+        db.query(db_schemas.MetaQuery)
+        .filter(db_schemas.MetaQuery.user_id == user_id)
+        .all()
+    )
+    db.query(db_schemas.MetaQuery).filter(
+        db_schemas.MetaQuery.user_id == user_id
+    ).delete()
+    project_users = (
+        db.query(db_schemas.ProjectUser)
+        .filter(db_schemas.ProjectUser.user_id == user_id)
+        .all()
+    )
+    # TODO: Is not fully tested yet because in current settings the frontend doesn't support multi user project edit
+    for project_user in project_users:
+        project_context_should_be_deleted = True
+        project_should_be_deleted = True
+        common_project_users = (
+            db.query(db_schemas.ProjectUser)
+            .filter(db_schemas.ProjectUser.project_id == project_user.project_id)
+            .all()
+        )
+        # Check if there exists another user working on this project don't delete this project as a whole
+        if len(common_project_users) > 1:
+            project_should_be_deleted = False
+        # Check if there exists a user who has agreed to store context on the same project keep the context
+        for common_project_user in common_project_users:
+            common_user = (
+                db.query(db_schemas.User)
+                .filter(db_schemas.User.user_id == common_project_user.user_id)
+                .first()
+            )
+            if common_user and json.loads(common_user.preference).get(
+                "store_context", False
+            ):
+                project_context_should_be_deleted = False
+                break
+        if project_should_be_deleted:
+            db.query(db_schemas.Project).filter(
+                db_schemas.Project.project_id == project_user.project_id
+            ).delete()
+        elif project_context_should_be_deleted:
+            db.query(db_schemas.Project).filter(
+                db_schemas.Project.project_id == project_user.project_id
+            ).update({"multi_file_contexts": "{}", "multi_file_context_changes": "{}"})
 
+    db.query(db_schemas.ProjectUser).filter(
+        db_schemas.ProjectUser.user_id == user_id
+    ).delete()
+    db.query(db_schemas.Context).filter(
+        db_schemas.Context.context_id.in_(
+            list(map(lambda x: x.context_id, meta_queries))
+        )
+    ).delete()
+    db.query(db_schemas.BehavioralTelemetry).filter(
+        db_schemas.BehavioralTelemetry.behavioral_telemetry_id.in_(
+            list(map(lambda x: x.behavioral_telemetry_id, meta_queries))
+        )
+    ).delete()
+    db.query(db_schemas.ContextualTelemetry).filter(
+        db_schemas.ContextualTelemetry.contextual_telemetry_id.in_(
+            list(map(lambda x: x.contextual_telemetry_id, meta_queries))
+        )
+    ).delete()
+
+    db.query(db_schemas.Session).filter(db_schemas.Session.user_id == user_id).delete()
+    db.query(db_schemas.Chat).filter(db_schemas.Chat.user_id == user_id).delete()
+    db.query(db_schemas.HadGeneration).filter(
+        db_schemas.HadGeneration.meta_query_id.in_(
+            list(map(lambda x: x.meta_query_id, meta_queries))
+        )
+    ).delete()
+    db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
+    db.commit()
+
+
+# Context Operations
 # def add_context(db: Session, context: Queries.ContextData) -> db_schemas.Context:
 #     """Create a new context record"""
 #     db_context = db_schemas.Context(
@@ -259,7 +354,9 @@ def create_completion_query(
         context_id=query.context_id,
         session_id=query.session_id,
         project_id=query.project_id,
-        multi_file_context_changes_indexes=query.multi_file_context_changes_indexes,
+        multi_file_context_changes_indexes=json.dumps(
+            query.multi_file_context_changes_indexes
+        ),
         timestamp=datetime.now(),
         total_serving_time=query.total_serving_time,
         server_version_id=query.server_version_id,
@@ -281,7 +378,7 @@ def create_completion_query(
 
 
 def create_chat_query(
-    db: Session, query: Queries.CreateChatQuery
+    db: Session, query: Queries.CreateChatQuery, id: str = ""
 ) -> db_schemas.ChatQuery:
     meta_query_id = uuid.uuid4()
 
@@ -420,13 +517,13 @@ def delete_meta_query_cascade(db: Session, meta_query_id: uuid.UUID) -> bool:
 
 
 def create_generation(
-    db: Session, generation: Queries.CreateGeneration
+    db: Session, generation: Queries.CreateGeneration, id: str = ""
 ) -> db_schemas.HadGeneration:
     # Convert string timestamps to datetime objects
     shown_at_datetimes = [datetime.fromisoformat(ts) for ts in generation.shown_at]
 
     db_generation = db_schemas.HadGeneration(
-        meta_query_id=generation.meta_query_id,
+        meta_query_id=uuid.uuid4() if id == "" else uuid.UUID(id),
         model_id=generation.model_id,
         completion=generation.completion,
         generation_time=generation.generation_time,
@@ -504,11 +601,11 @@ def update_generation(
     db: Session, query_id: str, model_id: int, generation: Queries.UpdateGeneration
 ) -> int:
     """Update an existing generation"""
-    update_data = generation.dict(exclude_unset=True)
+    update_data = generation.dict(exclude_unset=True, to_json_values=True)
     result = (
         db.query(db_schemas.HadGeneration)
         .filter(
-            db_schemas.HadGeneration.query_id == query_id,
+            db_schemas.HadGeneration.meta_query_id == query_id,
             db_schemas.HadGeneration.model_id == model_id,
         )
         .update(update_data)  # type: ignore
@@ -535,9 +632,9 @@ def get_all_models(db: Session) -> list[db_schemas.ModelName]:
 
 
 # Chat operations
-def create_chat(db: Session, chat: Queries.CreateChat) -> db_schemas.Chat:
+def create_chat(db: Session, chat: Queries.CreateChat, id: str = "") -> db_schemas.Chat:
     db_chat = db_schemas.Chat(
-        chat_id=uuid.uuid4(),
+        chat_id=uuid.uuid4() if id == "" else uuid.UUID(id),
         project_id=chat.project_id,
         user_id=chat.user_id,
         title=chat.title,
@@ -556,16 +653,14 @@ def get_chat_by_id(db: Session, chat_id: uuid.UUID) -> Optional[db_schemas.Chat]
 def update_chat(
     db: Session, chat_id: uuid.UUID, chat_update: Queries.UpdateChat
 ) -> Optional[db_schemas.Chat]:
-    update_data = chat_update.dict(exclude_unset=True)
+    update_data = chat_update.dict(exclude_unset=True, to_json_values=True)
     result = (
         db.query(db_schemas.Chat)
         .filter(db_schemas.Chat.chat_id == chat_id)
         .update(update_data)  # type: ignore
     )
     db.commit()
-    if result:
-        return get_chat_by_id(db, chat_id)
-    return None
+    return result
 
 
 def get_chats_for_project(db: Session, project_id: uuid.UUID) -> list[db_schemas.Chat]:
@@ -617,9 +712,11 @@ def get_all_configs(db: Session) -> list[db_schemas.Config]:
 
 
 # Project Operations
-def create_project(db: Session, project: Queries.CreateProject) -> db_schemas.Project:
+def create_project(
+    db: Session, project: Queries.CreateProject, id: str = ""
+) -> db_schemas.Project:
     db_project = db_schemas.Project(
-        project_id=uuid.uuid4(),
+        project_id=uuid.uuid4() if id == "" else uuid.UUID(id),
         project_name=project.project_name,
         created_at=datetime.now(),
     )
@@ -641,17 +738,15 @@ def get_project_by_id(
 
 def update_project(
     db: Session, project_id: uuid.UUID, project_update: Queries.UpdateProject
-) -> Optional[db_schemas.Project]:
-    update_data = project_update.dict(exclude_unset=True)
+) -> int:
+    update_data = project_update.dict(exclude_unset=True, to_json_values=True)
     result = (
         db.query(db_schemas.Project)
         .filter(db_schemas.Project.project_id == project_id)
         .update(update_data)  # type: ignore
     )
     db.commit()
-    if result:
-        return get_project_by_id(db, project_id)
-    return None
+    return result
 
 
 def get_projects_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Project]:
@@ -663,8 +758,8 @@ def get_projects_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Pr
     )
 
 
-def add_user_to_project(
-    db: Session, project_user: Queries.AddUserToProject
+def create_user_project(
+    db: Session, project_user: Queries.CreateUserProject
 ) -> db_schemas.ProjectUser:
     db_project_user = db_schemas.ProjectUser(
         project_id=project_user.project_id,
@@ -691,6 +786,19 @@ def remove_user_from_project(
     )
     db.commit()
     return result > 0
+
+
+def get_user_project(
+    db: Session, user_id: uuid.UUID, project_id: uuid.UUID
+) -> Optional[db_schemas.ProjectUser]:
+    return (
+        db.query(db_schemas.ProjectUser)
+        .filter(
+            db_schemas.ProjectUser.user_id == user_id,
+            db_schemas.ProjectUser.project_id == project_id,
+        )
+        .first()
+    )
 
 
 def get_project_users(
@@ -748,17 +856,32 @@ def create_session_project(
     return db_session_project
 
 
+def get_session_project(
+    db: Session, session_id: uuid.UUID, project_id: uuid.UUID
+) -> Optional[db_schemas.SessionProject]:
+    return (
+        db.query(db_schemas.SessionProject)
+        .filter(
+            db_schemas.SessionProject.session_id == session_id,
+            db_schemas.SessionProject.project_id == project_id,
+        )
+        .first()
+    )
+
+
 def update_session(
     db: Session,
     session_id: uuid.UUID,
     session_update: Queries.UpdateSession,
-) -> Optional[db_schemas.Session]:
-    session = get_session_by_id(db, session_id)
-    if session and session_update.end_time:
-        setattr(session, "end_time", datetime.fromisoformat(session_update.end_time))
-        db.commit()
-        # db.refresh(session)
-    return session
+) -> int:
+    update_data = session_update.dict(exclude_unset=True, to_json_values=True)
+    result = (
+        db.query(db_schemas.Session)
+        .filter(db_schemas.Session.session_id == session_id)
+        .update(update_data)  # type: ignore
+    )
+    db.commit()
+    return result
 
 
 def get_sessions_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Session]:

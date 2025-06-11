@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS public.project_users
 -- Session table (individual user sessions within projects)
 CREATE TABLE IF NOT EXISTS public.session (
     session_id uuid PRIMARY KEY,
-    user_id uuid NOT NULL,
+    user_id uuid NULL,
     start_time timestamp with time zone NOT NULL,
     end_time timestamp with time zone
 );
@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS public.chat
 (
     chat_id uuid NOT NULL PRIMARY KEY,
     project_id uuid NOT NULL,
-    user_id uuid NOT NULL,
+    user_id uuid NULL,
     title VARCHAR NOT NULL,
     created_at timestamp with time zone NOT NULL
 );
@@ -133,9 +133,9 @@ CREATE TABLE IF NOT EXISTS public.meta_query
 (
     meta_query_id uuid NOT NULL PRIMARY KEY,
     user_id uuid,
-    contextual_telemetry_id uuid NOT NULL,
-    behavioral_telemetry_id uuid NOT NULL,
-    context_id uuid NOT NULL,
+    contextual_telemetry_id uuid NULL,
+    behavioral_telemetry_id uuid NULL,
+    context_id uuid NULL,
     session_id uuid NOT NULL,
     project_id uuid NOT NULL,
     multi_file_context_changes_indexes text DEFAULT '{}',

@@ -22,13 +22,13 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from database import crud
-from database.utils import create_uuid
+from utils import create_uuid
 
 router = APIRouter()
 
 
 @router.get(
-    "/",
+    "",
     response_model=AcquireSessionGetResponse,
     responses={
         200: {"model": AcquireSessionGetResponse},

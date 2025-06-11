@@ -1,6 +1,7 @@
+import json
 from abc import ABC
 from datetime import datetime
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator
@@ -20,9 +21,19 @@ class ResponseUser(Queries.CreateUser):
     verified: bool = Field(
         ..., description="Whether the user's email has been verified"
     )
+    preference: Optional[Dict[str, Any]] = Field(
+        {}, description="Users preference for data management"
+    )
     auth_token: Optional[UUID] = Field(
         default=None, description="Last auth token used to login"
     )
+
+    @field_validator("preference", mode="before")
+    @classmethod
+    def parse_preference(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
 
     @field_validator("password")
     @classmethod
