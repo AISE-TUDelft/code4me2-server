@@ -220,8 +220,11 @@ def request_completion(
                 f"Invoke={((local_t3 - local_t2) * 1000):.2f}ms"
             )
             completion_result["completion"] = redact_secrets(
-                completion_request["completion"],
-                extract_secrets(completion_request["completion"], file_name),
+                completion_result["completion"],
+                extract_secrets(
+                    completion_result["completion"],
+                    completion_request.context.file_name,
+                ),
             )
 
             # Used for test mode

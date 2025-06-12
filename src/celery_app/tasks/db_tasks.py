@@ -3,7 +3,7 @@ from App import App
 from backend.email_utils import send_verification_email
 from celery_app.celery_app import celery
 from database import crud
-from database.utils import create_uuid
+from utils import create_uuid
 
 
 @celery.task

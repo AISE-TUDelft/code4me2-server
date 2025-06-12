@@ -21,7 +21,6 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from database import crud
-from database.utils import create_uuid
 from response_models import (
     ChatCompletionErrorItem,
     ChatCompletionItem,
@@ -30,6 +29,7 @@ from response_models import (
     ChatMessageItem,
     ChatMessageRole,
 )
+from utils import create_uuid, extract_secrets, redact_secrets
 
 router = APIRouter()
 
@@ -122,6 +122,19 @@ def request_chat_completion(
 
         t1 = time.perf_counter()
         logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
+        # Redact secrets from context
+        secrets = extract_secrets(
+            chat_completion_request.context.prefix
+            + "\n"
+            + chat_completion_request.context.suffix,
+            file_name=str(chat_completion_request.context.file_name),
+        )
+        chat_completion_request.context.prefix = redact_secrets(
+            chat_completion_request.context.prefix, secrets
+        )
+        chat_completion_request.context.suffix = redact_secrets(
+            chat_completion_request.context.suffix, secrets
+        )
 
         # Process chat completion
         chat_completions = []
@@ -163,11 +176,17 @@ def request_chat_completion(
                 f"GetModel={((local_t2 - local_t1) * 1000):.2f}ms, "
                 f"Invoke={((local_t3 - local_t2) * 1000):.2f}ms"
             )
+            completion_result["completion"] = redact_secrets(
+                completion_result["completion"],
+                extract_secrets(
+                    completion_result["completion"],
+                    chat_completion_request.context.file_name,
+                ),
+            )
 
             # Create generation task
             add_generation_task = db_tasks.add_generation_task.si(
                 Queries.CreateGeneration(
-                    meta_query_id=uuid.UUID(created_query_id_provided),
                     model_id=model_id,
                     completion=completion_result["completion"],
                     generation_time=completion_result["generation_time"],
@@ -194,10 +213,8 @@ def request_chat_completion(
 
         # Create necessary IDs (this it put here to ensure the same ids are used in the generation tasks)
         created_query_id = create_uuid()
-        created_context_id = create_uuid()
-        created_contextual_telemetry_id = create_uuid()
-        created_behavioral_telemetry_id = create_uuid()
 
+        # TODO: Consider adding multi file context to chat prefix before invoking
         with ThreadPoolExecutor(max_workers=config.thread_pool_max_workers) as executor:
             future_to_model = {
                 executor.submit(
@@ -222,19 +239,30 @@ def request_chat_completion(
         # Celery task preparation
         t6 = time.perf_counter()
 
-        # Create context task
-        add_context_task = db_tasks.add_context_task.si(
-            chat_completion_request.context.dict(), created_context_id
-        )
-
-        # Create telemetry task
-        add_telemetry_task = db_tasks.add_telemetry_task.si(
-            chat_completion_request.contextual_telemetry.dict(),
-            chat_completion_request.behavioral_telemetry.dict(),
-            created_contextual_telemetry_id,
-            created_behavioral_telemetry_id,
-        )
-
+        # Prepare tasks based on user preferences
+        created_context_id = None
+        add_context_task = None
+        if chat_completion_request.store_context:
+            created_context_id = create_uuid()
+            add_context_task = db_tasks.add_context_task.si(
+                chat_completion_request.context.dict(), created_context_id
+            )
+        created_contextual_telemetry_id = None
+        add_contextual_telemetry_task = None
+        if chat_completion_request.store_contextual_telemetry:
+            created_contextual_telemetry_id = create_uuid()
+            add_contextual_telemetry_task = db_tasks.add_contextual_telemetry_task.si(
+                chat_completion_request.contextual_telemetry.dict(),
+                created_contextual_telemetry_id,
+            )
+        created_behavioral_telemetry_id = None
+        add_behavioral_telemetry_task = None
+        if chat_completion_request.store_behavioral_telemetry:
+            created_behavioral_telemetry_id = create_uuid()
+            add_behavioral_telemetry_task = db_tasks.add_behavioral_telemetry_task.si(
+                chat_completion_request.behavioral_telemetry.dict(),
+                created_behavioral_telemetry_id,
+            )
         # check if the content of any of the chat completions contains a [Title], [/Title] tag pair
         title_found = None
         for completion_item in chat_completions:
@@ -254,7 +282,6 @@ def request_chat_completion(
                         completion_item.completion[: start_index - (len("[Title]"))]
                         + completion_item.completion[end_index + (len("[/Title]")) :]
                     )
-
         # Calculate total serving time
         total_serving_time = int((time.perf_counter() - overall_start) * 1000)
 
@@ -271,9 +298,19 @@ def request_chat_completion(
         add_chat_query_task = db_tasks.add_chat_query_task.si(
             Queries.CreateChatQuery(
                 user_id=uuid.UUID(str(user_id)),
-                contextual_telemetry_id=uuid.UUID(created_contextual_telemetry_id),
-                behavioral_telemetry_id=uuid.UUID(created_behavioral_telemetry_id),
-                context_id=uuid.UUID(created_context_id),
+                contextual_telemetry_id=(
+                    uuid.UUID(created_contextual_telemetry_id)
+                    if created_contextual_telemetry_id
+                    else None
+                ),
+                behavioral_telemetry_id=(
+                    uuid.UUID(created_behavioral_telemetry_id)
+                    if created_behavioral_telemetry_id
+                    else None
+                ),
+                context_id=(
+                    uuid.UUID(created_context_id) if created_context_id else None
+                ),
                 session_id=uuid.UUID(session_token),
                 project_id=uuid.UUID(project_token),
                 chat_id=chat_completion_request.chat_id,
@@ -284,13 +321,26 @@ def request_chat_completion(
             created_query_id,
         )
 
+        # Filter out None tasks
+        pre_query_tasks = list(
+            filter(
+                None,
+                [
+                    add_context_task,
+                    add_contextual_telemetry_task,
+                    add_behavioral_telemetry_task,
+                ],
+            )
+        )
+
         # Chain tasks
         chain(
-            group(add_context_task, add_telemetry_task),
+            group(*pre_query_tasks) if pre_query_tasks else None,
             add_chat_task,
             add_chat_query_task,
             group(*add_generation_tasks),
         ).apply_async(queue="db")
+
         t7 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t7 - t6) * 1000:.2f}ms")
 

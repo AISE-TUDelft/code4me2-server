@@ -47,7 +47,7 @@ def extract_secrets(text: str, file_name: str = "unknown_file") -> str:
     secrets = set()
     for detector in secret_detectors:
         findings = detector.analyze_line(
-            filename=file_name,
+            filename=file_name if file_name is not None else "unknown_file",
             line=text,
         )
         if findings:
