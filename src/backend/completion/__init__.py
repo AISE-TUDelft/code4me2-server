@@ -13,17 +13,19 @@ class Template(Enum):
 
 class CompletionModels:
     _instance = None
+    _initialized = False
 
-    def __init__(self, config: Code4meV2Config = None):
-        if self._instance is not None:
-            raise RuntimeError("This class is a singleton!")
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, config: Code4meV2Config):
+        if self._initialized:
+            return
         self.__config = config
         self.__models = {}
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(CompletionModels, cls).__new__(cls)
-        return cls._instance
+        self._initialized = True
 
     def load_model(
         self,
