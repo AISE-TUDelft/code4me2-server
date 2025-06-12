@@ -22,24 +22,25 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from database import crud
-from database.utils import create_uuid
+from utils import create_uuid
 
 router = APIRouter()
 
 
 @router.get(
-    "/",
+    "",
     response_model=AcquireSessionGetResponse,
     responses={
-        200: {"model": AcquireSessionGetResponse},
-        401: {"model": InvalidOrExpiredAuthToken},
-        429: {"model": ErrorResponse},
-        500: {"model": AcquireSessionError},
+        "200": {"model": AcquireSessionGetResponse},
+        "401": {"model": InvalidOrExpiredAuthToken},
+        "422": {"model": ErrorResponse},
+        "429": {"model": ErrorResponse},
+        "500": {"model": AcquireSessionError},
     },
 )
 def acquire_session(
     app: App = Depends(App.get_instance),
-    auth_token: str = Cookie("auth_token"),
+    auth_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Acquire or create a session token using the provided auth token.
@@ -55,15 +56,15 @@ def acquire_session(
 
     try:
         auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
+        # If the token is invalid or missing, return a 401 error
+        if auth_info is None or not auth_info.get("user_id"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredAuthToken(),
             )
-
-        user_id = auth_info.get("user_id")
+        user_id = auth_info["user_id"]
         session_token = auth_info.get("session_token")
-        if not session_token or not redis_manager.get("session_token", session_token):
+        if not redis_manager.get("session_token", session_token):
             session_token = create_uuid()
             crud.create_session(
                 db_session,

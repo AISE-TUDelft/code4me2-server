@@ -14,6 +14,7 @@ from backend.Responses import (
     MultiFileContextUpdatePostResponse,
 )
 from Queries import ContextChangeType, FileContextChangeData, UpdateMultiFileContext
+from utils import extract_secrets, redact_secrets
 
 router = APIRouter()
 
@@ -98,8 +99,8 @@ def update_multi_file_context_changes_in_session(
 def update_multi_file_context(
     context_update: UpdateMultiFileContext,
     app: App = Depends(App.get_instance),
-    session_token: str = Cookie("session_token"),
-    project_token: str = Cookie("project_token"),
+    session_token: str = Cookie(""),
+    project_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Update the context for a specific query ID.
@@ -110,7 +111,7 @@ def update_multi_file_context(
     try:
         # Get session info from Redis
         session_info = redis_manager.get("session_token", session_token)
-        if session_token is None or session_info is None:
+        if session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
@@ -151,6 +152,14 @@ def update_multi_file_context(
             existing_context, context_update.context_updates
         )
 
+        # Redact secrets
+        for file_name, lines in updated_context.items():
+            redacted_lines = []
+            secrets = extract_secrets(text="\n".join(lines), file_name=file_name)
+            for line_number, line in enumerate(lines, start=1):
+                line = redact_secrets(line, secrets)
+                redacted_lines.append(line)
+            updated_context[file_name] = redacted_lines
         # Remove the files that their new content are empty
         for file in copy(list(updated_context.keys())):
             if not updated_context[file]:

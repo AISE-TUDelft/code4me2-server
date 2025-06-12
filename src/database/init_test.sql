@@ -108,10 +108,9 @@ CREATE TABLE IF NOT EXISTS public.project_users
 );
 
 -- Session table (individual user sessions within projects)
-CREATE TABLE IF NOT EXISTS public.session
-(
+CREATE TABLE IF NOT EXISTS public.session (
     session_id uuid PRIMARY KEY,
-    user_id uuid NOT NULL,
+    user_id uuid NULL,
     start_time timestamp with time zone NOT NULL,
     end_time timestamp with time zone
 );
@@ -127,7 +126,7 @@ CREATE TABLE IF NOT EXISTS public.chat
 (
     chat_id uuid NOT NULL PRIMARY KEY,
     project_id uuid NOT NULL,
-    user_id uuid NOT NULL,
+    user_id uuid NULL,
     title VARCHAR NOT NULL,
     created_at timestamp with time zone NOT NULL
 );
@@ -137,9 +136,9 @@ CREATE TABLE IF NOT EXISTS public.meta_query
 (
     meta_query_id uuid NOT NULL PRIMARY KEY,
     user_id uuid,
-    contextual_telemetry_id uuid NOT NULL,
-    behavioral_telemetry_id uuid NOT NULL,
-    context_id uuid NOT NULL,
+    contextual_telemetry_id uuid NULL,
+    behavioral_telemetry_id uuid NULL,
+    context_id uuid NULL,
     session_id uuid NOT NULL,
     project_id uuid NOT NULL,
     multi_file_context_changes_indexes text DEFAULT '{}',
@@ -374,9 +373,8 @@ INSERT INTO public.config (config_data) VALUES ('{"default": true, "version": "1
 
 INSERT INTO public.model_name (model_name, is_instruction_tuned) VALUES
     ('deepseek-ai/deepseek-coder-1.3b-base', FALSE),
-    ('bigcode/starcoder2-3b', FALSE),
-    ('gpt-4-turbo', TRUE),
-    ('claude-3-sonnet', TRUE);
+--     ('bigcode/starcoder2-3b', FALSE),
+    ('mistralai/Ministral-8B-Instruct-2410', TRUE);
 
 INSERT INTO public.programming_language (language_name) VALUES
     ('plaintext'), ('code-text-binary'), ('Log'), ('log'), ('scminput'), ('bat'),

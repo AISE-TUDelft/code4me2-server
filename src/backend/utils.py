@@ -1,6 +1,7 @@
 import inspect
 import json
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, Union, get_args, get_origin
 from uuid import UUID
 
@@ -11,16 +12,28 @@ from polyfactory.field_meta import FieldMeta
 from pydantic import BaseModel, EmailStr, SecretStr
 
 
-def iterable_to_dict(obj: Any) -> Dict[str, Any]:
+def iterable_to_dict(obj: Any, to_json_values: bool = False) -> Dict[str, Any]:
     """
     Converts an iterable to a dictionary, handling nested models and custom types.
     """
     if isinstance(obj, BaseModel):
         return obj.dict()
     elif isinstance(obj, list):
-        return [iterable_to_dict(item) for item in obj]
+        res = [iterable_to_dict(item, to_json_values) for item in obj]
+        if to_json_values:
+            return json.dumps(res)
+        return res
     elif isinstance(obj, dict):
-        return {key: iterable_to_dict(value) for key, value in obj.items()}
+        res = {
+            key: iterable_to_dict(value, to_json_values) for key, value in obj.items()
+        }
+        if to_json_values:
+            return json.dumps(res)
+        return res
+    elif isinstance(obj, tuple):
+        return tuple(iterable_to_dict(item) for item in obj)
+    elif isinstance(obj, Enum):
+        return str(obj.value)
     else:
         return obj
 
@@ -32,7 +45,12 @@ class SerializableBaseModel(BaseModel):
     """
 
     def dict(
-        self, exclude_unset=False, hide_secrets=False, *args, **kwargs
+        self,
+        exclude_unset=False,
+        hide_secrets=False,
+        to_json_values=False,
+        *args,
+        **kwargs
     ) -> Dict[str, Any]:
         data = {}
         # Iterate over the fields and convert fields to plain strings
@@ -83,7 +101,7 @@ class SerializableBaseModel(BaseModel):
                     field_value.isoformat() if field_value is not None else None
                 )
             else:
-                data[field_name] = iterable_to_dict(field_value)
+                data[field_name] = iterable_to_dict(field_value, to_json_values)
         return data
 
     def json(self, *args, **kwargs) -> str:

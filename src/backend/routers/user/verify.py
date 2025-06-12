@@ -1,14 +1,22 @@
 import logging
 
 from fastapi import APIRouter, Cookie, Depends, Query
-from fastapi.responses import HTMLResponse
 
 import database.crud as crud
 from App import App
 from backend.Responses import (
     ErrorResponse,
+    GetVerificationError,
+    GetVerificationGetResponse,
+    HTMLResponseWithStatus,
     InvalidOrExpiredAuthToken,
+    InvalidOrExpiredVerificationToken,
     JsonResponseWithStatus,
+    ResendVerificationEmailError,
+    ResendVerificationEmailPostResponse,
+    UserNotFoundError,
+    VerifyUserError,
+    VerifyUserPostHTMLResponse,
 )
 from celery_app.tasks.db_tasks import send_verification_email_task
 from Queries import UpdateUser
@@ -19,19 +27,18 @@ router = APIRouter()
 @router.get(
     "/check",
     responses={
-        "200": {"description": "User verification status retrieved successfully"},
-        "404": {
-            "model": ErrorResponse,
-            "description": "User not found or not authenticated",
-        },
-        "400": {"model": ErrorResponse, "description": "Bad request"},
-        "500": {"model": ErrorResponse, "description": "Internal server error"},
+        "200": {"model": GetVerificationGetResponse},
+        "401": {"model": InvalidOrExpiredAuthToken},
+        "404": {"model": UserNotFoundError},
+        "422": {"model": ErrorResponse},
+        "429": {"model": ErrorResponse},
+        "500": {"model": GetVerificationError},
     },
     tags=["User Verification"],
 )
 def check_verification(
     app: App = Depends(App.get_instance),
-    auth_token: str = Cookie("auth_token"),
+    auth_token: str = Cookie(""),
 ):
     """
     Check if the user is verified
@@ -39,55 +46,56 @@ def check_verification(
     # Get Redis client
     redis_client = app.get_redis_manager()
 
-    # Check if auth_token exists in Redis
-    user_info = redis_client.get("auth_token", auth_token)
-
-    if not user_info:
-        return JsonResponseWithStatus(
-            status_code=404,
-            content=ErrorResponse(message="User not found or not authenticated."),
-        )
-
-    user_id = None
     try:
-        user_id = user_info.get("user_id")
-    except AttributeError:
-        # If user_info is not a dict, it means the token is invalid or expired
+        # Check if auth_token exists in Redis
+        auth_info = redis_client.get("auth_token", auth_token)
+
+        # If the token is invalid or missing, return a 401 error
+        if auth_info is None or not auth_info.get("user_id"):
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredAuthToken(),
+            )
+        user_id = auth_info["user_id"]
+
+        # Get user data from database
+        db_session = app.get_db_session()
+        user = crud.get_user_by_id(db_session, user_id)
+
+        if not user:
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=UserNotFoundError(),
+            )
+
+        # Return verification status
         return JsonResponseWithStatus(
-            status_code=401,
-            content=ErrorResponse(message="Invalid or expired auth token."),
+            status_code=200,
+            content=GetVerificationGetResponse(user_is_verified=user.verified),
+        )
+    except Exception as e:
+        logging.error(f"Error checking verification status: {str(e)}")
+        return JsonResponseWithStatus(
+            status_code=500,
+            content=GetVerificationError(),
         )
 
-    # Get user data from database
-    db_session = app.get_db_session()
-    user = crud.get_user_by_id(db_session, user_id)
 
-    if not user:
-        return JsonResponseWithStatus(
-            status_code=404,
-            content=ErrorResponse(message="User not found."),
-        )
-
-    # Return verification status
-    return JsonResponseWithStatus(
-        status_code=200,
-        content={"verified": user.verified},
-    )
-
-
-@router.get(
+@router.post(
     "/resend",
     responses={
-        200: {"description": "Email sent"},
-        404: {"description": "User not found or not authenticated"},
-        401: {"description": "Invalid or expired auth token"},
-        500: {"description": "Server error"},
+        "200": {"model": ResendVerificationEmailPostResponse},
+        "401": {"model": InvalidOrExpiredAuthToken},
+        "404": {"model": UserNotFoundError},
+        "422": {"model": ErrorResponse},
+        "429": {"model": ErrorResponse},
+        "500": {"model": ResendVerificationEmailError},
     },
     tags=["User Verification"],
 )
 def resend_verification_email(
     app: App = Depends(App.get_instance),
-    auth_token: str = Cookie("auth_token"),
+    auth_token: str = Cookie(""),
 ):
     """
     Resend verification email to the user
@@ -95,50 +103,52 @@ def resend_verification_email(
     # Get Redis client
     redis_client = app.get_redis_manager()
 
-    # Check if auth_token exists in Redis
-    auth_info = redis_client.get("auth_token", auth_token)
-    if auth_info is None:
-        return JsonResponseWithStatus(
-            status_code=401,
-            content=InvalidOrExpiredAuthToken(),
+    try:
+        # Check if auth_token exists in Redis
+        auth_info = redis_client.get("auth_token", auth_token)
+
+        # If the token is invalid or missing, return a 401 error
+        if auth_info is None or not auth_info.get("user_id"):
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredAuthToken(),
+            )
+        user_id = auth_info["user_id"]
+
+        # Get user data from database
+        db_session = app.get_db_session()
+        user = crud.get_user_by_id(db_session, user_id)
+
+        if not user:
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=UserNotFoundError(),
+            )
+
+        # Send verification email
+        send_verification_email_task.delay(
+            str(user.user_id), str(user.email), user.name
         )
 
-    user_id = auth_info.get("user_id")
-
-    # If user_id is not found, return 404
-
-    if not user_id:
         return JsonResponseWithStatus(
-            status_code=404,
-            content=ErrorResponse(message="User not found or not authenticated."),
+            status_code=200, content=ResendVerificationEmailPostResponse()
+        )
+    except Exception as e:
+        logging.error(f"Error resending verification email: {str(e)}")
+        return JsonResponseWithStatus(
+            status_code=500, content=ResendVerificationEmailError()
         )
 
-    # Get user data from database
-    db_session = app.get_db_session()
-    user = crud.get_user_by_id(db_session, user_id)
 
-    if not user:
-        return JsonResponseWithStatus(
-            status_code=404,
-            content=ErrorResponse(message="User not found."),
-        )
-
-    # Send verification email
-
-    send_verification_email_task.delay(str(user.user_id), str(user.email), user.name)
-
-    return JsonResponseWithStatus(
-        status_code=200,
-        content={"message": "Verification email resent successfully."},
-    )
-
-
-@router.get(
+@router.post(
     "/",
     responses={
-        "200": {"description": "Email verification successful"},
-        "400": {"model": ErrorResponse},
-        "404": {"model": ErrorResponse},
+        "200": {"model": VerifyUserPostHTMLResponse},
+        "401": {"model": InvalidOrExpiredVerificationToken},
+        "404": {"model": UserNotFoundError},
+        "422": {"model": ErrorResponse},
+        "429": {"model": ErrorResponse},
+        "500": {"model": VerifyUserError},
     },
     tags=["User Verification"],
 )
@@ -151,38 +161,24 @@ def verify_email(
     """
     # Get Redis client
     redis_client = app.get_redis_manager()
-
-    # Check if token exists in Redis
-    user_info = redis_client.get("email_verification", token)
-    user_id = None
-    try:
-        user_id = user_info.get("user_id") if user_info else None
-    except AttributeError:
-        # If user_info is not a dict, it means the token is invalid or expired
-        return JsonResponseWithStatus(
-            status_code=404,
-            content=ErrorResponse(
-                message="The verification token is invalid or has expired."
-            ),
-        )
-
-    if not user_id:
-        return JsonResponseWithStatus(
-            status_code=404,
-            content=ErrorResponse(
-                message="The verification token is invalid or has expired."
-            ),
-        )
-
-    # Update user verification status
     db_session = app.get_db_session()
     try:
+        # Check if token exists in Redis
+        verification_info = redis_client.get("email_verification", token)
+        # If the token is invalid or missing, return a 401 error
+        if verification_info is None or not verification_info.get("user_id"):
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredVerificationToken(),
+            )
+        user_id = verification_info["user_id"]
+
         # Get current user data first
         current_user = crud.get_user_by_id(db_session, user_id)
         if not current_user:
             return JsonResponseWithStatus(
                 status_code=404,
-                content=ErrorResponse(message="User not found."),
+                content=UserNotFoundError(),
             )
 
         # Create UpdateUser object with only verified=True, preserving existing name
@@ -193,51 +189,13 @@ def verify_email(
         # Update user
         crud.update_user(db_session, user_id, update_data)
 
-        # Return success response with HTML
-        html_content = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Email Verification Successful</title>
-            <style>
-                body {
-                    font-family: Arial, sans-serif;
-                    text-align: center;
-                    padding: 50px;
-                }
-                .success {
-                    color: #4CAF50;
-                    font-size: 24px;
-                    margin-bottom: 20px;
-                }
-                .message {
-                    font-size: 18px;
-                    margin-bottom: 30px;
-                }
-                .button {
-                    display: inline-block;
-                    padding: 10px 20px;
-                    background-color: #4CAF50;
-                    color: white;
-                    text-decoration: none;
-                    border-radius: 5px;
-                    font-size: 16px;
-                }
-            </style>
-        </head>
-        <body>
-            <div class="success">Email Verification Successful!</div>
-            <div class="message">Your email has been verified successfully. You can now close this page and continue using the application.</div>
-            <a href="/" class="button">Go to Homepage</a>
-        </body>
-        </html>
-        """
-
-        return HTMLResponse(content=html_content, status_code=200)
+        return HTMLResponseWithStatus(
+            content=VerifyUserPostHTMLResponse(), status_code=200
+        )
 
     except Exception as e:
         logging.error(f"Error verifying email: {str(e)}")
         return JsonResponseWithStatus(
             status_code=500,
-            content=ErrorResponse(message=f"Failed to verify email: {str(e)}"),
+            content=VerifyUserError(),
         )

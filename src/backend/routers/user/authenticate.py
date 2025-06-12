@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 from typing import Union
@@ -19,9 +20,9 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from backend.utils import verify_jwt_token
-from database.utils import create_uuid
 from Queries import AuthenticateUserEmailPassword, AuthenticateUserOAuth
 from response_models import ResponseUser
+from utils import create_uuid
 
 # Initialize the FastAPI router for authentication endpoints
 router = APIRouter()
@@ -50,7 +51,7 @@ def acquire_auth_token(
 
 
 @router.post(
-    "/",
+    "",
     response_model=AuthenticateUserPostResponse,
     responses={
         "200": {"model": AuthenticateUserPostResponse},
@@ -136,7 +137,7 @@ def authenticate_user(
                 status_code=200,
                 content=AuthenticateUserOAuthPostResponse(
                     user=ResponseUser.model_validate(found_user),
-                    config=config_data.config_data,
+                    config=json.loads(str(config_data.config_data)),
                 ),
             )
             # Set the auth token as an HttpOnly cookie with appropriate settings
@@ -163,7 +164,6 @@ def authenticate_user(
                     status_code=401,
                     content=InvalidEmailOrPassword(),
                 )
-
             # Generate authentication token and create response with cookie
             auth_token = acquire_auth_token(found_user.auth_token, found_user.user_id, redis_manager)  # type: ignore
             setattr(found_user, "auth_token", uuid.UUID(auth_token))
@@ -179,7 +179,7 @@ def authenticate_user(
                 status_code=200,
                 content=AuthenticateUserNormalPostResponse(
                     user=ResponseUser.model_validate(found_user),
-                    config=str(config_data.config_data),
+                    config=json.loads(str(config_data.config_data)),
                 ),
             )
             # Set the auth token as an HttpOnly cookie with appropriate settings

@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 @router.post(
-    "/",
+    "",
     response_model=CreateProjectPostResponse,
     responses={
         "201": {"model": CreateProjectPostResponse},
@@ -35,7 +35,7 @@ router = APIRouter()
 def create_project(
     project_to_create: Queries.CreateProject,
     app: App = Depends(App.get_instance),
-    auth_token: str = Cookie("auth_token"),
+    auth_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Create a new project
@@ -71,6 +71,12 @@ def create_project(
             db_session,
             Queries.CreateSessionProject(
                 session_id=uuid.UUID(session_token), project_id=uuid.UUID(project_token)
+            ),
+        )
+        crud.create_user_project(
+            db_session,
+            Queries.CreateUserProject(
+                project_id=uuid.UUID(project_token), user_id=user_id
             ),
         )
 

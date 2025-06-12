@@ -136,11 +136,11 @@ def test_project(db_session, test_user):
     created_project = crud.create_project(db_session, project_data)
 
     # Add user to project
-    project_user_data = Queries.AddUserToProject(
+    project_user_data = Queries.CreateUserProject(
         project_id=created_project.project_id,
         user_id=test_user.user_id,
     )
-    crud.add_user_to_project(db_session, project_user_data)
+    crud.create_user_project(db_session, project_user_data)
 
     return created_project
 
@@ -954,9 +954,9 @@ def test_complex_user_workflow(db_session, setup_reference_data):
         projects.append(project)
 
         # Add user to project
-        crud.add_user_to_project(
+        crud.create_user_project(
             db_session,
-            Queries.AddUserToProject(
+            Queries.CreateUserProject(
                 project_id=project.project_id,
                 user_id=user.user_id,
             ),

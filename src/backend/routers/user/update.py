@@ -32,18 +32,18 @@ router = APIRouter()
     "",
     response_model=UpdateUserPutResponse,
     responses={
-        201: {"model": UpdateUserPutResponse},
-        401: {"model": InvalidOrExpiredAuthToken},
-        409: {"model": UserAlreadyExistsWithThisEmail},
-        422: {"model": ErrorResponse},
-        429: {"model": ErrorResponse},
-        500: {"model": UpdateUserError},
+        "201": {"model": UpdateUserPutResponse},
+        "401": {"model": InvalidOrExpiredAuthToken},
+        "409": {"model": UserAlreadyExistsWithThisEmail},
+        "422": {"model": ErrorResponse},
+        "429": {"model": ErrorResponse},
+        "500": {"model": UpdateUserError},
     },
 )
 def update_user(
     user_to_update: Queries.UpdateUser,
     app: App = Depends(App.get_instance),
-    auth_token: str = Cookie("auth_token"),
+    auth_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Update the currently authenticated user's data.
@@ -67,7 +67,7 @@ def update_user(
         auth_info = redis_manager.get("auth_token", auth_token)
 
         # If the token is invalid or missing, return a 401 error
-        if auth_info is None:
+        if auth_info is None or not auth_info.get("user_id"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredAuthToken(),

@@ -21,7 +21,7 @@ router = APIRouter()
 
 
 @router.put(
-    "/",
+    "",
     response_model=ActivateProjectPostResponse,
     responses={
         "200": {"model": ActivateProjectPostResponse},
@@ -36,7 +36,7 @@ router = APIRouter()
 def activate_project(
     activate_project_request: Queries.ActivateProject,
     app: App = Depends(App.get_instance),
-    auth_token: str = Cookie("auth_token"),
+    auth_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Activates the project by following these steps:
@@ -60,7 +60,7 @@ def activate_project(
         user_id = auth_info.get("user_id", "")
         session_info = redis_manager.get("session_token", session_token)
         # Validate session token
-        if session_token == "" or session_info is None:
+        if not session_token or session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
@@ -93,12 +93,25 @@ def activate_project(
         session_info["project_tokens"] = session_projects
         redis_manager.set("session_token", session_token, session_info)
 
-        crud.create_session_project(
-            db_session,
-            Queries.CreateSessionProject(
-                session_id=uuid.UUID(session_token), project_id=uuid.UUID(project_token)
-            ),
-        )
+        if not crud.get_session_project(
+            db_session, uuid.UUID(session_token), uuid.UUID(project_token)
+        ):
+            crud.create_session_project(
+                db_session,
+                Queries.CreateSessionProject(
+                    session_id=uuid.UUID(session_token),
+                    project_id=uuid.UUID(project_token),
+                ),
+            )
+        if not crud.get_user_project(
+            db_session, uuid.UUID(user_id), uuid.UUID(project_token)
+        ):
+            crud.create_user_project(
+                db_session,
+                Queries.CreateUserProject(
+                    project_id=uuid.UUID(project_token), user_id=uuid.UUID(user_id)
+                ),
+            )
 
         response_obj = JsonResponseWithStatus(
             status_code=200, content=ActivateProjectPostResponse()
