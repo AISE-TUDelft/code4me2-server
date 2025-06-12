@@ -379,21 +379,23 @@ INSERT INTO public.model_name (model_name, is_instruction_tuned) VALUES
     ('claude-3-sonnet', TRUE);
 
 INSERT INTO public.programming_language (language_name) VALUES
-    ('plaintext'), ('code-text-binary'), ('Log'), ('log'), ('scminput'), ('bat'),
-    ('clojure'), ('coffeescript'), ('jsonc'), ('json'), ('c'), ('cpp'), ('cuda-cpp'),
-    ('csharp'), ('css'), ('dart'), ('diff'), ('dockerfile'), ('ignore'), ('fsharp'),
-    ('git-commit'), ('git-rebase'), ('go'), ('groovy'), ('handlebars'), ('hlsl'),
-    ('html'), ('ini'), ('properties'), ('java'), ('javascriptreact'), ('javascript'),
-    ('jsx-tags'), ('jsonl'), ('snippets'), ('julia'), ('juliamarkdown'), ('tex'),
-    ('latex'), ('bibtex'), ('cpp_embedded_latex'), ('markdown_latex_combined'),
-    ('less'), ('lua'), ('makefile'), ('markdown'), ('markdown-math'), ('wat'),
-    ('objective-c'), ('objective-cpp'), ('perl'), ('raku'), ('php'), ('powershell'),
-    ('jade'), ('python'), ('r'), ('razor'), ('restructuredtext'), ('ruby'), ('rust'),
-    ('scss'), ('search-result'), ('shaderlab'), ('shellscript'), ('sql'), ('swift'),
-    ('typescript'), ('typescriptreact'), ('vb'), ('xml'), ('xsl'), ('dockercompose'),
-    ('yaml'), ('doctex'), ('bibtex-style'), ('latex-expl3'), ('pweave'), ('jlweave'),
-    ('rsweave'), ('csv'), ('tsv'), ('jinja'), ('pip-requirements'), ('toml'), ('raw'),
-    ('ssh_config'), ('Vimscript');
+    ('Oracle NetSuite'), ('GoPlusBuild'), ('HelmJSON'), ('USS'), ('UnityYaml'),
+    ('Blade'), ('Xaml'), ('Meson'), ('Angular SVG template'), ('Pug (ex-Jade)'),
+    ('Java'), ('DTD'), ('SQL'), ('LinkerScript'), ('Asp'), ('ClickHouse'),
+    ('CMakeCache'), ('Chameleon template'), ('VB'), ('.ignore (IgnoreLang)'), ('Vue template'),
+    ('UastContextLanguage'), ('EditorConfig'), ('XPath'), ('MariaDB'), ('MySQL based'), ('MongoJS'),
+    ('Angular SVG template (17+)'), ('IBM Db2 LUW'), ('SCSS'), ('DotEnv'), ('Kotlin/Native Def'), ('JSONPath'),
+    ('Microsoft SQL Server'), ('Flow JS'), ('Devicetree'), ('JSON5'), ('protobase'), ('Angular HTML template (17+)'),
+    ('BladeHTML'), ('TypeScript'), ('Metadata JSON'), ('Greenplum'), ('Handlebars'), ('Oracle SQL*Plus'), ('JVM languages'),
+    ('Python'), ('GoBuild'), ('VueTS'), ('JSON'), ('ASM'), ('VueExpr'), ('DynamoDB'), ('MSBuild'), ('C#'),
+    ('Exasol'), ('Sybase ASE'), ('XML'), ('.gitignore (GitIgnore)'), ('vgo'), ('prototext'), ('Groovy'), ('ECMAScript 6'),
+    ('TypeScript JSX'), ('CSS'), ('Config'), ('DjangoUrlPath'), ('Composer Log'), ('Jinja2'), ('Injectable PHP'), ('HelmTEXT'),
+    ('PythonStub'), ('GoTag'), ('JSON Lines'), ('PyTypeHint'), ('Angular HTML template (18.1+)'), ('JSUnicodeRegexp'), ('Razor'), ('CMake'),
+    ('HTML'), ('HtmlCompatible'), ('Go'), ('Angular2'), ('XHTML'), ('VueJS'), ('Apache Cassandra'), ('IBM Db2 iSeries'), ('SQL2016'),
+    ('exclude (GitExclude)'), ('ShaderLab'), ('.hgignore (HgIgnore)'), ('Angular HTML template'), ('YouTrack'), ('Markdown'), ('WerfYAML'), ('RELAX-NG'),
+    ('UXML'), ('Kotlin'), ('GDB'), ('Redis'), ('XPath2'), ('PostCSS'), ('Jupyter'), ('Twig'), ('JShell Snippet'), ('Go Template'),
+    ('SQLite'), ('PyFunctionTypeComment'), ('Angular SVG template (18.1+)'), ('HTTP Request'), ('Scmp'), ('Plain text'), ('H2'), ('Gradle Declarative Configuration'), ('RuleSet'), ('plan9_x86'), ('WebSymbolsEnabledLanguage'), ('Properties'), ('Asxx'), ('Vertica'), ('JVM'), ('ModuleMap'), ('C/C++'), ('Resx'), ('Blazor'), ('HSQLDB'), ('Cookie'), ('Generic SQL'), ('XsdRegExp'), ('SlnLaunchLanguage'), ('Dockerfile'), ('MySQL'), ('IL'), ('HelmYAML'), ('Terminal Prompt'), ('Requirements'), ('Apache Spark'), ('HttpClientHandlerJavaScriptDialect'), ('textmate'), ('QML'), ('GoTime'), ('F#'), ('PostgreSQL'), ('Rest language'), ('protobuf'), ('Oracle'), ('Cgo'), ('.dockerignore (DockerIgnore)'), ('JQL'), ('Manifest'), ('LLDB'), ('Makefile'), ('RegExp'), ('GoFuzzCorpus'), ('Cython'), ('Sass'), ('TOML'), ('Shell Script'), ('Ini'), ('Less'), ('CockroachDB'), ('Apache Derby'), ('GoDebug'), ('SolutionFile'), ('YAML'), ('ActionScript'), ('JSRegexp'), ('T4'), ('JavaScript'), ('Gherkin'), ('TerminalOutput'), ('SVG'), ('SPI'), ('Doxygen'), ('Notebook'), ('Apache Hive'), ('GithubExpressionLanguage'), ('PythonRegExp'),('unknown');
+
 
 INSERT INTO public.trigger_type (trigger_type_name) VALUES ('manual'), ('auto'), ('idle');
 
