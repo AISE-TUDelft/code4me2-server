@@ -10,6 +10,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+import torch
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -81,37 +82,42 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
 
     # model loading configuration
     stop_sequences: List[str] = Field(default_factory=list)
-    cache_dir: str = Field(default=os.path.join(".", ".cache"))
+    cache_dir: str = Field(default="../chat/.cache")
     trust_remote_code: bool = True
-    device_map: str = "auto"
+    device_map: str = Field(default="auto")
+
+    # additional torch configuration
+    torch_dtype: str = Field(default="float16")  # or "bfloat16" for newer GPUs
+    low_cpu_mem_usage: bool = Field(default=True)
+    load_in_8bit: bool = Field(default=False)  # Set to True for 8-bit quantization
+    load_in_4bit: bool = Field(default=False)  # Set to True for 4-bit quantization
 
     # Internal model instances
     model: Any = Field(default=None)
     tokenizer: Any = Field(default=None)
 
+    @staticmethod
+    def _check_gpu_availability() -> bool:
+        """
+        Check if a GPU is available for model inference.
+
+        Returns:
+            bool: True if a GPU is available, False otherwise.
+        """
+        return torch.cuda.is_available() and torch.cuda.device_count() > 0
+
     def __init__(self, **data: Any):
         """
         Initialize the ChatCompletionModel.
-
-        This method loads the specified HuggingFace model and tokenizer, sets up the
-        text generation pipeline, and configures all necessary components for chat completion.
-
-        Args:
-            **data: Keyword arguments for model configuration. See class attributes for options.
-
-        Raises:
-            NotImplementedError: If model_type is not "local".
-            Exception: If model or tokenizer loading fails.
-
-        Note:
-            Model loading can take significant time depending on model size and hardware.
-            Progress is printed to stdout during initialization.
         """
         super().__init__(**data)
 
         # Set default tokenizer name
         self.tokenizer_name = self.tokenizer_name or self.model_name
         os.makedirs(self.cache_dir, exist_ok=True)
+
+        # Check GPU availability
+        gpu_available = self._check_gpu_availability()
 
         # Validate model type
         if self.model_type.lower() != "local":
@@ -135,32 +141,60 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
         start_time = time.time()
         print(f"Loading model {self.model_name}...")
 
-        # Configure model loading parameters
+        # Configure model loading parameters - FIXED
         model_kwargs = {
             "cache_dir": self.cache_dir,
-            "device_map": self.device_map,
             "trust_remote_code": self.trust_remote_code,
         }
+
+        # Add GPU-specific parameters if available
+        if gpu_available:
+            print("Using GPU for model loading")
+            model_kwargs["device_map"] = self.device_map
+            model_kwargs["torch_dtype"] = (
+                getattr(torch, self.torch_dtype)
+                if hasattr(torch, self.torch_dtype)
+                else torch.float16
+            )
+            model_kwargs["low_cpu_mem_usage"] = self.low_cpu_mem_usage
+
+            # Optional: Add quantization for large models
+            if self.load_in_8bit:
+                model_kwargs["load_in_8bit"] = True
+            elif self.load_in_4bit:
+                model_kwargs["load_in_4bit"] = True
+        else:
+            print("Using CPU")
 
         raw_model = AutoModelForCausalLM.from_pretrained(
             self.model_name, **model_kwargs
         )
         print(f"Model loaded in {time.time() - start_time:.2f} seconds")
 
-        # Create HuggingFace pipeline
+        # Print actual device placement
+        if hasattr(raw_model, "hf_device_map"):
+            print(f"Model device map: {raw_model.hf_device_map}")
+
+        # Create HuggingFace pipeline - FIXED
         start_time = time.time()
         print("Setting up text generation pipeline...")
-        text_gen_pipeline = pipeline(
-            "text-generation",
-            model=raw_model,
-            tokenizer=self.tokenizer,
-            max_new_tokens=self.max_new_tokens,
-            temperature=self.temperature,
-            top_p=self.top_p,
-            top_k=self.top_k,
-            do_sample=self.do_sample,
-            repetition_penalty=self.repetition_penalty,
-        )
+
+        pipeline_kwargs = {
+            "model": raw_model,
+            "tokenizer": self.tokenizer,
+            "max_new_tokens": self.max_new_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+            "do_sample": self.do_sample,
+            "repetition_penalty": self.repetition_penalty,
+        }
+
+        # Add device for pipeline if not using device_map
+        if gpu_available and self.device_map != "auto":
+            pipeline_kwargs["device"] = 0  # Use first GPU
+
+        text_gen_pipeline = pipeline("text-generation", **pipeline_kwargs)
         print(f"Pipeline set up in {time.time() - start_time:.2f} seconds")
 
         # Wrap in LangChain HuggingFacePipeline
@@ -215,6 +249,11 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
         for msg in messages:
             if isinstance(msg, SystemMessage):
                 formatted += f"{self.system_prefix} {msg.content}\n"
+                formatted += """
+                Before you answer, please provide a very short 3-6 word title for the user's question.
+                Place the summary in the tag in in a set of [Title] tags.
+                Example: [Title] How to use Python? [/Title]
+                """
             elif isinstance(msg, HumanMessage):
                 formatted += f"{self.user_prefix} {msg.content}\n"
             elif isinstance(msg, AIMessage):

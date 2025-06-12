@@ -3,7 +3,7 @@ from typing import Any, Dict
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from response_models import (
@@ -28,6 +28,24 @@ class JsonResponseWithStatus(JSONResponse):
         self.status_code = status_code
         # Convert the Pydantic model to a dict
         super().__init__(content=jsonable_encoder(content), status_code=status_code)
+
+    def dict(self) -> dict:
+        """
+        Convert the response content to a dictionary.
+        """
+        return {
+            "status_code": self.status_code,
+            "content": jsonable_encoder(self.content),
+        }
+
+
+class HTMLResponseWithStatus(HTMLResponse):
+    def __init__(self, content: BaseModel, status_code: int):
+        self.content = content
+        self.status_code = status_code
+        # Convert the Pydantic model to a dict and extract the HTML string
+        html_content = jsonable_encoder(content).get("html", "")
+        super().__init__(content=html_content, status_code=status_code)
 
     def dict(self) -> dict:
         """
@@ -139,7 +157,7 @@ class UserNotFoundError(ErrorResponse):
 
 
 class GenerateCompletionsError(ErrorResponse):
-    message: str = Field(default="Failed to generate completions.")
+    message: str = Field(default="Server failed to generate completions.")
 
 
 # /api/completion/feedback
@@ -151,7 +169,7 @@ class CompletionFeedbackPostResponse(BaseResponse):
 
 
 class FeedbackRecordingError(ErrorResponse):
-    message: str = Field(default="Failed to record feedback.")
+    message: str = Field(default="Server failed to record feedback.")
 
 
 class GenerationNotFoundError(ErrorResponse):
@@ -167,7 +185,17 @@ class CompletionsNotFoundError(ErrorResponse):
 
 
 class RetrieveCompletionsError(ErrorResponse):
-    message: str = Field(default="Failed to retrieve completions.")
+    message: str = Field(default="Server failed to retrieve completions.")
+
+
+# /api/chat/request
+class GenerateChatCompletionsError(ErrorResponse):
+    message: str = Field(default="Server failed to generate chat completions.")
+
+
+# /api/chat/get
+class RetrieveChatCompletionsError(ErrorResponse):
+    message: str = Field(default="Server failed to retrieve chat completions.")
 
 
 # /api/completion/multi-file-context/update
@@ -177,7 +205,7 @@ class MultiFileContextUpdatePostResponse(BaseResponse):
 
 
 class MultiFileContextUpdateError(ErrorResponse):
-    message: str = Field(default="Failed to update multi-file context.")
+    message: str = Field(default="Server failed to update multi-file context.")
 
 
 # /api/project/create
@@ -239,3 +267,84 @@ class NoAccessToGetQueryError(ErrorResponse):
 
 class TooManyRequests(ErrorResponse):
     message: str = Field(default="Too many requests. Please try again later.")
+
+
+########################################
+# /api/chat/delete
+class DeleteChatError(ErrorResponse):
+    """Error response for chat deletion failure"""
+
+    message: str = "Server failed to delete chat"
+
+
+# /api/user/verify
+class ResendVerificationEmailPostResponse(BaseResponse):
+    message: str = Field(
+        default="Verification email sent successfully. Please check your inbox."
+    )
+
+
+class ResendVerificationEmailError(ErrorResponse):
+    message: str = Field(default="Server failed to resend verification email.")
+
+
+class GetVerificationGetResponse(BaseResponse):
+    message: str = Field(default="Verification get returned successfully.")
+    user_is_verified: bool = Field(
+        ..., description="Indicates whether the user is verified"
+    )
+
+
+class GetVerificationError(ErrorResponse):
+    message: str = Field(default="Server failed to retrieve verification status.")
+
+
+class VerifyUserPostHTMLResponse(BaseResponse):
+    message: str = Field(default="User verified successfully.")
+    html: str = Field(
+        default="""<!DOCTYPE html>
+                              <html>
+                              <head>
+                                  <title>Email Verification Successful</title>
+                                  <style>
+                                      body {
+                                          font-family: Arial, sans-serif;
+                                          text-align: center;
+                                          padding: 50px;
+                                      }
+                                      .success {
+                                          color: #4CAF50;
+                                          font-size: 24px;
+                                          margin-bottom: 20px;
+                                      }
+                                      .message {
+                                          font-size: 18px;
+                                          margin-bottom: 30px;
+                                      }
+                                      .button {
+                                          display: inline-block;
+                                          padding: 10px 20px;
+                                          background-color: #4CAF50;
+                                          color: white;
+                                          text-decoration: none;
+                                          border-radius: 5px;
+                                          font-size: 16px;
+                                      }
+                                  </style>
+                              </head>
+                              <body>
+                                  <div class="success">Email Verification Successful!</div>
+                                  <div class="message">Your email has been verified successfully. You can now close this page and continue using the application.</div>
+                                  <a href="/" class="button">Go to Homepage</a>
+                              </body>
+                              </html>
+                      """
+    )
+
+
+class VerifyUserError(ErrorResponse):
+    message: str = Field(default="Server failed to verify the user.")
+
+
+class InvalidOrExpiredVerificationToken(ErrorResponse):
+    message: str = Field(default="Invalid or expired verification token.")

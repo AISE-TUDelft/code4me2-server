@@ -35,7 +35,7 @@ router = APIRouter()
 def create_project(
     project_to_create: Queries.CreateProject,
     app: App = Depends(App.get_instance),
-    auth_token: str = Cookie("auth_token"),
+    auth_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Create a new project

@@ -40,10 +40,14 @@ class TemplateCompletionModel(BaseLLM):
         config: Optional[Code4meV2Config] = None,
         **model_kwargs,
     ) -> "TemplateCompletionModel":
-        if config is None:
-            config = Code4meV2Config()
-
         tokenizer_name = tokenizer_name or model_name
+
+        # Ensure cache directory exists
+        import os
+
+        os.makedirs(config.model_cache_dir, exist_ok=True)
+
+        logging.info(f"Using cache directory: {config.model_cache_dir}")
 
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,

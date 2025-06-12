@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from .chat import router as chat_router
 from .completion import router as completion_router
 from .project import router as project_router
 from .session import router as session_router
@@ -11,6 +12,7 @@ router.include_router(session_router, prefix="/session", tags=["Session"])
 router.include_router(project_router, prefix="/project", tags=["Project"])
 router.include_router(user_router, prefix="/user", tags=["User"])
 router.include_router(completion_router, prefix="/completion")
+router.include_router(chat_router, prefix="/chat", tags=["Chat"])
 router.include_router(ws_routers, prefix="/ws", tags=["WebSocket"])
 
 

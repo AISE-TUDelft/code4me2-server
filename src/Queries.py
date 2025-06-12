@@ -1,9 +1,10 @@
 import re
 from abc import ABC
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
 
 from backend.utils import Fakable, SerializableBaseModel
@@ -128,7 +129,7 @@ class CreateConfig(QueryBase):
 class ContextData(QueryBase):
     prefix: str = Field(..., description="Code before cursor")
     suffix: str = Field(..., description="Code after cursor")
-    file_name: Optional[str] = Field(..., description="File name")
+    file_name: Optional[str] = Field("unknown_file", description="File name")
     selected_text: Optional[str] = Field("", description="Selected text in editor")
     context_files: Optional[List[str]] = Field(
         [], description="Context files to consider"
@@ -184,6 +185,57 @@ class RequestCompletion(QueryBase):
     )
 
 
+class QueryChatMessageRole(Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+class RequestChatCompletion(QueryBase):
+    model_ids: List[int] = Field(..., description="Models to use for chat completion")
+    chat_id: UUID = Field(..., description="Chat ID")
+    messages: List[Tuple[QueryChatMessageRole, str]] = Field(
+        ..., description="Chat messages as a list of tuples"
+    )
+    context: ContextData = Field(..., description="Context data for completion")
+    store_context: Optional[bool] = Field(
+        default=DEFAULT_USER_PREFERENCE.get("store_context"),
+        description="Whether to store context data in database",
+    )
+    contextual_telemetry: ContextualTelemetryData = Field(
+        ..., description="Contextual telemetry data"
+    )
+    store_contextual_telemetry: Optional[bool] = Field(
+        default=DEFAULT_USER_PREFERENCE.get("store_contextual_telemetry"),
+        description="Whether to store contextual telemetry in database",
+    )
+    behavioral_telemetry: BehavioralTelemetryData = Field(
+        ..., description="Behavioral telemetry data"
+    )
+    store_behavioral_telemetry: Optional[bool] = Field(
+        default=DEFAULT_USER_PREFERENCE.get("store_behavioral_telemetry"),
+        description="Whether to store behavioral telemetry in database",
+    )
+    web_enabled: Optional[bool] = Field(
+        default=False, description="Whether web access is enabled"
+    )
+
+    # convert the messages to a list of sequential messages using langchain apis
+    # which would use SystemMessage, HumanMessage, AIMessage
+    def to_langchain_messages(self) -> List[BaseMessage]:
+        messages = []
+        for role, content in self.messages:
+            if role == QueryChatMessageRole.USER:
+                messages.append(HumanMessage(content=content))
+            elif role == QueryChatMessageRole.ASSISTANT:
+                messages.append(AIMessage(content=content))
+            elif role == QueryChatMessageRole.SYSTEM:
+                messages.append(SystemMessage(content=content))
+            else:
+                raise ValueError(f"Unknown message role: {role}")
+        return messages
+
+
 class CreateCompletionQuery(QueryBase):
     user_id: UUID = Field(..., description="User ID")
     contextual_telemetry_id: Optional[UUID] = Field(
@@ -209,13 +261,13 @@ class CreateCompletionQuery(QueryBase):
 
 class CreateChatQuery(QueryBase):
     user_id: UUID = Field(..., description="User ID")
-    contextual_telemetry_id: UUID = Field(
+    contextual_telemetry_id: Optional[UUID] = Field(
         ..., description="Contextual telemetry record ID"
     )
-    behavioral_telemetry_id: UUID = Field(
+    behavioral_telemetry_id: Optional[UUID] = Field(
         ..., description="Behavioral telemetry record ID"
     )
-    context_id: UUID = Field(..., description="Context record ID")
+    context_id: Optional[UUID] = Field(..., description="Context record ID")
     session_id: UUID = Field(..., description="Session ID")
     project_id: UUID = Field(..., description="Project ID")
     chat_id: UUID = Field(..., description="Chat ID")

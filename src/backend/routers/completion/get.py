@@ -31,6 +31,7 @@ router = APIRouter()
         "401": {"model": InvalidOrExpiredSessionToken},
         "403": {"model": NoAccessToGetQueryError},
         "404": {"model": QueryNotFoundError},
+        "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": RetrieveCompletionsError},
     },
@@ -38,7 +39,7 @@ router = APIRouter()
 def get_completions_by_query(
     query_id: UUID,
     app: App = Depends(App.get_instance),
-    session_token: str = Cookie("session_token"),
+    session_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
     Get completions for a specific query ID.
@@ -50,7 +51,7 @@ def get_completions_by_query(
     try:
         # Get session info from Redis
         session_info = redis_manager.get("session_token", session_token)
-        if session_token is None or session_info is None:
+        if session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),

@@ -1,59 +1,58 @@
 import logging
 from typing import Union
+from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends
 
 import database.crud as crud
-import Queries
 from App import App
 from backend.Responses import (
-    CompletionFeedbackPostResponse,
+    DeleteChatError,
     ErrorResponse,
-    FeedbackRecordingError,
-    GenerationNotFoundError,
     InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
-    NoAccessToProvideFeedbackError,
+    NoAccessToGetQueryError,
+    QueryNotFoundError,
 )
-from celery_app.tasks import db_tasks
-from response_models import ResponseFeedbackResponseData
+from response_models import DeleteChatSuccessResponse
 
 router = APIRouter()
 
 
-@router.post(
-    "",
-    response_model=CompletionFeedbackPostResponse,
+@router.delete(
+    "/{chat_id}",
     responses={
-        "200": {"model": CompletionFeedbackPostResponse},
+        "200": {"model": DeleteChatSuccessResponse},
         "401": {
             "model": Union[
-                InvalidOrExpiredSessionToken,
                 InvalidOrExpiredAuthToken,
+                InvalidOrExpiredSessionToken,
                 InvalidOrExpiredProjectToken,
             ]
         },
-        "403": {"model": NoAccessToProvideFeedbackError},
-        "404": {"model": GenerationNotFoundError},
+        "403": {"model": NoAccessToGetQueryError},
+        "404": {"model": QueryNotFoundError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
-        "500": {"model": FeedbackRecordingError},
+        "500": {"model": DeleteChatError},
     },
 )
-def submit_completion_feedback(
-    feedback: Queries.FeedbackCompletion,
+def delete_chat(
+    chat_id: UUID,
     app: App = Depends(App.get_instance),
     session_token: str = Cookie(""),
     project_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
-    Submit feedback on a generated completion.
+    Delete a specific chat by its ID.
+    Validates that the user has access to the chat through their session and project tokens.
     """
-    logging.info(f"Completion feedback: {feedback}")
+    logging.info(f"Attempting to delete chat with ID: {chat_id}")
     db_session = app.get_db_session()
     redis_manager = app.get_redis_manager()
+
     try:
         # Get session info from Redis
         # Validate session token
@@ -82,6 +81,7 @@ def submit_completion_feedback(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
+
         # Validate project token
         project_info = redis_manager.get("project_token", project_token)
         if project_info is None:
@@ -96,70 +96,38 @@ def submit_completion_feedback(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
 
-        # only allow feedback for queries that are for the current user
-        query = crud.get_meta_query_by_id(db_session, feedback.meta_query_id)
-        if not query:
+        # Verify that the chat exists and belongs to this user and project
+        chat = crud.get_chat_by_id(db=db_session, chat_id=chat_id)
+        if chat is None:
             return JsonResponseWithStatus(
                 status_code=404,
-                content=GenerationNotFoundError(),
+                content=QueryNotFoundError(),
             )
 
-        # Convert user_id from string (Redis) to UUID for comparison with database user_id (UUID)
-        print(str(query.user_id))
-        print(user_id)
-        print(str(query.user_id) != user_id)
-        if str(query.user_id) != user_id:
+        # Verify the chat belongs to the correct user and project
+        if str(chat.user_id) != user_id or str(chat.project_id) != project_token:
             return JsonResponseWithStatus(
                 status_code=403,
-                content=NoAccessToProvideFeedbackError(),
+                content=NoAccessToGetQueryError(),
             )
 
-        # Get the generation record
-        generation = crud.get_generation_by_meta_query_and_model(
-            db_session, feedback.meta_query_id, feedback.model_id
-        )
+        # Delete the chat with cascade
+        success = crud.delete_chat_cascade(db=db_session, chat_id=chat_id)
 
-        if not generation:
+        if not success:
             return JsonResponseWithStatus(
-                status_code=404,
-                content=GenerationNotFoundError(),
-            )
-
-        # Update generation status
-        db_tasks.update_generation_task.apply_async(
-            args=[
-                str(feedback.meta_query_id),
-                feedback.model_id,
-                Queries.UpdateGeneration(was_accepted=feedback.was_accepted).dict(),
-            ],
-            queue="db",
-        )
-
-        # If ground truth is provided, save it
-        if feedback.ground_truth:
-            db_tasks.add_ground_truth_task.apply_async(
-                args=[
-                    Queries.CreateGroundTruth(
-                        completion_query_id=feedback.meta_query_id,
-                        ground_truth=feedback.ground_truth,
-                    ).dict()
-                ],
-                queue="db",
+                status_code=500,
+                content=DeleteChatError(),
             )
 
         return JsonResponseWithStatus(
             status_code=200,
-            content=CompletionFeedbackPostResponse(
-                data=ResponseFeedbackResponseData(
-                    meta_query_id=feedback.meta_query_id, model_id=feedback.model_id
-                ),
-            ),
+            content=DeleteChatSuccessResponse(),
         )
 
     except Exception as e:
-        logging.error(f"Error recording feedback: {str(e)}")
-        db_session.rollback()
+        logging.error(f"Error deleting chat {chat_id}: {str(e)}")
         return JsonResponseWithStatus(
             status_code=500,
-            content=FeedbackRecordingError(),
+            content=DeleteChatError(),
         )

@@ -380,7 +380,7 @@ def create_completion_query(
 def create_chat_query(
     db: Session, query: Queries.CreateChatQuery, id: str = ""
 ) -> db_schemas.ChatQuery:
-    meta_query_id = uuid.uuid4()
+    meta_query_id = uuid.uuid4() if id == "" else uuid.UUID(id)
 
     # Step 1: Create MetaQuery first with all the main fields
     db_meta_query = db_schemas.MetaQuery(
@@ -391,7 +391,9 @@ def create_chat_query(
         context_id=query.context_id,
         session_id=query.session_id,
         project_id=query.project_id,
-        multi_file_context_changes_indexes=query.multi_file_context_changes_indexes,
+        multi_file_context_changes_indexes=json.dumps(
+            query.multi_file_context_changes_indexes
+        ),
         timestamp=datetime.now(),
         total_serving_time=query.total_serving_time,
         server_version_id=query.server_version_id,
@@ -632,9 +634,21 @@ def get_all_models(db: Session) -> list[db_schemas.ModelName]:
 
 
 # Chat operations
-def create_chat(db: Session, chat: Queries.CreateChat, id: str = "") -> db_schemas.Chat:
+def create_chat(db: Session, chat: Queries.CreateChat, chat_id: str) -> db_schemas.Chat:
+    # check if chat_id is already present in the database or not
+    chat_uuid = uuid.UUID(chat_id) if isinstance(chat_id, str) else chat_id
+    if existing_chat := get_chat_by_id(db, chat_uuid):
+        if (
+            existing_chat.user_id != chat.user_id
+            or existing_chat.project_id != chat.project_id
+        ):
+            raise ValueError("Chat ID already exists with different project/user.")
+        else:
+            # If chat already exists, just return it
+            return existing_chat
+
     db_chat = db_schemas.Chat(
-        chat_id=uuid.uuid4() if id == "" else uuid.UUID(id),
+        chat_id=chat_uuid if chat_id else uuid.uuid4(),
         project_id=chat.project_id,
         user_id=chat.user_id,
         title=chat.title,
@@ -669,8 +683,90 @@ def get_chats_for_project(db: Session, project_id: uuid.UUID) -> list[db_schemas
     )
 
 
+def get_project_chat_history(
+    db: Session, project_id: uuid.UUID, user_id: uuid.UUID, page_number: int = 1
+) -> list[
+    tuple[
+        db_schemas.Chat,
+        tuple[db_schemas.MetaQuery, db_schemas.Context, list[db_schemas.HadGeneration]],
+    ]
+]:
+    """
+    Get the chat history for a specific project and user.
+    Returns a list of chats ordered by creation date.
+    """
+    chats = (
+        db.query(db_schemas.Chat)
+        .filter(
+            db_schemas.Chat.project_id == project_id, db_schemas.Chat.user_id == user_id
+        )
+        .order_by(db_schemas.Chat.created_at.desc())
+        .offset((page_number - 1) * 10)
+        .limit(10)
+        .all()
+    )
+
+    if not chats:
+        return []
+
+    history_page = []
+
+    # per chat, get the entire chat history
+    for chat in chats:
+        information = get_chat_history(db, chat.chat_id)
+        if information:
+            history_page.append((chat, information))
+
+    return history_page
+
+
 def get_chats_for_user(db: Session, user_id: uuid.UUID) -> list[db_schemas.Chat]:
     return db.query(db_schemas.Chat).filter(db_schemas.Chat.user_id == user_id).all()
+
+
+def get_chat_history(
+    db: Session, chat_id: uuid.UUID
+) -> list[
+    tuple[db_schemas.MetaQuery, db_schemas.Context, list[db_schemas.HadGeneration]]
+]:
+    """
+    Get the complete chat history for a specific chat ID.
+    Returns a list of tuples containing (meta_query, context, generations)
+    ordered by timestamp.
+    """
+    # Get all chat queries for this chat
+    chat_queries = get_chat_queries_for_chat(db, chat_id)
+
+    # Get the chat metadata
+    chat = get_chat_by_id(db, chat_id)
+    if not chat:
+        return []
+
+    # Build the history
+    history = []
+    for chat_query in chat_queries:
+        # Get the meta query
+        meta_query = get_meta_query_by_id(db, chat_query.meta_query_id)
+        if not meta_query:
+            continue
+
+        # Get the context (contains user message)
+        context = get_context_by_id(db, meta_query.context_id)
+        if not context:
+            continue
+
+        # Get all generations for this query
+        generations = get_generations_by_meta_query_id(
+            db, str(meta_query.meta_query_id)
+        )
+
+        # Add to history
+        history.append((meta_query, context, generations))
+
+    # Sort by timestamp
+    history.sort(key=lambda x: x[0].timestamp)
+
+    return history
 
 
 def delete_chat_cascade(db: Session, chat_id: uuid.UUID) -> bool:

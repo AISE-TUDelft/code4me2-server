@@ -3,7 +3,7 @@ from App import App
 from backend.email_utils import send_verification_email
 from celery_app.celery_app import celery
 from database import crud
-from database.utils import create_uuid
+from utils import create_uuid
 
 
 @celery.task
@@ -59,6 +59,31 @@ def add_completion_query_task(query_data: dict, query_id: str = None):  # type: 
         try:
             query_query = Queries.CreateCompletionQuery(**query_data)
             crud.create_completion_query(db=db, query=query_query, id=query_id)
+        except Exception:
+            db.rollback()
+            raise
+
+
+@celery.task
+def add_chat_query_task(query_data: dict, query_id: str = None):  # type: ignore
+    with App.get_instance().get_db_session_fresh() as db:
+        try:
+            query_query = Queries.CreateChatQuery(**query_data)
+            crud.create_chat_query(db=db, query=query_query, id=query_id)
+        except Exception:
+            db.rollback()
+            raise
+
+
+@celery.task
+def get_or_create_chat_task(chat_data: dict, chat_id: str = None):  # type: ignore
+    """
+    Celery task to get or create a chat
+    """
+    with App.get_instance().get_db_session_fresh() as db:
+        try:
+            chat_query = Queries.CreateChat(**chat_data)
+            crud.create_chat(db=db, chat=chat_query, chat_id=chat_id)
         except Exception:
             db.rollback()
             raise
