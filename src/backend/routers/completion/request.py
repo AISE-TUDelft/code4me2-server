@@ -176,7 +176,7 @@ def request_completion(
                 completion_request.context.prefix = (
                     "Other files context:\n"
                     + "\n".join(other_files_context)
-                    + "\n\n"
+                    + "\n\n ONLY USE THE PREVIOUS LINES FOR CONTEXT, DO NOT REPEAT THEM IN YOUR RESPONSE!\n\n"
                     + (completion_request.context.prefix or "")
                 )
         multi_file_context_changes_indexes = {}

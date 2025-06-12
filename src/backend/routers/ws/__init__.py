@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from .chat import router as chat_router
 from .completion import router as completions_router
 from .multi_file_context import router as multi_file_context_router
 
@@ -10,3 +11,4 @@ router.include_router(
     prefix="/completion/multi-file-context",
     tags=["Multi File Context"],
 )
+router.include_router(chat_router, prefix="/chat", tags=["Chat"])

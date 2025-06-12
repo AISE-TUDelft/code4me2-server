@@ -10,6 +10,7 @@ from Queries import FeedbackCompletion, RequestCompletion, UpdateMultiFileContex
 def completion_request_task(
     connection_id: str,
     session_token: str,
+    project_token: str,
     completion_request: dict,
 ) -> None:
     """
@@ -24,7 +25,12 @@ def completion_request_task(
     celery_broker = app.get_celery_broker()
     try:
         request_obj = RequestCompletion(**completion_request)
-        response = request_completion(request_obj, app=app, session_token=session_token)
+        response = request_completion(
+            request_obj,
+            app=app,
+            session_token=session_token,
+            project_token=project_token,
+        )
         celery_broker.publish_message(
             "completion_request_channel",
             json.dumps(
@@ -50,7 +56,10 @@ def completion_request_task(
 
 @celery.task
 def completion_feedback_task(
-    connection_id: str, session_token: str, completion_feedback: dict
+    connection_id: str,
+    session_token: str,
+    project_token: str,
+    completion_feedback: dict,
 ) -> None:
     """
     Process a completion request, used for background tasks.
@@ -65,6 +74,7 @@ def completion_feedback_task(
             feedback=FeedbackCompletion(**completion_feedback),
             app=app,
             session_token=session_token,
+            project_token=project_token,
         )
         celery_broker.publish_message(
             "completion_feedback_channel",
@@ -86,7 +96,10 @@ def completion_feedback_task(
 
 @celery.task
 def update_multi_file_context_task(
-    connection_id: str, session_token: str, multi_file_context_update: dict
+    connection_id: str,
+    session_token: str,
+    project_token: str,
+    multi_file_context_update: dict,
 ) -> None:
     """
     Process a multi-file context update request, used for background tasks.
@@ -103,6 +116,7 @@ def update_multi_file_context_task(
             context_update=UpdateMultiFileContext(**multi_file_context_update),
             app=app,
             session_token=session_token,
+            project_token=project_token,
         )
         celery_broker.publish_message(
             "multi_file_context_update_channel",

@@ -82,7 +82,13 @@ async def completions_websocket(
 
             if completion_request:
                 task = llm_tasks.completion_request_task.apply_async(
-                    args=[connection_id, session_token, completion_request], queue="llm"
+                    args=[
+                        connection_id,
+                        session_token,
+                        project_token,
+                        completion_request,
+                    ],
+                    queue="llm",
                 )
                 logging.log(
                     logging.INFO,
@@ -90,7 +96,12 @@ async def completions_websocket(
                 )
             elif completion_feedback:
                 task = llm_tasks.completion_feedback_task.apply_async(
-                    args=[connection_id, session_token, completion_feedback],
+                    args=[
+                        connection_id,
+                        session_token,
+                        project_token,
+                        completion_feedback,
+                    ],
                     queue="llm",
                 )
                 logging.log(
