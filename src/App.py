@@ -85,16 +85,14 @@ class App:
                 logging.ERROR, f"Exception happened in session expiration listener: {e}"
             )
 
-        self.__completion_models = CompletionModels()
+        self.__completion_models = CompletionModels(config=config)
         if config.preload_models:
             logging.log(logging.INFO, "Preloading llm models...")
             models = crud.get_all_model_names(self.get_db_session())
             for model in models:
                 logging.log(logging.INFO, f"Loading {model.model_name}...")
                 t0 = time.time()
-                self.__completion_models.load_model(
-                    str(model.model_name), config=config
-                )
+                self.__completion_models.load_model(str(model.model_name))
                 logging.log(
                     logging.INFO,
                     f"{model.model_name} is setup in {time.time() - t0:.2f} seconds",

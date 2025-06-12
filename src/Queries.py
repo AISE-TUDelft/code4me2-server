@@ -183,6 +183,9 @@ class RequestCompletion(QueryBase):
         default=DEFAULT_USER_PREFERENCE.get("store_behavioral_telemetry"),
         description="Whether to store behavioral telemetry in database",
     )
+    stop_sequences: Optional[List[str]] = Field(
+        default=[], description="List of sequences that signal the end of generation"
+    )
 
 
 class QueryChatMessageRole(Enum):

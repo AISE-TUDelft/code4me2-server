@@ -209,7 +209,8 @@ def request_completion(
                 {
                     "prefix": completion_request.context.prefix,
                     "suffix": completion_request.context.suffix,
-                }
+                },
+                stop_sequences=completion_model.stop_sequences,
             )
             local_t3 = time.perf_counter()
 

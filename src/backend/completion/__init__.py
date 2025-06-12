@@ -13,8 +13,12 @@ class Template(Enum):
 
 class CompletionModels:
     _instance = None
-    __models = {}
-    __config = None
+
+    def __init__(self, config: Code4meV2Config = None):
+        if self._instance is not None:
+            raise RuntimeError("This class is a singleton!")
+        self.__config = config
+        self.__models = {}
 
     def __new__(cls):
         if cls._instance is None:
@@ -24,13 +28,8 @@ class CompletionModels:
     def load_model(
         self,
         model_name: str,
-        config=None,
         prompt_template: Template = Template.PREFIX_SUFFIX,
     ) -> None:
-        if self.__config is None:
-            if config is None:
-                raise ValueError("Configuration must be provided to load models.")
-            self.__config = config
         if "instruct" in model_name.lower():
             key = f"{model_name}:instruct"
         else:
@@ -43,21 +42,22 @@ class CompletionModels:
         else:
             try:
                 logging.info(
-                    f"Loading model with cache directory: {config.model_cache_dir}"
+                    f"Loading model with cache directory: {self.__config.model_cache_dir}"
                 )
 
+                # TODO: the parameters should be moved to .env so that they are read from self.__config
                 if "instruct" in model_name.lower():
                     self.__models[key] = ChatCompletionModel(
                         model_name=model_name,
                         temperature=0.8,
                         max_new_tokens=256,
-                        cache_dir=config.model_cache_dir,  # Explicit cache dir
+                        cache_dir=self.__config.model_cache_dir,  # Explicit cache dir
                     )
                 else:
                     self.__models[key] = TemplateCompletionModel.from_pretrained(
                         model_name=model_name,
                         prompt_template=prompt_template.value,
-                        config=config,  # Pass the config explicitly
+                        config=self.__config,  # Pass the config explicitly
                     )
             except Exception as e:
                 logging.log(logging.ERROR, e)
@@ -70,7 +70,6 @@ class CompletionModels:
         self,
         model_name: str,
         prompt_template: Template = Template.PREFIX_SUFFIX,
-        config: Code4meV2Config = None,
     ) -> Optional[Union[TemplateCompletionModel, ChatCompletionModel]]:
         if "instruct" in model_name.lower():
             key = f"{model_name}:instruct"
@@ -82,7 +81,5 @@ class CompletionModels:
             logging.log(
                 logging.INFO, f"Loading the {key} model since it's not preloaded..."
             )
-            self.load_model(
-                model_name=model_name, config=config, prompt_template=prompt_template
-            )
+            self.load_model(model_name=model_name, prompt_template=prompt_template)
             return self.__models.get(key)
