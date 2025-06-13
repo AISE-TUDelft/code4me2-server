@@ -61,7 +61,7 @@ def deactivate_session(
         session_token = auth_info.get("session_token")
 
         # Step 2: Retrieve and validate session info from Redis
-        session_info = redis_manager.get("session_info", session_token)
+        session_info = redis_manager.get("session_token", session_token)
         if not session_info:
             # Session token not found or expired
             return JsonResponseWithStatus(
