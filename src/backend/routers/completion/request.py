@@ -31,6 +31,17 @@ from utils import create_uuid, extract_secrets, redact_secrets
 
 router = APIRouter()
 
+"""
+API endpoint to handle code completion requests.
+
+- Validates session, auth, and project tokens using Redis.
+- Redacts secrets from input context.
+- Optionally stores context and telemetry data asynchronously with Celery.
+- Supports multi-file context aggregation.
+- Invokes multiple completion models in parallel threads.
+- Returns aggregated completions or errors.
+"""
+
 
 @router.post(
     "",
@@ -56,7 +67,16 @@ def request_completion(
     project_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
-    Request code completions based on provided context.
+    Handle a code completion request.
+
+    Steps:
+    - Authenticate session, user, and project tokens via Redis.
+    - Redact any secrets from the context before processing.
+    - Prepare optional Celery tasks for storing context and telemetry.
+    - Aggregate multi-file context if available.
+    - Run completion models concurrently using a thread pool.
+    - Queue database update tasks asynchronously using Celery.
+    - Return completion results or appropriate error responses.
     """
     overall_start = time.perf_counter()
     logging.info(f"Completion request: {completion_request.dict()}")
@@ -77,7 +97,7 @@ def request_completion(
                 content=InvalidOrExpiredSessionToken(),
             )
 
-        # Get user_id and auth_token from session info
+        # Extract auth token from session info and validate
         auth_token = session_info.get("auth_token")
         if not auth_token:
             return JsonResponseWithStatus(
@@ -95,6 +115,7 @@ def request_completion(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
+
         # Validate project token
         project_info = redis_manager.get("project_token", project_token)
         if project_info is None:
@@ -102,7 +123,7 @@ def request_completion(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
 
-        # Verify project is linked to this session
+        # Ensure project token is linked to session
         session_projects = session_info.get("project_tokens", [])
         if project_token not in session_projects:
             return JsonResponseWithStatus(
@@ -111,7 +132,8 @@ def request_completion(
 
         t1 = time.perf_counter()
         logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
-        # Redact secrets from context
+
+        # Extract and redact secrets from context prefix and suffix
         secrets = extract_secrets(
             completion_request.context.prefix
             + "\n"
@@ -127,7 +149,7 @@ def request_completion(
         t2 = time.perf_counter()
         logging.info(f"Context secret redaction took {(t2 - t1) * 1000:.2f}ms")
 
-        # Prepare tasks based on user preferences
+        # Prepare Celery tasks to store context and telemetry if requested
         created_context_id = None
         add_context_task = None
         if completion_request.store_context:
@@ -157,11 +179,13 @@ def request_completion(
             f"Preparing celery tasks based on user preferences took {(t3 - t2) * 1000:.2f}ms"
         )
 
+        # Retrieve multi-file contexts and changes from project info
         multi_file_contexts = project_info.get("multi_file_contexts", {})
         multi_file_context_changes = project_info.get("multi_file_context_changes", {})
 
         created_query_id = create_uuid()
 
+        # Aggregate other file contexts into the prefix if applicable
         if multi_file_contexts:
             other_files_context = []
             for file_name, context in multi_file_contexts.items():
@@ -179,32 +203,41 @@ def request_completion(
                     + "\n\n ONLY USE THE PREVIOUS LINES FOR CONTEXT, DO NOT REPEAT THEM IN YOUR RESPONSE!\n\n"
                     + (completion_request.context.prefix or "")
                 )
+
+        # Prepare indexes of multi-file context changes counts
         multi_file_context_changes_indexes = {}
         if multi_file_context_changes:
             multi_file_context_changes_indexes = {
                 file_name: len(changes)
                 for file_name, changes in multi_file_context_changes.items()
             }
+
         t4 = time.perf_counter()
         logging.info(f"Multi-file context processing took {(t4 - t3) * 1000:.2f}ms")
+
         completions = []
         add_generation_tasks = []
 
         def handle_model_completion(model_id):
+            """
+            Run completion model by ID and prepare result with DB logging task.
+            """
             local_t0 = time.perf_counter()
             model = crud.get_model_by_id(db_auth, model_id)
             if not model:
                 return CompletionErrorItem(model_name=f"Model ID: {model_id}")
             local_t1 = time.perf_counter()
 
+            # Retrieve completion model instance
             completion_model = completion_models.get_model(
                 model_name=str(model.model_name),
                 prompt_template=completion.Template.PREFIX_SUFFIX,
             )
-
             if completion_model is None:
                 return CompletionErrorItem(model_name=model)
+
             local_t2 = time.perf_counter()
+            # Invoke the model with redacted prefix and suffix
             completion_result = completion_model.invoke(
                 {
                     "prefix": completion_request.context.prefix,
@@ -220,6 +253,8 @@ def request_completion(
                 f"GetModel={((local_t2 - local_t1) * 1000):.2f}ms, "
                 f"Invoke={((local_t3 - local_t2) * 1000):.2f}ms"
             )
+
+            # Redact any secrets in the model's completion output
             completion_result["completion"] = redact_secrets(
                 completion_result["completion"],
                 extract_secrets(
@@ -228,9 +263,7 @@ def request_completion(
                 ),
             )
 
-            # Used for test mode
-            # completion_result = {"completion": "test", "generation_time": 100, "confidence": 0.8, "logprobs": [0.2, 0.5]}
-
+            # Prepare Celery task to log generation details to DB
             add_generation_task = db_tasks.add_generation_task.si(
                 Queries.CreateGeneration(
                     model_id=model_id,
@@ -253,6 +286,7 @@ def request_completion(
                 confidence=completion_result["confidence"],
             )
 
+        # Execute completion calls concurrently using thread pool
         with ThreadPoolExecutor(max_workers=config.thread_pool_max_workers) as executor:
             future_to_model = {
                 executor.submit(handle_model_completion, model_id): model_id
@@ -262,10 +296,11 @@ def request_completion(
                 result = future.result()
                 if result is not None:
                     completions.append(result)
+
         t5 = time.perf_counter()
         logging.info(f"Model completion (threaded) took {(t5 - t4) * 1000:.2f}ms")
 
-        # Celery task prep
+        # Prepare Celery task to add the completion query metadata to DB
         add_query_task = db_tasks.add_completion_query_task.si(
             Queries.CreateCompletionQuery(
                 user_id=uuid.UUID(str(user_id)),
@@ -291,7 +326,7 @@ def request_completion(
             created_query_id,
         )
 
-        # Filter out None tasks
+        # Collect all optional pre-query tasks (filter out None)
         pre_query_tasks = list(
             filter(
                 None,
@@ -302,11 +337,14 @@ def request_completion(
                 ],
             )
         )
+
+        # Chain Celery tasks: store context/telemetry -> add query -> add generations
         chain(
             group(*pre_query_tasks) if pre_query_tasks else None,
             add_query_task,
             group(*add_generation_tasks),
         ).apply_async(queue="db")
+
         t6 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t6 - t5) * 1000:.2f}ms")
 
@@ -315,6 +353,7 @@ def request_completion(
             f"TOTAL serving time: {(overall_end - overall_start) * 1000:.2f}ms"
         )
 
+        # Return successful completion response with data
         return JsonResponseWithStatus(
             status_code=200,
             content=CompletionPostResponse(
@@ -325,6 +364,7 @@ def request_completion(
         )
 
     except Exception as e:
+        # Log error and rollback DB transaction on failure
         logging.error(f"Error processing completion request: {str(e)}")
         db_auth.rollback()
         return JsonResponseWithStatus(

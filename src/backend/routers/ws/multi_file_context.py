@@ -16,69 +16,91 @@ async def multi_file_context_websocket(
     session_token: str = Cookie(""),
     project_token: str = Cookie(""),
 ):
+    """
+    WebSocket endpoint to handle multi-file context updates.
+
+    Validates session, auth, and project tokens from cookies and Redis.
+    Registers the WebSocket connection with the Celery broker and
+    listens for multi-file context update requests, dispatching them as
+    Celery tasks.
+
+    Args:
+        websocket (WebSocket): The WebSocket connection.
+        app (App): Application instance, injected via FastAPI dependency.
+        session_token (str): Session token cookie.
+        project_token (str): Project token cookie.
+    """
     await websocket.accept()
     redis_manager = app.get_redis_manager()
+
     # Validate session token
     session_info = redis_manager.get("session_token", session_token)
     if session_info is None:
-        logging.log(logging.INFO, f"Invalid or expired session token: {session_token}")
+        logging.info(f"Invalid or expired session token: {session_token}")
         await websocket.send_json(
             {"error": Responses.InvalidOrExpiredSessionToken().message}
         )
         await websocket.close()
         return
 
-    # Get user_id and auth_token from session info
+    # Get auth_token from session info and validate
     auth_token = session_info.get("auth_token")
     if not auth_token:
-        logging.log(logging.INFO, f"Invalid or expired session token: {session_token}")
+        logging.info(f"Invalid or expired session token: {session_token}")
         await websocket.send_json(
             {"error": Responses.InvalidOrExpiredSessionToken().message}
         )
         await websocket.close()
         return
+
     auth_info = redis_manager.get("auth_token", auth_token)
     if auth_info is None:
-        logging.log(logging.INFO, f"Invalid or expired auth token: {auth_token}")
+        logging.info(f"Invalid or expired auth token: {auth_token}")
         await websocket.send_json(
             {"error": Responses.InvalidOrExpiredAuthToken().message}
         )
         await websocket.close()
         return
+
+    # Extract user_id and verify
     user_id = auth_info.get("user_id")
     if not user_id:
-        logging.log(logging.INFO, f"Invalid or expired session token: {session_token}")
+        logging.info(f"Invalid or expired session token: {session_token}")
         await websocket.send_json(
             {"error": Responses.InvalidOrExpiredSessionToken().message}
         )
         await websocket.close()
         return
+
     # Validate project token
     project_info = redis_manager.get("project_token", project_token)
     if project_info is None:
-        logging.log(logging.INFO, f"Invalid or expired project token: {project_token}")
+        logging.info(f"Invalid or expired project token: {project_token}")
         await websocket.send_json(
             {"error": Responses.InvalidOrExpiredProjectToken().message}
         )
         await websocket.close()
         return
 
-    # Verify project is linked to this session
+    # Verify that the project token is linked to this session
     session_projects = session_info.get("project_tokens", [])
     if project_token not in session_projects:
-        logging.log(logging.INFO, f"Invalid or expired project token: {project_token}")
+        logging.info(f"Invalid or expired project token: {project_token}")
         await websocket.send_json(
             {"error": Responses.InvalidOrExpiredProjectToken().message}
         )
         await websocket.close()
         return
+
     broker = app.get_celery_broker()
     connection_id = broker.register_new_connection(websocket)
+
     try:
         while True:
             data = await websocket.receive_json()
             multi_file_context_update = data.get("multi_file_context_update")
             if multi_file_context_update:
+                # Dispatch the multi-file context update task to Celery
                 task = llm_tasks.update_multi_file_context_task.apply_async(
                     args=[
                         connection_id,
@@ -88,9 +110,8 @@ async def multi_file_context_websocket(
                     ],
                     queue="llm",
                 )
-                logging.log(
-                    logging.INFO,
-                    f"Submitted multi-file context update with task ID: {task.id}",
+                logging.info(
+                    f"Submitted multi-file context update with task ID: {task.id}"
                 )
             else:
                 await websocket.send_json({"error": "Invalid websocket request"})

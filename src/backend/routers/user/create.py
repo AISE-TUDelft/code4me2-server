@@ -1,3 +1,16 @@
+"""
+This module defines a FastAPI router for user account creation.
+
+Endpoints:
+- POST /: Creates a new user using either standard or OAuth registration.
+
+Features:
+- Conflict checking for existing email addresses.
+- Optional JWT verification for OAuth users.
+- Asynchronous email verification via Celery.
+- Structured response models and status codes.
+"""
+
 import logging
 from typing import Union
 
@@ -16,7 +29,7 @@ from backend.Responses import (
 )
 from backend.utils import verify_jwt_token
 
-# Initialize the API router for user creation endpoints
+# Initialize the API router for user creation
 router = APIRouter()
 
 
@@ -37,50 +50,46 @@ def create_user(
     app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
-    Create a new user in the system.
+    Create a new user in the system using standard or OAuth-based data.
 
     Args:
-        user_to_create (Union[Queries.CreateUser, Queries.CreateUserOauth]):
-            The user data to create, can be standard or OAuth-based.
+        user_to_create (Union[CreateUser, CreateUserOauth]):
+            User data from the request body (standard or OAuth-based).
         app (App):
-            The application instance, injected by FastAPI's dependency system.
+            Application context with access to database and services.
 
     Returns:
-        JsonResponseWithStatus: Response with status code and content.
+        JsonResponseWithStatus: JSON response indicating success or failure.
 
-    Steps:
-        1. Check if the user already exists by email.
-        2. If OAuth, verify the JWT token and email.
-        3. Create the user in the database if not exists.
-        4. Send verification email.
-        5. Return appropriate response.
+    Flow:
+        1. Check if a user already exists with the given email.
+        2. If using OAuth, validate the JWT token.
+        3. Insert the new user into the database.
+        4. Send a verification email via Celery.
+        5. Return HTTP 201 with the new user ID.
     """
-    # Log the user creation attempt
-    logging.log(
-        logging.INFO, f"Creating user: ({user_to_create.dict(hide_secrets=True)})"
-    )
+    logging.info(f"Creating user: ({user_to_create.dict(hide_secrets=True)})")
     db_session = app.get_db_session()
 
     try:
-        # Check if user already exists in the database
+        # Check for existing user by email
         existing_user = crud.get_user_by_email(db_session, str(user_to_create.email))
         if existing_user:
-            # User already exists, return 409 conflict
             return JsonResponseWithStatus(
                 status_code=409,
                 content=UserAlreadyExistsWithThisEmail(),
             )
-        # If OAuth, verify the provided JWT token
+
+        # Verify JWT token if OAuth-based registration
         if (
             isinstance(user_to_create, Queries.CreateUserOauth)
-            and not user_to_create.token == ""
+            and user_to_create.token != ""
         ):
             verification_result = verify_jwt_token(user_to_create.token)
             if (
                 verification_result is None
                 or verification_result.get("email") != user_to_create.email
             ):
-                # Invalid or expired token, return 401 unauthorized
                 return JsonResponseWithStatus(
                     status_code=401,
                     content=InvalidOrExpiredJWTToken(),
@@ -89,19 +98,16 @@ def create_user(
         # Create the user in the database
         user = crud.create_user(db_session, user_to_create)
 
-        # Send verification email
+        # Send verification email asynchronously via Celery
         from celery_app.tasks.db_tasks import send_verification_email_task
 
         send_verification_email_task.delay(
             str(user.user_id), str(user.email), user.name
         )
 
-        # Return success response with the new user's ID
         return JsonResponseWithStatus(
             status_code=201,
-            content=CreateUserPostResponse(
-                user_id=user.user_id,
-            ),
+            content=CreateUserPostResponse(user_id=user.user_id),
         )
     except Exception as e:
         logging.error(f"Error processing user creation request: {str(e)}")
@@ -114,7 +120,8 @@ def create_user(
 
 def __init__():
     """
-    Module initializer. Called when the module is imported.
-    Used to initialize the module and import the router.
+    Optional module initializer.
+
+    Placeholder for any setup logic required during import.
     """
     pass
