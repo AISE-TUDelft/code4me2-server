@@ -1,3 +1,6 @@
+from datetime import datetime
+
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     BigInteger,
@@ -343,6 +346,23 @@ class GroundTruth(Base):
     )
     truth_timestamp = Column(DateTime(timezone=True), nullable=False)
     ground_truth = Column(Text, nullable=False)
+
+
+class Documentation(Base):
+    __tablename__ = "documentation"
+    __table_args__ = (
+        Index("idx_documentation_language", "language"),
+        Index("idx_documentation_embedding", "embedding", postgresql_using="ivfflat"),
+        {"schema": "public"},
+    )
+
+    documentation_id = Column(Integer, primary_key=True, autoincrement=True)
+    content = Column(Text, nullable=False)
+    language = Column(String(50), nullable=False)
+    embedding = Column(
+        Vector(384), nullable=True
+    )  # 384 dimensions for all-MiniLM-L6-v2
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
 
 
 #

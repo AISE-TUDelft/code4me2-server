@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     container_name: postgres
     ports:
       - ${DB_PORT}:5432
@@ -231,7 +231,7 @@ services:
       retries: 3
 
 #  test_db:
-#    image: postgres:16
+#    image: pgvector/pgvector:pg16
 #    container_name: postgres_test
 #    ports:
 #      - "5433:5432"

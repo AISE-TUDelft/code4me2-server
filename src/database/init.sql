@@ -1,4 +1,7 @@
 BEGIN TRANSACTION;
+-- Enable pgvector extension
+CREATE EXTENSION IF NOT EXISTS vector;
+
 
 -- Config table
 CREATE TABLE IF NOT EXISTS public.config
@@ -182,6 +185,21 @@ CREATE TABLE IF NOT EXISTS public.ground_truth
     PRIMARY KEY (completion_query_id, truth_timestamp)
 );
 
+
+-- Documentation table with vector embeddings
+CREATE TABLE IF NOT EXISTS public.documentation
+(
+    documentation_id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL,
+    language VARCHAR(50) NOT NULL,
+    embedding vector(384),  -- 384 dimensions for all-MiniLM-L6-v2 model
+    created_at timestamp with time zone NOT NULL DEFAULT NOW()
+);
+
+-- Indexes for documentation table
+CREATE INDEX IF NOT EXISTS idx_documentation_language ON public.documentation (language);
+CREATE INDEX IF NOT EXISTS idx_documentation_embedding ON public.documentation
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 -- Foreign Key Constraints
 ALTER TABLE public."user"
     ADD CONSTRAINT fk_user_config FOREIGN KEY (config_id)
