@@ -176,7 +176,9 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         with self.locks[client_key]:
             current_count = self.request_counts.get(client_key, 0)
             rate_limit = self._get_rate_limit(endpoint)
-
+            logging.info(
+                f"Rate limit for {client_key} on {endpoint}: {current_count}/{rate_limit}"
+            )
             if current_count >= rate_limit:
                 logging.warning(
                     f"Rate limit exceeded for {client_key} "

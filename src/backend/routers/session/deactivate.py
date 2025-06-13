@@ -26,7 +26,6 @@ router = APIRouter()
         "429": {"model": ErrorResponse},
         "500": {"model": DeactivateSessionError},
     },
-    tags=["Deactivate Session"],
 )
 def deactivate_session(
     app: App = Depends(App.get_instance),
