@@ -138,7 +138,7 @@ def request_completion(
             completion_request.context.prefix
             + "\n"
             + completion_request.context.suffix,
-            file_name=str(completion_request.context.file_name),
+            file_name=completion_request.context.file_name,
         )
         completion_request.context.prefix = redact_secrets(
             completion_request.context.prefix, secrets

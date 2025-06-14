@@ -1,3 +1,4 @@
+# TODO: reformat
 """
 Celery tasks for database operations in Code4meV2.
 
@@ -272,3 +273,31 @@ def send_verification_email_task(user_id: str, user_email: str, user_name: str):
 
     # Send the verification email with the generated token
     send_verification_email(user_email, user_name, verification_token)
+
+
+@celery.task
+def send_reset_password_email_task(user_id: str, user_email: str, user_name: str):
+    """
+    Send a password reset email to the user.
+
+    This task generates a unique reset token, stores it in Redis with an expiration time,
+    and sends the reset password email to the user.
+
+    Args:
+        user_id: Unique identifier for the user account
+        user_email: Email address to send the reset link to
+        user_name: Display name of the user for personalization
+    """
+    # # Generate a secure reset token
+    reset_token = create_uuid()
+
+    # # Store the reset token in Redis with user info and expiration (15 minutes)
+    app = App.get_instance()
+    app.get_redis_manager().set(
+        "password_reset",
+        reset_token,
+        {"user_id": user_id, "email": user_email},
+        force_reset_exp=True,
+    )
+    # Send the password reset email with the generated token
+    send_verification_email(user_email, user_name, reset_token)

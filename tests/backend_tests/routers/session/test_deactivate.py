@@ -38,7 +38,7 @@ class TestDeactivateSession:
             if namespace == "auth_token" and key == auth_token
             else (
                 {"data": "something"}
-                if namespace == "session_info" and key == session_token
+                if namespace == "session_token" and key == session_token
                 else None
             )
         )

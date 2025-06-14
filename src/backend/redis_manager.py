@@ -25,6 +25,8 @@ class RedisManager:
         port: int,
         auth_token_expires_in_seconds: int = 86400,
         session_token_expires_in_seconds: int = 3600,
+        email_verification_token_expires_in_seconds: int = 86400,
+        reset_password_token_expires_in_seconds: int = 900,
         token_hook_activation_in_seconds: int = 60,
         store_multi_file_context_on_db: bool = True,
     ):
@@ -32,6 +34,12 @@ class RedisManager:
         self.__redis_client = Redis(host=host, port=port, decode_responses=True)
         self.session_token_expires_in_seconds = session_token_expires_in_seconds
         self.auth_token_expires_in_seconds = auth_token_expires_in_seconds
+        self.email_verification_token_expires_in_seconds = (
+            email_verification_token_expires_in_seconds
+        )
+        self.reset_password_token_expires_in_seconds = (
+            reset_password_token_expires_in_seconds
+        )
         self.store_multi_file_context_on_db = store_multi_file_context_on_db
         self.token_hook_activation_in_seconds = token_hook_activation_in_seconds
 
@@ -55,7 +63,9 @@ class RedisManager:
         elif type == "project_token":
             return -1  # project tokens do not expire by default
         elif type == "email_verification":
-            return 86400  # 24 hours expiration
+            return self.email_verification_token_expires_in_seconds
+        elif type == "password_reset":
+            return self.reset_password_token_expires_in_seconds
         else:
             return 3600  # default 1 hour expiration
 

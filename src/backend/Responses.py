@@ -1,5 +1,4 @@
 from abc import ABC
-from typing import Any, Dict
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
@@ -76,7 +75,7 @@ class CreateUserError(ErrorResponse):
 # /api/user/authenticate
 class AuthenticateUserPostResponse(BaseResponse, ABC):
     user: ResponseUser = Field(..., description="User details")
-    config: Dict[str, Any] = Field(..., description="User's config JSON string")
+    config: str = Field(..., description="User's config HOKON string")
 
 
 class AuthenticateUserNormalPostResponse(AuthenticateUserPostResponse):
@@ -130,7 +129,7 @@ class UpdateUserPutResponse(BaseResponse):
     user: ResponseUser = Field(..., description="User details")
 
 
-class InvalidPreviousPassword(BaseResponse):
+class InvalidPreviousPassword(ErrorResponse):
     message: str = Field(default="Previous password is not correct!")
 
 
@@ -341,3 +340,126 @@ class VerifyUserError(ErrorResponse):
 
 class InvalidOrExpiredVerificationToken(ErrorResponse):
     message: str = Field(default="Invalid or expired verification token.")
+
+
+# /api/user/reset-password/request
+# Define response models (these would typically be in a separate responses module)
+class PasswordResetRequestPostResponse(BaseResponse):
+    message: str = Field(
+        default="Password reset email sent successfully. Check you email for instructions."
+    )
+
+
+# /api/user/reset-password
+class PasswordResetGetHTMLResponse(BaseResponse):
+    def __init__(self, token: str = None, success: bool = False, error: str = None):
+        super().__init__()
+        if success:
+            self.html = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Password Reset Successful</title>
+                <style>
+                    body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+                    .success { color: #4CAF50; text-align: center; }
+                    .card { border: 1px solid #ddd; border-radius: 8px; padding: 30px; background: #f9f9f9; }
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h2 class="success">Password Reset Successful!</h2>
+                    <p>Your password has been updated successfully. You can now log in with your new password.</p>
+                </div>
+            </body>
+            </html>
+            """
+        elif error:
+            self.html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Password Reset Error</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+                    .error {{ color: #f44336; text-align: center; }}
+                    .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 30px; background: #f9f9f9; }}
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h2 class="error">Password Reset Error</h2>
+                    <p>{error}</p>
+                </div>
+            </body>
+            </html>
+            """
+        else:
+            self.html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Reset Your Password</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+                    .form-group {{ margin-bottom: 15px; }}
+                    label {{ display: block; margin-bottom: 5px; font-weight: bold; }}
+                    input[type="password"] {{ width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }}
+                    button {{ background-color: #4CAF50; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; width: 100%; }}
+                    button:hover {{ background-color: #45a049; }}
+                    .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 30px; background: #f9f9f9; }}
+                    .error {{ color: #f44336; margin-bottom: 15px; }}
+                </style>
+            </head>
+            <body>
+                <div class="card">
+                    <h2>Reset Your Password</h2>
+                    <form method="post" action="/api/user/reset-password/change">
+                        <input type="hidden" name="token" value="{token}">
+
+                        <div class="form-group">
+                            <label for="current_password">Current Password:</label>
+                            <input type="password" id="current_password" name="current_password" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="new_password">New Password:</label>
+                            <input type="password" id="new_password" name="new_password" required minlength="8">
+                        </div>
+
+                        <div class="form-group">
+                            <label for="confirm_password">Confirm New Password:</label>
+                            <input type="password" id="confirm_password" name="confirm_password" required minlength="8">
+                        </div>
+
+                        <button type="submit">Reset Password</button>
+                    </form>
+                </div>
+
+                <script>
+                    // Client-side password confirmation validation
+                    document.querySelector('form').addEventListener('submit', function(e) {{
+                        const newPassword = document.getElementById('new_password').value;
+                        const confirmPassword = document.getElementById('confirm_password').value;
+
+                        if (newPassword !== confirmPassword) {{
+                            e.preventDefault();
+                            alert('New password and confirmation do not match!');
+                        }}
+                    }});
+                </script>
+            </body>
+            </html>
+            """
+
+
+class InvalidOrExpiredResetToken(ErrorResponse):
+    message: str = Field(default="Invalid or expired password reset token.")
+
+
+class ErrorShowingPasswordResetForm(ErrorResponse):
+    message: str = Field(default="Error showing password reset form.")
+
+
+class PasswordResetError(ErrorResponse):
+    message: str = Field(default="Server failed to reset the password.")

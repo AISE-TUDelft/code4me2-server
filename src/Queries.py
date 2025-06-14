@@ -96,7 +96,7 @@ class UpdateUser(QueryBase):
         """
         Normalize email to lowercase.
         """
-        return v.strip().lower()
+        return v.strip().lower() if v else v
 
     @field_validator("password")
     @classmethod

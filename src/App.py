@@ -129,6 +129,8 @@ class App:
             port=config.redis_port,
             auth_token_expires_in_seconds=config.auth_token_expires_in_seconds,
             session_token_expires_in_seconds=config.session_token_expires_in_seconds,
+            email_verification_token_expires_in_seconds=config.email_verification_token_expires_in_seconds,
+            reset_password_token_expires_in_seconds=config.reset_password_token_expires_in_seconds,
             token_hook_activation_in_seconds=config.token_hook_activation_in_seconds,
         )
 

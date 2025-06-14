@@ -8,6 +8,8 @@ a variety of detectors from the `detect-secrets` library.
 import re
 import uuid
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHash, VerifyMismatchError
 from detect_secrets.plugins.artifactory import ArtifactoryDetector
 from detect_secrets.plugins.aws import AWSKeyDetector
 from detect_secrets.plugins.azure_storage_key import AzureStorageKeyDetector
@@ -47,6 +49,19 @@ secret_detectors = [
     ArtifactoryDetector(),
 ]
 
+ph = PasswordHasher()
+
+
+def hash_password(password: str) -> str:
+    return ph.hash(password)
+
+
+def verify_password(hashed_password: str, input_password: str) -> bool:
+    try:
+        return ph.verify(hashed_password, input_password)
+    except (InvalidHash, VerifyMismatchError):
+        return False
+
 
 def extract_secrets(text: str, file_name: str = "unknown_file") -> set[str]:
     """
@@ -60,7 +75,7 @@ def extract_secrets(text: str, file_name: str = "unknown_file") -> set[str]:
         set[str]: A set of detected secret values.
     """
     secrets = set()
-
+    file_name = "unknown_file" if not file_name else file_name
     for detector in secret_detectors:
         findings = detector.analyze_line(
             filename=file_name,
