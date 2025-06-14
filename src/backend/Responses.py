@@ -463,3 +463,14 @@ class ErrorShowingPasswordResetForm(ErrorResponse):
 
 class PasswordResetError(ErrorResponse):
     message: str = Field(default="Server failed to reset the password.")
+
+
+# /api/user/get
+class GetUserError(ErrorResponse):
+    message: str = Field(default="Server failed to retrieve user information.")
+
+
+class GetUserGetResponse(BaseResponse):
+    message: str = Field(default="User information retrieved successfully.")
+    user: ResponseUser = Field(..., description="User details")
+    config: str = Field(..., description="User's config HOKON string")

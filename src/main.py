@@ -177,7 +177,7 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
             current_count = self.request_counts.get(client_key, 0)
             rate_limit = self._get_rate_limit(endpoint)
             logging.info(
-                f"Rate limit for {client_key} on {endpoint}: {current_count}/{rate_limit}"
+                f"Rate limit for {client_key} with cookies {request.cookies}: {current_count}/{rate_limit}"
             )
             if current_count >= rate_limit:
                 logging.warning(

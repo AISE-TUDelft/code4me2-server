@@ -10,7 +10,7 @@ on errors and follow a consistent pattern for data validation and persistence.
 
 import Queries
 from App import App
-from backend.email_utils import send_verification_email
+from backend.email_utils import send_reset_password_email, send_verification_email
 from celery_app.celery_app import celery
 from database import crud
 from utils import create_uuid
@@ -300,4 +300,4 @@ def send_reset_password_email_task(user_id: str, user_email: str, user_name: str
         force_reset_exp=True,
     )
     # Send the password reset email with the generated token
-    send_verification_email(user_email, user_name, reset_token)
+    send_reset_password_email(user_email, user_name, reset_token)

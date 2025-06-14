@@ -72,7 +72,7 @@ def send_verification_email(
         return False
 
 
-def send_password_reset_email(
+def send_reset_password_email(
     user_email: str, user_name: str, reset_token: str
 ) -> bool:
     """
