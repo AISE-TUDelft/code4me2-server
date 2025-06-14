@@ -19,7 +19,6 @@ import pytest
 from sqlalchemy import create_engine, text
 
 
-
 def setup_project_paths():
     """
     Properly detect project root and set up paths for Windows.
