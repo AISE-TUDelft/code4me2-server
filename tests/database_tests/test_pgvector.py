@@ -1,4 +1,4 @@
-# test_pgvector_fixed.py
+# RUN THIS TEST FILE SEPARATELY FROM THE TEST SUITE THE MOCKUPS CAUSE THIS FILE TO FAIL
 # !/usr/bin/env python3
 
 import os

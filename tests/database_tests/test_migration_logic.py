@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive Migration System Test Suite - UPDATED VERSION
+Migration System Test Suite
 
 This version properly handles:
 - Windows paths with spaces
@@ -8,7 +8,6 @@ This version properly handles:
 - Project root detection from tests subdirectory
 - Configurable database (main vs test)
 
-Place this file at: tests/database_tests/test_migration.py
 """
 
 import os
@@ -20,7 +19,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 
-# === WINDOWS PATH FIX ===
+
 def setup_project_paths():
     """
     Properly detect project root and set up paths for Windows.
@@ -108,7 +107,7 @@ except ImportError as e:
     raise
 
 
-# Test Configuration - UPDATED FOR CONFIGURABLE DATABASE
+# Test Configuration
 class TestConfig:
     """Centralized test configuration with configurable database."""
 

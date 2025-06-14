@@ -71,17 +71,6 @@ def mock_model_components():
         yield tokenizer, model
 
 
-# @pytest.fixture
-# def dummy_config():
-#     return Code4meV2Config(
-#         model_cache_dir="./.test_cache",
-#         model_use_cache=True,
-#         model_num_beams=1,
-#         model_max_new_tokens=10,
-#         model_use_compile=False,
-#     )
-
-
 @pytest.fixture
 def model_instance(mock_model_components, dummy_config):
     tokenizer, model = mock_model_components
