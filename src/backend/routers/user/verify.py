@@ -16,7 +16,7 @@ from backend.Responses import (
     ResendVerificationEmailPostResponse,
     UserNotFoundError,
     VerifyUserError,
-    VerifyUserPostHTMLResponse,
+    VerifyUserGetHTMLResponse,
 )
 from celery_app.tasks.db_tasks import send_verification_email_task
 from Queries import UpdateUser
@@ -159,10 +159,10 @@ def resend_verification_email(
         )
 
 
-@router.post(
+@router.get(
     "/",
     responses={
-        "200": {"model": VerifyUserPostHTMLResponse},
+        "200": {"model": VerifyUserGetHTMLResponse},
         "401": {"model": InvalidOrExpiredVerificationToken},
         "404": {"model": UserNotFoundError},
         "422": {"model": ErrorResponse},
@@ -223,7 +223,7 @@ def verify_email(
 
         # Return success response in HTML format
         return HTMLResponseWithStatus(
-            content=VerifyUserPostHTMLResponse(), status_code=200
+            content=VerifyUserGetHTMLResponse(), status_code=200
         )
 
     except Exception as e:

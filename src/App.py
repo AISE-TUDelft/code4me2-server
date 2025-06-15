@@ -117,8 +117,6 @@ class App:
 
         # Store configuration for later access
         self.__config = config
-        # TODO: to be removed
-        print(config.email_password)
 
         # Initialize Redis manager for session and token management
         self.__redis_manager = RedisManager(

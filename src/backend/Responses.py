@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from response_models import (
     ResponseCompletionResponseData,
@@ -41,7 +41,9 @@ class HTMLResponseWithStatus(HTMLResponse):
         self.content = content
         self.status_code = status_code
         # Extract the HTML string from the serialized model
-        html_content = jsonable_encoder(content).get("html", "")
+        html_content = getattr(content, "html", None)
+        if html_content is None:
+            raise ValueError("HTML content missing from model.")
         super().__init__(content=html_content, status_code=status_code)
 
     def dict(self) -> dict:
@@ -302,7 +304,7 @@ class GetVerificationError(ErrorResponse):
     message: str = Field(default="Server failed to retrieve verification status.")
 
 
-class VerifyUserPostHTMLResponse(BaseResponse):
+class VerifyUserGetHTMLResponse(BaseResponse):
     message: str = Field(default="User verified successfully.")
     html: str = Field(
         default="""<!DOCTYPE html>
@@ -362,10 +364,14 @@ class PasswordResetRequestPostResponse(BaseResponse):
 
 # /api/user/reset-password
 class PasswordResetGetHTMLResponse(BaseResponse):
+    message: str = Field(default="Password reset form displayed successfully.")
+    _html: str = PrivateAttr()
+
     def __init__(self, token: str = None, success: bool = False, error: str = None):
         super().__init__()
+
         if success:
-            self.html = """
+            self._html = """
             <!DOCTYPE html>
             <html>
             <head>
@@ -384,28 +390,9 @@ class PasswordResetGetHTMLResponse(BaseResponse):
             </body>
             </html>
             """
-        elif error:
-            self.html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Password Reset Error</title>
-                <style>
-                    body {{ font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
-                    .error {{ color: #f44336; text-align: center; }}
-                    .card {{ border: 1px solid #ddd; border-radius: 8px; padding: 30px; background: #f9f9f9; }}
-                </style>
-            </head>
-            <body>
-                <div class="card">
-                    <h2 class="error">Password Reset Error</h2>
-                    <p>{error}</p>
-                </div>
-            </body>
-            </html>
-            """
         else:
-            self.html = f"""
+            error_block = f'<p class="error">{error}</p>' if error else ""
+            self._html = f"""
             <!DOCTYPE html>
             <html>
             <head>
@@ -428,11 +415,6 @@ class PasswordResetGetHTMLResponse(BaseResponse):
                         <input type="hidden" name="token" value="{token}">
 
                         <div class="form-group">
-                            <label for="current_password">Current Password:</label>
-                            <input type="password" id="current_password" name="current_password" required>
-                        </div>
-
-                        <div class="form-group">
                             <label for="new_password">New Password:</label>
                             <input type="password" id="new_password" name="new_password" required minlength="8">
                         </div>
@@ -441,6 +423,8 @@ class PasswordResetGetHTMLResponse(BaseResponse):
                             <label for="confirm_password">Confirm New Password:</label>
                             <input type="password" id="confirm_password" name="confirm_password" required minlength="8">
                         </div>
+
+                        {error_block}
 
                         <button type="submit">Reset Password</button>
                     </form>
@@ -461,6 +445,10 @@ class PasswordResetGetHTMLResponse(BaseResponse):
             </body>
             </html>
             """
+
+    @property
+    def html(self) -> str:
+        return self._html
 
 
 class InvalidOrExpiredResetToken(ErrorResponse):
