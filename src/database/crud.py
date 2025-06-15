@@ -4,11 +4,13 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Tuple, Type, Union
 
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 import Queries as Queries
 from database import db_schemas
 from database.db_schemas import DEFAULT_USER_PREFERENCE
+from database.embedding_service import encode_text
 from utils import hash_password, verify_password
 
 
