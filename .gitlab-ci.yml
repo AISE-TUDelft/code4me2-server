@@ -5,6 +5,7 @@ stages:
   #  - Uncomment if you want to run tests. make sure to also uncomment the test stage in the pipeline
   - test
   - security
+  - docs
 
 # Cache node_modules for faster builds
 cache:
@@ -26,7 +27,7 @@ lint:
     when: always
 
 build-openapi-docs:
-  stage: openapi-docs # or create a new stage like "docs"
+  stage: docs # or create a new stage like "docs"
   image: node:latest
   script:
     - npm install -g @redocly/cli
