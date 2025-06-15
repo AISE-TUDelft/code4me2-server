@@ -49,13 +49,14 @@ class TestPasswordResetEndpoints:
         client.mock_app.get_db_session.return_value = MagicMock()
         client.mock_app.get_redis_manager.return_value = MagicMock()
 
-        with patch("database.crud.get_user_by_email", return_value=user):
-            with patch("backend.email_utils.send_reset_password_email") as mock_email:
-                response = client.post(
-                    f"/api/user/reset-password/request?email={user.email}"
-                )
-                assert response.status_code == 200
-                assert response.json() == PasswordResetRequestPostResponse()
+        with patch("database.crud.get_user_by_email", return_value=user), patch(
+            "backend.routers.user.reset_password.send_reset_password_email"
+        ) as mock_email:
+            response = client.post(
+                f"/api/user/reset-password/request?email={user.email}"
+            )
+            assert response.status_code == 200
+            assert response.json() == PasswordResetRequestPostResponse()
 
     def test_show_form_invalid_token(self, client):
         client.mock_app.get_redis_manager.return_value.get.return_value = None

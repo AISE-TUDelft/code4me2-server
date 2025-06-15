@@ -62,7 +62,6 @@ def request_password_reset(
     - JsonResponseWithStatus: Success confirmation or error response
     """
     db_session = app.get_db_session()
-    redis_client = app.get_redis_manager()
     redis_manager = app.get_redis_manager()
 
     try:
@@ -80,8 +79,7 @@ def request_password_reset(
         reset_token = create_uuid()
 
         # # Store the reset token in Redis with user info and expiration (15 minutes)
-        app = App.get_instance()
-        app.get_redis_manager().set(
+        redis_manager.set(
             "password_reset",
             reset_token,
             {"user_id": str(user.user_id), "email": str(user.email)},
