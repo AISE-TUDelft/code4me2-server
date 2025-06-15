@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from App import App
 from backend.Responses import (
     DeleteChatError,
-    InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     NoAccessToGetQueryError,
@@ -46,29 +45,9 @@ class TestDeleteChatEndpoint:
         assert response.status_code == 401
         assert response.json() == InvalidOrExpiredSessionToken()
 
-    def test_missing_auth_token(self, client):
-        client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
-            "session_token": {"auth_token": None}
-        }.get(key)
-
-        chat_id = uuid.uuid4()
-        response = client.delete(f"/api/chat/delete/{chat_id}")
-        assert response.status_code == 401
-        assert response.json() == InvalidOrExpiredSessionToken()
-
-    def test_invalid_auth_token(self, client):
-        client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
-            "session_token": {"auth_token": "abc"},
-            "auth_token": None,
-        }.get(key)
-        chat_id = uuid.uuid4()
-        response = client.delete(f"/api/chat/delete/{chat_id}")
-        assert response.status_code == 401
-        assert response.json() == InvalidOrExpiredAuthToken()
-
     def test_invalid_project_token(self, client):
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
-            "session_token": {"auth_token": "abc", "project_tokens": []},
+            "session_token": {"user_token": "abc", "project_tokens": []},
             "auth_token": {"user_id": "user123"},
             "project_token": None,
         }.get(key)
@@ -80,7 +59,7 @@ class TestDeleteChatEndpoint:
 
     def test_project_token_not_in_session(self, client):
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
-            "session_token": {"auth_token": "abc", "project_tokens": ["other"]},
+            "session_token": {"user_token": "abc", "project_tokens": ["other"]},
             "auth_token": {"user_id": "user123"},
             "project_token": {"id": "project123"},
         }.get(key)
@@ -97,7 +76,7 @@ class TestDeleteChatEndpoint:
 
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
             "session_token": {
-                "auth_token": auth_token,
+                "user_token": user_id,
                 "project_tokens": [project_token],
             },
             "auth_token": {"user_id": user_id},
@@ -118,7 +97,7 @@ class TestDeleteChatEndpoint:
 
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
             "session_token": {
-                "auth_token": auth_token,
+                "user_token": user_id,
                 "project_tokens": [project_token],
             },
             "auth_token": {"user_id": user_id},
@@ -140,7 +119,7 @@ class TestDeleteChatEndpoint:
 
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
             "session_token": {
-                "auth_token": auth_token,
+                "user_token": user_id,
                 "project_tokens": [project_token],
             },
             "auth_token": {"user_id": user_id},
@@ -163,7 +142,7 @@ class TestDeleteChatEndpoint:
 
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
             "session_token": {
-                "auth_token": auth_token,
+                "user_token": user_id,
                 "project_tokens": [project_token],
             },
             "auth_token": {"user_id": user_id},

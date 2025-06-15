@@ -56,8 +56,8 @@ class TestActivateProject:
         # Setup redis and db mocks
         mock_redis_manager = MagicMock()
         mock_redis_manager.get.side_effect = lambda key, token: {
+            ("user_token", fake_user_id): {"session_token": fake_session_token},
             ("auth_token", client.cookies.get("auth_token")): {
-                "session_token": fake_session_token,
                 "user_id": fake_user_id,
             },
             ("session_token", fake_session_token): {"project_tokens": []},
@@ -122,8 +122,8 @@ class TestActivateProject:
     ):
         mock_redis_manager = MagicMock()
         mock_redis_manager.get.side_effect = lambda key, token: {
+            ("user_token", fake_user_id): {"session_token": fake_session_token},
             ("auth_token", client.cookies.get("auth_token")): {
-                "session_token": fake_session_token,
                 "user_id": fake_user_id,
             },
             ("session_token", fake_session_token): {"project_tokens": []},

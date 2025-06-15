@@ -60,7 +60,6 @@ def get_user_from_auth_token(
             )
 
         user_id = auth_info["user_id"]
-        logging.info(f"Getting user with ID: {user_id}")
 
         # Check if user exists in the database
         user = crud.get_user_by_id(db_session, uuid.UUID(user_id))

@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 
 from App import App
 from backend.Responses import (
-    InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     QueryNotFoundError,
@@ -53,19 +52,9 @@ class TestChatHistoryEndpoint:
         assert response.status_code == 401
         assert response.json() == InvalidOrExpiredSessionToken()
 
-    def test_invalid_auth_token(self, client):
-        client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
-            "session_token": {"auth_token": "abc"},
-            "auth_token": None,
-        }.get(key)
-
-        response = client.get("/api/chat/get/1")
-        assert response.status_code == 401
-        assert response.json() == InvalidOrExpiredAuthToken()
-
     def test_invalid_project_token(self, client):
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
-            "session_token": {"auth_token": "abc", "project_tokens": []},
+            "session_token": {"user_token": "abc", "project_tokens": []},
             "auth_token": {"user_id": "user123"},
             "project_token": None,
         }.get(key)
@@ -76,7 +65,7 @@ class TestChatHistoryEndpoint:
 
     def test_project_token_not_in_session(self, client):
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
-            "session_token": {"auth_token": "abc", "project_tokens": ["some_other"]},
+            "session_token": {"user_token": "abc", "project_tokens": ["some_other"]},
             "auth_token": {"user_id": "user123"},
             "project_token": {"id": "proj"},
         }.get(key)
@@ -90,7 +79,7 @@ class TestChatHistoryEndpoint:
         project_token = str(uuid.uuid4())
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
             "session_token": {
-                "auth_token": auth_token,
+                "user_token": auth_token,
                 "project_tokens": [project_token],
             },
             "auth_token": {"user_id": auth_token},
@@ -109,7 +98,7 @@ class TestChatHistoryEndpoint:
         project_token = str(uuid.uuid4())
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
             "session_token": {
-                "auth_token": auth_token,
+                "user_token": auth_token,
                 "project_tokens": [project_token],
             },
             "auth_token": {"user_id": uuid4()},

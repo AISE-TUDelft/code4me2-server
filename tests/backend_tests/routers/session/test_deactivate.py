@@ -1,3 +1,4 @@
+import uuid
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,18 +29,22 @@ class TestDeactivateSession:
             yield client
 
     def test_deactivate_session_success(self, client):
-        auth_token = "valid_auth"
-        session_token = "valid_session"
-        user_id = "user123"
+        auth_token = str(uuid.uuid4())
+        session_token = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
 
         mock_redis_manager = MagicMock()
         mock_redis_manager.get.side_effect = lambda namespace, key: (
             {"user_id": user_id, "session_token": session_token}
-            if namespace == "auth_token" and key == auth_token
+            if namespace == "auth_token"
             else (
                 {"data": "something"}
-                if namespace == "session_token" and key == session_token
-                else None
+                if namespace == "session_token"
+                else (
+                    {"session_token": session_token}
+                    if namespace == "user_token" and key == user_id
+                    else None
+                )
             )
         )
 
@@ -68,14 +73,14 @@ class TestDeactivateSession:
         assert response.json() == InvalidOrExpiredAuthToken()
 
     def test_deactivate_session_invalid_session_token(self, client):
-        auth_token = "valid_auth"
-        session_token = "invalid_session"
-        user_id = "user123"
+        auth_token = str(uuid.uuid4())
+        session_token = str(uuid.uuid4())
+        user_id = str(uuid.uuid4())
 
         mock_redis_manager = MagicMock()
         mock_redis_manager.get.side_effect = lambda namespace, key: (
             {"user_id": user_id, "session_token": session_token}
-            if namespace == "auth_token" and key == auth_token
+            if namespace == "auth_token"
             else None  # No session info found
         )
 

@@ -68,7 +68,6 @@ def create_user(
         4. Send a verification email via Celery.
         5. Return HTTP 201 with the new user ID.
     """
-    logging.info(f"Creating user: ({user_to_create.dict(hide_secrets=True)})")
     db_session = app.get_db_session()
 
     try:

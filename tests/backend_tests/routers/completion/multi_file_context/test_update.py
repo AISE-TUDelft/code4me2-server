@@ -56,8 +56,11 @@ class TestUpdateMultiFileContext:
         client.mock_app.get_redis_manager.return_value = redis_mock
 
         redis_mock.get.side_effect = lambda key, token: {
-            ("session_token", "valid_session_token"): {"auth_token": "auth123"},
-            ("auth_token", "auth123"): {"user_id": "user123"},
+            ("session_token", "valid_session_token"): {
+                "user_token": "user-id",
+                "project_tokens": ["valid_project_token"],
+            },
+            ("auth_token", "auth123"): {"user_token": "user123"},
             ("project_token", "valid_project_token"): {
                 "multi_file_contexts": {"old.py": ["old line"]},
                 "multi_file_context_changes": {},

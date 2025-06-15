@@ -151,43 +151,29 @@ def update_multi_file_context(
     Returns:
         JsonResponseWithStatus containing the updated multi-file context or an error response.
     """
-    logging.info(f"Updating context for session: {session_token}")
     redis_manager = app.get_redis_manager()
 
     try:
-        # Validate session token and get session info
+        # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_info is None:
+        if session_info is None or not session_info.get("user_token"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
+        user_id = session_info.get("user_token")
+        # Skipped checking if the user exists in the database
 
-        # Validate auth token and user_id from session info
-        auth_token = session_info.get("auth_token")
-        if not auth_token:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
-        auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
-        user_id = auth_info.get("user_id")
-        if not user_id:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
-        # Validate project token and get project info
+        # Validate project token
         project_info = redis_manager.get("project_token", project_token)
         if project_info is None:
+            return JsonResponseWithStatus(
+                status_code=401, content=InvalidOrExpiredProjectToken()
+            )
+
+        # Ensure project token is linked to session
+        session_projects = session_info.get("project_tokens", [])
+        if project_token not in session_projects:
             return JsonResponseWithStatus(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
@@ -210,7 +196,6 @@ def update_multi_file_context(
         # Remove files that became empty after updates
         for file in copy(list(updated_context.keys())):
             if not updated_context[file]:
-                logging.warning(f"Removing {file} context")
                 del updated_context[file]
 
         # Store updated contexts back into project info

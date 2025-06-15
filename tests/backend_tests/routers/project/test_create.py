@@ -58,8 +58,8 @@ class TestCreateProject:
         # Setup Redis and DB mocks
         mock_redis = MagicMock()
         mock_redis.get.side_effect = lambda key, token: {
+            ("user_token", fake_user_id): {"session_token": fake_session_token},
             ("auth_token", "valid_token"): {
-                "session_token": fake_session_token,
                 "user_id": fake_user_id,
             },
             ("session_token", fake_session_token): {"project_tokens": []},

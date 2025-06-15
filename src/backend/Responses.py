@@ -228,6 +228,12 @@ class InvalidOrExpiredProjectToken(ErrorResponse):
     )
 
 
+class ProjectNotFoundError(ErrorResponse):
+    message: str = Field(
+        default="Project not found. You may need to create or activate it again."
+    )
+
+
 # /api/session/deactivate
 class DeactivateSessionPostResponse(BaseResponse):
     message: str = Field(default="Session deactivated successfully.")
@@ -245,6 +251,10 @@ class AcquireSessionGetResponse(BaseResponse):
 
 class AcquireSessionError(BaseResponse):
     message: str = Field(default="Server failed to acquire a session.")
+
+
+class SessionNotFoundError(ErrorResponse):
+    message: str = Field(default="Session not found. You may need to log in again.")
 
 
 # /api/completion/feedback

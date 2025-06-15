@@ -8,7 +8,6 @@ import database.crud as crud
 from App import App
 from backend.Responses import (
     ErrorResponse,
-    InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
@@ -35,7 +34,6 @@ router = APIRouter()
         "200": {"model": ChatHistoryResponsePage},
         "401": {
             "model": Union[
-                InvalidOrExpiredAuthToken,
                 InvalidOrExpiredSessionToken,
                 InvalidOrExpiredProjectToken,
             ]
@@ -65,51 +63,28 @@ def get_chat_history(
     Returns:
     - JsonResponseWithStatus: Paginated chat history or an error response.
     """
-    logging.info(
-        f"Attempting to retrieve page {page_number} of chat history for the user's project."
-    )
-
     db_session = app.get_db_session()
     redis_manager = app.get_redis_manager()
 
     try:
-        # Step 1: Validate session token
+        # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_info is None:
+        if session_info is None or not session_info.get("user_token"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
+        user_id = session_info.get("user_token")
+        # Skipped checking if the user exists in the database
 
-        # Step 2: Extract and validate auth token
-        auth_token = session_info.get("auth_token")
-        if not auth_token:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
-        auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
-            return JsonResponseWithStatus(
-                status_code=401, content=InvalidOrExpiredAuthToken()
-            )
-
-        user_id = auth_info.get("user_id")
-        if not user_id:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
-        # Step 3: Validate project token
+        # Validate project token
         project_info = redis_manager.get("project_token", project_token)
         if project_info is None:
             return JsonResponseWithStatus(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
 
-        # Step 4: Ensure the project is linked to this session
+        # Ensure project token is linked to session
         session_projects = session_info.get("project_tokens", [])
         if project_token not in session_projects:
             return JsonResponseWithStatus(

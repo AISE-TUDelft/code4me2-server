@@ -13,6 +13,8 @@ from backend.Responses import (
     InvalidOrExpiredAuthToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
+    SessionNotFoundError,
+    UserNotFoundError,
 )
 from database import crud
 
@@ -27,6 +29,7 @@ router = APIRouter()
         "401": {
             "model": Union[InvalidOrExpiredAuthToken, InvalidOrExpiredSessionToken]
         },
+        "404": {"model": Union[UserNotFoundError, SessionNotFoundError]},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": CreateProjectError},
@@ -61,24 +64,41 @@ def create_project(
     db_session = app.get_db_session()
 
     try:
-        # Fetch authentication info from Redis using the auth token
         auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
-            # Auth token invalid or expired
+        # Validate auth token presence and associated user_id
+        if auth_info is None or not auth_info.get("user_id"):
             return JsonResponseWithStatus(
-                status_code=401, content=InvalidOrExpiredAuthToken()
+                status_code=401,
+                content=InvalidOrExpiredAuthToken(),
             )
-        session_token = auth_info.get("session_token", "")
-        user_id = auth_info.get("user_id", "")
-        # Retrieve session info from Redis
-        session_info = redis_manager.get("session_token", session_token)
-        # Validate session token presence and validity
-        if session_token == "" or session_info is None:
+
+        user_id = auth_info["user_id"]
+        if crud.get_user_by_id(db_session, uuid.UUID(user_id)) is None:
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=UserNotFoundError(),
+            )
+
+        user_info = redis_manager.get("user_token", user_id)
+        if user_info is None or not user_info.get("session_token"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
-        logging.log(logging.INFO, f"Creating project for user_id: {user_id}")
+        session_token = user_info.get("session_token")
+        if crud.get_session_by_id(db_session, uuid.UUID(session_token)) is None:
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=SessionNotFoundError(),
+            )
+        # Retrieve session info from Redis
+        session_info = redis_manager.get("session_token", session_token)
+        # Validate session token presence and validity
+        if session_info is None:
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
 
         # Create the project in the database
         created_project = crud.create_project(db_session, project_to_create)
@@ -126,7 +146,7 @@ def create_project(
         )
         return response_obj
     except Exception as e:
-        logging.log(logging.ERROR, f"Error creating project: {e}")
+        logging.error(f"Error creating project: {e}")
         db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,

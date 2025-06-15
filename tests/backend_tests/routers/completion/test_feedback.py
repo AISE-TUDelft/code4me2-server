@@ -41,8 +41,9 @@ class TestCompletionFeedback:
         mock_redis = MagicMock()
         client.mock_app.get_redis_manager.return_value = mock_redis
         mock_redis.get.side_effect = lambda prefix, token: {
+            ("user_token", user_id): {"session_token": "valid_session_token"},
             ("session_token", "valid_session_token"): {
-                "auth_token": "valid_auth_token",
+                "user_token": user_id,
                 "project_tokens": ["valid_project_token"],
             },
             ("auth_token", "valid_auth_token"): {"user_id": user_id},

@@ -20,6 +20,7 @@ from backend.Responses import (
     ErrorResponse,
     InvalidOrExpiredAuthToken,
     JsonResponseWithStatus,
+    UserNotFoundError,
 )
 from database import crud
 from utils import create_uuid
@@ -33,6 +34,7 @@ router = APIRouter()
     responses={
         "200": {"model": AcquireSessionGetResponse},
         "401": {"model": InvalidOrExpiredAuthToken},
+        "404": {"model": UserNotFoundError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": AcquireSessionError},
@@ -57,8 +59,6 @@ def acquire_session(
         - If no session token exists for the auth token, creates a new session.
         - Sets the session token as an HttpOnly cookie with expiration.
     """
-    logging.info(f"Acquiring session for auth_token: {auth_token}")
-
     redis_manager = app.get_redis_manager()
     config = app.get_config()
     db_session = app.get_db_session()
@@ -73,27 +73,41 @@ def acquire_session(
             )
 
         user_id = auth_info["user_id"]
-        session_token = auth_info.get("session_token")
+        if crud.get_user_by_id(db_session, uuid.UUID(user_id)) is None:
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=UserNotFoundError(),
+            )
 
+        user_info = redis_manager.get("user_token", user_id)
+        session_token = None
         # Create a new session token if none exists or invalid
-        if not redis_manager.get("session_token", session_token):
+        if (
+            not user_info
+            or not user_info.get("session_token")
+            or crud.get_session_by_id(
+                db_session, uuid.UUID(user_info.get("session_token"))
+            )
+            is None
+        ):
             session_token = create_uuid()
             crud.create_session(
                 db_session,
                 Queries.CreateSession(user_id=uuid.UUID(user_id)),
                 session_token,
             )
-            auth_info["session_token"] = session_token
 
-            # Update auth token in Redis with new session token while preserving TTL
-            redis_manager.set("auth_token", auth_token, auth_info)
+            # Update session token in Redis with new session token while preserving TTL
+            redis_manager.set("user_token", user_id, {"session_token": session_token})
 
             # Store session token entry separately
             redis_manager.set(
                 "session_token",
                 session_token,
-                {"auth_token": auth_token, "project_tokens": []},
+                {"user_token": user_id, "project_tokens": []},
             )
+        else:
+            session_token = user_info.get("session_token")
 
         response_obj = JsonResponseWithStatus(
             status_code=200,
