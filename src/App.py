@@ -6,6 +6,7 @@ Redis sessions, Celery broker, and completion models using the singleton pattern
 """
 
 import logging
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -117,12 +118,6 @@ class App:
         # Store configuration for later access
         self.__config = config
 
-        # Initialize Celery broker for background task processing
-        self.__celery_broker = CeleryBroker(
-            host=config.celery_broker_host,
-            port=config.celery_broker_port,
-        )
-
         # Initialize Redis manager for session and token management
         self.__redis_manager = RedisManager(
             host=config.redis_host,
@@ -134,19 +129,29 @@ class App:
             token_hook_activation_in_seconds=config.token_hook_activation_in_seconds,
         )
 
-        # Start background thread to listen for Redis key expiration events
-        # This handles cleanup of expired sessions in the database
-        try:
-            session_expiration_listener_thread = threading.Thread(
-                target=self.__redis_manager.listen_for_expired_keys,
-                args=(self.__db_session_factory(),),
-                daemon=True,  # Thread will exit when main program exits
+        # if os env doesn't have variable CELERY_WORKER=TRUE run the following
+        is_celery_worker = os.environ.get("CELERY_WORKER", False)
+
+        if not is_celery_worker:
+            # Initialize Celery broker for background task processing
+            self.__celery_broker = CeleryBroker(
+                host=config.celery_broker_host,
+                port=config.celery_broker_port,
             )
-            session_expiration_listener_thread.start()
-        except Exception as e:
-            logging.log(
-                logging.ERROR, f"Exception happened in session expiration listener: {e}"
-            )
+
+            # Start background thread to listen for Redis key expiration events
+            try:
+                session_expiration_listener_thread = threading.Thread(
+                    target=self.__redis_manager.listen_for_expired_keys,
+                    args=(self.__db_session_factory(),),
+                    daemon=True,  # Thread will exit when main program exits
+                )
+                session_expiration_listener_thread.start()
+            except Exception as e:
+                logging.log(
+                    logging.ERROR,
+                    f"Exception happened in session expiration listener: {e}",
+                )
 
         # Initialize completion models for AI functionality
         self.__completion_models = CompletionModels(config=config)
