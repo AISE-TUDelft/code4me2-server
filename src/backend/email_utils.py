@@ -6,20 +6,32 @@ from email.mime.text import MIMEText
 from App import App
 
 
-def send_verification_email(user_email: str, user_name: str, verification_token: str):
+def send_verification_email(
+    user_email: str, user_name: str, verification_token: str
+) -> bool:
     """
-    Send a verification email to the user
+    Sends a verification email with a unique token link to the specified user email.
+
+    Args:
+        user_email (str): The recipient's email address.
+        user_name (str): The recipient's name to personalize the email.
+        verification_token (str): A unique token used to verify the user's email.
+
+    Returns:
+        bool: True if the email was sent successfully, False otherwise.
     """
     config = App.get_instance().get_config()
 
-    # Create message
+    # Compose the multipart email message with HTML content
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Verify Your Email Address"
     msg["From"] = config.email_from
     msg["To"] = user_email
 
-    # Create HTML version of the message
+    # Construct the verification URL with the token as a query parameter
     verification_url = f"{config.verification_url}?token={verification_token}"
+
+    # HTML body for the email with a clickable verification button and fallback link
     html = f"""
     <html>
       <head></head>
@@ -39,17 +51,17 @@ def send_verification_email(user_email: str, user_name: str, verification_token:
     </html>
     """
 
-    # Attach HTML part
+    # Attach the HTML content to the email message
     msg.attach(MIMEText(html, "html"))
 
     try:
-        # Connect to SMTP server
+        # Connect to the SMTP server with optional TLS encryption and login
         server = smtplib.SMTP(config.email_host, config.email_port)
         if config.email_use_tls:
             server.starttls()
         server.login(config.email_username, config.email_password)
 
-        # Send email
+        # Send the composed email and close the connection
         server.sendmail(config.email_from, user_email, msg.as_string())
         server.quit()
 

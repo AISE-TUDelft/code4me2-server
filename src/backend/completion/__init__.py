@@ -8,81 +8,115 @@ from Code4meV2Config import Code4meV2Config
 
 
 class Template(Enum):
+    """
+    Enum for model prompt templates. Currently supports FIM-style (Fill-in-the-Middle).
+    """
+
     PREFIX_SUFFIX = """<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"""
 
 
 class CompletionModels:
-    _instance = None
-    __models = {}
-    __config = None
+    """
+    Singleton class responsible for managing and caching model instances used for code completion.
+    Supports both instruct-style and template-based models.
+    """
 
-    def __new__(cls):
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        """
+        Enforces the singleton pattern to ensure only one instance of CompletionModels exists.
+        """
         if cls._instance is None:
-            cls._instance = super(CompletionModels, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
+
+    def __init__(self, config: Code4meV2Config):
+        """
+        Initializes the CompletionModels instance with configuration and model cache.
+
+        Args:
+            config (Code4meV2Config): Configuration object containing model paths, cache directories, etc.
+        """
+        if self._initialized:
+            return
+        self.__config = config
+        self.__models = {}  # Dictionary to store loaded models keyed by name/template.
+        self._initialized = True
 
     def load_model(
         self,
         model_name: str,
-        config=None,
         prompt_template: Template = Template.PREFIX_SUFFIX,
     ) -> None:
-        if self.__config is None:
-            if config is None:
-                raise ValueError("Configuration must be provided to load models.")
-            self.__config = config
-        if "instruct" in model_name.lower():
-            key = f"{model_name}:instruct"
-        else:
-            key = f"{model_name}:{prompt_template.value}"
-        if key in self.__models:
-            logging.log(
-                logging.INFO,
-                f"Model {key} is already loaded, skipping loading process.",
-            )
-        else:
-            try:
-                logging.info(
-                    f"Loading model with cache directory: {config.model_cache_dir}"
-                )
+        """
+        Loads a model into memory and caches it using the specified template.
 
-                if "instruct" in model_name.lower():
-                    self.__models[key] = ChatCompletionModel(
-                        model_name=model_name,
-                        temperature=0.8,
-                        max_new_tokens=256,
-                        cache_dir=config.model_cache_dir,  # Explicit cache dir
-                    )
-                else:
-                    self.__models[key] = TemplateCompletionModel.from_pretrained(
-                        model_name=model_name,
-                        prompt_template=prompt_template.value,
-                        config=config,  # Pass the config explicitly
-                    )
-            except Exception as e:
-                logging.log(logging.ERROR, e)
-                logging.log(
-                    logging.ERROR,
-                    f"{model_name} with template {prompt_template.value} can't be loaded from hugging face hub",
+        Args:
+            model_name (str): Name of the model to load.
+            prompt_template (Template): Prompt formatting template (used for non-instruct models).
+        """
+        key = (
+            f"{model_name}:instruct"
+            if "instruct" in model_name.lower()
+            else f"{model_name}:{prompt_template.value}"
+        )
+
+        if key in self.__models:
+            logging.info(f"Model {key} is already loaded, skipping loading process.")
+            return
+
+        try:
+            logging.info(
+                f"Loading model with cache directory: {self.__config.model_cache_dir}"
+            )
+
+            if "instruct" in model_name.lower():
+                # Load an instruct-style chat model
+                self.__models[key] = ChatCompletionModel(
+                    model_name=model_name,
+                    temperature=0.8,
+                    max_new_tokens=256,
+                    cache_dir=self.__config.model_cache_dir,
                 )
+            else:
+                # Load a fill-in-the-middle (template) model
+                self.__models[key] = TemplateCompletionModel.from_pretrained(
+                    model_name=model_name,
+                    prompt_template=prompt_template.value,
+                    config=self.__config,
+                )
+        except Exception as e:
+            logging.error(e)
+            logging.error(
+                f"Failed to load model '{model_name}' with template '{prompt_template.value}'"
+            )
 
     def get_model(
         self,
         model_name: str,
         prompt_template: Template = Template.PREFIX_SUFFIX,
-        config: Code4meV2Config = None,
     ) -> Optional[Union[TemplateCompletionModel, ChatCompletionModel]]:
-        if "instruct" in model_name.lower():
-            key = f"{model_name}:instruct"
-        else:
-            key = f"{model_name}:{prompt_template.value}"
+        """
+        Retrieves a model instance. Loads and caches it if not already loaded.
+
+        Args:
+            model_name (str): Name of the model to retrieve.
+            prompt_template (Template): Prompt formatting template.
+
+        Returns:
+            Optional[Union[TemplateCompletionModel, ChatCompletionModel]]: The model instance if loaded successfully.
+        """
+        key = (
+            f"{model_name}:instruct"
+            if "instruct" in model_name.lower()
+            else f"{model_name}:{prompt_template.value}"
+        )
+
         if key in self.__models:
             return self.__models[key]
-        else:
-            logging.log(
-                logging.INFO, f"Loading the {key} model since it's not preloaded..."
-            )
-            self.load_model(
-                model_name=model_name, config=config, prompt_template=prompt_template
-            )
-            return self.__models.get(key)
+
+        logging.info(f"Model {key} not preloaded. Loading now...")
+        self.load_model(model_name=model_name, prompt_template=prompt_template)
+        return self.__models.get(key)

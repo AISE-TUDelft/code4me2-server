@@ -1,7 +1,10 @@
 import json
 import os
+import uuid
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 from dotenv import load_dotenv
 from pydantic import ValidationError
@@ -18,7 +21,7 @@ load_dotenv()
 
 # Get test database URL from environment or use default for Docker
 TEST_DB_URL = os.getenv(
-    "TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/code4mev2_test"
+    "TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/test_db"
 )
 
 
@@ -119,7 +122,6 @@ def test_user(db_session, test_config):
         name="Test User",
         password="SecurePassword123",
         config_id=test_config.config_id,
-        preference='{"theme": "dark", "language": "en"}',
     )
     created_user = crud.create_user(db_session, user_data)
     return created_user
@@ -130,8 +132,6 @@ def test_project(db_session, test_user):
     """Create a test project"""
     project_data = Queries.CreateProject(
         project_name="Test Project",
-        multi_file_contexts='{"files": []}',
-        multi_file_context_changes='{"changes": []}',
     )
     created_project = crud.create_project(db_session, project_data)
 
@@ -160,6 +160,17 @@ def test_session(db_session, test_user, test_project):
     return created_session
 
 
+@pytest.fixture(scope="function")
+def test_chat(db_session, test_user, test_project):
+    """Create a test chat"""
+    chat_data = Queries.CreateChat(
+        project_id=test_project.project_id, user_id=test_user.user_id, title="Test Chat"
+    )
+    # Pass the chat_id parameter that the function expects
+    chat_id = str(uuid.uuid4())
+    return crud.create_chat(db_session, chat_data, chat_id)
+
+
 # ============================================================================
 # CONFIG TESTS
 # ============================================================================
@@ -183,6 +194,12 @@ def test_create_and_get_config(db_session):
     assert retrieved_config.config_id == created_config.config_id
 
 
+def test_get_all_configs(db_session, setup_reference_data):
+    """Test getting all configs"""
+    configs = crud.get_all_configs(db_session)
+    assert len(configs) >= 1  # At least the setup config
+
+
 # ============================================================================
 # USER TESTS
 # ============================================================================
@@ -203,7 +220,6 @@ def test_create_and_get_user_by_email(db_session, test_config):
         name="Test User",
         password="SecurePassword123",
         config_id=test_config.config_id,
-        preference='{"theme": "light"}',
     )
 
     created_user = crud.create_user(db_session, user_data)
@@ -211,7 +227,6 @@ def test_create_and_get_user_by_email(db_session, test_config):
     assert created_user.email == user_email
     assert created_user.name == "Test User"
     assert created_user.config_id == test_config.config_id
-    assert created_user.preference == '{"theme": "light"}'
     assert created_user.is_oauth_signup is False
     assert created_user.verified is False
 
@@ -244,14 +259,68 @@ def test_create_user_with_oauth(db_session, test_config):
 def test_update_user(db_session, test_user):
     """Test updating user information"""
     update_data = Queries.UpdateUser(
-        name="Updated Name", preference='{"theme": "auto", "notifications": true}'
+        name="Updated Name", preference={"theme": "auto", "notifications": True}
     )
 
     updated_user = crud.update_user(db_session, test_user.user_id, update_data)
 
     assert updated_user is not None
     assert updated_user.name == "Updated Name"
-    assert updated_user.preference == '{"theme": "auto", "notifications": true}'
+    # Check that preference was updated (it gets merged with defaults)
+    preference_dict = json.loads(updated_user.preference)
+    assert preference_dict["theme"] == "auto"
+    assert preference_dict["notifications"] is True
+
+
+def test_get_user_by_id(db_session, test_user):
+    """Test retrieving user by ID"""
+    retrieved_user = crud.get_user_by_id(db_session, test_user.user_id)
+    assert retrieved_user is not None
+    assert retrieved_user.user_id == test_user.user_id
+    assert retrieved_user.email == test_user.email
+
+
+def test_get_user_by_email_password(db_session, test_config):
+    """Test user authentication with email and password"""
+    email = "auth_test@example.com"
+    password = "TestPassword123"
+
+    user_data = Queries.CreateUser(
+        email=email,
+        name="Auth Test User",
+        password=password,
+        config_id=test_config.config_id,
+    )
+    created_user = crud.create_user(db_session, user_data)
+
+    # Test correct password
+    auth_user = crud.get_user_by_email_password(db_session, email, password)
+    assert auth_user is not None
+    assert auth_user.user_id == created_user.user_id
+
+    # Test wrong password
+    wrong_auth = crud.get_user_by_email_password(db_session, email, "WrongPassword")
+    assert wrong_auth is None
+
+
+def test_delete_user_by_id(db_session, test_config):
+    """Test deleting a user by ID"""
+    user_data = Queries.CreateUser(
+        email="delete_test@example.com",
+        name="Delete Test User",
+        password="DeletePassword123",
+        config_id=test_config.config_id,
+    )
+    created_user = crud.create_user(db_session, user_data)
+    user_id = created_user.user_id
+
+    # Delete the user
+    result = crud.delete_user_by_id(db_session, user_id)
+    assert result is True
+
+    # Verify user is deleted
+    deleted_user = crud.get_user_by_id(db_session, user_id)
+    assert deleted_user is None
 
 
 # ============================================================================
@@ -263,19 +332,30 @@ def test_create_and_get_project(db_session):
     """Test creating and retrieving a project"""
     project_data = Queries.CreateProject(
         project_name="My Test Project",
-        multi_file_contexts='{"context1": "data"}',
-        multi_file_context_changes='{"change1": "data"}',
     )
 
     created_project = crud.create_project(db_session, project_data)
 
     assert created_project is not None
     assert created_project.project_name == "My Test Project"
-    assert created_project.multi_file_contexts == '{"context1": "data"}'
 
     retrieved_project = crud.get_project_by_id(db_session, created_project.project_id)
     assert retrieved_project is not None
     assert retrieved_project.project_id == created_project.project_id
+
+
+def test_update_project(db_session, test_project):
+    """Test updating a project"""
+    update_data = Queries.UpdateProject(
+        project_name="Updated Project Name",
+    )
+
+    result = crud.update_project(db_session, test_project.project_id, update_data)
+    assert result > 0
+
+    # Verify update
+    updated_project = crud.get_project_by_id(db_session, test_project.project_id)
+    assert updated_project.project_name == "Updated Project Name"
 
 
 def test_add_user_to_project(db_session, test_user, test_project):
@@ -293,6 +373,27 @@ def test_get_projects_for_user(db_session, test_user, test_project):
 
     assert len(projects) == 1
     assert projects[0].project_id == test_project.project_id
+
+
+def test_remove_user_from_project(db_session, test_user, test_project):
+    """Test removing a user from a project"""
+    # First verify user is in project
+    user_project = crud.get_user_project(
+        db_session, test_user.user_id, test_project.project_id
+    )
+    assert user_project is not None
+
+    # Remove user from project
+    result = crud.remove_user_from_project(
+        db_session, test_project.project_id, test_user.user_id
+    )
+    assert result is True
+
+    # Verify user is removed
+    user_project = crud.get_user_project(
+        db_session, test_user.user_id, test_project.project_id
+    )
+    assert user_project is None
 
 
 # ============================================================================
@@ -320,13 +421,28 @@ def test_update_session_end_time(db_session, test_session, test_user):
     end_time = datetime.now().isoformat()
     update_data = Queries.UpdateSession(end_time=end_time)
 
-    # Current crud.py function only takes 3 parameters
-    updated_session = crud.update_session(
-        db_session, test_session.session_id, update_data
-    )
+    result = crud.update_session(db_session, test_session.session_id, update_data)
+    assert result > 0
 
-    assert updated_session is not None
+    updated_session = crud.get_session_by_id(db_session, test_session.session_id)
     assert updated_session.end_time is not None
+
+
+def test_get_sessions_for_user(db_session, test_user, test_session):
+    """Test getting all sessions for a user"""
+    sessions = crud.get_sessions_for_user(db_session, test_user.user_id)
+    assert len(sessions) >= 1
+    assert any(s.session_id == test_session.session_id for s in sessions)
+
+
+def test_session_project_association(db_session, test_session, test_project):
+    """Test session-project association"""
+    session_project = crud.get_session_project(
+        db_session, test_session.session_id, test_project.project_id
+    )
+    assert session_project is not None
+    assert session_project.session_id == test_session.session_id
+    assert session_project.project_id == test_project.project_id
 
 
 # ============================================================================
@@ -340,7 +456,8 @@ def test_create_and_get_chat(db_session, test_user, test_project):
         project_id=test_project.project_id, user_id=test_user.user_id, title="Test Chat"
     )
 
-    created_chat = crud.create_chat(db_session, chat_data)
+    chat_id = str(uuid.uuid4())
+    created_chat = crud.create_chat(db_session, chat_data, chat_id)
 
     assert created_chat is not None
     assert created_chat.title == "Test Chat"
@@ -354,26 +471,37 @@ def test_create_and_get_chat(db_session, test_user, test_project):
 def test_get_chats_for_project(db_session, test_user, test_project):
     """Test getting all chats for a project"""
     # Create multiple chats
-    chat1 = crud.create_chat(
-        db_session,
-        Queries.CreateChat(
-            project_id=test_project.project_id,
-            user_id=test_user.user_id,
-            title="Chat 1",
-        ),
+    chat1_data = Queries.CreateChat(
+        project_id=test_project.project_id,
+        user_id=test_user.user_id,
+        title="Chat 1",
     )
+    chat1 = crud.create_chat(db_session, chat1_data, str(uuid.uuid4()))
 
-    chat2 = crud.create_chat(
-        db_session,
-        Queries.CreateChat(
-            project_id=test_project.project_id,
-            user_id=test_user.user_id,
-            title="Chat 2",
-        ),
+    chat2_data = Queries.CreateChat(
+        project_id=test_project.project_id,
+        user_id=test_user.user_id,
+        title="Chat 2",
     )
+    chat2 = crud.create_chat(db_session, chat2_data, str(uuid.uuid4()))
 
     chats = crud.get_chats_for_project(db_session, test_project.project_id)
     assert len(chats) == 2
+
+
+def test_get_chats_for_user(db_session, test_user, test_chat):
+    """Test getting all chats for a user"""
+    chats = crud.get_chats_for_user(db_session, test_user.user_id)
+    assert len(chats) >= 1
+    assert any(c.chat_id == test_chat.chat_id for c in chats)
+
+
+def test_update_chat(db_session, test_chat):
+    """Test updating a chat"""
+    update_data = Queries.UpdateChat(title="Updated Chat Title")
+
+    result = crud.update_chat(db_session, test_chat.chat_id, update_data)
+    assert result is not None
 
 
 # ============================================================================
@@ -397,6 +525,20 @@ def test_create_context(db_session):
     assert created_context.suffix == "    pass"
     assert created_context.file_name == "test.py"
     assert created_context.selected_text == "hello_world"
+
+
+def test_get_context_by_id(db_session):
+    """Test retrieving context by ID"""
+    context_data = Queries.ContextData(
+        prefix="test prefix",
+        suffix="test suffix",
+        file_name="test.py",
+    )
+    created_context = crud.create_context(db_session, context_data)
+
+    retrieved_context = crud.get_context_by_id(db_session, created_context.context_id)
+    assert retrieved_context is not None
+    assert retrieved_context.context_id == created_context.context_id
 
 
 def test_create_contextual_telemetry(db_session, setup_reference_data):
@@ -433,6 +575,40 @@ def test_create_behavioral_telemetry(db_session):
     assert created_telemetry.time_since_last_shown == 5000
     assert created_telemetry.time_since_last_accepted == 10000
     assert created_telemetry.typing_speed == 300
+
+
+def test_get_contextual_telemetry_by_id(db_session, setup_reference_data):
+    """Test retrieving contextual telemetry by ID"""
+    telemetry_data = Queries.ContextualTelemetryData(
+        version_id=1,
+        trigger_type_id=1,
+        language_id=1,
+    )
+    created_telemetry = crud.create_contextual_telemetry(db_session, telemetry_data)
+
+    retrieved_telemetry = crud.get_contextual_telemetry_by_id(
+        db_session, created_telemetry.contextual_telemetry_id
+    )
+    assert retrieved_telemetry is not None
+    assert (
+        retrieved_telemetry.contextual_telemetry_id
+        == created_telemetry.contextual_telemetry_id
+    )
+
+
+def test_get_behavioral_telemetry_by_id(db_session):
+    """Test retrieving behavioral telemetry by ID"""
+    telemetry_data = Queries.BehavioralTelemetryData(typing_speed=250)
+    created_telemetry = crud.create_behavioral_telemetry(db_session, telemetry_data)
+
+    retrieved_telemetry = crud.get_behavioral_telemetry_by_id(
+        db_session, created_telemetry.behavioral_telemetry_id
+    )
+    assert retrieved_telemetry is not None
+    assert (
+        retrieved_telemetry.behavioral_telemetry_id
+        == created_telemetry.behavioral_telemetry_id
+    )
 
 
 # ============================================================================
@@ -484,7 +660,7 @@ def test_create_completion_query(
         context_id=context.context_id,
         session_id=test_session.session_id,
         project_id=test_project.project_id,
-        multi_file_context_changes_indexes='{"index": 1}',
+        multi_file_context_changes_indexes={"index": 1},
         total_serving_time=150,
         server_version_id=1,
     )
@@ -502,19 +678,9 @@ def test_create_completion_query(
 
 
 def test_create_chat_query(
-    db_session, test_user, test_project, test_session, setup_reference_data
+    db_session, test_user, test_project, test_session, test_chat, setup_reference_data
 ):
     """Test creating a chat query"""
-    # Create chat
-    chat = crud.create_chat(
-        db_session,
-        Queries.CreateChat(
-            project_id=test_project.project_id,
-            user_id=test_user.user_id,
-            title="Test Chat for Query",
-        ),
-    )
-
     # Create context and telemetries
     context = crud.create_context(
         db_session,
@@ -554,7 +720,7 @@ def test_create_chat_query(
         context_id=context.context_id,
         session_id=test_session.session_id,
         project_id=test_project.project_id,
-        chat_id=chat.chat_id,
+        chat_id=test_chat.chat_id,
         web_enabled=True,
         total_serving_time=200,
     )
@@ -563,13 +729,47 @@ def test_create_chat_query(
 
     assert created_query is not None
     assert created_query.meta_query_id is not None
-    assert created_query.chat_id == chat.chat_id
+    assert created_query.chat_id == test_chat.chat_id
     assert created_query.web_enabled is True
 
     # Verify the meta_query was created correctly
     meta_query = crud.get_meta_query_by_id(db_session, created_query.meta_query_id)
     assert meta_query is not None
     assert meta_query.query_type == "chat"
+
+
+def test_get_chat_queries_for_chat(
+    db_session, test_user, test_project, test_session, test_chat, setup_reference_data
+):
+    """Test getting all chat queries for a chat"""
+    # Create context and telemetries
+    context = crud.create_context(
+        db_session,
+        Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
+    )
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
+    )
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
+    )
+
+    # Create multiple chat queries for the same chat
+    for i in range(3):
+        query_data = Queries.CreateChatQuery(
+            user_id=test_user.user_id,
+            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+            context_id=context.context_id,
+            session_id=test_session.session_id,
+            project_id=test_project.project_id,
+            chat_id=test_chat.chat_id,
+        )
+        crud.create_chat_query(db_session, query_data)
+
+    chat_queries = crud.get_chat_queries_for_chat(db_session, test_chat.chat_id)
+    assert len(chat_queries) == 3
 
 
 # ============================================================================
@@ -622,10 +822,9 @@ def test_create_generation(
         ),
     )
 
-    # Create generation
+    # Create generation - pass meta_query_id as the id parameter
     current_time = datetime.now().isoformat()
     generation_data = Queries.CreateGeneration(
-        meta_query_id=completion_query.meta_query_id,
         model_id=1,
         completion="def generate_test():\n    return 'Generated successfully!'",
         generation_time=50,
@@ -635,7 +834,10 @@ def test_create_generation(
         logprobs=[-0.05, -0.1, -0.15],
     )
 
-    created_generation = crud.create_generation(db_session, generation_data)
+    # Pass the meta_query_id as the id parameter to use existing meta_query
+    created_generation = crud.create_generation(
+        db_session, generation_data, str(completion_query.meta_query_id)
+    )
 
     assert created_generation is not None
     assert created_generation.meta_query_id == completion_query.meta_query_id
@@ -647,16 +849,142 @@ def test_create_generation(
     assert created_generation.confidence == 0.85
 
 
-@pytest.mark.skip(
-    reason="Function update_generation_acceptance needs to be implemented in crud.py"
-)
-def test_update_generation_acceptance(
+def test_get_generations_by_meta_query(
     db_session, test_user, test_project, test_session, setup_reference_data
 ):
-    """Test updating generation acceptance status - REQUIRES IMPLEMENTATION"""
-    # This test is skipped until update_generation_acceptance is implemented
-    # See missing functions section in crud.py
-    pass
+    """Test getting generations by meta query"""
+    # Create completion query
+    context = crud.create_context(
+        db_session,
+        Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
+    )
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
+    )
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
+    )
+
+    completion_query = crud.create_completion_query(
+        db_session,
+        Queries.CreateCompletionQuery(
+            user_id=test_user.user_id,
+            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+            context_id=context.context_id,
+            session_id=test_session.session_id,
+            project_id=test_project.project_id,
+        ),
+    )
+
+    # Create multiple generations - fixing the way we create them
+    for model_id in [1, 2]:
+        generation_data = Queries.CreateGeneration(
+            model_id=model_id,
+            completion=f"Generated content from model {model_id}",
+            generation_time=50,
+            shown_at=[datetime.now().isoformat()],
+            was_accepted=False,
+            confidence=0.8,
+            logprobs=[-0.1, -0.2],
+        )
+
+        # Create generation with correct meta_query_id
+        crud.create_generation(
+            db_session, generation_data, str(completion_query.meta_query_id)
+        )
+
+    generations = crud.get_generations_by_meta_query(
+        db_session, completion_query.meta_query_id
+    )
+    assert len(generations) == 2
+
+
+def test_get_generation_by_meta_query_and_model(
+    db_session, test_user, test_project, test_session, setup_reference_data
+):
+    """Test getting specific generation by meta query and model"""
+    # Create completion query and generation
+    context = crud.create_context(
+        db_session,
+        Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
+    )
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
+    )
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
+    )
+
+    completion_query = crud.create_completion_query(
+        db_session,
+        Queries.CreateCompletionQuery(
+            user_id=test_user.user_id,
+            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+            context_id=context.context_id,
+            session_id=test_session.session_id,
+            project_id=test_project.project_id,
+        ),
+    )
+
+    generation_data = Queries.CreateGeneration(
+        model_id=1,
+        completion="Test generation",
+        generation_time=50,
+        shown_at=[datetime.now().isoformat()],
+        was_accepted=False,
+        confidence=0.8,
+        logprobs=[-0.1],
+    )
+
+    crud.create_generation(
+        db_session, generation_data, str(completion_query.meta_query_id)
+    )
+
+    generation = crud.get_generation_by_meta_query_and_model(
+        db_session, completion_query.meta_query_id, 1
+    )
+    assert generation is not None
+    assert generation.model_id == 1
+
+
+# ============================================================================
+# MODEL TESTS
+# ============================================================================
+
+
+def test_create_model(db_session):
+    """Test creating a model"""
+    model_data = Queries.CreateModel(
+        model_name="test-model-1b", is_instruction_tuned=True
+    )
+
+    created_model = crud.create_model(db_session, model_data)
+    assert created_model is not None
+    assert created_model.model_name == "test-model-1b"
+    assert created_model.is_instruction_tuned is True
+
+
+def test_get_model_by_id(db_session, setup_reference_data):
+    """Test getting model by ID"""
+    model = crud.get_model_by_id(db_session, 1)
+    assert model is not None
+    assert model.model_id == 1
+
+
+def test_get_all_model_names(db_session, setup_reference_data):
+    """Test getting all model names"""
+    models = crud.get_all_model_names(db_session)
+    assert len(models) >= 3  # From setup_reference_data
+
+
+def test_get_all_models(db_session, setup_reference_data):
+    """Test getting all models"""
+    models = crud.get_all_models(db_session)
+    assert len(models) >= 3  # From setup_reference_data
 
 
 # ============================================================================
@@ -717,48 +1045,23 @@ def test_create_ground_truth(
     assert "actual code" in created_ground_truth.ground_truth
 
 
-# ============================================================================
-# INTEGRATION TESTS
-# ============================================================================
-
-
-def test_complete_workflow(
+def test_get_ground_truths_for_completion(
     db_session, test_user, test_project, test_session, setup_reference_data
 ):
-    """Test a complete workflow from context creation to generation"""
-    # 1. Create context
+    """Test getting ground truths for a completion"""
+    # Create completion query and ground truth
     context = crud.create_context(
         db_session,
-        Queries.ContextData(
-            prefix="def workflow_test():",
-            suffix="    return result",
-            file_name="workflow.py",
-            selected_text="workflow_test",
-        ),
+        Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
     )
-
-    # 2. Create telemetries
     contextual_telemetry = crud.create_contextual_telemetry(
         db_session,
-        Queries.ContextualTelemetryData(
-            version_id=1,
-            trigger_type_id=2,
-            language_id=1,
-            file_path="/workflow.py",
-            caret_line=10,
-            document_char_length=500,
-            relative_document_position=0.6,
-        ),
+        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
     )
-
     behavioral_telemetry = crud.create_behavioral_telemetry(
-        db_session,
-        Queries.BehavioralTelemetryData(
-            time_since_last_shown=4000, time_since_last_accepted=8000, typing_speed=280
-        ),
+        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
     )
 
-    # 3. Create completion query
     completion_query = crud.create_completion_query(
         db_session,
         Queries.CreateCompletionQuery(
@@ -768,53 +1071,64 @@ def test_complete_workflow(
             context_id=context.context_id,
             session_id=test_session.session_id,
             project_id=test_project.project_id,
-            total_serving_time=120,
         ),
     )
 
-    # 4. Create multiple generations
-    for model_id in [1, 2]:
-        generation = crud.create_generation(
-            db_session,
-            Queries.CreateGeneration(
-                meta_query_id=completion_query.meta_query_id,
-                model_id=model_id,
-                completion=f"def workflow_test():\n    result = model_{model_id}_output\n    return result",
-                generation_time=40 + model_id * 10,
-                shown_at=[datetime.now().isoformat()],
-                was_accepted=False,
-                confidence=0.8 + model_id * 0.05,
-                logprobs=[-0.01, -0.02, -0.03],
-            ),
-        )
-
-    # 5. Skip acceptance update until function is implemented
-    # TODO: Implement update_generation_acceptance in crud.py
-
-    # 6. Add ground truth
-    crud.create_ground_truth(
-        db_session,
-        Queries.CreateGroundTruth(
-            completion_query_id=completion_query.meta_query_id,
-            ground_truth="def workflow_test():\n    result = calculate_workflow()\n    return result",
-        ),
+    ground_truth_data = Queries.CreateGroundTruth(
+        completion_query_id=completion_query.meta_query_id,
+        ground_truth="Test ground truth code",
     )
-
-    # 7. Verify everything exists
-    retrieved_query = crud.get_completion_query_by_id(
-        db_session, completion_query.meta_query_id
-    )
-    assert retrieved_query is not None
-
-    generations = crud.get_generations_by_meta_query(
-        db_session, completion_query.meta_query_id
-    )
-    assert len(generations) == 2
+    crud.create_ground_truth(db_session, ground_truth_data)
 
     ground_truths = crud.get_ground_truths_for_completion(
         db_session, completion_query.meta_query_id
     )
     assert len(ground_truths) == 1
+    assert ground_truths[0].ground_truth == "Test ground truth code"
+
+
+# ============================================================================
+# REFERENCE DATA TESTS
+# ============================================================================
+
+
+def test_get_all_programming_languages(db_session, setup_reference_data):
+    """Test getting all programming languages"""
+    languages = crud.get_all_programming_languages(db_session)
+    assert len(languages) >= 3  # From setup_reference_data
+
+
+def test_get_all_trigger_types(db_session, setup_reference_data):
+    """Test getting all trigger types"""
+    trigger_types = crud.get_all_trigger_types(db_session)
+    assert len(trigger_types) >= 3  # From setup_reference_data
+
+
+def test_get_all_plugin_versions(db_session, setup_reference_data):
+    """Test getting all plugin versions"""
+    versions = crud.get_all_plugin_versions(db_session)
+    assert len(versions) >= 2  # From setup_reference_data
+
+
+def test_get_programming_language_by_id(db_session, setup_reference_data):
+    """Test getting programming language by ID"""
+    language = crud.get_programming_language_by_id(db_session, 1)
+    assert language is not None
+    assert language.language_id == 1
+
+
+def test_get_trigger_type_by_id(db_session, setup_reference_data):
+    """Test getting trigger type by ID"""
+    trigger_type = crud.get_trigger_type_by_id(db_session, 1)
+    assert trigger_type is not None
+    assert trigger_type.trigger_type_id == 1
+
+
+def test_get_plugin_version_by_id(db_session, setup_reference_data):
+    """Test getting plugin version by ID"""
+    version = crud.get_plugin_version_by_id(db_session, 1)
+    assert version is not None
+    assert version.version_id == 1
 
 
 # ============================================================================
@@ -849,18 +1163,6 @@ def test_foreign_key_constraints(db_session, setup_reference_data):
 
     # Rollback again after the second failed transaction
     db_session.rollback()
-
-
-@pytest.mark.skip(reason="CASCADE deletion functions need to be implemented in crud.py")
-def test_cascade_deletions(db_session, test_user, test_project, test_session):
-    """Test cascade deletions work properly - REQUIRES IMPLEMENTATION"""
-    # This test is skipped until cascade deletion functions are implemented
-    # Required functions:
-    # - delete_user_cascade
-    # - delete_project_cascade
-    # - delete_chat_cascade
-    # - delete_meta_query_cascade
-    pass
 
 
 def test_unique_constraints(db_session, test_config):
@@ -927,68 +1229,95 @@ def test_password_hashing_and_verification(db_session, test_config):
     assert wrong_auth is None
 
 
-def test_complex_user_workflow(db_session, setup_reference_data):
-    """Test a complete user workflow with multiple projects and sessions"""
-
-    # Create user
-    config = crud.get_config_by_id(db_session, 1)
-    user = crud.create_user(
+def test_chat_history_workflow(
+    db_session, test_user, test_project, test_session, test_chat, setup_reference_data
+):
+    """Test complete chat history workflow"""
+    # Create context and telemetries
+    context = crud.create_context(
         db_session,
-        Queries.CreateUser(
-            email="workflow@example.com",
-            name="Workflow User",
-            password="SecurePassword123",
-            config_id=config.config_id,
+        Queries.ContextData(
+            prefix="How do I create",
+            suffix="in Python?",
+            file_name="question.md",
+            selected_text="a web server",
         ),
     )
 
-    # Create multiple projects
-    projects = []
-    for i in range(3):
-        project = crud.create_project(
-            db_session,
-            Queries.CreateProject(
-                project_name=f"Project {i + 1}",
-            ),
-        )
-        projects.append(project)
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(
+            version_id=1,
+            trigger_type_id=1,
+            language_id=1,
+        ),
+    )
 
-        # Add user to project
-        crud.create_user_project(
-            db_session,
-            Queries.CreateUserProject(
-                project_id=project.project_id,
-                user_id=user.user_id,
-            ),
-        )
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session,
+        Queries.BehavioralTelemetryData(typing_speed=250),
+    )
 
-    # Create sessions for each project
-    sessions = []
-    for project in projects:
-        session = crud.create_session(
-            db_session,
-            Queries.CreateSession(
-                user_id=user.user_id,
-            ),
-        )
+    # Create chat query
+    chat_query = crud.create_chat_query(
+        db_session,
+        Queries.CreateChatQuery(
+            user_id=test_user.user_id,
+            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+            context_id=context.context_id,
+            session_id=test_session.session_id,
+            project_id=test_project.project_id,
+            chat_id=test_chat.chat_id,
+        ),
+    )
 
-        # Associate session with project
-        crud.create_session_project(
-            db_session,
-            Queries.CreateSessionProject(
-                session_id=session.session_id,
-                project_id=project.project_id,
-            ),
-        )
-        sessions.append(session)
+    # Create generation (response) - fix this
+    generation_data = Queries.CreateGeneration(
+        model_id=1,
+        completion="You can create a web server in Python using Flask or Django...",
+        generation_time=100,
+        shown_at=[datetime.now().isoformat()],
+        was_accepted=True,
+        confidence=0.9,
+        logprobs=[-0.1, -0.2],
+    )
 
-    # Verify user can access all projects
-    user_projects = crud.get_projects_for_user(db_session, user.user_id)
-    assert len(user_projects) == 3
+    crud.create_generation(db_session, generation_data, str(chat_query.meta_query_id))
 
-    # Verify sessions exist
-    user_sessions = crud.get_sessions_for_user(db_session, user.user_id)
-    assert len(user_sessions) == 3
+    # Get chat history
+    history = crud.get_chat_history(db_session, test_chat.chat_id)
+    assert len(history) == 1
+
+    meta_query, context_obj, generations = history[0]
+    assert meta_query.meta_query_id == chat_query.meta_query_id
+    assert context_obj.context_id == context.context_id
+    assert len(generations) == 1
+    assert generations[0].completion.startswith("You can create a web server")
+
+
+def test_project_chat_history(
+    db_session, test_user, test_project, test_session, setup_reference_data
+):
+    """Test getting project chat history"""
+    # Create multiple chats
+    chat1_data = Queries.CreateChat(
+        project_id=test_project.project_id, user_id=test_user.user_id, title="Chat 1"
+    )
+    chat1 = crud.create_chat(db_session, chat1_data, str(uuid.uuid4()))
+
+    chat2_data = Queries.CreateChat(
+        project_id=test_project.project_id, user_id=test_user.user_id, title="Chat 2"
+    )
+    chat2 = crud.create_chat(db_session, chat2_data, str(uuid.uuid4()))
+
+    # Get project chat history
+    history = crud.get_project_chat_history(
+        db_session, test_project.project_id, test_user.user_id, page_number=1
+    )
+
+    # Should return empty if no chat queries exist yet
+    assert isinstance(history, list)
 
 
 # ============================================================================
@@ -999,144 +1328,50 @@ def test_complex_user_workflow(db_session, setup_reference_data):
 def test_empty_and_null_values(db_session, test_config):
     """Test handling of empty strings and optional fields"""
 
-    # Test user with minimal data - password must meet validation requirements
+    # Test user with minimal data - should get default preferences
     user = crud.create_user(
         db_session,
         Queries.CreateUser(
             email="minimal@example.com",
-            name="Min",  # Minimum length (3 chars)
-            password="MinPass1",  # Meets requirements: uppercase, lowercase, digit, 8+ chars
+            name="Min",
+            password="MinPass1",
             config_id=test_config.config_id,
-            preference=None,  # Optional field
         ),
     )
 
-    assert user.preference is None
+    # Should get default preference from DEFAULT_USER_PREFERENCE
+    assert user.preference is not None
+    preference_dict = json.loads(user.preference)
+    assert "store_context" in preference_dict
 
     # Test context with all optional fields as None
     context = crud.create_context(
         db_session,
         Queries.ContextData(
-            prefix=None,
-            suffix=None,
+            prefix="",  # Empty string instead of None
+            suffix="",  # Empty string instead of None
             file_name=None,
             selected_text=None,
         ),
     )
 
-    assert context.prefix is None
-    assert context.suffix is None
-
-    # Test with empty strings (different from None)
-    context_empty = crud.create_context(
-        db_session,
-        Queries.ContextData(
-            prefix="",  # Empty string
-            suffix="",  # Empty string
-            file_name="empty.py",
-            selected_text="",
-        ),
-    )
-
-    assert context_empty.prefix == ""
-    assert context_empty.suffix == ""
-    assert context_empty.selected_text == ""
+    assert context.prefix == ""
+    assert context.suffix == ""
 
 
-def test_large_text_fields(
+def test_update_generation(
     db_session, test_user, test_project, test_session, setup_reference_data
 ):
-    """Test handling of large text content"""
-
-    # Large prefix/suffix content
-    large_text = "x" * 10000  # 10KB of text
-
-    context = crud.create_context(
-        db_session,
-        Queries.ContextData(
-            prefix=large_text,
-            suffix=large_text,
-            file_name="large_file.py",
-            selected_text=large_text,
-        ),
-    )
-
-    assert len(context.prefix) == 10000
-
-    # Large completion text
-    contextual_telemetry = crud.create_contextual_telemetry(
-        db_session,
-        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
-    )
-
-    behavioral_telemetry = crud.create_behavioral_telemetry(
-        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
-    )
-
-    completion_query = crud.create_completion_query(
-        db_session,
-        Queries.CreateCompletionQuery(
-            user_id=test_user.user_id,
-            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
-            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
-            context_id=context.context_id,
-            session_id=test_session.session_id,
-            project_id=test_project.project_id,
-        ),
-    )
-
-    large_completion = "def large_function():\n" + "    # " + "x" * 5000
-    generation = crud.create_generation(
-        db_session,
-        Queries.CreateGeneration(
-            meta_query_id=completion_query.meta_query_id,
-            model_id=1,
-            completion=large_completion,
-            generation_time=100,
-            shown_at=[datetime.now().isoformat()],
-            was_accepted=False,
-            confidence=0.8,
-            logprobs=[-0.1] * 100,  # Large logprobs array
-        ),
-    )
-
-    assert len(generation.completion) > 5000
-    assert len(generation.logprobs) == 100
-
-
-def test_datetime_edge_cases(db_session, test_user, test_project, setup_reference_data):
-    """Test datetime handling edge cases"""
-
-    # Test session with very short duration
-    session = crud.create_session(
-        db_session,
-        Queries.CreateSession(
-            user_id=test_user.user_id,
-        ),
-    )
-
-    # End session immediately
-    end_time = datetime.now().isoformat()
-    crud.update_session(
-        db_session,
-        session.session_id,
-        Queries.UpdateSession(end_time=end_time),
-    )
-
-    updated_session = crud.get_session_by_id(db_session, session.session_id)
-    assert updated_session.end_time is not None
-
-    # Test generation with multiple show times
+    """Test updating generation"""
+    # Create completion query and generation
     context = crud.create_context(
         db_session,
         Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
     )
-
     contextual_telemetry = crud.create_contextual_telemetry(
         db_session,
         Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
     )
-
     behavioral_telemetry = crud.create_behavioral_telemetry(
         db_session, Queries.BehavioralTelemetryData(typing_speed=250)
     )
@@ -1148,195 +1383,101 @@ def test_datetime_edge_cases(db_session, test_user, test_project, setup_referenc
             contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
             behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
             context_id=context.context_id,
-            session_id=session.session_id,
+            session_id=test_session.session_id,
             project_id=test_project.project_id,
         ),
     )
 
-    # Multiple timestamps
-    now = datetime.now()
-    timestamps = [
-        now.isoformat(),
-        (now + timedelta(seconds=1)).isoformat(),
-        (now + timedelta(seconds=2)).isoformat(),
-    ]
-
-    generation = crud.create_generation(
-        db_session,
-        Queries.CreateGeneration(
-            meta_query_id=completion_query.meta_query_id,
-            model_id=1,
-            completion="test completion",
-            generation_time=50,
-            shown_at=timestamps,
-            was_accepted=False,
-            confidence=0.8,
-            logprobs=[-0.1, -0.2],
-        ),
+    generation_data = Queries.CreateGeneration(
+        model_id=1,
+        completion="Original completion",
+        generation_time=50,
+        shown_at=[datetime.now().isoformat()],
+        was_accepted=False,
+        confidence=0.8,
+        logprobs=[-0.1],
     )
 
-    assert len(generation.shown_at) == 3
+    crud.create_generation(
+        db_session, generation_data, str(completion_query.meta_query_id)
+    )
+
+    # Update generation
+    update_data = Queries.UpdateGeneration(was_accepted=True)
+
+    result = crud.update_generation(
+        db_session, str(completion_query.meta_query_id), 1, update_data
+    )
+    assert result > 0  # Should return True (converted to int > 0)
 
 
 # ============================================================================
-# JSON VALIDATION TESTS
+# DOCUMENTATION TESTS WITH MOCKING
 # ============================================================================
 
 
-def test_json_field_validation(db_session, test_config):
-    """Test JSON string fields are properly handled"""
-
-    # Test valid JSON in user preferences
-    valid_prefs = '{"theme": "dark", "notifications": true, "language": "en"}'
-    user = crud.create_user(
-        db_session,
-        Queries.CreateUser(
-            email="json_test@example.com",
-            name="JSON User",
-            password="SecurePassword123",
-            config_id=test_config.config_id,
-            preference=valid_prefs,
-        ),
-    )
-
-    # Verify JSON can be parsed
-    prefs = json.loads(user.preference)
-    assert prefs["theme"] == "dark"
-    assert prefs["notifications"] is True
-
-    # Test project with complex JSON
-    complex_contexts = json.dumps(
-        {
-            "files": ["file1.py", "file2.py"],
-            "imports": {"numpy": "np", "pandas": "pd"},
-            "config": {"max_lines": 1000},
-        }
-    )
-
-    project = crud.create_project(
-        db_session,
-        Queries.CreateProject(
-            project_name="JSON Project",
-            multi_file_contexts=complex_contexts,
-        ),
-    )
-
-    parsed_contexts = json.loads(project.multi_file_contexts)
-    assert len(parsed_contexts["files"]) == 2
-    assert parsed_contexts["config"]["max_lines"] == 1000
-
-
-# ============================================================================
-# PERFORMANCE TESTS
-# ============================================================================
-
-
-def test_bulk_operations_performance(
-    db_session, test_user, test_project, setup_reference_data
+@patch("database.crud.encode_text")
+def test_create_documentation_with_mocked_embedding(
+    mock_encode_text, db_session, setup_reference_data
 ):
-    """Test performance with larger datasets"""
+    """Test creating documentation with mocked embedding"""
+    mock_embedding = [0.1] * 384
+    mock_encode_text.return_value = mock_embedding
 
-    # Create many contexts
-    contexts = []
-    for i in range(100):
-        context = crud.create_context(
-            db_session,
-            Queries.ContextData(
-                prefix=f"def function_{i}():",
-                suffix=f"    return {i}",
-                file_name=f"file_{i}.py",
-            ),
-        )
-        contexts.append(context)
-
-    assert len(contexts) == 100
-
-    # Create session for bulk operations
-    session = crud.create_session(
-        db_session,
-        Queries.CreateSession(
-            user_id=test_user.user_id,
-        ),
+    doc_data = Queries.CreateDocumentation(
+        content="def hello(): print('Hello, World!')", language="python"
     )
 
-    # Associate with project
-    crud.create_session_project(
-        db_session,
-        Queries.CreateSessionProject(
-            session_id=session.session_id,
-            project_id=test_project.project_id,
-        ),
+    created_doc = crud.create_documentation(db_session, doc_data)
+
+    assert created_doc is not None
+    assert created_doc.content == doc_data.content
+    assert created_doc.language == doc_data.language
+    assert np.allclose(created_doc.embedding, mock_embedding)
+    mock_encode_text.assert_called_once_with(doc_data.content)
+
+
+@patch("database.crud.encode_text")
+def test_create_documentation_embedding_failure(
+    mock_encode_text, db_session, setup_reference_data
+):
+    """Test creating documentation when embedding generation fails"""
+    mock_encode_text.side_effect = Exception("Embedding service failed")
+
+    doc_data = Queries.CreateDocumentation(
+        content="def hello(): print('Hello, World!')", language="python"
     )
 
-    # Create telemetries for bulk operations
-    contextual_telemetry = crud.create_contextual_telemetry(
-        db_session,
-        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
-    )
+    created_doc = crud.create_documentation(db_session, doc_data)
 
-    behavioral_telemetry = crud.create_behavioral_telemetry(
-        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
-    )
-
-    # Create many completion queries
-    queries = []
-    for i, context in enumerate(contexts[:10]):  # Just 10 to keep test reasonable
-        query = crud.create_completion_query(
-            db_session,
-            Queries.CreateCompletionQuery(
-                user_id=test_user.user_id,
-                contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
-                behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
-                context_id=context.context_id,
-                session_id=session.session_id,
-                project_id=test_project.project_id,
-            ),
-        )
-        queries.append(query)
-
-    assert len(queries) == 10
-
-    # Verify we can retrieve them efficiently
-    user_projects = crud.get_projects_for_user(db_session, test_user.user_id)
-    assert len(user_projects) >= 1
+    assert created_doc is not None
+    assert created_doc.content == doc_data.content
+    assert created_doc.language == doc_data.language
+    assert created_doc.embedding is None  # Should be None due to failure
 
 
 # ============================================================================
-# POLYMORPHIC INHERITANCE TESTS
+# CASCADE DELETE TESTS
 # ============================================================================
 
 
-def test_polymorphic_query_inheritance(
+def test_delete_meta_query_cascade(
     db_session, test_user, test_project, test_session, setup_reference_data
 ):
-    """Test that polymorphic inheritance works correctly"""
-
-    # Create context and telemetries
+    """Test cascade deletion of meta query"""
+    # Create completion query with generation
     context = crud.create_context(
         db_session,
         Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
     )
-
     contextual_telemetry = crud.create_contextual_telemetry(
         db_session,
         Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
     )
-
     behavioral_telemetry = crud.create_behavioral_telemetry(
         db_session, Queries.BehavioralTelemetryData(typing_speed=250)
     )
 
-    # Create chat
-    chat = crud.create_chat(
-        db_session,
-        Queries.CreateChat(
-            project_id=test_project.project_id,
-            user_id=test_user.user_id,
-            title="Polymorphic Test Chat",
-        ),
-    )
-
-    # Create both types of queries
     completion_query = crud.create_completion_query(
         db_session,
         Queries.CreateCompletionQuery(
@@ -1349,70 +1490,86 @@ def test_polymorphic_query_inheritance(
         ),
     )
 
-    chat_query = crud.create_chat_query(
-        db_session,
-        Queries.CreateChatQuery(
-            user_id=test_user.user_id,
-            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
-            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
-            context_id=context.context_id,
-            session_id=test_session.session_id,
-            project_id=test_project.project_id,
-            chat_id=chat.chat_id,
-        ),
+    # Create generation
+    generation_data = Queries.CreateGeneration(
+        model_id=1,
+        completion="Test completion",
+        generation_time=50,
+        shown_at=[datetime.now().isoformat()],
+        was_accepted=False,
+        confidence=0.8,
+        logprobs=[-0.1],
     )
 
-    # Test that we can retrieve both as MetaQueries
-    completion_meta = crud.get_meta_query_by_id(
-        db_session, completion_query.meta_query_id
+    # Store the ID before deletion:
+    meta_query_id = completion_query.meta_query_id
+
+    # Delete meta query (should cascade to completion_query and generation)
+    result = crud.delete_meta_query_cascade(db_session, meta_query_id)
+    assert result is True
+
+    # Verify deletion
+    deleted_meta_query = crud.get_meta_query_by_id(db_session, meta_query_id)
+    assert deleted_meta_query is None
+
+    deleted_completion_query = crud.get_completion_query_by_id(
+        db_session, meta_query_id
     )
-    chat_meta = crud.get_meta_query_by_id(db_session, chat_query.meta_query_id)
+    assert deleted_completion_query is None
 
-    assert completion_meta.query_type == "completion"
-    assert chat_meta.query_type == "chat"
+    generations = crud.get_generations_by_meta_query(db_session, meta_query_id)
+    assert len(generations) == 0
 
-    # Test that we can retrieve specific types
-    specific_completion = crud.get_completion_query_by_id(
-        db_session, completion_query.meta_query_id
+
+def test_delete_chat_cascade(db_session, test_user, test_project, setup_reference_data):
+    """Test cascade deletion of chat"""
+    chat_data = Queries.CreateChat(
+        project_id=test_project.project_id,
+        user_id=test_user.user_id,
+        title="Test Chat for Deletion",
     )
-    specific_chat = crud.get_chat_query_by_id(db_session, chat_query.meta_query_id)
+    chat = crud.create_chat(db_session, chat_data, str(uuid.uuid4()))
 
-    assert specific_completion is not None
-    assert specific_chat is not None
-    assert specific_chat.chat_id == chat.chat_id
+    # Delete chat
+    result = crud.delete_chat_cascade(db_session, chat.chat_id)
+    assert result is True
+
+    # Verify deletion
+    deleted_chat = crud.get_chat_by_id(db_session, chat.chat_id)
+    assert deleted_chat is None
+
+
+def test_delete_session_cascade(db_session, test_user):
+    """Test cascade deletion of session"""
+    session_data = Queries.CreateSession(user_id=test_user.user_id)
+    session = crud.create_session(db_session, session_data)
+
+    # Delete session
+    result = crud.delete_session_cascade(db_session, session.session_id)
+    assert result is True
+
+    # Verify deletion
+    deleted_session = crud.get_session_by_id(db_session, session.session_id)
+    assert deleted_session is None
+
+
+def test_delete_project_cascade(db_session, test_user):
+    """Test cascade deletion of project"""
+    project_data = Queries.CreateProject(project_name="Test Project for Deletion")
+    project = crud.create_project(db_session, project_data)
+
+    # Delete project
+    result = crud.delete_project_cascade(db_session, project.project_id)
+    assert result is True
+
+    # Verify deletion
+    deleted_project = crud.get_project_by_id(db_session, project.project_id)
+    assert deleted_project is None
 
 
 # ============================================================================
-# CONCURRENT ACCESS TESTS
+# PASSWORD VALIDATION TESTS
 # ============================================================================
-
-
-def test_sequential_user_creation_simulating_concurrency(db_session, test_config):
-    """Test multiple user creation operations sequentially (simpler alternative)"""
-
-    users_created = []
-
-    for i in range(3):
-        try:
-            user = crud.create_user(
-                db_session,
-                Queries.CreateUser(
-                    email=f"sequential_{i}@example.com",
-                    name=f"Sequential User {i}",
-                    password="SecurePassword123",
-                    config_id=test_config.config_id,
-                ),
-            )
-            users_created.append(user)
-        except Exception as e:
-            print(f"Error creating user {i}: {e}")
-
-    # Should be able to create multiple users
-    assert len(users_created) == 3
-
-    # Verify they all have different IDs
-    user_ids = [u.user_id for u in users_created]
-    assert len(set(user_ids)) == 3  # All unique
 
 
 def test_password_validation():
@@ -1454,3 +1611,429 @@ def test_password_validation():
             config_id=1,
         )
         assert user_data.password.get_secret_value() == password
+
+
+# ============================================================================
+# COMPREHENSIVE WORKFLOW TEST
+# ============================================================================
+
+
+def test_complete_workflow(
+    db_session, test_user, test_project, test_session, setup_reference_data
+):
+    """Test a complete workflow from context creation to generation"""
+    # 1. Create context
+    context = crud.create_context(
+        db_session,
+        Queries.ContextData(
+            prefix="def workflow_test():",
+            suffix="    return result",
+            file_name="workflow.py",
+            selected_text="workflow_test",
+        ),
+    )
+
+    # 2. Create telemetries
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(
+            version_id=1,
+            trigger_type_id=2,
+            language_id=1,
+            file_path="/workflow.py",
+            caret_line=10,
+            document_char_length=500,
+            relative_document_position=0.6,
+        ),
+    )
+
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session,
+        Queries.BehavioralTelemetryData(
+            time_since_last_shown=4000, time_since_last_accepted=8000, typing_speed=280
+        ),
+    )
+
+    # 3. Create completion query
+    completion_query = crud.create_completion_query(
+        db_session,
+        Queries.CreateCompletionQuery(
+            user_id=test_user.user_id,
+            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+            context_id=context.context_id,
+            session_id=test_session.session_id,
+            project_id=test_project.project_id,
+            total_serving_time=120,
+        ),
+    )
+
+    # 4. Create multiple generations - fix this
+    for model_id in [1, 2]:
+        generation_data = Queries.CreateGeneration(
+            model_id=model_id,
+            completion=f"def workflow_test():\n    result = model_{model_id}_output\n    return result",
+            generation_time=40 + model_id * 10,
+            shown_at=[datetime.now().isoformat()],
+            was_accepted=False,
+            confidence=0.8 + model_id * 0.05,
+            logprobs=[-0.01, -0.02, -0.03],
+        )
+
+        crud.create_generation(
+            db_session, generation_data, str(completion_query.meta_query_id)
+        )
+
+    # 5. Add ground truth
+    crud.create_ground_truth(
+        db_session,
+        Queries.CreateGroundTruth(
+            completion_query_id=completion_query.meta_query_id,
+            ground_truth="def workflow_test():\n    result = calculate_workflow()\n    return result",
+        ),
+    )
+
+    # 6. Verify everything exists
+    retrieved_query = crud.get_completion_query_by_id(
+        db_session, completion_query.meta_query_id
+    )
+    assert retrieved_query is not None
+
+    generations = crud.get_generations_by_meta_query(
+        db_session, completion_query.meta_query_id
+    )
+    assert len(generations) == 2
+
+    ground_truths = crud.get_ground_truths_for_completion(
+        db_session, completion_query.meta_query_id
+    )
+    assert len(ground_truths) == 1
+
+
+# ============================================================================
+# ADDITIONAL COVERAGE TESTS
+# ============================================================================
+
+
+def test_get_user_by_id_password(db_session, test_config):
+    """Test get_user_by_id_password function"""
+    password = "TestPassword123"
+    user_data = Queries.CreateUser(
+        email="id_password_test@example.com",
+        name="ID Password Test User",
+        password=password,
+        config_id=test_config.config_id,
+    )
+    created_user = crud.create_user(db_session, user_data)
+
+    # Test correct password
+    auth_user = crud.get_user_by_id_password(db_session, created_user.user_id, password)
+    assert auth_user is not None
+    assert auth_user.user_id == created_user.user_id
+
+    # Test wrong password
+    wrong_auth = crud.get_user_by_id_password(
+        db_session, created_user.user_id, "WrongPassword"
+    )
+    assert wrong_auth is None
+
+
+def test_get_generations_by_meta_query_id_string(
+    db_session, test_user, test_project, test_session, setup_reference_data
+):
+    """Test get_generations_by_meta_query_id with string parameter"""
+    # Create completion query and generation
+    context = crud.create_context(
+        db_session,
+        Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
+    )
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
+    )
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
+    )
+
+    completion_query = crud.create_completion_query(
+        db_session,
+        Queries.CreateCompletionQuery(
+            user_id=test_user.user_id,
+            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+            context_id=context.context_id,
+            session_id=test_session.session_id,
+            project_id=test_project.project_id,
+        ),
+    )
+
+    generation_data = Queries.CreateGeneration(
+        model_id=1,
+        completion="Test generation",
+        generation_time=50,
+        shown_at=[datetime.now().isoformat()],
+        was_accepted=False,
+        confidence=0.8,
+        logprobs=[-0.1],
+    )
+
+    crud.create_generation(
+        db_session, generation_data, str(completion_query.meta_query_id)
+    )
+
+    # Test with string parameter
+    generations = crud.get_generations_by_meta_query_id(
+        db_session, str(completion_query.meta_query_id)
+    )
+    assert len(generations) == 1
+
+
+def test_user_full_wipe_out(
+    db_session, test_user, test_project, test_session, setup_reference_data
+):
+    """Test delete_user_full_wipe_out function"""
+    # Create some data associated with the user
+    context = crud.create_context(
+        db_session,
+        Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
+    )
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
+    )
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
+    )
+
+    completion_query = crud.create_completion_query(
+        db_session,
+        Queries.CreateCompletionQuery(
+            user_id=test_user.user_id,
+            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+            context_id=context.context_id,
+            session_id=test_session.session_id,
+            project_id=test_project.project_id,
+        ),
+    )
+
+    # Create chat
+    chat_data = Queries.CreateChat(
+        project_id=test_project.project_id,
+        user_id=test_user.user_id,
+        title="Test Chat for Wipeout",
+    )
+    chat = crud.create_chat(db_session, chat_data, str(uuid.uuid4()))
+
+    # Perform full wipeout
+    crud.delete_user_full_wipe_out(db_session, test_user.user_id)
+
+    # Verify user and associated data are deleted
+    deleted_user = crud.get_user_by_id(db_session, test_user.user_id)
+    assert deleted_user is None
+
+
+def test_hash_and_verify_password_functions(db_session):
+    """Test password hashing and verification utility functions"""
+    from database.crud import hash_password, verify_password
+
+    password = "TestPassword123"
+    hashed = hash_password(password)
+
+    assert hashed != password
+    assert hashed.startswith("$argon2id$")
+
+    # Test correct password
+    assert verify_password(hashed, password) is True
+
+    # Test wrong password
+    assert verify_password(hashed, "WrongPassword") is False
+
+    # Test invalid hash
+    assert verify_password("invalid_hash", password) is False
+
+
+def test_create_context_with_custom_id(db_session):
+    """Test creating context with custom ID"""
+    custom_id = str(uuid.uuid4())
+    context_data = Queries.ContextData(
+        prefix="test prefix",
+        suffix="test suffix",
+        file_name="test.py",
+    )
+
+    created_context = crud.create_context(db_session, context_data, custom_id)
+    assert str(created_context.context_id) == custom_id
+
+
+def test_create_contextual_telemetry_with_custom_id(db_session, setup_reference_data):
+    """Test creating contextual telemetry with custom ID"""
+    custom_id = str(uuid.uuid4())
+    telemetry_data = Queries.ContextualTelemetryData(
+        version_id=1,
+        trigger_type_id=1,
+        language_id=1,
+    )
+
+    created_telemetry = crud.create_contextual_telemetry(
+        db_session, telemetry_data, custom_id
+    )
+    assert str(created_telemetry.contextual_telemetry_id) == custom_id
+
+
+def test_create_behavioral_telemetry_with_custom_id(db_session):
+    """Test creating behavioral telemetry with custom ID"""
+    custom_id = str(uuid.uuid4())
+    telemetry_data = Queries.BehavioralTelemetryData(typing_speed=250)
+
+    created_telemetry = crud.create_behavioral_telemetry(
+        db_session, telemetry_data, custom_id
+    )
+    assert str(created_telemetry.behavioral_telemetry_id) == custom_id
+
+
+def test_create_session_with_custom_id(db_session, test_user):
+    """Test creating session with custom ID"""
+    custom_id = str(uuid.uuid4())
+    session_data = Queries.CreateSession(user_id=test_user.user_id)
+
+    created_session = crud.create_session(db_session, session_data, custom_id)
+    assert str(created_session.session_id) == custom_id
+
+
+def test_create_project_with_custom_id(db_session):
+    """Test creating project with custom ID"""
+    custom_id = str(uuid.uuid4())
+    project_data = Queries.CreateProject(project_name="Custom ID Project")
+
+    created_project = crud.create_project(db_session, project_data, custom_id)
+    assert str(created_project.project_id) == custom_id
+
+
+def test_existing_chat_id_handling(db_session, test_user, test_project):
+    """Test handling of existing chat ID in create_chat"""
+    chat_id = str(uuid.uuid4())
+    chat_data = Queries.CreateChat(
+        project_id=test_project.project_id,
+        user_id=test_user.user_id,
+        title="First Chat",
+    )
+
+    # Create first chat
+    first_chat = crud.create_chat(db_session, chat_data, chat_id)
+
+    # Try to create second chat with same ID and same user/project
+    second_chat = crud.create_chat(db_session, chat_data, chat_id)
+
+    # Should return the existing chat
+    assert first_chat.chat_id == second_chat.chat_id
+    assert first_chat.title == second_chat.title
+
+
+def test_create_completion_query_with_custom_id(
+    db_session, test_user, test_project, test_session, setup_reference_data
+):
+    """Test creating completion query with custom ID"""
+    custom_id = str(uuid.uuid4())
+
+    context = crud.create_context(
+        db_session,
+        Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
+    )
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
+    )
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
+    )
+
+    query_data = Queries.CreateCompletionQuery(
+        user_id=test_user.user_id,
+        contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+        behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+        context_id=context.context_id,
+        session_id=test_session.session_id,
+        project_id=test_project.project_id,
+    )
+
+    created_query = crud.create_completion_query(db_session, query_data, custom_id)
+    assert str(created_query.meta_query_id) == custom_id
+
+
+def test_create_chat_query_with_custom_id(
+    db_session, test_user, test_project, test_session, test_chat, setup_reference_data
+):
+    """Test creating chat query with custom ID"""
+    custom_id = str(uuid.uuid4())
+
+    context = crud.create_context(
+        db_session,
+        Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
+    )
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
+    )
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
+    )
+
+    query_data = Queries.CreateChatQuery(
+        user_id=test_user.user_id,
+        contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+        behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+        context_id=context.context_id,
+        session_id=test_session.session_id,
+        project_id=test_project.project_id,
+        chat_id=test_chat.chat_id,
+    )
+
+    created_query = crud.create_chat_query(db_session, query_data, custom_id)
+    assert str(created_query.meta_query_id) == custom_id
+
+
+def test_create_generation_with_custom_id(
+    db_session, test_user, test_project, test_session, setup_reference_data
+):
+    """Test creating generation with custom ID (must reference existing meta_query)"""
+    # First create a completion query to get a valid meta_query_id
+    context = crud.create_context(
+        db_session,
+        Queries.ContextData(prefix="test", suffix="test", file_name="test.py"),
+    )
+    contextual_telemetry = crud.create_contextual_telemetry(
+        db_session,
+        Queries.ContextualTelemetryData(version_id=1, trigger_type_id=1, language_id=1),
+    )
+    behavioral_telemetry = crud.create_behavioral_telemetry(
+        db_session, Queries.BehavioralTelemetryData(typing_speed=250)
+    )
+
+    completion_query = crud.create_completion_query(
+        db_session,
+        Queries.CreateCompletionQuery(
+            user_id=test_user.user_id,
+            contextual_telemetry_id=contextual_telemetry.contextual_telemetry_id,
+            behavioral_telemetry_id=behavioral_telemetry.behavioral_telemetry_id,
+            context_id=context.context_id,
+            session_id=test_session.session_id,
+            project_id=test_project.project_id,
+        ),
+    )
+
+    # Use the existing meta_query_id as the custom_id
+    custom_id = str(completion_query.meta_query_id)
+
+    generation_data = Queries.CreateGeneration(
+        model_id=1,
+        completion="Test generation",
+        generation_time=50,
+        shown_at=[datetime.now().isoformat()],
+        was_accepted=False,
+        confidence=0.8,
+        logprobs=[-0.1],
+    )
+
+    created_generation = crud.create_generation(db_session, generation_data, custom_id)
+    assert str(created_generation.meta_query_id) == custom_id

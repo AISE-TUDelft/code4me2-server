@@ -1,4 +1,6 @@
+# TODO: reformat
 import logging
+import os
 
 # import threading
 import time
@@ -11,9 +13,36 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.outputs import LLMResult
 from langchain_core.prompts import PromptTemplate
 from pydantic import Field
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    StoppingCriteria,
+    StoppingCriteriaList,
+)
 
 from Code4meV2Config import Code4meV2Config
+
+
+class StopSequenceCriteria(StoppingCriteria):
+    """Custom stopping criteria for text generation based on specific sequences."""
+
+    def __init__(self, tokenizer, stop_sequences, device):
+        self.tokenizer = tokenizer
+        self.stop_sequences = stop_sequences
+        self.device = device
+        self.buffer = ""
+
+    def __call__(self, input_ids, scores, **kwargs):
+        # Get the generated text so far
+        generated_text = self.tokenizer.decode(input_ids[0])
+
+        # Check if any stop sequence appears in the generated text
+        if self.stop_sequences:
+            for stop_seq in self.stop_sequences:
+                if stop_seq in generated_text:
+                    return True
+
+        return False
 
 
 class TemplateCompletionModel(BaseLLM):
@@ -36,15 +65,13 @@ class TemplateCompletionModel(BaseLLM):
         cls,
         model_name: str,
         prompt_template: str,
+        config: Code4meV2Config,
         tokenizer_name: Optional[str] = None,
-        config: Optional[Code4meV2Config] = None,
         **model_kwargs,
     ) -> "TemplateCompletionModel":
         tokenizer_name = tokenizer_name or model_name
 
         # Ensure cache directory exists
-        import os
-
         os.makedirs(config.model_cache_dir, exist_ok=True)
 
         logging.info(f"Using cache directory: {config.model_cache_dir}")
@@ -171,7 +198,9 @@ class TemplateCompletionModel(BaseLLM):
         # Return the results wrapped in an LLMResult
         return LLMResult(generations=generations)
 
-    def invoke(self, prompt: dict, max_new_tokens=None, **kwargs) -> dict:
+    def invoke(
+        self, prompt: dict, max_new_tokens=None, stop_sequences=None, **kwargs
+    ) -> dict:
         """
         Generate text completions using the model with optimized performance.
 
@@ -202,6 +231,14 @@ class TemplateCompletionModel(BaseLLM):
         # Measure generation time with perf_counter for higher precision
         start_time = time.perf_counter()
 
+        # Set up stopping criteria if stop_sequences is provided
+        stopping_criteria = None
+        if stop_sequences:
+            stop_criteria = StopSequenceCriteria(
+                self.tokenizer, stop_sequences, self.device
+            )
+            stopping_criteria = StoppingCriteriaList([stop_criteria])
+
         # Use model_lock for thread safety and inference_mode for faster inference
         # with self.model_lock, torch.inference_mode():
         with torch.inference_mode():
@@ -213,6 +250,7 @@ class TemplateCompletionModel(BaseLLM):
                 # Add performance-optimized generation parameters from config
                 use_cache=self.config.model_use_cache,
                 num_beams=self.config.model_num_beams,
+                stopping_criteria=stopping_criteria,
                 **kwargs,
             )
             end_time = time.perf_counter()
@@ -244,6 +282,13 @@ class TemplateCompletionModel(BaseLLM):
                 if token_probs_list
                 else None
             )
+        # Post-process the generated text to remove any content after the stop sequence
+        if stop_sequences and generated_text:
+            for stop_seq in stop_sequences:
+                if stop_seq in generated_text:
+                    # Truncate at the stop sequence
+                    generated_text = generated_text.split(stop_seq)[0]
+                    break
 
         result = {
             "completion": generated_text.strip(),

@@ -1,3 +1,4 @@
+# TODO: Reformat
 import re
 from abc import ABC
 from enum import Enum
@@ -182,6 +183,9 @@ class RequestCompletion(QueryBase):
     store_behavioral_telemetry: Optional[bool] = Field(
         default=DEFAULT_USER_PREFERENCE.get("store_behavioral_telemetry"),
         description="Whether to store behavioral telemetry in database",
+    )
+    stop_sequences: Optional[List[str]] = Field(
+        default=[], description="List of sequences that signal the end of generation"
     )
 
 

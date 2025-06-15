@@ -1,3 +1,10 @@
+"""
+Secret Detection and Redaction Utilities
+
+This module provides utilities to extract and redact secrets from text using
+a variety of detectors from the `detect-secrets` library.
+"""
+
 import re
 import uuid
 
@@ -20,6 +27,7 @@ from detect_secrets.plugins.stripe import StripeDetector
 from detect_secrets.plugins.telegram_token import TelegramBotTokenDetector
 from detect_secrets.plugins.twilio import TwilioKeyDetector
 
+# List of initialized secret detectors
 secret_detectors = [
     AWSKeyDetector(),
     AzureStorageKeyDetector(),
@@ -40,35 +48,63 @@ secret_detectors = [
 ]
 
 
-def extract_secrets(text: str, file_name: str = "unknown_file") -> str:
+def extract_secrets(text: str, file_name: str = "unknown_file") -> set[str]:
     """
-    Redact secrets from the given text using various detectors.
+    Extract secrets from the given text using all enabled detectors.
+
+    Args:
+        text (str): The text to analyze for secrets.
+        file_name (str, optional): The name of the file being analyzed. Defaults to "unknown_file".
+
+    Returns:
+        set[str]: A set of detected secret values.
     """
     secrets = set()
+
     for detector in secret_detectors:
         findings = detector.analyze_line(
-            filename=file_name if file_name is not None else "unknown_file",
+            filename=file_name,
             line=text,
         )
-        if findings:
-            for finding in findings:
-                if finding.secret_value:
-                    secrets.add(finding.secret_value)
+        for finding in findings or []:
+            if finding.secret_value:
+                secrets.add(finding.secret_value)
+
     return secrets
 
 
 def redact_secrets(text: str, secrets: list[str]) -> str:
     """
-    Redact secrets in the given text using various detectors.
+    Redact all detected secrets in the given text.
+
+    Args:
+        text (str): The input text containing secrets.
+        secrets (list[str]): A list of secret values to redact.
+
+    Returns:
+        str: The redacted text with secrets replaced by "<hidden>".
     """
-    if secrets:
-        pattern = re.compile("|".join(re.escape(secret) for secret in secrets))
-        return pattern.sub("<hidden>", text)
-    else:
+    if not secrets:
         return text
+
+    # Compile a single regex pattern to match all secrets
+    pattern = re.compile("|".join(re.escape(secret) for secret in secrets))
+    return pattern.sub("<hidden>", text)
 
 
 def create_uuid(version: int = 4) -> str:
+    """
+    Generate a UUID of a specified version.
+
+    Args:
+        version (int, optional): UUID version to generate. Must be 1, 3, 4, or 5. Defaults to 4.
+
+    Returns:
+        str: The generated UUID as a string.
+
+    Raises:
+        ValueError: If an unsupported version is specified.
+    """
     if version == 1:
         return str(uuid.uuid1())
     elif version == 3:
@@ -79,38 +115,3 @@ def create_uuid(version: int = 4) -> str:
         return str(uuid.uuid5(uuid.NAMESPACE_DNS, "example.com"))
     else:
         raise ValueError("Invalid UUID version. Supported versions are 1, 3, 4, and 5.")
-
-
-#
-if __name__ == "__main__":
-    file_content = "a = 10"
-    print(redact_secrets(file_content, extract_secrets(file_content)))
-    # file_content = "secret_key = 'AKIAIOSFODNN7EXAMPLE'\npassword= 'mypassword123'\n"+ "normal_code = 1\n"*300
-
-#     redacted_file_content = ""
-#     attempts = 100
-#
-#     # Approach 1 -> Slower takes about 40 milliseconds on average per 100 lines of code
-#     sum_time1 = 0
-#     for _ in range(attempts):
-#         t0 = time.perf_counter()
-#         redacted_file_content = ""
-#         for line_number, line in enumerate(file_content.split("\n"), start=1):
-#             secrets = extract_secrets(text=line, file_name="dummy.py", line_number=line_number)
-#             for secret in secrets:
-#                 line = re.sub(re.escape(secret), "<hidden>", line)
-#             redacted_file_content+=line+"\n"
-#         sum_time1+=time.perf_counter()-t0
-#
-#     # Approach 2 -> Much faster takes about 1 millisecond on average per 100 lines of code
-#     sum_time2 = 0
-#     for _ in range(attempts):
-#         t0 = time.perf_counter()
-#         redacted_file_content=file_content
-#         secrets = extract_secrets(text=file_content, file_name="dummy.py", line_number=1)
-#         for secret in secrets:
-#             redacted_file_content = re.sub(re.escape(secret), "<hidden>", redacted_file_content)
-#         sum_time2+=time.perf_counter()-t0
-#
-#     print(f"Average time approach 1 took: {sum_time1/attempts}")
-#     print(f"Average time approach 2 took: {sum_time2/attempts}")

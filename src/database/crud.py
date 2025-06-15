@@ -1,3 +1,4 @@
+# TODO: Reformat
 import json
 import uuid
 from datetime import datetime
@@ -182,22 +183,6 @@ def delete_user_full_wipe_out(db: Session, user_id: uuid.UUID):
 
 
 # Context Operations
-# def add_context(db: Session, context: Queries.ContextData) -> db_schemas.Context:
-#     """Create a new context record"""
-#     db_context = db_schemas.Context(
-#         context_id=uuid.uuid4(),
-#         prefix=context.prefix,
-#         suffix=context.suffix,
-#         language_id=context.language_id,
-#         trigger_type_id=context.trigger_type_id,
-#         version_id=context.version_id,
-#     )
-#     db.add(db_context)
-#     db.commit()
-#     db.refresh(db_context)
-#     return db_context
-
-
 def create_context(
     db: Session, context: Queries.ContextData, context_id: str = ""
 ) -> db_schemas.Context:
@@ -225,23 +210,6 @@ def get_context_by_id(
 
 
 # Telemetry operations
-# def add_telemetry(
-#     db: Session, telemetry: Queries.TelemetryData
-# ) -> db_schemas.Telemetry:
-#     """Create a new telemetry record"""
-#     db_telemetry = db_schemas.Telemetry(
-#         telemetry_id=uuid.uuid4(),
-#         time_since_last_completion=telemetry.time_since_last_completion,
-#         typing_speed=telemetry.typing_speed,
-#         document_char_length=telemetry.document_char_length,
-#         relative_document_position=telemetry.relative_document_position,
-#     )
-#     db.add(db_telemetry)
-#     db.commit()
-#     db.refresh(db_telemetry)
-#     return db_telemetry
-
-
 def create_contextual_telemetry(
     db: Session, telemetry: Queries.ContextualTelemetryData, id: str = ""
 ) -> db_schemas.ContextualTelemetry:
@@ -294,52 +262,6 @@ def get_behavioral_telemetry_by_id(
         .filter(db_schemas.BehavioralTelemetry.behavioral_telemetry_id == telemetry_id)
         .first()
     )
-
-
-# Query operations
-# def add_query(db: Session, query: Queries.CreateQuery) -> db_schemas.Query:
-#     """Create a new query record"""
-#     db_query = db_schemas.Query(
-#         query_id=uuid.uuid4(),
-#         user_id=str(query.user_id),
-#         telemetry_id=str(query.telemetry_id),
-#         context_id=str(query.context_id),
-#         timestamp=datetime.now().isoformat(),
-#         total_serving_time=query.total_serving_time,
-#         server_version_id=query.server_version_id,
-#     )
-#     db.add(db_query)
-#     db.commit()
-#     db.refresh(db_query)
-#     return db_query
-#
-#
-# def get_query_by_id(db: Session, query_id: str) -> Optional[Type[db_schemas.Query]]:
-#     """Get query by ID"""
-#     return (
-#         db.query(db_schemas.Query).filter(db_schemas.Query.query_id == query_id).first()
-#     )
-#
-#
-# def update_query_serving_time(
-#     db: Session, query_id: str, total_serving_time: int
-# ) -> Optional[db_schemas.Query]:
-#     """Update query total serving time"""
-#     query = get_query_by_id(db, query_id)
-#     if query:
-#         query.total_serving_time = total_serving_time
-#         db.commit()
-#         db.refresh(query)
-#     return query
-#
-#
-# def remove_query_by_user_id(db: Session, user_id: str) -> bool:
-#     """Remove all queries by user ID"""
-#     result = (
-#         db.query(db_schemas.Query).filter(db_schemas.Query.user_id == user_id).delete()
-#     )
-#     db.commit()
-#     return result > 0
 
 
 # MetaQuery operations
@@ -474,50 +396,6 @@ def delete_meta_query_cascade(db: Session, meta_query_id: uuid.UUID) -> bool:
     except Exception as e:
         db.rollback()
         raise e
-
-
-# Generation operations
-
-# def add_generation(
-#     db: Session, generation: Queries.CreateGeneration
-# ) -> db_schemas.HadGeneration:
-#     """Create a new generation record"""
-#     db_generation = db_schemas.HadGeneration(
-#         query_id=str(generation.query_id),
-#         model_id=generation.model_id,
-#         completion=generation.completion,
-#         generation_time=generation.generation_time,
-#         shown_at=generation.shown_at,
-#         was_accepted=generation.was_accepted,
-#         confidence=generation.confidence,
-#         logprobs=generation.logprobs,
-#     )
-#     db.add(db_generation)
-#     db.commit()
-#     db.refresh(db_generation)
-#     return db_generation
-# def get_generations_by_query_id(
-#     db: Session, query_id: str
-# ) -> list[db_schemas.HadGeneration]:
-#     """Get all generations for a query"""
-#     # assert is_valid_uuid(query_id)
-#     return (
-#         db.query(db_schemas.HadGeneration)
-#         .filter(db_schemas.HadGeneration.query_id == query_id)
-#         .all()
-#     )
-# def get_generations_by_query_and_model_id(
-#     db: Session, query_id: str, model_id: int
-# ) -> Optional[db_schemas.HadGeneration]:
-#     """Get generation by query ID and model ID"""
-#     return (
-#         db.query(db_schemas.HadGeneration)
-#         .filter(
-#             db_schemas.HadGeneration.query_id == query_id,
-#             db_schemas.HadGeneration.model_id == model_id,
-#         )
-#         .first()
-#     )
 
 
 def create_generation(

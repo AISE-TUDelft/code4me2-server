@@ -1,10 +1,13 @@
 """
 This module defines a FastAPI router for deleting a user account.
 
-It includes:
-- An endpoint for deleting the currently authenticated user.
-- Optional deletion of related data (sessions and queries).
-- Cookie-based authentication and response handling.
+Endpoints:
+- DELETE /: Deletes the currently authenticated user's account.
+
+Features:
+- Cookie-based authentication using auth_token.
+- Optional deletion of related data (sessions, queries).
+- Structured JSON responses with appropriate status codes.
 """
 
 import logging
@@ -23,7 +26,7 @@ from backend.Responses import (
     UserNotFoundError,
 )
 
-# Initialize a FastAPI router for user deletion
+# Initialize FastAPI router
 router = APIRouter()
 
 
@@ -40,63 +43,62 @@ router = APIRouter()
     },
 )
 def delete_user(
-    delete_data: bool = Query(False, description="Delete user's data"),
+    delete_data: bool = Query(False, description="Delete user's associated data"),
     auth_token: str = Cookie(""),
     app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
-    Delete the authenticated user's account and optionally their data.
+    Delete the authenticated user's account and optionally their associated data.
 
     Args:
-        delete_data (bool): Flag indicating whether to delete associated data (default: False).
-        auth_token (str): Authentication token stored in browser cookies.
-        app (App): Application instance with access to database and session managers.
+        delete_data (bool): If True, removes all user-related data (default is False).
+        auth_token (str): Auth token provided in cookies to authenticate the user.
+        app (App): Dependency-injected app instance with DB and Redis access.
 
     Returns:
-        JsonResponseWithStatus: A success message or an appropriate error response.
+        JsonResponseWithStatus: A success or error response depending on the outcome.
     """
     db_session = app.get_db_session()
     redis_manager = app.get_redis_manager()
 
     try:
-
-        # Retrieve the user ID from the auth token
+        # Get auth data from Redis using the auth token
         auth_info = redis_manager.get("auth_token", auth_token)
 
-        # If the token is invalid or missing, return a 401 error
+        # If token is invalid or user ID is missing, respond with 401
         if auth_info is None or not auth_info.get("user_id"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredAuthToken(),
             )
-        user_id = auth_info["user_id"]
-        logging.log(logging.INFO, f"Deleting user with ID: {user_id}")
 
-        # Clear user sessions and auth tokens
+        user_id = auth_info["user_id"]
+        logging.info(f"Deleting user with ID: {user_id}")
+
+        # Check if user exists in the database
         found_user = crud.get_user_by_id(db_session, uuid.UUID(user_id))
         if not found_user:
             return JsonResponseWithStatus(
                 status_code=404,
                 content=UserNotFoundError(),
             )
+
+        # Delete session/auth token data from Redis
         redis_manager.delete("auth_token", auth_token, db_session)
 
-        # If delete_data flag is True, also delete user-related data from the database
+        # Optionally delete all associated data
         if delete_data:
-            logging.log(
-                logging.INFO,
-                f"Deleting user data for user ID: {user_id}",
-            )
+            logging.info(f"Performing full wipe-out for user ID: {user_id}")
             crud.delete_user_full_wipe_out(db=db_session, user_id=uuid.UUID(user_id))
 
-        # Remove the user account
+        # Delete the user account itself
         crud.delete_user_by_id(db=db_session, user_id=user_id)
 
-        # Return appropriate response based on whether the user was deleted
         return JsonResponseWithStatus(
             status_code=200,
             content=DeleteUserDeleteResponse(),
         )
+
     except Exception as e:
         logging.error(f"Error processing user deletion request: {str(e)}")
         db_session.rollback()
@@ -108,9 +110,8 @@ def delete_user(
 
 def __init__():
     """
-    Module-level initializer.
+    Optional module-level initializer.
 
-    This function runs when the module is imported.
-    Currently a placeholder for future initialization logic if needed.
+    Placeholder for any future initialization logic required upon import.
     """
     pass

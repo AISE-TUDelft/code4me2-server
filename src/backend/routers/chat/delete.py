@@ -1,3 +1,17 @@
+"""
+Route to delete a chat by ID.
+
+This endpoint allows a user to delete a specific chat instance identified by its `chat_id`.
+It performs several layers of access validation using tokens stored in Redis:
+- Validates the session token and retrieves associated authentication information.
+- Checks if the project token is valid and associated with the current session.
+- Ensures that the chat to be deleted belongs to the authenticated user and project.
+
+If all validations pass, the chat and its related data are deleted from the database.
+Appropriate HTTP status codes and error messages are returned in case of invalid tokens,
+unauthorized access, or server/database errors.
+"""
+
 import logging
 from typing import Union
 from uuid import UUID

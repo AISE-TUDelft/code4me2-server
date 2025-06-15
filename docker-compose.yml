@@ -21,27 +21,27 @@ services:
       timeout: 5s
       retries: 5
 
-  pgadmin:
-    image: dpage/pgadmin4:8.11
-    container_name: pgadmin
-    ports:
-      - ${PGADMIN_PORT}:80
-    volumes:
-      - .:/app
-      - pgadmin_data:/var/lib/pgadmin
-    environment:
-      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
-      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
-    depends_on:
-      db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:80"]
-      start_period: 0s
-      start_interval: 0s
-      interval: 60s
-      timeout: 5s
-      retries: 3
+  #  pgadmin:
+  #    image: dpage/pgadmin4:8.11
+  #    container_name: pgadmin
+  #    ports:
+  #      - ${PGADMIN_PORT}:80
+  #    volumes:
+  #      - .:/app
+  #      - pgadmin_data:/var/lib/pgadmin
+  #    environment:
+  #      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
+  #      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
+  #    depends_on:
+  #      db:
+  #        condition: service_healthy
+  #    healthcheck:
+  #      test: ["CMD", "wget", "--spider", "http://localhost:80"]
+  #      start_period: 0s
+  #      start_interval: 0s
+  #      interval: 60s
+  #      timeout: 5s
+  #      retries: 3
 
   redis:
     image: redis:7.0
@@ -85,8 +85,7 @@ services:
     command: [
         "/bin/bash",
         "-c",
-        "source activate myenv &&
-        huggingface-cli login --token $HF_TOKEN &&
+        "source activate myenv  && huggingface-cli login --token $HF_TOKEN &&
         celery -A celery_app.celery_app worker --loglevel=info -E -Q llm,db --concurrency=1 --prefetch-multiplier=1",
       ]
     deploy:
@@ -94,13 +93,15 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0"]
+              device_ids: ["2"]
               capabilities: [gpu]
     depends_on:
       redis-celery:
         condition: service_healthy
     environment:
-      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=2
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NVIDIA_REQUIRE_CUDA=cuda>=12.0
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - CELERY_BROKER_HOST=redis-celery
@@ -116,10 +117,15 @@ services:
       - HF_HUB_CACHE=/app/hf_cache
       - TRANSFORMERS_CACHE=/app/hf_cache
       - MODEL_CACHE_DIR=/app/hf_cache
-
+      # CUDA/NVML specific environment variables
+      - CUDA_VISIBLE_DEVICES=2
+      - TORCH_CUDA_ARCH_LIST="8.6"
     volumes:
       - .:/app
       - ${DATA_DIR}/hf:/app/hf_cache
+      # Mount NVIDIA libraries for NVML access
+      - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
     healthcheck:
       test:
         [
@@ -156,8 +162,13 @@ services:
     volumes:
       - .:/app
       - ${DATA_DIR}/hf:/app/hf_cache
+      # Mount NVIDIA libraries for NVML access
+      - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
     environment:
       - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - NVIDIA_REQUIRE_CUDA=cuda>=12.0
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - CELERY_BROKER_HOST=redis-celery
@@ -172,6 +183,9 @@ services:
       - HF_HUB_CACHE=/app/hf_cache
       - TRANSFORMERS_CACHE=/app/hf_cache
       - MODEL_CACHE_DIR=/app/hf_cache
+      # CUDA/NVML specific environment variables
+      - CUDA_VISIBLE_DEVICES=0
+      - TORCH_CUDA_ARCH_LIST="8.6"
     depends_on:
       db:
         condition: service_healthy

@@ -39,46 +39,61 @@ def activate_project(
     auth_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
-    Activates the project by following these steps:
-    1. Validate the provided auth token
-    2. If valid, return confirmation
-    3. If invalid, return an appropriate error response
-    4. The project might exist in redis or in the database, if it is in the database, it should be fetched from there and put in redis
-    if it is in the redis, its expiration time should be updated.
+    Activate a project for a user session by performing the following:
 
+    1. Validate the auth token and session token from cookies.
+    2. If the project exists in Redis, update its expiration time.
+    3. If the project is not found in Redis, fetch it from the database and cache it.
+    4. Associate the project with the user session and user in the database if not already linked.
+    5. Return a success response with the project token set as an HttpOnly cookie.
+
+    Args:
+        activate_project_request: Request data containing the project ID to activate.
+        app: FastAPI dependency injection to get app context.
+        auth_token: Auth token from cookie to validate user identity.
+
+    Returns:
+        JsonResponseWithStatus: Success or error response with appropriate status and messages.
     """
     redis_manager = app.get_redis_manager()
     db_session = app.get_db_session()
     config = app.get_config()
     try:
+        # Retrieve auth info from Redis using auth token
         auth_info = redis_manager.get("auth_token", auth_token)
         if auth_info is None:
+            # Auth token invalid or expired
             return JsonResponseWithStatus(
                 status_code=401, content=InvalidOrExpiredAuthToken()
             )
         session_token = auth_info.get("session_token", "")
         user_id = auth_info.get("user_id", "")
+        # Retrieve session info from Redis
         session_info = redis_manager.get("session_token", session_token)
-        # Validate session token
+        # Validate session token existence
         if not session_token or session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
         project_token = str(activate_project_request.project_id)
+        # Attempt to get project info from Redis
         project_info = redis_manager.get("project_token", project_token)
         logging.log(logging.INFO, f"Retrieved project info: {project_info}")
+
         if not project_info:
-            # The project is not in the redis, so we need to fetch it from the database if it exists there
+            # Project not in Redis, fetch from database
             existing_project = crud.get_project_by_id(
                 db_session, uuid.UUID(project_token)
             )
             if existing_project is None:
+                # Project token invalid or expired
                 return JsonResponseWithStatus(
                     status_code=401,
                     content=InvalidOrExpiredProjectToken(),
                 )
             else:
+                # Cache project info in Redis with relevant metadata
                 redis_manager.set(
                     "project_token",
                     project_token,
@@ -88,11 +103,14 @@ def activate_project(
                         "multi_file_context_changes": existing_project.multi_file_context_changes,
                     },
                 )
+
+        # Add the project token to the session's project list in Redis
         session_projects = session_info.get("project_tokens", [])
         session_projects.append(project_token)
         session_info["project_tokens"] = session_projects
         redis_manager.set("session_token", session_token, session_info)
 
+        # Ensure session-project link exists in database
         if not crud.get_session_project(
             db_session, uuid.UUID(session_token), uuid.UUID(project_token)
         ):
@@ -103,6 +121,8 @@ def activate_project(
                     project_id=uuid.UUID(project_token),
                 ),
             )
+
+        # Ensure user-project link exists in database
         if not crud.get_user_project(
             db_session, uuid.UUID(user_id), uuid.UUID(project_token)
         ):
@@ -113,6 +133,7 @@ def activate_project(
                 ),
             )
 
+        # Return success response with project token set as cookie
         response_obj = JsonResponseWithStatus(
             status_code=200, content=ActivateProjectPostResponse()
         )
@@ -134,7 +155,8 @@ def activate_project(
 
 def __init__():
     """
-    This function is called when the module is imported.
-    It is used to initialize the module and import the router.
+    Module-level initializer placeholder.
+
+    This function is executed when the module is imported.
     """
     pass

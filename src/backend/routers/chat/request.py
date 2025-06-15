@@ -1,3 +1,4 @@
+# TODO: reformat
 import logging
 import time
 import uuid
@@ -150,18 +151,17 @@ def request_chat_completion(
             # Get chat completion model
             chat_completion_model = completion_models.get_model(
                 model_name=str(model.model_name),
-                config=app.get_config(),
             )
 
             if chat_completion_model is None:
-                return ChatCompletionErrorItem(model_name=model.model_name)
+                return ChatCompletionErrorItem(model_name=str(model.model_name))
             local_t2 = time.perf_counter()
 
             # Invoke the chat model with messages
             # ensure that the chat_completion_model is of type ChatCompletionModel
             if not isinstance(chat_completion_model, completion.ChatCompletionModel):
                 return ChatCompletionErrorItem(
-                    model_name=model.model_name,
+                    model_name=str(model.model_name),
                     message="Model is not a ChatCompletionModel",
                 )
 

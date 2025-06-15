@@ -42,14 +42,35 @@ def get_completions_by_query(
     session_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
-    Get completions for a specific query ID.
+    Retrieve code completions associated with a specific query ID.
+
+    This endpoint validates the user's session token and authorization,
+    ensures the requested query exists and belongs to the requesting user,
+    and then fetches all the associated completion generations from the database.
+
+    Parameters:
+    - query_id (UUID): The unique identifier for the meta query whose completions are requested.
+    - app (App, dependency): The application instance providing database and Redis access.
+    - session_token (str, cookie): The session token cookie for user authentication.
+
+    Returns:
+    - JsonResponseWithStatus: JSON response with HTTP status and either the completions data
+      or an error response detailing the failure reason.
+
+    Possible responses:
+    - 200: Successfully retrieved completions for the given query ID.
+    - 401: Session token is invalid, expired, or missing.
+    - 403: User does not have access rights to the requested query.
+    - 404: The requested query ID does not exist.
+    - 422, 429: Various client errors (validation or rate limiting).
+    - 500: Internal server error while retrieving completions.
     """
     logging.info(f"Getting completions for query: {query_id}")
     db_session = app.get_db_session()
     redis_manager = app.get_redis_manager()
 
     try:
-        # Get session info from Redis
+        # Validate session token and get session info from Redis
         session_info = redis_manager.get("session_token", session_token)
         if session_info is None:
             return JsonResponseWithStatus(
@@ -57,7 +78,7 @@ def get_completions_by_query(
                 content=InvalidOrExpiredSessionToken(),
             )
 
-        # Get auth token from session info and then get user_id from auth token
+        # Extract auth token from session and verify
         auth_token = session_info.get("auth_token")
         if not auth_token:
             return JsonResponseWithStatus(
@@ -65,6 +86,7 @@ def get_completions_by_query(
                 content=InvalidOrExpiredSessionToken(),
             )
 
+        # Fetch auth info from Redis using auth token and get user ID
         auth_info = redis_manager.get("auth_token", auth_token)
         if auth_info is None:
             return JsonResponseWithStatus(
@@ -79,7 +101,7 @@ def get_completions_by_query(
                 content=InvalidOrExpiredSessionToken(),
             )
 
-        # check if metaquery exists and if so if the user is the owner of the query
+        # Check if the meta query exists in DB
         query = crud.get_meta_query_by_id(db_session, query_id)
         if not query:
             return JsonResponseWithStatus(
@@ -87,16 +109,16 @@ def get_completions_by_query(
                 content=QueryNotFoundError(),
             )
 
-        # Convert user_id from string (Redis) to UUID for comparison with database user_id (UUID)
+        # Verify user owns the query (convert user_id from Redis to string for comparison)
         if str(query.user_id) != user_id:
             return JsonResponseWithStatus(
                 status_code=403, content=NoAccessToGetQueryError()
             )
 
-        # Retrieve completions for the query
+        # Retrieve completion generations linked to the meta query
         generations = crud.get_generations_by_meta_query_id(db_session, str(query_id))
 
-        # Build response
+        # Construct the list of completions to return
         completions = []
         for generation in generations:
             model = crud.get_model_by_id(db_session, int(str(generation.model_id)))
@@ -120,7 +142,8 @@ def get_completions_by_query(
             status_code=200,
             content=CompletionPostResponse(
                 data=ResponseCompletionResponseData(
-                    meta_query_id=query_id, completions=completions
+                    meta_query_id=query_id,
+                    completions=completions,
                 ),
             ),
         )

@@ -1,10 +1,12 @@
 """
 This module defines a FastAPI router for updating user information.
 
-It includes:
-- An endpoint for updating the currently authenticated user.
-- Dependency injection for app and authentication token.
-- Response model validation and error handling.
+Endpoints:
+- PUT /: Updates the currently authenticated user's data.
+
+Features:
+- Dependency injection for App instance and authentication token.
+- Validation and error handling for update, email conflicts, and password verification.
 """
 
 import logging
@@ -49,13 +51,12 @@ def update_user(
     Update the currently authenticated user's data.
 
     Args:
-    - user_to_update: Pydantic model containing fields to update.
-    - app: Application context, injected by FastAPI.
-    - auth_token: Authentication token stored in browser cookies.
+        user_to_update (Queries.UpdateUser): Fields the user wants to update.
+        app (App): Injected application instance with DB and Redis access.
+        auth_token (str): Auth token stored in the user's browser cookies.
 
     Returns:
-    - JSON response with updated user information if successful.
-    - Appropriate error response if auth token is missing or invalid.
+        JsonResponseWithStatus: Contains updated user data or error info.
     """
     logging.info(f"Updating user: {user_to_update.dict()}")
 
@@ -72,9 +73,10 @@ def update_user(
                 status_code=401,
                 content=InvalidOrExpiredAuthToken(),
             )
+
         user_id = auth_info["user_id"]
 
-        # Check for email conflict only if new email provided and different from current user's email
+        # Check for email conflict if email is being updated
         if user_to_update.email:
             existing_user = crud.get_user_by_email(
                 db_session, str(user_to_update.email)
@@ -85,7 +87,7 @@ def update_user(
                     content=UserAlreadyExistsWithThisEmail(),
                 )
 
-        # If changing password, verify the previous password is correct
+        # If changing password, verify previous password matches
         if user_to_update.previous_password and user_to_update.password:
             valid_password = crud.get_user_by_id_password(
                 db=db_session,
@@ -97,9 +99,12 @@ def update_user(
                     status_code=401,
                     content=InvalidPreviousPassword(),
                 )
+
+        # Perform the user update
         updated_user = crud.update_user(
             db=db_session, user_id=user_id, user_to_update=user_to_update
         )
+
         return JsonResponseWithStatus(
             status_code=201,
             content=UpdateUserPutResponse(
@@ -117,9 +122,8 @@ def update_user(
 
 def __init__():
     """
-    Module-level initializer.
+    Optional module-level initializer.
 
-    This function runs when the module is imported.
-    Currently a placeholder for future initialization logic if needed.
+    Placeholder for any future setup needed when this module is imported.
     """
     pass

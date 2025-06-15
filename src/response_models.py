@@ -1,3 +1,8 @@
+"""
+Response schemas for API models involving users, completions, chat interactions,
+telemetry, and associated metadata. Builds on shared base models and query schemas.
+"""
+
 import json
 from abc import ABC
 from datetime import datetime
@@ -12,26 +17,29 @@ from backend.utils import Fakable, SerializableBaseModel
 
 
 class ResponseBase(SerializableBaseModel, Fakable, ABC):
+    """Base class for all response models, combining serializability and fakability."""
+
     pass
 
 
 class ResponseUser(Queries.CreateUser):
-    user_id: UUID = Field(..., description="Unique id for the user")
-    joined_at: datetime = Field(..., description="When the user was created")
-    password: SecretStr = Field(..., description="User's password (will be hashed)")
-    verified: bool = Field(
-        ..., description="Whether the user's email has been verified"
-    )
+    """Response model representing a user in the system."""
+
+    user_id: UUID = Field(..., description="Unique ID for the user")
+    joined_at: datetime = Field(..., description="Timestamp when the user joined")
+    password: SecretStr = Field(..., description="User's password (hashed)")
+    verified: bool = Field(..., description="Whether the user's email is verified")
     preference: Optional[Dict[str, Any]] = Field(
-        {}, description="Users preference for data management"
+        {}, description="User preferences for data management"
     )
     auth_token: Optional[UUID] = Field(
-        default=None, description="Last auth token used to login"
+        default=None, description="Last authentication token used by the user"
     )
 
     @field_validator("preference", mode="before")
     @classmethod
     def parse_preference(cls, v):
+        """Ensure preference is parsed from a JSON string if needed."""
         if isinstance(v, str):
             return json.loads(v)
         return v
@@ -39,145 +47,129 @@ class ResponseUser(Queries.CreateUser):
     @field_validator("password")
     @classmethod
     def validate_password(cls, v: SecretStr) -> SecretStr:
+        """Placeholder password validation hook."""
         return v
 
 
-# Query
-# class QueryBase(Queries.CreateQuery):
-#     query_id: UUID = Field(..., description="Query ID")
-#     user_id: UUID = Field(..., description="User ID")
-#     telemetry_id: UUID = Field(..., description="Telemetry record ID")
-#     context_id: UUID = Field(..., description="Context record ID")
-#     total_serving_time: int = Field(..., description="Total serving time (ms)", ge=0)
-#     timestamp: str = Field(..., description="Timestamp of the query")
-#     server_version_id: UUID = Field(..., description="Server version ID")
-
-
 class ResponseCompletionQuery(Queries.CreateCompletionQuery):
+    """Metadata for a completion query."""
+
     meta_query_id: UUID = Field(..., description="Meta Query ID")
     timestamp: str = Field(..., description="Timestamp of the query")
 
 
-# Model Name
-# class ModelNameBase(ResponseBase):
-#     model_name: str
-#
-#     model_config = {"protected_namespaces": ()}
-
-
-# Plugin Version
-# class PluginVersionBase(ResponseBase):
-#     version_name: str
-#     ide_type: str
-#     description: str
-
-
 class ResponseCompletionItem(ResponseBase):
+    """Represents a successful model completion result."""
+
     model_id: int = Field(..., description="Model ID", ge=0)
     model_name: str = Field(..., description="Model name")
     completion: str = Field(..., description="Generated code")
-    generation_time: int = Field(..., description="Generation time", ge=0)
-    confidence: float = Field(..., description="Confidence score")
+    generation_time: int = Field(..., description="Generation time in ms", ge=0)
+    confidence: float = Field(..., description="Confidence score of the result")
 
 
 class CompletionErrorItem(ResponseBase):
+    """Represents an error during code completion."""
+
     message: str = Field(default="Completion for model failed")
-    model_name: str = Field(..., description="Model name")
+    model_name: str = Field(..., description="Model name that failed")
 
 
 class ResponseCompletionResponseData(ResponseBase):
+    """Container for completion responses for a given meta-query."""
+
     meta_query_id: UUID = Field(..., description="Meta Query ID")
-    completions: list[Union[ResponseCompletionItem, CompletionErrorItem]] = Field(
-        ..., description="Generated completions"
+    completions: List[Union[ResponseCompletionItem, CompletionErrorItem]] = Field(
+        ..., description="List of generated completions or errors"
     )
 
 
 class ResponseFeedbackResponseData(ResponseBase):
+    """Response model for storing feedback about completions."""
+
     meta_query_id: UUID = Field(..., description="Meta Query ID")
     model_id: int = Field(..., description="Model ID", ge=0)
 
 
-# class ResponseContext(Queries.ContextData):
-#     context_id: UUID = Field(..., description="Context record ID")
-
-
-# class ResponseTelemetry(Queries.TelemetryData):
-#     telemetry_id: UUID = Field(..., description="Telemetry record ID")
-
-
 class ContextualTelemetry(Queries.ContextualTelemetryData):
+    """Telemetry that includes contextual data."""
+
     contextual_telemetry_id: UUID = Field(
-        ..., description="Contextual telemetry record ID"
+        ..., description="Unique ID for contextual telemetry record"
     )
 
 
 class ResponseBehavioralTelemetry(Queries.BehavioralTelemetryData):
+    """Telemetry data related to behavioral tracking."""
+
     behavioral_telemetry_id: UUID = Field(
-        ..., description="Behavioral telemetry record ID"
+        ..., description="Unique ID for behavioral telemetry record"
     )
 
 
 class ChatMessageRole(str, Enum):
+    """Enumeration of roles within a chat conversation."""
+
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
 
 
 class ChatMessageItem(ResponseBase):
-    """Represents a single message in a chat conversation"""
+    """Represents a single message in a chat conversation."""
 
-    role: ChatMessageRole = Field(..., description="Role of the message sender")
-    content: str = Field(..., description="Content of the message")
-    timestamp: datetime = Field(..., description="When the message was sent")
+    role: ChatMessageRole = Field(..., description="Sender's role")
+    content: str = Field(..., description="Message content")
+    timestamp: datetime = Field(..., description="Time the message was sent")
     meta_query_id: Optional[UUID] = Field(
-        None, description="Associated query ID if any"
+        None, description="Associated meta query ID, if applicable"
     )
 
 
 class ChatCompletionItem(ResponseBase):
-    """Represents a single model completion in a chat conversation"""
+    """Model-generated response in a chat conversation."""
 
     model_id: int = Field(..., description="Model ID", ge=0)
     model_name: str = Field(..., description="Model name")
     completion: str = Field(..., description="Generated text")
-    generation_time: int = Field(..., description="Generation time", ge=0)
+    generation_time: int = Field(..., description="Generation time in ms", ge=0)
     confidence: float = Field(..., description="Confidence score")
-    was_accepted: bool = Field(..., description="Whether the completion was accepted")
+    was_accepted: bool = Field(..., description="User acceptance status")
 
 
 class ChatCompletionErrorItem(ResponseBase):
+    """Represents a failed attempt to generate a chat completion."""
+
     message: str = Field(default="Chat completion for model failed")
-    model_name: str = Field(..., description="Model name")
+    model_name: str = Field(..., description="Model name that failed")
 
 
 class ChatHistoryItem(ResponseBase):
-    """Represents a single turn in the chat conversation"""
+    """Represents a single user-assistant interaction in a chat session."""
 
-    user_message: ChatMessageItem = Field(..., description="User's message")
+    user_message: ChatMessageItem = Field(..., description="User's input message")
     assistant_responses: List[Union[ChatCompletionItem, ChatCompletionErrorItem]] = (
-        Field(..., description="Assistant's responses from different models")
+        Field(..., description="Assistant's model responses")
     )
 
 
 class ChatHistoryResponse(ResponseBase):
-    """Response containing the entire chat history"""
+    """Complete chat conversation history for a session."""
 
-    chat_id: UUID = Field(..., description="Chat ID")
-    title: str = Field(..., description="Chat title")
-    history: List[ChatHistoryItem] = Field(..., description="Chat conversation history")
+    chat_id: UUID = Field(..., description="Unique chat session ID")
+    title: str = Field(..., description="Title of the chat")
+    history: List[ChatHistoryItem] = Field(..., description="List of message exchanges")
 
 
 class ChatHistoryResponsePage(ResponseBase):
-    """A glorified list of chat history responses with pagination"""
+    """Paginated response containing multiple chat histories."""
 
-    page: int = Field(..., description="Current page number")
-    per_page: int = Field(..., description="Number of records per page")
-    items: List[ChatHistoryResponse] = Field(
-        ..., description="List of chat history responses"
-    )
+    page: int = Field(..., description="Current page index")
+    per_page: int = Field(..., description="Number of items per page")
+    items: List[ChatHistoryResponse] = Field(..., description="Paginated chat sessions")
 
 
 class DeleteChatSuccessResponse(ResponseBase):
-    """Success response for chat deletion"""
+    """Acknowledgement response for successful chat deletion."""
 
     message: str = "Chat deleted successfully"

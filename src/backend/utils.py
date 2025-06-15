@@ -14,22 +14,19 @@ from pydantic import BaseModel, EmailStr, SecretStr
 
 def iterable_to_dict(obj: Any, to_json_values: bool = False) -> Dict[str, Any]:
     """
-    Converts an iterable to a dictionary, handling nested models and custom types.
+    Recursively converts an iterable (list, tuple, dict, BaseModel) to a plain dictionary.
+    Optionally converts output to JSON if to_json_values=True.
     """
     if isinstance(obj, BaseModel):
         return obj.dict()
     elif isinstance(obj, list):
         res = [iterable_to_dict(item, to_json_values) for item in obj]
-        if to_json_values:
-            return json.dumps(res)
-        return res
+        return json.dumps(res) if to_json_values else res
     elif isinstance(obj, dict):
         res = {
             key: iterable_to_dict(value, to_json_values) for key, value in obj.items()
         }
-        if to_json_values:
-            return json.dumps(res)
-        return res
+        return json.dumps(res) if to_json_values else res
     elif isinstance(obj, tuple):
         return tuple(iterable_to_dict(item) for item in obj)
     elif isinstance(obj, Enum):
@@ -40,8 +37,10 @@ def iterable_to_dict(obj: Any, to_json_values: bool = False) -> Dict[str, Any]:
 
 class SerializableBaseModel(BaseModel):
     """
-    A base class that automatically converts SecretStr and EmailStr fields to plain strings
-    when calling dict() or json() methods. Any model that extends this will inherit this functionality.
+    Base model that customizes dict/json output:
+    - Converts EmailStr, SecretStr, UUID, Enum, datetime to str
+    - Optionally masks secrets
+    - Supports nested serialization via iterable_to_dict
     """
 
     def dict(
@@ -53,16 +52,14 @@ class SerializableBaseModel(BaseModel):
         **kwargs
     ) -> Dict[str, Any]:
         data = {}
-        # Iterate over the fields and convert fields to plain strings
         for field_name, value in self.__class__.model_fields.items():
             if exclude_unset and getattr(self, field_name) is None:
                 continue
+
             annotation = value.annotation
             field_value = getattr(self, field_name)
-
-            # Handle Union types (e.g., Union[SecretStr, NoneType])
-            origin = getattr(annotation, "__origin__", None)
-            args = getattr(annotation, "__args__", ())
+            origin = get_origin(annotation)
+            args = get_args(annotation)
 
             def is_type(typ, target):
                 try:
@@ -74,7 +71,6 @@ class SerializableBaseModel(BaseModel):
 
             # Unwrap Union types
             if origin is Union:
-                # Remove NoneType from Union
                 non_none_args = [arg for arg in args if arg is not type(None)]
                 if non_none_args:
                     annotation = non_none_args[0]
@@ -102,30 +98,35 @@ class SerializableBaseModel(BaseModel):
                 )
             else:
                 data[field_name] = iterable_to_dict(field_value, to_json_values)
+
         return data
 
     def json(self, *args, **kwargs) -> str:
-        # Convert the model to JSON (a string)
+        """Return model as a JSON string."""
         return super().json(*args, **kwargs)
 
     def __eq__(self, other: Any) -> bool:
+        """Equality comparison against another model or dict."""
         if isinstance(other, BaseModel):
             return self == other
         elif isinstance(other, dict):
             return self.dict() == other
-        else:
-            return False
+        return False
 
     def __str__(self) -> str:
+        """String representation as JSON."""
         return json.dumps(self.dict())
 
 
 class Fakable:
+    """
+    Mixin class to add `.fake()` support for generating synthetic data using Polyfactory.
+    """
+
     @classmethod
     def fake(cls, n: int = 1, **overrides) -> Union[BaseModel, list[BaseModel]]:
         """
-        Generates fake data for the class that calls this method.
-        It works dynamically for any subclass of Fakable and handles nested BaseModel relationships.
+        Generates one or more fake instances of the model, optionally overriding fields.
         """
 
         class _Factory(ModelFactory):
@@ -135,7 +136,7 @@ class Fakable:
             def get_constrained_field_value(
                 cls, annotation, field_meta: FieldMeta, *args, **kwargs
             ):
-                # Provide a valid SecretStr for password-related fields
+                # Special handling for common constrained fields
                 if annotation is EmailStr:
                     return cls.__faker__.email()
                 elif annotation is SecretStr or field_meta.name in {
@@ -150,11 +151,14 @@ class Fakable:
 
             @classmethod
             def get_field_value(cls, field_meta: FieldMeta, *args, **kwargs):
-                """Override to handle nested BaseModel objects and SecretStr fields"""
+                """
+                Override to handle nested BaseModel, list of BaseModel, and secrets.
+                """
                 annotation = field_meta.annotation
-                # Handle SecretStr or Optional[SecretStr]
                 origin = get_origin(annotation)
                 args_ = get_args(annotation)
+
+                # Handle SecretStr or Optional[SecretStr]
                 if (
                     field_meta.name in ["password", "previous_password"]
                     or annotation is SecretStr
@@ -162,6 +166,7 @@ class Fakable:
                 ):
                     return SecretStr("ValidPassword123!")
 
+                # Handle EmailStr or Optional[EmailStr]
                 if (
                     field_meta.name == "email"
                     and annotation is EmailStr
@@ -169,12 +174,12 @@ class Fakable:
                 ):
                     return cls.__faker__.email()
 
-                # Handle nested BaseModel objects
+                # Handle nested BaseModel
                 if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
                     if hasattr(annotation, "fake"):
                         return annotation.fake()
 
-                # Handle lists of BaseModel objects
+                # Handle List[BaseModel]
                 if hasattr(annotation, "__origin__") and annotation.__origin__ is list:
                     inner_type = annotation.__args__[0] if annotation.__args__ else None
                     if (
@@ -183,7 +188,6 @@ class Fakable:
                         and issubclass(inner_type, BaseModel)
                     ):
                         if hasattr(inner_type, "fake"):
-                            # Generate 1-3 items for lists by default
                             count = cls.__faker__.random_int(min=1, max=3)
                             return [inner_type.fake() for _ in range(count)]
 
@@ -196,19 +200,23 @@ class Fakable:
 
 
 def verify_jwt_token(token: str, provider: str = "google"):
+    """
+    Verifies a JWT token using the provider's public key infrastructure.
+    Currently supports Google only.
+    """
     try:
         if provider == "google":
-            # This automatically fetches Google's public keys
             id_info = id_token.verify_oauth2_token(token, requests.Request())
-
-            # Example fields
-            email = id_info.get("email")  # user's email
+            email = id_info.get("email")
             return {"email": email, "id_info": id_info}
     except ValueError:
         return None
 
 
 def recursive_json_loads(obj):
+    """
+    Recursively attempts to JSON-decode any nested strings in the input structure.
+    """
     if isinstance(obj, str):
         try:
             loaded = json.loads(obj)

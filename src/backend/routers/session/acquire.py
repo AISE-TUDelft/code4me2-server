@@ -1,10 +1,10 @@
 """
 This module defines a FastAPI router for managing session acquisition via an auth token.
 
-It includes:
+It provides:
 - A GET endpoint to acquire or create a session token associated with a valid auth token.
 - Dependency injection for application context and Redis.
-- Error handling and appropriate HTTP response codes.
+- Proper error handling and HTTP response codes.
 """
 
 import logging
@@ -37,16 +37,26 @@ router = APIRouter()
         "429": {"model": ErrorResponse},
         "500": {"model": AcquireSessionError},
     },
+    tags=["Acquire Session"],
 )
 def acquire_session(
     app: App = Depends(App.get_instance),
     auth_token: str = Cookie(""),
 ) -> JsonResponseWithStatus:
     """
-    Acquire or create a session token using the provided auth token.
+    Acquire or create a session token linked to the provided auth token.
 
-    - If the auth token is missing or invalid, return 401.
-    - If no session is associated yet, create one and store it in Redis.
+    Args:
+        app (App): Injected FastAPI app instance.
+        auth_token (str): Auth token from the client's cookies.
+
+    Returns:
+        JsonResponseWithStatus: Contains the session token or appropriate error response.
+
+    Behavior:
+        - Returns 401 if auth token is missing or invalid.
+        - If no session token exists for the auth token, creates a new session.
+        - Sets the session token as an HttpOnly cookie with expiration.
     """
     logging.info(f"Acquiring session for auth_token: {auth_token}")
 
@@ -56,14 +66,17 @@ def acquire_session(
 
     try:
         auth_info = redis_manager.get("auth_token", auth_token)
-        # If the token is invalid or missing, return a 401 error
+        # Validate auth token presence and associated user_id
         if auth_info is None or not auth_info.get("user_id"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredAuthToken(),
             )
+
         user_id = auth_info["user_id"]
         session_token = auth_info.get("session_token")
+
+        # Create a new session token if none exists or invalid
         if not redis_manager.get("session_token", session_token):
             session_token = create_uuid()
             crud.create_session(
@@ -73,10 +86,10 @@ def acquire_session(
             )
             auth_info["session_token"] = session_token
 
-            # Update auth_token with new session_token while preserving TTL
+            # Update auth token in Redis with new session token while preserving TTL
             redis_manager.set("auth_token", auth_token, auth_info)
 
-            # Add session_token entry separately
+            # Store session token entry separately
             redis_manager.set(
                 "session_token",
                 session_token,
@@ -96,7 +109,7 @@ def acquire_session(
         )
         return response_obj
     except Exception as e:
-        logging.log(logging.ERROR, f"Error acquiring a session: {e}")
+        logging.error(f"Error acquiring a session: {e}")
         db_session.rollback()
         return JsonResponseWithStatus(
             status_code=500,

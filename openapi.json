@@ -1,0 +1,3018 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Code4Me V2 API",
+    "description": "The complete API for Code4Me V2",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/session/acquire": {
+      "get": {
+        "tags": ["Session"],
+        "summary": "Acquire Session",
+        "description": "Acquire or create a session token using the provided auth token.\n\n- If the auth token is missing or invalid, return 401.\n- If no session is associated yet, create one and store it in Redis.",
+        "operationId": "acquire_session_api_session_acquire_get",
+        "parameters": [
+          {
+            "name": "auth_token",
+            "in": "cookie",
+            "required": false,
+            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcquireSessionGetResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AcquireSessionError" }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/project/create": {
+      "post": {
+        "tags": ["Project"],
+        "summary": "Create Project",
+        "description": "Create a new project\n1. Validate the provided session token\n2. If valid, create a project and return the project token\n3. If invalid, return an appropriate error response",
+        "operationId": "create_project_api_project_create_post",
+        "parameters": [
+          {
+            "name": "auth_token",
+            "in": "cookie",
+            "required": false,
+            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateProject" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateProjectPostResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateProjectPostResponse"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
+                    }
+                  ],
+                  "title": "Response 401 Create Project Api Project Create Post"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreateProjectError" }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/project/activate": {
+      "put": {
+        "tags": ["Project"],
+        "summary": "Activate Project",
+        "description": "Activates the project by following these steps:\n1. Validate the provided auth token\n2. If valid, return confirmation\n3. If invalid, return an appropriate error response\n4. The project might exist in redis or in the database, if it is in the database, it should be fetched from there and put in redis\nif it is in the redis, its expiration time should be updated.",
+        "operationId": "activate_project_api_project_activate_put",
+        "parameters": [
+          {
+            "name": "auth_token",
+            "in": "cookie",
+            "required": false,
+            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ActivateProject" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivateProjectPostResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
+                    },
+                    { "$ref": "#/components/schemas/InvalidOrExpiredAuthToken" }
+                  ],
+                  "title": "Response 401 Activate Project Api Project Activate Put"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivateProjectError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/user/create": {
+      "post": {
+        "tags": ["User"],
+        "summary": "Create User",
+        "description": "Create a new user in the system.\n\nArgs:\n    user_to_create (Union[Queries.CreateUser, Queries.CreateUserOauth]):\n        The user data to create, can be standard or OAuth-based.\n    app (App):\n        The application instance, injected by FastAPI's dependency system.\n\nReturns:\n    JsonResponseWithStatus: Response with status code and content.\n\nSteps:\n    1. Check if the user already exists by email.\n    2. If OAuth, verify the JWT token and email.\n    3. Create the user in the database if not exists.\n    4. Send verification email.\n    5. Return appropriate response.",
+        "operationId": "create_user_api_user_create_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  { "$ref": "#/components/schemas/CreateUser" },
+                  { "$ref": "#/components/schemas/CreateUserOauth" }
+                ],
+                "title": "User To Create"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateUserPostResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateUserPostResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidOrExpiredJWTToken"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserAlreadyExistsWithThisEmail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreateUserError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/user/update": {
+      "put": {
+        "tags": ["User"],
+        "summary": "Update User",
+        "description": "Update the currently authenticated user's data.\n\nArgs:\n- user_to_update: Pydantic model containing fields to update.\n- app: Application context, injected by FastAPI.\n- auth_token: Authentication token stored in browser cookies.\n\nReturns:\n- JSON response with updated user information if successful.\n- Appropriate error response if auth token is missing or invalid.",
+        "operationId": "update_user_api_user_update_put",
+        "parameters": [
+          {
+            "name": "auth_token",
+            "in": "cookie",
+            "required": false,
+            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateUser" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateUserPutResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateUserPutResponse"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserAlreadyExistsWithThisEmail"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UpdateUserError" }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/user/delete": {
+      "delete": {
+        "tags": ["User"],
+        "summary": "Delete User",
+        "description": "Delete the authenticated user's account and optionally their data.\n\nArgs:\n    delete_data (bool): Flag indicating whether to delete associated data (default: False).\n    auth_token (str): Authentication token stored in browser cookies.\n    app (App): Application instance with access to database and session managers.\n\nReturns:\n    JsonResponseWithStatus: A success message or an appropriate error response.",
+        "operationId": "delete_user_api_user_delete_delete",
+        "parameters": [
+          {
+            "name": "delete_data",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Delete user's data",
+              "default": false,
+              "title": "Delete Data"
+            },
+            "description": "Delete user's data"
+          },
+          {
+            "name": "auth_token",
+            "in": "cookie",
+            "required": false,
+            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteUserDeleteResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserNotFoundError" }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeleteUserError" }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/user/authenticate": {
+      "post": {
+        "tags": ["User", "Authentication"],
+        "summary": "Authenticate User",
+        "description": "Authenticate a user via either OAuth (JWT token) or traditional email/password.\n\nThis endpoint supports two methods of authentication:\n1. OAuth Authentication:\n   - The input contains a JWT token from an OAuth provider (Google).\n   - The token's validity is verified.\n   - If valid, the user is fetched by email from the database.\n   - A session auth token is created and returned as a cookie.\n2. Email/Password Authentication:\n   - The input contains user email and password.\n   - Credentials are verified against the database.\n   - If valid, a session auth token is created and returned as a cookie.\n\nArgs:\n    user_to_authenticate: Union of OAuth token or email/password credentials.\n    app: FastAPI dependency to access the application context.\n\nReturns:\n    JsonResponseWithStatus: A JSON response containing the authenticated user info\n    and a session auth token cookie on success, or an error response otherwise.",
+        "operationId": "authenticate_user_api_user_authenticate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AuthenticateUserEmailPassword"
+                  },
+                  { "$ref": "#/components/schemas/AuthenticateUserOAuth" }
+                ],
+                "title": "User To Authenticate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticateUserPostResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/InvalidOrExpiredJWTToken" },
+                    { "$ref": "#/components/schemas/InvalidEmailOrPassword" }
+                  ],
+                  "title": "Response 401 Authenticate User Api User Authenticate Post"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ConfigNotFound" }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticateUserError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/user/verify/check": {
+      "get": {
+        "tags": ["User", "User Verification"],
+        "summary": "Check Verification",
+        "description": "Check if the user is verified",
+        "operationId": "check_verification_api_user_verify_check_get",
+        "parameters": [
+          {
+            "name": "auth_token",
+            "in": "cookie",
+            "required": false,
+            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetVerificationGetResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserNotFoundError" }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetVerificationError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/user/verify/resend": {
+      "post": {
+        "tags": ["User", "User Verification"],
+        "summary": "Resend Verification Email",
+        "description": "Resend verification email to the user",
+        "operationId": "resend_verification_email_api_user_verify_resend_post",
+        "parameters": [
+          {
+            "name": "auth_token",
+            "in": "cookie",
+            "required": false,
+            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResendVerificationEmailPostResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserNotFoundError" }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResendVerificationEmailError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/user/verify/": {
+      "post": {
+        "tags": ["User", "User Verification"],
+        "summary": "Verify Email",
+        "description": "Verify user email with the provided token",
+        "operationId": "verify_email_api_user_verify__post",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Verification token",
+              "title": "Token"
+            },
+            "description": "Verification token"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyUserPostHTMLResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidOrExpiredVerificationToken"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserNotFoundError" }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VerifyUserError" }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/completion/request": {
+      "post": {
+        "tags": ["Completion"],
+        "summary": "Request Completion",
+        "description": "Request code completions based on provided context.",
+        "operationId": "request_completion_api_completion_request_post",
+        "parameters": [
+          {
+            "name": "session_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Session Token"
+            }
+          },
+          {
+            "name": "project_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Project Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RequestCompletion" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionPostResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredProjectToken"
+                    }
+                  ],
+                  "title": "Response 401 Request Completion Api Completion Request Post"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateCompletionsError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/completion/feedback": {
+      "post": {
+        "tags": ["Completion"],
+        "summary": "Submit Completion Feedback",
+        "description": "Submit feedback on a generated completion.",
+        "operationId": "submit_completion_feedback_api_completion_feedback_post",
+        "parameters": [
+          {
+            "name": "session_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Session Token"
+            }
+          },
+          {
+            "name": "project_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Project Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/FeedbackCompletion" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionFeedbackPostResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredProjectToken"
+                    }
+                  ],
+                  "title": "Response 401 Submit Completion Feedback Api Completion Feedback Post"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoAccessToProvideFeedbackError"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationNotFoundError"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackRecordingError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/completion/{query_id}": {
+      "get": {
+        "tags": ["Completion"],
+        "summary": "Get Completions By Query",
+        "description": "Get completions for a specific query ID.",
+        "operationId": "get_completions_by_query_api_completion__query_id__get",
+        "parameters": [
+          {
+            "name": "query_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Query Id"
+            }
+          },
+          {
+            "name": "session_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Session Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletionPostResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoAccessToGetQueryError"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/QueryNotFoundError" }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrieveCompletionsError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/completion/multi-file-context/update": {
+      "post": {
+        "tags": ["Multi File Context"],
+        "summary": "Update Multi File Context",
+        "description": "Update the context for a specific query ID.",
+        "operationId": "update_multi_file_context_api_completion_multi_file_context_update_post",
+        "parameters": [
+          {
+            "name": "session_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Session Token"
+            }
+          },
+          {
+            "name": "project_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Project Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMultiFileContext"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultiFileContextUpdatePostResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredProjectToken"
+                    }
+                  ],
+                  "title": "Response 401 Update Multi File Context Api Completion Multi File Context Update Post"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultiFileContextUpdateError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/chat/request": {
+      "post": {
+        "tags": ["Chat"],
+        "summary": "Request Chat Completion",
+        "description": "Request chat completions based on provided messages.\n\nThe contract here is that the request always contains all the history of the chat as well\n\nWe do this because it could be that the user modifies the chat history in the frontend\nand we want to ensure that the chat completions are based on the latest state of the chat.\n\nTake the case where the user edits a message in the chat history midway through a chat.\nWe don't want to be generating a completion based on the old state of the chat.",
+        "operationId": "request_chat_completion_api_chat_request_post",
+        "parameters": [
+          {
+            "name": "session_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Session Token"
+            }
+          },
+          {
+            "name": "project_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Project Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RequestChatCompletion" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ChatHistoryResponse" }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredProjectToken"
+                    }
+                  ],
+                  "title": "Response 401 Request Chat Completion Api Chat Request Post"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateChatCompletionsError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/chat/get/{page_number}": {
+      "get": {
+        "tags": ["Chat"],
+        "summary": "Get Chat History",
+        "description": "Get the complete chat history for",
+        "operationId": "get_chat_history_api_chat_get__page_number__get",
+        "parameters": [
+          {
+            "name": "page_number",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "title": "Page Number" }
+          },
+          {
+            "name": "session_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Session Token"
+            }
+          },
+          {
+            "name": "project_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Project Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatHistoryResponsePage"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredProjectToken"
+                    }
+                  ],
+                  "title": "Response 401 Get Chat History Api Chat Get  Page Number  Get"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoAccessToGetQueryError"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/QueryNotFoundError" }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrieveChatCompletionsError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/chat/delete/{chat_id}": {
+      "delete": {
+        "tags": ["Chat"],
+        "summary": "Delete Chat",
+        "description": "Delete a specific chat by its ID.\nValidates that the user has access to the chat through their session and project tokens.",
+        "operationId": "delete_chat_api_chat_delete__chat_id__delete",
+        "parameters": [
+          {
+            "name": "chat_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid", "title": "Chat Id" }
+          },
+          {
+            "name": "session_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Session Token"
+            }
+          },
+          {
+            "name": "project_token",
+            "in": "cookie",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Project Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteChatSuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredProjectToken"
+                    }
+                  ],
+                  "title": "Response 401 Delete Chat Api Chat Delete  Chat Id  Delete"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoAccessToGetQueryError"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/QueryNotFoundError" }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeleteChatError" }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        }
+      }
+    },
+    "/api/ping": {
+      "get": {
+        "summary": "Ping",
+        "operationId": "ping_api_ping_head",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": { "application/json": { "schema": {} } }
+          }
+        }
+      },
+      "head": {
+        "summary": "Ping",
+        "operationId": "ping_api_ping_head",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": { "application/json": { "schema": {} } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AcquireSessionError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to acquire a session."
+          }
+        },
+        "type": "object",
+        "title": "AcquireSessionError"
+      },
+      "AcquireSessionGetResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Session acquired successfully"
+          },
+          "session_token": {
+            "type": "string",
+            "title": "Session Token",
+            "description": "Session token"
+          }
+        },
+        "type": "object",
+        "required": ["session_token"],
+        "title": "AcquireSessionGetResponse"
+      },
+      "ActivateProject": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Project Id",
+            "description": "Project id to activate"
+          }
+        },
+        "type": "object",
+        "required": ["project_id"],
+        "title": "ActivateProject"
+      },
+      "ActivateProjectError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to activate the project."
+          }
+        },
+        "type": "object",
+        "title": "ActivateProjectError"
+      },
+      "ActivateProjectPostResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Project activated successfully."
+          }
+        },
+        "type": "object",
+        "title": "ActivateProjectPostResponse"
+      },
+      "AuthenticateUserEmailPassword": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email",
+            "description": "User's email address"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "title": "Password",
+            "description": "User's password",
+            "writeOnly": true
+          }
+        },
+        "type": "object",
+        "required": ["email", "password"],
+        "title": "AuthenticateUserEmailPassword"
+      },
+      "AuthenticateUserError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to authenticate the user!"
+          }
+        },
+        "type": "object",
+        "title": "AuthenticateUserError"
+      },
+      "AuthenticateUserOAuth": {
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/Provider",
+            "description": "OAuth provider"
+          },
+          "token": {
+            "type": "string",
+            "title": "Token",
+            "description": "OAuth token in JWT format"
+          }
+        },
+        "type": "object",
+        "required": ["provider", "token"],
+        "title": "AuthenticateUserOAuth"
+      },
+      "AuthenticateUserPostResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Response message"
+          },
+          "user": {
+            "$ref": "#/components/schemas/ResponseUser",
+            "description": "User details"
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config",
+            "description": "Users config json string"
+          }
+        },
+        "type": "object",
+        "required": ["message", "user", "config"],
+        "title": "AuthenticateUserPostResponse"
+      },
+      "BehavioralTelemetryData": {
+        "properties": {
+          "time_since_last_shown": {
+            "anyOf": [
+              { "type": "integer", "minimum": 0.0 },
+              { "type": "null" }
+            ],
+            "title": "Time Since Last Shown",
+            "description": "Time since last completion shown (ms)"
+          },
+          "time_since_last_accepted": {
+            "anyOf": [
+              { "type": "integer", "minimum": 0.0 },
+              { "type": "null" }
+            ],
+            "title": "Time Since Last Accepted",
+            "description": "Time since last completion accepted (ms)"
+          },
+          "typing_speed": {
+            "anyOf": [
+              { "type": "integer", "minimum": 0.0 },
+              { "type": "null" }
+            ],
+            "title": "Typing Speed",
+            "description": "Typing speed (chars per minute)"
+          }
+        },
+        "type": "object",
+        "title": "BehavioralTelemetryData"
+      },
+      "ChatCompletionErrorItem": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Chat completion for model failed"
+          },
+          "model_name": {
+            "type": "string",
+            "title": "Model Name",
+            "description": "Model name"
+          }
+        },
+        "type": "object",
+        "required": ["model_name"],
+        "title": "ChatCompletionErrorItem"
+      },
+      "ChatCompletionItem": {
+        "properties": {
+          "model_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Model Id",
+            "description": "Model ID"
+          },
+          "model_name": {
+            "type": "string",
+            "title": "Model Name",
+            "description": "Model name"
+          },
+          "completion": {
+            "type": "string",
+            "title": "Completion",
+            "description": "Generated text"
+          },
+          "generation_time": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Generation Time",
+            "description": "Generation time"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "description": "Confidence score"
+          },
+          "was_accepted": {
+            "type": "boolean",
+            "title": "Was Accepted",
+            "description": "Whether the completion was accepted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_id",
+          "model_name",
+          "completion",
+          "generation_time",
+          "confidence",
+          "was_accepted"
+        ],
+        "title": "ChatCompletionItem",
+        "description": "Represents a single model completion in a chat conversation"
+      },
+      "ChatHistoryItem": {
+        "properties": {
+          "user_message": {
+            "$ref": "#/components/schemas/ChatMessageItem",
+            "description": "User's message"
+          },
+          "assistant_responses": {
+            "items": {
+              "anyOf": [
+                { "$ref": "#/components/schemas/ChatCompletionItem" },
+                { "$ref": "#/components/schemas/ChatCompletionErrorItem" }
+              ]
+            },
+            "type": "array",
+            "title": "Assistant Responses",
+            "description": "Assistant's responses from different models"
+          }
+        },
+        "type": "object",
+        "required": ["user_message", "assistant_responses"],
+        "title": "ChatHistoryItem",
+        "description": "Represents a single turn in the chat conversation"
+      },
+      "ChatHistoryResponse": {
+        "properties": {
+          "chat_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Chat Id",
+            "description": "Chat ID"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Chat title"
+          },
+          "history": {
+            "items": { "$ref": "#/components/schemas/ChatHistoryItem" },
+            "type": "array",
+            "title": "History",
+            "description": "Chat conversation history"
+          }
+        },
+        "type": "object",
+        "required": ["chat_id", "title", "history"],
+        "title": "ChatHistoryResponse",
+        "description": "Response containing the entire chat history"
+      },
+      "ChatHistoryResponsePage": {
+        "properties": {
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "description": "Current page number"
+          },
+          "per_page": {
+            "type": "integer",
+            "title": "Per Page",
+            "description": "Number of records per page"
+          },
+          "items": {
+            "items": { "$ref": "#/components/schemas/ChatHistoryResponse" },
+            "type": "array",
+            "title": "Items",
+            "description": "List of chat history responses"
+          }
+        },
+        "type": "object",
+        "required": ["page", "per_page", "items"],
+        "title": "ChatHistoryResponsePage",
+        "description": "A glorified list of chat history responses with pagination"
+      },
+      "ChatMessageItem": {
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/ChatMessageRole",
+            "description": "Role of the message sender"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "Content of the message"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "When the message was sent"
+          },
+          "meta_query_id": {
+            "anyOf": [
+              { "type": "string", "format": "uuid" },
+              { "type": "null" }
+            ],
+            "title": "Meta Query Id",
+            "description": "Associated query ID if any"
+          }
+        },
+        "type": "object",
+        "required": ["role", "content", "timestamp"],
+        "title": "ChatMessageItem",
+        "description": "Represents a single message in a chat conversation"
+      },
+      "ChatMessageRole": {
+        "type": "string",
+        "enum": ["user", "assistant", "system"],
+        "title": "ChatMessageRole"
+      },
+      "CompletionErrorItem": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Completion for model failed"
+          },
+          "model_name": {
+            "type": "string",
+            "title": "Model Name",
+            "description": "Model name"
+          }
+        },
+        "type": "object",
+        "required": ["model_name"],
+        "title": "CompletionErrorItem"
+      },
+      "CompletionFeedbackPostResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Feedback recorded successfully."
+          },
+          "data": {
+            "$ref": "#/components/schemas/ResponseFeedbackResponseData",
+            "description": "Information about the recorded feedback"
+          }
+        },
+        "type": "object",
+        "required": ["data"],
+        "title": "CompletionFeedbackPostResponse"
+      },
+      "CompletionPostResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Completions generated successfully. Ready for display in your IDE."
+          },
+          "data": {
+            "$ref": "#/components/schemas/ResponseCompletionResponseData",
+            "description": "Generated code completions including query ID and suggestions"
+          }
+        },
+        "type": "object",
+        "required": ["data"],
+        "title": "CompletionPostResponse"
+      },
+      "ConfigNotFound": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Config not found!"
+          }
+        },
+        "type": "object",
+        "title": "ConfigNotFound"
+      },
+      "ContextChangeType": {
+        "type": "string",
+        "enum": ["update", "insert", "remove"],
+        "title": "ContextChangeType"
+      },
+      "ContextData": {
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "title": "Prefix",
+            "description": "Code before cursor"
+          },
+          "suffix": {
+            "type": "string",
+            "title": "Suffix",
+            "description": "Code after cursor"
+          },
+          "file_name": {
+            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "title": "File Name",
+            "description": "File name",
+            "default": "unknown_file"
+          },
+          "selected_text": {
+            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "title": "Selected Text",
+            "description": "Selected text in editor",
+            "default": ""
+          },
+          "context_files": {
+            "anyOf": [
+              { "items": { "type": "string" }, "type": "array" },
+              { "type": "null" }
+            ],
+            "title": "Context Files",
+            "description": "Context files to consider",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": ["prefix", "suffix"],
+        "title": "ContextData"
+      },
+      "ContextualTelemetryData": {
+        "properties": {
+          "version_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Version Id",
+            "description": "Plugin version ID"
+          },
+          "trigger_type_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Trigger Type Id",
+            "description": "Trigger type ID"
+          },
+          "language_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Language Id",
+            "description": "Programming language ID"
+          },
+          "file_path": {
+            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "title": "File Path",
+            "description": "Path to the file being edited"
+          },
+          "caret_line": {
+            "anyOf": [
+              { "type": "integer", "minimum": 0.0 },
+              { "type": "null" }
+            ],
+            "title": "Caret Line",
+            "description": "Line number of cursor"
+          },
+          "document_char_length": {
+            "anyOf": [
+              { "type": "integer", "minimum": 0.0 },
+              { "type": "null" }
+            ],
+            "title": "Document Char Length",
+            "description": "Document length in characters"
+          },
+          "relative_document_position": {
+            "anyOf": [
+              { "type": "number", "maximum": 1.0, "minimum": 0.0 },
+              { "type": "null" }
+            ],
+            "title": "Relative Document Position",
+            "description": "Cursor position as fraction of document"
+          }
+        },
+        "type": "object",
+        "required": ["version_id", "trigger_type_id", "language_id"],
+        "title": "ContextualTelemetryData"
+      },
+      "CreateProject": {
+        "properties": {
+          "project_name": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Project Name",
+            "description": "Project name"
+          }
+        },
+        "type": "object",
+        "required": ["project_name"],
+        "title": "CreateProject"
+      },
+      "CreateProjectError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to create a project!"
+          }
+        },
+        "type": "object",
+        "title": "CreateProjectError"
+      },
+      "CreateProjectPostResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Project created successfully."
+          },
+          "project_token": {
+            "type": "string",
+            "title": "Project Token",
+            "description": "Created project token."
+          }
+        },
+        "type": "object",
+        "required": ["project_token"],
+        "title": "CreateProjectPostResponse"
+      },
+      "CreateUser": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 3,
+            "format": "email",
+            "title": "Email",
+            "description": "User's email address"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 3,
+            "title": "Name",
+            "description": "User's full name"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 8,
+            "format": "password",
+            "title": "Password",
+            "description": "User's password (will be hashed)",
+            "writeOnly": true
+          },
+          "config_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Config Id",
+            "description": "Configuration ID to use"
+          }
+        },
+        "type": "object",
+        "required": ["email", "name", "password", "config_id"],
+        "title": "CreateUser"
+      },
+      "CreateUserError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to create a new user!"
+          }
+        },
+        "type": "object",
+        "title": "CreateUserError"
+      },
+      "CreateUserOauth": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 3,
+            "format": "email",
+            "title": "Email",
+            "description": "User's email address"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 3,
+            "title": "Name",
+            "description": "User's full name"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 8,
+            "format": "password",
+            "title": "Password",
+            "description": "User's password (will be hashed)",
+            "writeOnly": true
+          },
+          "config_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Config Id",
+            "description": "Configuration ID to use"
+          },
+          "token": {
+            "type": "string",
+            "title": "Token",
+            "description": "JWT token for authentication"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/Provider",
+            "description": "OAuth provider (Google, Microsoft, etc.)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "name",
+          "password",
+          "config_id",
+          "token",
+          "provider"
+        ],
+        "title": "CreateUserOauth"
+      },
+      "CreateUserPostResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "User created successfully. Please check your email for verification."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id",
+            "description": "Created user id"
+          }
+        },
+        "type": "object",
+        "required": ["user_id"],
+        "title": "CreateUserPostResponse"
+      },
+      "DeleteChatError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to delete chat"
+          }
+        },
+        "type": "object",
+        "title": "DeleteChatError",
+        "description": "Error response for chat deletion failure"
+      },
+      "DeleteChatSuccessResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Chat deleted successfully"
+          }
+        },
+        "type": "object",
+        "title": "DeleteChatSuccessResponse",
+        "description": "Success response for chat deletion"
+      },
+      "DeleteUserDeleteResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "User is deleted successfully."
+          }
+        },
+        "type": "object",
+        "title": "DeleteUserDeleteResponse"
+      },
+      "DeleteUserError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to delete the user!"
+          }
+        },
+        "type": "object",
+        "title": "DeleteUserError"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Error message"
+          }
+        },
+        "type": "object",
+        "required": ["message"],
+        "title": "ErrorResponse"
+      },
+      "FeedbackCompletion": {
+        "properties": {
+          "meta_query_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Meta Query Id",
+            "description": "Meta Query ID"
+          },
+          "model_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Model Id",
+            "description": "Model ID"
+          },
+          "was_accepted": {
+            "type": "boolean",
+            "title": "Was Accepted",
+            "description": "Whether completion was accepted"
+          },
+          "ground_truth": {
+            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "title": "Ground Truth",
+            "description": "Actual code if available"
+          }
+        },
+        "type": "object",
+        "required": ["meta_query_id", "model_id", "was_accepted"],
+        "title": "FeedbackCompletion"
+      },
+      "FeedbackRecordingError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to record feedback."
+          }
+        },
+        "type": "object",
+        "title": "FeedbackRecordingError"
+      },
+      "FileContextChangeData": {
+        "properties": {
+          "change_type": {
+            "$ref": "#/components/schemas/ContextChangeType",
+            "description": "Type of change ('update', 'insert', 'remove')"
+          },
+          "start_line": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Start Line",
+            "description": "Start line number"
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "End Line",
+            "description": "End line number"
+          },
+          "new_lines": {
+            "items": { "type": "string" },
+            "type": "array",
+            "title": "New Lines",
+            "description": "New lines of code"
+          }
+        },
+        "type": "object",
+        "required": ["change_type", "start_line", "end_line", "new_lines"],
+        "title": "FileContextChangeData"
+      },
+      "GenerateChatCompletionsError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to generate chat completions."
+          }
+        },
+        "type": "object",
+        "title": "GenerateChatCompletionsError"
+      },
+      "GenerateCompletionsError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to generate completions."
+          }
+        },
+        "type": "object",
+        "title": "GenerateCompletionsError"
+      },
+      "GenerationNotFoundError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Generation record not found"
+          }
+        },
+        "type": "object",
+        "title": "GenerationNotFoundError"
+      },
+      "GetVerificationError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to retrieve verification status."
+          }
+        },
+        "type": "object",
+        "title": "GetVerificationError"
+      },
+      "GetVerificationGetResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Verification get returned successfully."
+          },
+          "user_is_verified": {
+            "type": "boolean",
+            "title": "User Is Verified",
+            "description": "Indicates whether the user is verified"
+          }
+        },
+        "type": "object",
+        "required": ["user_is_verified"],
+        "title": "GetVerificationGetResponse"
+      },
+      "InvalidEmailOrPassword": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Invalid email or password!"
+          }
+        },
+        "type": "object",
+        "title": "InvalidEmailOrPassword"
+      },
+      "InvalidOrExpiredAuthToken": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Authentication token not found! You are not authenticated or your token has expired. Login before you can perform this action."
+          }
+        },
+        "type": "object",
+        "title": "InvalidOrExpiredAuthToken"
+      },
+      "InvalidOrExpiredJWTToken": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Invalid or expired token!"
+          }
+        },
+        "type": "object",
+        "title": "InvalidOrExpiredJWTToken"
+      },
+      "InvalidOrExpiredProjectToken": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Invalid or expired project token. Acquire a session token first."
+          }
+        },
+        "type": "object",
+        "title": "InvalidOrExpiredProjectToken"
+      },
+      "InvalidOrExpiredSessionToken": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Session not found! You are not authenticated or your session has expired. Login before you can perform this action."
+          }
+        },
+        "type": "object",
+        "title": "InvalidOrExpiredSessionToken"
+      },
+      "InvalidOrExpiredVerificationToken": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Invalid or expired verification token."
+          }
+        },
+        "type": "object",
+        "title": "InvalidOrExpiredVerificationToken"
+      },
+      "MultiFileContextUpdateError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to update multi-file context."
+          }
+        },
+        "type": "object",
+        "title": "MultiFileContextUpdateError"
+      },
+      "MultiFileContextUpdatePostResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Multi-file context updated successfully."
+          },
+          "data": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Data",
+            "description": "Data related to the multi-file context update"
+          }
+        },
+        "type": "object",
+        "required": ["data"],
+        "title": "MultiFileContextUpdatePostResponse"
+      },
+      "NoAccessToGetQueryError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "You do not have permission to access this query."
+          }
+        },
+        "type": "object",
+        "title": "NoAccessToGetQueryError"
+      },
+      "NoAccessToProvideFeedbackError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "You are not allowed to provide feedback for this query."
+          }
+        },
+        "type": "object",
+        "title": "NoAccessToProvideFeedbackError"
+      },
+      "Provider": {
+        "type": "string",
+        "enum": ["no_provider", "google"],
+        "title": "Provider"
+      },
+      "QueryChatMessageRole": {
+        "type": "string",
+        "enum": ["user", "assistant", "system"],
+        "title": "QueryChatMessageRole"
+      },
+      "QueryNotFoundError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Query not found"
+          }
+        },
+        "type": "object",
+        "title": "QueryNotFoundError"
+      },
+      "RequestChatCompletion": {
+        "properties": {
+          "model_ids": {
+            "items": { "type": "integer" },
+            "type": "array",
+            "title": "Model Ids",
+            "description": "Models to use for chat completion"
+          },
+          "chat_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Chat Id",
+            "description": "Chat ID"
+          },
+          "messages": {
+            "items": {
+              "prefixItems": [
+                { "$ref": "#/components/schemas/QueryChatMessageRole" },
+                { "type": "string" }
+              ],
+              "type": "array",
+              "maxItems": 2,
+              "minItems": 2
+            },
+            "type": "array",
+            "title": "Messages",
+            "description": "Chat messages as a list of tuples"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextData",
+            "description": "Context data for completion"
+          },
+          "store_context": {
+            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "title": "Store Context",
+            "description": "Whether to store context data in database",
+            "default": false
+          },
+          "contextual_telemetry": {
+            "$ref": "#/components/schemas/ContextualTelemetryData",
+            "description": "Contextual telemetry data"
+          },
+          "store_contextual_telemetry": {
+            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "title": "Store Contextual Telemetry",
+            "description": "Whether to store contextual telemetry in database",
+            "default": true
+          },
+          "behavioral_telemetry": {
+            "$ref": "#/components/schemas/BehavioralTelemetryData",
+            "description": "Behavioral telemetry data"
+          },
+          "store_behavioral_telemetry": {
+            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "title": "Store Behavioral Telemetry",
+            "description": "Whether to store behavioral telemetry in database",
+            "default": true
+          },
+          "web_enabled": {
+            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "title": "Web Enabled",
+            "description": "Whether web access is enabled",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_ids",
+          "chat_id",
+          "messages",
+          "context",
+          "contextual_telemetry",
+          "behavioral_telemetry"
+        ],
+        "title": "RequestChatCompletion"
+      },
+      "RequestCompletion": {
+        "properties": {
+          "model_ids": {
+            "items": { "type": "integer" },
+            "type": "array",
+            "title": "Model Ids",
+            "description": "Models to use for completion"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextData",
+            "description": "Context data for completion"
+          },
+          "store_context": {
+            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "title": "Store Context",
+            "description": "Whether to store context data in database",
+            "default": false
+          },
+          "contextual_telemetry": {
+            "$ref": "#/components/schemas/ContextualTelemetryData",
+            "description": "Contextual telemetry data"
+          },
+          "store_contextual_telemetry": {
+            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "title": "Store Contextual Telemetry",
+            "description": "Whether to store contextual telemetry in database",
+            "default": true
+          },
+          "behavioral_telemetry": {
+            "$ref": "#/components/schemas/BehavioralTelemetryData",
+            "description": "Behavioral telemetry data"
+          },
+          "store_behavioral_telemetry": {
+            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "title": "Store Behavioral Telemetry",
+            "description": "Whether to store behavioral telemetry in database",
+            "default": true
+          },
+          "stop_sequences": {
+            "anyOf": [
+              { "items": { "type": "string" }, "type": "array" },
+              { "type": "null" }
+            ],
+            "title": "Stop Sequences",
+            "description": "List of sequences that signal the end of generation",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_ids",
+          "context",
+          "contextual_telemetry",
+          "behavioral_telemetry"
+        ],
+        "title": "RequestCompletion"
+      },
+      "ResendVerificationEmailError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to resend verification email."
+          }
+        },
+        "type": "object",
+        "title": "ResendVerificationEmailError"
+      },
+      "ResendVerificationEmailPostResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Verification email sent successfully. Please check your inbox."
+          }
+        },
+        "type": "object",
+        "title": "ResendVerificationEmailPostResponse"
+      },
+      "ResponseCompletionItem": {
+        "properties": {
+          "model_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Model Id",
+            "description": "Model ID"
+          },
+          "model_name": {
+            "type": "string",
+            "title": "Model Name",
+            "description": "Model name"
+          },
+          "completion": {
+            "type": "string",
+            "title": "Completion",
+            "description": "Generated code"
+          },
+          "generation_time": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Generation Time",
+            "description": "Generation time"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "description": "Confidence score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "model_id",
+          "model_name",
+          "completion",
+          "generation_time",
+          "confidence"
+        ],
+        "title": "ResponseCompletionItem"
+      },
+      "ResponseCompletionResponseData": {
+        "properties": {
+          "meta_query_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Meta Query Id",
+            "description": "Meta Query ID"
+          },
+          "completions": {
+            "items": {
+              "anyOf": [
+                { "$ref": "#/components/schemas/ResponseCompletionItem" },
+                { "$ref": "#/components/schemas/CompletionErrorItem" }
+              ]
+            },
+            "type": "array",
+            "title": "Completions",
+            "description": "Generated completions"
+          }
+        },
+        "type": "object",
+        "required": ["meta_query_id", "completions"],
+        "title": "ResponseCompletionResponseData"
+      },
+      "ResponseFeedbackResponseData": {
+        "properties": {
+          "meta_query_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Meta Query Id",
+            "description": "Meta Query ID"
+          },
+          "model_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Model Id",
+            "description": "Model ID"
+          }
+        },
+        "type": "object",
+        "required": ["meta_query_id", "model_id"],
+        "title": "ResponseFeedbackResponseData"
+      },
+      "ResponseUser": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 3,
+            "format": "email",
+            "title": "Email",
+            "description": "User's email address"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 3,
+            "title": "Name",
+            "description": "User's full name"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "title": "Password",
+            "description": "User's password (will be hashed)",
+            "writeOnly": true
+          },
+          "config_id": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Config Id",
+            "description": "Configuration ID to use"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id",
+            "description": "Unique id for the user"
+          },
+          "joined_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Joined At",
+            "description": "When the user was created"
+          },
+          "verified": {
+            "type": "boolean",
+            "title": "Verified",
+            "description": "Whether the user's email has been verified"
+          },
+          "preference": {
+            "anyOf": [
+              { "additionalProperties": true, "type": "object" },
+              { "type": "null" }
+            ],
+            "title": "Preference",
+            "description": "Users preference for data management",
+            "default": {}
+          },
+          "auth_token": {
+            "anyOf": [
+              { "type": "string", "format": "uuid" },
+              { "type": "null" }
+            ],
+            "title": "Auth Token",
+            "description": "Last auth token used to login"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "name",
+          "password",
+          "config_id",
+          "user_id",
+          "joined_at",
+          "verified"
+        ],
+        "title": "ResponseUser"
+      },
+      "RetrieveChatCompletionsError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to retrieve chat completions."
+          }
+        },
+        "type": "object",
+        "title": "RetrieveChatCompletionsError"
+      },
+      "RetrieveCompletionsError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to retrieve completions."
+          }
+        },
+        "type": "object",
+        "title": "RetrieveCompletionsError"
+      },
+      "UpdateMultiFileContext": {
+        "properties": {
+          "context_updates": {
+            "additionalProperties": {
+              "items": { "$ref": "#/components/schemas/FileContextChangeData" },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Context Updates",
+            "description": "Updates to the context for multiple files"
+          }
+        },
+        "type": "object",
+        "required": ["context_updates"],
+        "title": "UpdateMultiFileContext"
+      },
+      "UpdateUser": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              { "type": "string", "maxLength": 50, "minLength": 3 },
+              { "type": "null" }
+            ],
+            "title": "Name",
+            "description": "User's new name"
+          },
+          "email": {
+            "anyOf": [
+              { "type": "string", "format": "email" },
+              { "type": "null" }
+            ],
+            "title": "Email",
+            "description": "New email of user"
+          },
+          "previous_password": {
+            "anyOf": [
+              { "type": "string", "format": "password", "writeOnly": true },
+              { "type": "null" }
+            ],
+            "title": "Previous Password",
+            "description": "Previous password of user"
+          },
+          "password": {
+            "anyOf": [
+              { "type": "string", "format": "password", "writeOnly": true },
+              { "type": "null" }
+            ],
+            "title": "Password",
+            "description": "New password of user"
+          },
+          "preference": {
+            "anyOf": [
+              { "additionalProperties": true, "type": "object" },
+              { "type": "null" }
+            ],
+            "title": "Preference",
+            "description": "Updated user preferences as a dictionary"
+          },
+          "config_id": {
+            "anyOf": [
+              { "type": "integer", "minimum": 1.0 },
+              { "type": "null" }
+            ],
+            "title": "Config Id",
+            "description": "New configuration ID"
+          },
+          "verified": {
+            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "title": "Verified",
+            "description": "Whether user verified or not"
+          }
+        },
+        "type": "object",
+        "title": "UpdateUser"
+      },
+      "UpdateUserError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to update the user!"
+          }
+        },
+        "type": "object",
+        "title": "UpdateUserError"
+      },
+      "UpdateUserPutResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "User is updated successfully."
+          },
+          "user": {
+            "$ref": "#/components/schemas/ResponseUser",
+            "description": "User details"
+          }
+        },
+        "type": "object",
+        "required": ["user"],
+        "title": "UpdateUserPutResponse"
+      },
+      "UserAlreadyExistsWithThisEmail": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "User already exists with this email!"
+          }
+        },
+        "type": "object",
+        "title": "UserAlreadyExistsWithThisEmail"
+      },
+      "UserNotFoundError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "User not found"
+          }
+        },
+        "type": "object",
+        "title": "UserNotFoundError"
+      },
+      "VerifyUserError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Server failed to verify the user."
+          }
+        },
+        "type": "object",
+        "title": "VerifyUserError"
+      },
+      "VerifyUserPostHTMLResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "User verified successfully."
+          },
+          "html": {
+            "type": "string",
+            "title": "Html",
+            "default": "<!DOCTYPE html>\n                              <html>\n                              <head>\n                                  <title>Email Verification Successful</title>\n                                  <style>\n                                      body {\n                                          font-family: Arial, sans-serif;\n                                          text-align: center;\n                                          padding: 50px;\n                                      }\n                                      .success {\n                                          color: #4CAF50;\n                                          font-size: 24px;\n                                          margin-bottom: 20px;\n                                      }\n                                      .message {\n                                          font-size: 18px;\n                                          margin-bottom: 30px;\n                                      }\n                                      .button {\n                                          display: inline-block;\n                                          padding: 10px 20px;\n                                          background-color: #4CAF50;\n                                          color: white;\n                                          text-decoration: none;\n                                          border-radius: 5px;\n                                          font-size: 16px;\n                                      }\n                                  </style>\n                              </head>\n                              <body>\n                                  <div class=\"success\">Email Verification Successful!</div>\n                                  <div class=\"message\">Your email has been verified successfully. You can now close this page and continue using the application.</div>\n                                  <a href=\"/\" class=\"button\">Go to Homepage</a>\n                              </body>\n                              </html>\n                      "
+          }
+        },
+        "type": "object",
+        "title": "VerifyUserPostHTMLResponse"
+      }
+    }
+  }
+}

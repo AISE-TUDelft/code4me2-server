@@ -30,9 +30,7 @@ class JsonResponseWithStatus(JSONResponse):
         super().__init__(content=jsonable_encoder(content), status_code=status_code)
 
     def dict(self) -> dict:
-        """
-        Convert the response content to a dictionary.
-        """
+        """Convert the response content to a dictionary."""
         return {
             "status_code": self.status_code,
             "content": jsonable_encoder(self.content),
@@ -43,21 +41,19 @@ class HTMLResponseWithStatus(HTMLResponse):
     def __init__(self, content: BaseModel, status_code: int):
         self.content = content
         self.status_code = status_code
-        # Convert the Pydantic model to a dict and extract the HTML string
+        # Extract the HTML string from the serialized model
         html_content = jsonable_encoder(content).get("html", "")
         super().__init__(content=html_content, status_code=status_code)
 
     def dict(self) -> dict:
-        """
-        Convert the response content to a dictionary.
-        """
+        """Convert the response content to a dictionary."""
         return {
             "status_code": self.status_code,
             "content": jsonable_encoder(self.content),
         }
 
 
-# api/user/create
+# /api/user/create
 class CreateUserPostResponse(BaseResponse):
     message: str = Field(
         default="User created successfully. Please check your email for verification."
@@ -77,10 +73,10 @@ class CreateUserError(ErrorResponse):
     message: str = Field(default="Server failed to create a new user!")
 
 
-# api/user/authenticate
+# /api/user/authenticate
 class AuthenticateUserPostResponse(BaseResponse, ABC):
-    user: ResponseUser = Field(..., description="User details")  # Uncomment if needed
-    config: Dict[str, Any] = Field(..., description="Users config json string")
+    user: ResponseUser = Field(..., description="User details")
+    config: Dict[str, Any] = Field(..., description="User's config JSON string")
 
 
 class AuthenticateUserNormalPostResponse(AuthenticateUserPostResponse):
@@ -131,7 +127,7 @@ class InvalidOrExpiredAuthToken(ErrorResponse):
 # /api/user/update
 class UpdateUserPutResponse(BaseResponse):
     message: str = Field(default="User is updated successfully.")
-    user: ResponseUser = Field(..., description="User details")  # Uncomment if needed
+    user: ResponseUser = Field(..., description="User details")
 
 
 class InvalidPreviousPassword(BaseResponse):
@@ -242,7 +238,6 @@ class DeactivateSessionError(ErrorResponse):
     message: str = Field(default="Server failed to deactivate session.")
 
 
-############################################################
 # /api/session/acquire
 class AcquireSessionGetResponse(BaseResponse):
     message: str = Field(default="Session acquired successfully")
@@ -269,10 +264,9 @@ class TooManyRequests(ErrorResponse):
     message: str = Field(default="Too many requests. Please try again later.")
 
 
-########################################
 # /api/chat/delete
 class DeleteChatError(ErrorResponse):
-    """Error response for chat deletion failure"""
+    """Error response for chat deletion failure."""
 
     message: str = "Server failed to delete chat"
 
@@ -303,42 +297,41 @@ class VerifyUserPostHTMLResponse(BaseResponse):
     message: str = Field(default="User verified successfully.")
     html: str = Field(
         default="""<!DOCTYPE html>
-                              <html>
-                              <head>
-                                  <title>Email Verification Successful</title>
-                                  <style>
-                                      body {
-                                          font-family: Arial, sans-serif;
-                                          text-align: center;
-                                          padding: 50px;
-                                      }
-                                      .success {
-                                          color: #4CAF50;
-                                          font-size: 24px;
-                                          margin-bottom: 20px;
-                                      }
-                                      .message {
-                                          font-size: 18px;
-                                          margin-bottom: 30px;
-                                      }
-                                      .button {
-                                          display: inline-block;
-                                          padding: 10px 20px;
-                                          background-color: #4CAF50;
-                                          color: white;
-                                          text-decoration: none;
-                                          border-radius: 5px;
-                                          font-size: 16px;
-                                      }
-                                  </style>
-                              </head>
-                              <body>
-                                  <div class="success">Email Verification Successful!</div>
-                                  <div class="message">Your email has been verified successfully. You can now close this page and continue using the application.</div>
-                                  <a href="/" class="button">Go to Homepage</a>
-                              </body>
-                              </html>
-                      """
+<html>
+<head>
+    <title>Email Verification Successful</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 50px;
+        }
+        .success {
+            color: #4CAF50;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+        .message {
+            font-size: 18px;
+            margin-bottom: 30px;
+        }
+        .button {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="success">Email Verification Successful!</div>
+    <div class="message">Your email has been verified successfully. You can now close this page and continue using the application.</div>
+    <a href="/" class="button">Go to Homepage</a>
+</body>
+</html>"""
     )
 
 
