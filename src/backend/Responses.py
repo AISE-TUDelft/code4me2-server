@@ -77,7 +77,7 @@ class CreateUserError(ErrorResponse):
 # /api/user/authenticate
 class AuthenticateUserPostResponse(BaseResponse, ABC):
     user: ResponseUser = Field(..., description="User details")
-    config: str = Field(..., description="User's config HOKON string")
+    config: str = Field(..., description="User's config HOCON string")
 
 
 class AuthenticateUserNormalPostResponse(AuthenticateUserPostResponse):
@@ -471,4 +471,4 @@ class GetUserError(ErrorResponse):
 class GetUserGetResponse(BaseResponse):
     message: str = Field(default="User information retrieved successfully.")
     user: ResponseUser = Field(..., description="User details")
-    config: str = Field(..., description="User's config HOKON string")
+    config: str = Field(..., description="User's config HOCON string")

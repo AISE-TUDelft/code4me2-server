@@ -4,6 +4,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from App import App
+from backend.utils import format_expiry
 
 
 def send_verification_email(
@@ -111,7 +112,7 @@ def send_reset_password_email(
         </p>
         <p>If the button doesn't work, you can also copy and paste this link into your browser:</p>
         <p>{reset_url}</p>
-        <p>This link will expire after {config.reset_password_token_expires_in_seconds//60} minutes.</p>
+        <p>This link will expire after {format_expiry(config.reset_password_token_expires_in_seconds)}.</p>
         <p>Best regards,<br>The Code4Me Team</p>
       </body>
     </html>
