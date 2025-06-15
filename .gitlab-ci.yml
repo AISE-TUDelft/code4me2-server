@@ -26,7 +26,7 @@ lint:
     when: always
 
 build-openapi-docs:
-  stage: lint # or create a new stage like "docs"
+  stage: openapi-docs # or create a new stage like "docs"
   image: node:latest
   script:
     - npm install -g @redocly/cli
