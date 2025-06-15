@@ -212,7 +212,7 @@ def request_completion(
                 prompt_template=completion.Template.PREFIX_SUFFIX,
             )
             if completion_model is None:
-                return CompletionErrorItem(model_name=model)
+                return CompletionErrorItem(model_name=str(model.model_name))
 
             local_t2 = time.perf_counter()
             # Invoke the model with redacted prefix and suffix

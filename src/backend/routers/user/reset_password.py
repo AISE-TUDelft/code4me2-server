@@ -8,7 +8,7 @@ reset email and then use the provided link to securely change their password.
 
 import logging
 
-from fastapi import APIRouter, Cookie, Depends, Query
+from fastapi import APIRouter, Depends, Query
 
 from App import App
 from backend.email_utils import send_reset_password_email
@@ -16,7 +16,6 @@ from backend.Responses import (
     ErrorResponse,
     ErrorShowingPasswordResetForm,
     HTMLResponseWithStatus,
-    InvalidOrExpiredAuthToken,
     InvalidOrExpiredResetToken,
     JsonResponseWithStatus,
     PasswordResetError,
@@ -36,7 +35,6 @@ router = APIRouter()
     response_model=PasswordResetRequestPostResponse,
     responses={
         "200": {"model": PasswordResetRequestPostResponse},
-        "401": {"model": InvalidOrExpiredAuthToken},
         "404": {"model": UserNotFoundError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -44,7 +42,10 @@ router = APIRouter()
     },
 )
 def request_password_reset(
-    auth_token: str = Cookie(""), app: App = Depends(App.get_instance)
+    email: str = Query(
+        ..., description="Email address of the user requesting password reset"
+    ),
+    app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
     Initiate a password reset request by sending a reset email to the user.
@@ -64,19 +65,9 @@ def request_password_reset(
     redis_manager = app.get_redis_manager()
 
     try:
-        # Retrieve the user ID from the auth token
-        auth_info = redis_manager.get("auth_token", auth_token)
 
-        # If the token is invalid or missing, return a 401 error
-        if auth_info is None or not auth_info.get("user_id"):
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredAuthToken(),
-            )
-
-        user_id = auth_info["user_id"]
         # Fetch the user by ID from the database
-        user = crud.get_user_by_id(db_session, user_id)
+        user = crud.get_user_by_email(db_session, email)
         # If user not found, return a 404 error
         if not user:
             return JsonResponseWithStatus(
@@ -92,7 +83,7 @@ def request_password_reset(
         app.get_redis_manager().set(
             "password_reset",
             reset_token,
-            {"user_id": user_id, "email": str(user.email)},
+            {"user_id": str(user.user_id), "email": str(user.email)},
             force_reset_exp=True,
         )
         # Send the password reset email with the generated token

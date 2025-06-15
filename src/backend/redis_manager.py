@@ -142,7 +142,7 @@ class RedisManager:
             self.__redis_client.delete(key)
             self.__redis_client.delete(f"{type}_hook:{token}")
             if auth_dict:
-                user_token = auth_dict.get("user_token")
+                user_token = auth_dict.get("user_id")
                 if user_token:
                     self.delete("user_token", user_token, db_session)
 
