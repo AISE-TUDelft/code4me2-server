@@ -36,9 +36,6 @@ build-openapi-docs:
       - fastapi-doc.html
     when: always
     expire_in: 1 week
-  only:
-    - merge_requests
-    - main
 
 # Python code style check job
 black:
