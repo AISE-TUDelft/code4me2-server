@@ -13,6 +13,9 @@ The schema supports:
 - Session management and tracking
 """
 
+from datetime import datetime
+
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     BigInteger,
@@ -603,3 +606,51 @@ class GroundTruth(Base):
         DateTime(timezone=True), nullable=False
     )  # When ground truth was captured
     ground_truth = Column(Text, nullable=False)  # Actual code written by user
+    truth_timestamp = Column(DateTime(timezone=True), nullable=False)
+    ground_truth = Column(Text, nullable=False)
+
+
+class Documentation(Base):
+    __tablename__ = "documentation"
+    __table_args__ = (
+        Index("idx_documentation_language", "language"),
+        Index("idx_documentation_embedding", "embedding", postgresql_using="ivfflat"),
+        {"schema": "public"},
+    )
+
+    documentation_id = Column(Integer, primary_key=True, autoincrement=True)
+    content = Column(Text, nullable=False)
+    language = Column(String(50), nullable=False)
+    embedding = Column(
+        Vector(384), nullable=True
+    )  # 384 dimensions for all-MiniLM-L6-v2
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+
+
+#
+# class SessionQuery(Base):
+#     __tablename__ = "session_queries"
+#     session_id = Column(
+#         UUID(as_uuid=True),
+#         ForeignKey("session.session_id", ondelete="CASCADE"),
+#         primary_key=True,
+#         nullable=False,
+#     )
+#     query_id = Column(
+#         UUID(as_uuid=True),
+#         ForeignKey("query.query_id", ondelete="CASCADE"),
+#         primary_key=True,
+#         nullable=False,
+#     )
+#     multi_file_context_changes_indexes = Column(
+#         Text, default="{}"
+#     )  # JSON string of the upper limit indexes of context changes used for the query in the session
+#
+#     # Relationships
+#     session = relationship("Session", back_populates="session_queries")
+#     query = relationship("Query", back_populates="session_queries")
+#
+#     __table_args__ = (
+#         UniqueConstraint("session_id", "query_id", name="unique_session_query"),
+#         Index("idx_session_queries_query_id", "query_id"),
+#     )

@@ -2,7 +2,7 @@
 import json
 import uuid
 from datetime import datetime
-from typing import Optional, Type, Union
+from typing import List, Optional, Tuple, Type, Union
 
 from sqlalchemy.orm import Session
 
@@ -942,3 +942,268 @@ def get_plugin_version_by_id(
         .filter(db_schemas.PluginVersion.version_id == version_id)
         .first()
     )
+
+
+# Documentation Operations
+def create_documentation(
+    db: Session, doc: Queries.CreateDocumentation
+) -> db_schemas.Documentation:
+    """Create a new documentation entry with embedding."""
+
+    # Generate embedding for the content
+    try:
+        embedding = encode_text(doc.content)
+    except Exception as e:
+        # If embedding fails, log error but don't fail the creation
+        print(f"Warning: Failed to generate embedding: {e}")
+        embedding = None
+
+    db_doc = db_schemas.Documentation(
+        content=doc.content, language=doc.language, embedding=embedding
+    )
+
+    db.add(db_doc)
+    db.commit()
+    db.refresh(db_doc)
+    return db_doc
+
+
+def get_documentation_by_id(
+    db: Session, doc_id: int
+) -> Optional[db_schemas.Documentation]:
+    """Get documentation by ID."""
+    return (
+        db.query(db_schemas.Documentation)
+        .filter(db_schemas.Documentation.documentation_id == doc_id)
+        .first()
+    )
+
+
+def get_all_documentation(
+    db: Session, language: Optional[str] = None, limit: Optional[int] = None
+) -> List[db_schemas.Documentation]:
+    """Get all documentation, optionally filtered by language."""
+    query = db.query(db_schemas.Documentation)
+
+    if language:
+        query = query.filter(db_schemas.Documentation.language == language)
+
+    query = query.order_by(db_schemas.Documentation.created_at.desc())
+
+    if limit:
+        query = query.limit(limit)
+
+    return query.all()
+
+
+def update_documentation(
+    db: Session, doc_id: int, doc_update: Queries.UpdateDocumentation
+) -> Optional[db_schemas.Documentation]:
+    """Update documentation entry."""
+    doc = get_documentation_by_id(db, doc_id)
+    if not doc:
+        return None
+
+    update_data = doc_update.dict(exclude_unset=True)
+
+    # If content is being updated, regenerate embedding
+    if "content" in update_data:
+        try:
+            new_embedding = encode_text(update_data["content"])
+            update_data["embedding"] = new_embedding
+        except Exception as e:
+            print(f"Warning: Failed to update embedding: {e}")
+
+    for field, value in update_data.items():
+        setattr(doc, field, value)
+
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
+def delete_documentation(db: Session, doc_id: int) -> bool:
+    """Delete documentation entry."""
+    result = (
+        db.query(db_schemas.Documentation)
+        .filter(db_schemas.Documentation.documentation_id == doc_id)
+        .delete()
+    )
+    db.commit()
+    return result > 0
+
+
+def search_similar_documentation(
+    db: Session, search_query: Queries.SearchDocumentation
+) -> List[Tuple[db_schemas.Documentation, float]]:
+    """
+    Search for documentation similar to the given query text.
+
+    Returns:
+        List of tuples containing (documentation, similarity_score)
+    """
+    # Generate embedding for the search query
+    try:
+        query_embedding = encode_text(search_query.query_text)
+    except Exception as e:
+        print(f"Error generating embedding for search query: {e}")
+        return []
+
+    # Build the SQL query
+    # Using cosine similarity with pgvector
+    sql_parts = [
+        "SELECT documentation_id, content, language, created_at,",
+        "       1 - (embedding <=> :query_embedding) as similarity_score",
+        "FROM documentation",
+        "WHERE embedding IS NOT NULL",
+    ]
+
+    params = {"query_embedding": str(query_embedding)}
+
+    # Add language filter if specified
+    if search_query.language:
+        sql_parts.append("AND language = :language")
+        params["language"] = search_query.language
+
+    # Add similarity threshold filter
+    sql_parts.append("AND (1 - (embedding <=> :query_embedding)) >= :threshold")
+    params["threshold"] = search_query.similarity_threshold
+
+    # Order by similarity and limit results
+    sql_parts.extend(["ORDER BY similarity_score DESC", "LIMIT :limit"])
+    params["limit"] = search_query.limit
+
+    sql_query = " ".join(sql_parts)
+
+    try:
+        result = db.execute(text(sql_query), params)
+        rows = result.fetchall()
+
+        # Convert results to documentation objects with similarity scores
+        results = []
+        for row in rows:
+            # Create a documentation object
+            doc = db_schemas.Documentation(
+                documentation_id=row.documentation_id,
+                content=row.content,
+                language=row.language,
+                created_at=row.created_at,
+            )
+
+            similarity_score = float(row.similarity_score)
+            results.append((doc, similarity_score))
+
+        return results
+
+    except Exception as e:
+        print(f"Error executing similarity search: {e}")
+        return []
+
+
+def regenerate_embeddings(db: Session, language: Optional[str] = None) -> int:
+    """
+    Regenerate embeddings for all documentation entries.
+    Useful when changing embedding models or fixing corrupted embeddings.
+
+    Args:
+        language: Optional language filter to regenerate only specific language docs
+
+    Returns:
+        Number of embeddings regenerated
+    """
+    query = db.query(db_schemas.Documentation)
+
+    if language:
+        query = query.filter(db_schemas.Documentation.language == language)
+
+    docs = query.all()
+
+    updated_count = 0
+    for doc in docs:
+        try:
+            new_embedding = encode_text(doc.content)
+            doc.embedding = new_embedding
+            updated_count += 1
+        except Exception as e:
+            print(f"Failed to regenerate embedding for doc {doc.documentation_id}: {e}")
+
+    db.commit()
+    return updated_count
+
+
+def get_documentation_stats(db: Session) -> dict:
+    """Get statistics about documentation entries."""
+    total_docs = db.query(db_schemas.Documentation).count()
+
+    docs_with_embeddings = (
+        db.query(db_schemas.Documentation)
+        .filter(db_schemas.Documentation.embedding.isnot(None))
+        .count()
+    )
+
+    # Get language distribution
+    language_stats = (
+        db.query(
+            db_schemas.Documentation.language,
+            func.count(db_schemas.Documentation.documentation_id),
+        )
+        .group_by(db_schemas.Documentation.language)
+        .all()
+    )
+
+    return {
+        "total_documents": total_docs,
+        "documents_with_embeddings": docs_with_embeddings,
+        "embedding_coverage": (
+            docs_with_embeddings / total_docs if total_docs > 0 else 0
+        ),
+        "languages": dict(language_stats),
+    }
+
+
+# Old Sessions
+# Kept in case we need to revert to the old session management
+# def get_session_by_id(db: Session, session_id: str) -> Optional[db_schemas.Session]:
+#     return (
+#         db.query(db_schemas.Session)
+#         .filter(db_schemas.Session.session_id == session_id)
+#         .first()
+#     )
+#
+#
+# def delete_session_by_id(db: Session, session_id: str) -> None:
+#     db.query(db_schemas.Session).filter(
+#         db_schemas.Session.session_id == session_id
+#     ).delete()
+#     db.commit()
+#
+#
+# def add_session(db: Session, session: db_schemas.Session) -> None:
+#     db.add(session)
+#     db.commit()
+#     db.refresh(session)
+#
+# def remove_session_by_user_id(db: Session, user_id: str) -> bool:
+#     """Remove all sessions by user ID"""
+#     result = (
+#         db.query(db_schemas.Session)
+#         .filter(db_schemas.Session.user_id == user_id)
+#         .delete()
+#     )
+#     db.commit()
+#     return result > 0
+#
+#
+# def add_session_query(db: Session, session_query: db_schemas.SessionQuery) -> None:
+#     logging.log(logging.INFO, "Add session query is called")
+#     db.add(session_query)
+#     db.commit()
+#     db.refresh(session_query)
+#
+#
+# def create_session(db: Session, user_id: str) -> db_schemas.Session:
+#     session = db_schemas.Session(session_id=uuid.uuid4(), user_id=user_id)
+#     db.add(session)
+#     db.commit()
+#     db.refresh(session)
+#     return session

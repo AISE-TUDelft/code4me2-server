@@ -1,4 +1,7 @@
 BEGIN TRANSACTION;
+-- Enable pgvector extension
+CREATE EXTENSION IF NOT EXISTS vector;
+
 
 -- Config table
 CREATE TABLE IF NOT EXISTS public.config
@@ -105,10 +108,9 @@ CREATE TABLE IF NOT EXISTS public.project_users
 );
 
 -- Session table (individual user sessions within projects)
-CREATE TABLE IF NOT EXISTS public.session
-(
+CREATE TABLE IF NOT EXISTS public.session (
     session_id uuid PRIMARY KEY,
-    user_id uuid NOT NULL,
+    user_id uuid NULL,
     start_time timestamp with time zone NOT NULL,
     end_time timestamp with time zone
 );
@@ -118,12 +120,13 @@ CREATE TABLE IF NOT EXISTS public.session_projects (
     project_id uuid NOT NULL,
     PRIMARY KEY (session_id, project_id)
 );
+
 -- Chat table
 CREATE TABLE IF NOT EXISTS public.chat
 (
     chat_id uuid NOT NULL PRIMARY KEY,
     project_id uuid NOT NULL,
-    user_id uuid NOT NULL,
+    user_id uuid NULL,
     title VARCHAR NOT NULL,
     created_at timestamp with time zone NOT NULL
 );
@@ -133,9 +136,9 @@ CREATE TABLE IF NOT EXISTS public.meta_query
 (
     meta_query_id uuid NOT NULL PRIMARY KEY,
     user_id uuid,
-    contextual_telemetry_id uuid NOT NULL,
-    behavioral_telemetry_id uuid NOT NULL,
-    context_id uuid NOT NULL,
+    contextual_telemetry_id uuid NULL,
+    behavioral_telemetry_id uuid NULL,
+    context_id uuid NULL,
     session_id uuid NOT NULL,
     project_id uuid NOT NULL,
     multi_file_context_changes_indexes text DEFAULT '{}',
@@ -182,6 +185,21 @@ CREATE TABLE IF NOT EXISTS public.ground_truth
     PRIMARY KEY (completion_query_id, truth_timestamp)
 );
 
+
+-- Documentation table with vector embeddings
+CREATE TABLE IF NOT EXISTS public.documentation
+(
+    documentation_id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL,
+    language VARCHAR(50) NOT NULL,
+    embedding vector(384),  -- 384 dimensions for all-MiniLM-L6-v2 model
+    created_at timestamp with time zone NOT NULL DEFAULT NOW()
+);
+
+-- Indexes for documentation table
+CREATE INDEX IF NOT EXISTS idx_documentation_language ON public.documentation (language);
+CREATE INDEX IF NOT EXISTS idx_documentation_embedding ON public.documentation
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 -- Foreign Key Constraints
 ALTER TABLE public."user"
     ADD CONSTRAINT fk_user_config FOREIGN KEY (config_id)
@@ -235,7 +253,7 @@ ALTER TABLE public.chat
     ADD CONSTRAINT fk_chat_user FOREIGN KEY (user_id)
     REFERENCES public."user" (user_id)
     ON UPDATE NO ACTION
-    ON DELETE SET NULL ;
+    ON DELETE SET NULL;
 
 ALTER TABLE public.meta_query
     ADD CONSTRAINT fk_meta_query_user FOREIGN KEY (user_id)
@@ -355,26 +373,27 @@ INSERT INTO public.config (config_data) VALUES ('{"default": true, "version": "1
 
 INSERT INTO public.model_name (model_name, is_instruction_tuned) VALUES
     ('deepseek-ai/deepseek-coder-1.3b-base', FALSE),
-    ('bigcode/starcoder2-3b', FALSE),
-    ('gpt-4-turbo', TRUE),
-    ('claude-3-sonnet', TRUE);
+--     ('bigcode/starcoder2-3b', FALSE),
+    ('mistralai/Ministral-8B-Instruct-2410', TRUE);
 
 INSERT INTO public.programming_language (language_name) VALUES
-    ('plaintext'), ('code-text-binary'), ('Log'), ('log'), ('scminput'), ('bat'),
-    ('clojure'), ('coffeescript'), ('jsonc'), ('json'), ('c'), ('cpp'), ('cuda-cpp'),
-    ('csharp'), ('css'), ('dart'), ('diff'), ('dockerfile'), ('ignore'), ('fsharp'),
-    ('git-commit'), ('git-rebase'), ('go'), ('groovy'), ('handlebars'), ('hlsl'),
-    ('html'), ('ini'), ('properties'), ('java'), ('javascriptreact'), ('javascript'),
-    ('jsx-tags'), ('jsonl'), ('snippets'), ('julia'), ('juliamarkdown'), ('tex'),
-    ('latex'), ('bibtex'), ('cpp_embedded_latex'), ('markdown_latex_combined'),
-    ('less'), ('lua'), ('makefile'), ('markdown'), ('markdown-math'), ('wat'),
-    ('objective-c'), ('objective-cpp'), ('perl'), ('raku'), ('php'), ('powershell'),
-    ('jade'), ('python'), ('r'), ('razor'), ('restructuredtext'), ('ruby'), ('rust'),
-    ('scss'), ('search-result'), ('shaderlab'), ('shellscript'), ('sql'), ('swift'),
-    ('typescript'), ('typescriptreact'), ('vb'), ('xml'), ('xsl'), ('dockercompose'),
-    ('yaml'), ('doctex'), ('bibtex-style'), ('latex-expl3'), ('pweave'), ('jlweave'),
-    ('rsweave'), ('csv'), ('tsv'), ('jinja'), ('pip-requirements'), ('toml'), ('raw'),
-    ('ssh_config'), ('Vimscript');
+    ('Oracle NetSuite'), ('GoPlusBuild'), ('HelmJSON'), ('USS'), ('UnityYaml'),
+    ('Blade'), ('Xaml'), ('Meson'), ('Angular SVG template'), ('Pug (ex-Jade)'),
+    ('Java'), ('DTD'), ('SQL'), ('LinkerScript'), ('Asp'), ('ClickHouse'),
+    ('CMakeCache'), ('Chameleon template'), ('VB'), ('.ignore (IgnoreLang)'), ('Vue template'),
+    ('UastContextLanguage'), ('EditorConfig'), ('XPath'), ('MariaDB'), ('MySQL based'), ('MongoJS'),
+    ('Angular SVG template (17+)'), ('IBM Db2 LUW'), ('SCSS'), ('DotEnv'), ('Kotlin/Native Def'), ('JSONPath'),
+    ('Microsoft SQL Server'), ('Flow JS'), ('Devicetree'), ('JSON5'), ('protobase'), ('Angular HTML template (17+)'),
+    ('BladeHTML'), ('TypeScript'), ('Metadata JSON'), ('Greenplum'), ('Handlebars'), ('Oracle SQL*Plus'), ('JVM languages'),
+    ('Python'), ('GoBuild'), ('VueTS'), ('JSON'), ('ASM'), ('VueExpr'), ('DynamoDB'), ('MSBuild'), ('C#'),
+    ('Exasol'), ('Sybase ASE'), ('XML'), ('.gitignore (GitIgnore)'), ('vgo'), ('prototext'), ('Groovy'), ('ECMAScript 6'),
+    ('TypeScript JSX'), ('CSS'), ('Config'), ('DjangoUrlPath'), ('Composer Log'), ('Jinja2'), ('Injectable PHP'), ('HelmTEXT'),
+    ('PythonStub'), ('GoTag'), ('JSON Lines'), ('PyTypeHint'), ('Angular HTML template (18.1+)'), ('JSUnicodeRegexp'), ('Razor'), ('CMake'),
+    ('HTML'), ('HtmlCompatible'), ('Go'), ('Angular2'), ('XHTML'), ('VueJS'), ('Apache Cassandra'), ('IBM Db2 iSeries'), ('SQL2016'),
+    ('exclude (GitExclude)'), ('ShaderLab'), ('.hgignore (HgIgnore)'), ('Angular HTML template'), ('YouTrack'), ('Markdown'), ('WerfYAML'), ('RELAX-NG'),
+    ('UXML'), ('Kotlin'), ('GDB'), ('Redis'), ('XPath2'), ('PostCSS'), ('Jupyter'), ('Twig'), ('JShell Snippet'), ('Go Template'),
+    ('SQLite'), ('PyFunctionTypeComment'), ('Angular SVG template (18.1+)'), ('HTTP Request'), ('Scmp'), ('Plain text'), ('H2'), ('Gradle Declarative Configuration'), ('RuleSet'), ('plan9_x86'), ('WebSymbolsEnabledLanguage'), ('Properties'), ('Asxx'), ('Vertica'), ('JVM'), ('ModuleMap'), ('C/C++'), ('Resx'), ('Blazor'), ('HSQLDB'), ('Cookie'), ('Generic SQL'), ('XsdRegExp'), ('SlnLaunchLanguage'), ('Dockerfile'), ('MySQL'), ('IL'), ('HelmYAML'), ('Terminal Prompt'), ('Requirements'), ('Apache Spark'), ('HttpClientHandlerJavaScriptDialect'), ('textmate'), ('QML'), ('GoTime'), ('F#'), ('PostgreSQL'), ('Rest language'), ('protobuf'), ('Oracle'), ('Cgo'), ('.dockerignore (DockerIgnore)'), ('JQL'), ('Manifest'), ('LLDB'), ('Makefile'), ('RegExp'), ('GoFuzzCorpus'), ('Cython'), ('Sass'), ('TOML'), ('Shell Script'), ('Ini'), ('Less'), ('CockroachDB'), ('Apache Derby'), ('GoDebug'), ('SolutionFile'), ('YAML'), ('ActionScript'), ('JSRegexp'), ('T4'), ('JavaScript'), ('Gherkin'), ('TerminalOutput'), ('SVG'), ('SPI'), ('Doxygen'), ('Notebook'), ('Apache Hive'), ('GithubExpressionLanguage'), ('PythonRegExp'),('unknown');
+
 
 INSERT INTO public.trigger_type (trigger_type_name) VALUES ('manual'), ('auto'), ('idle');
 

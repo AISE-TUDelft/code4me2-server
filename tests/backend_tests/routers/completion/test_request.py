@@ -48,6 +48,35 @@ class TestCompletionRequest:
 
         return _mock_get
 
+    @pytest.fixture
+    def completion_request(self):
+        """Create a fake completion request with deterministic values for reliable testing."""
+        # Generate a base fake request
+        fake_request = Queries.RequestCompletion.fake()
+
+        # Override critical fields that might be None to ensure consistent behavior
+        fake_request.context.file_name = (
+            "test_file.py"  # Ensure file_name is never None
+        )
+        fake_request.model_ids = [1, 2]  # Ensure we have valid model IDs
+        fake_request.store_context = True
+        fake_request.store_contextual_telemetry = True
+        fake_request.store_behavioral_telemetry = False
+
+        # Ensure contextual_telemetry has valid required fields
+        if fake_request.contextual_telemetry:
+            fake_request.contextual_telemetry.version_id = 6
+            fake_request.contextual_telemetry.trigger_type_id = 7
+            fake_request.contextual_telemetry.language_id = 6
+            fake_request.contextual_telemetry.document_char_length = 1
+
+        # Ensure behavioral_telemetry has valid fields
+        if fake_request.behavioral_telemetry:
+            fake_request.behavioral_telemetry.time_since_last_shown = 2
+            fake_request.behavioral_telemetry.time_since_last_accepted = 2
+
+        return fake_request
+
     def test_request_completion_success(self, client, completion_request):
         mock_app = client.mock_app
 

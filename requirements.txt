@@ -43,6 +43,11 @@ psycopg_binary~=3.2.1
 psycopg2-binary~=2.9.9
 
 alembic>=1.13.1
+
+pgvector~=0.2.4
+sentence-transformers>=2.6.0
+numpy>=1.26.2
+
 # -----------------------
 # Auth & Security
 # -----------------------
