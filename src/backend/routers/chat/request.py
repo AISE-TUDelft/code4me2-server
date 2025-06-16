@@ -8,6 +8,7 @@ from typing import Union
 
 from celery import chain, group
 from fastapi import APIRouter, Cookie, Depends
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 import celery_app.tasks.db_tasks as db_tasks
 import Queries
@@ -145,26 +146,14 @@ def request_chat_completion(
         multi_file_contexts = project_info.get("multi_file_contexts", {})
         multi_file_context_changes = project_info.get("multi_file_context_changes", {})
 
-        multi_file_context = ""
         # Aggregate other file contexts into the prefix if applicable
-        if multi_file_contexts:
-            other_files_context = []
-            for file_name, context in multi_file_contexts.items():
-                if file_name != chat_completion_request.context.file_name and (
-                    chat_completion_request.context.context_files == ["*"]
-                    or file_name in chat_completion_request.context.context_files
-                ):
-                    joined_context = "\n".join(context).strip()
-                    other_files_context.append(f"#{file_name}\n{joined_context}")
-
-            if other_files_context:
-                multi_file_context += "\n".join(other_files_context).strip() + "\n\n"
-                # completion_request.context.prefix = (
-                #     "Other files context:\n"
-                #     + "\n".join(other_files_context)
-                #     + "\n\n ONLY USE THE PREVIOUS LINES FOR CONTEXT, DO NOT REPEAT THEM IN YOUR RESPONSE!\n\n"
-                #     + (completion_request.context.prefix or "")
-                # )
+        if chat_completion_request.context.context_files:
+            multi_file_contexts = {
+                file_name: "\n".join(context)
+                for file_name, context in multi_file_contexts.items()
+                if file_name in chat_completion_request.context.context_files
+                or chat_completion_request.context.context_files == ["*"]
+            }
 
         # Prepare indexes of multi-file context changes counts
         multi_file_context_changes_indexes = {}
@@ -190,7 +179,7 @@ def request_chat_completion(
 
             # Get chat completion model
             chat_completion_model = completion_models.get_model(
-                model_name=str(model.model_name),
+                model_name=str(model.model_name), meta_data=str(model.meta_data)
             )
 
             if chat_completion_model is None:
@@ -205,9 +194,25 @@ def request_chat_completion(
                     message="Model is not a ChatCompletionModel",
                 )
 
+            multi_file_context_str = "\n".join(
+                f"#{file_name}\n{context}\n"
+                for file_name, context in multi_file_contexts.items()
+            )
+
             completion_result = chat_completion_model.invoke(
                 chat_completion_request.to_langchain_messages()
+                + [
+                    SystemMessage(
+                        content=(
+                            "Consider the following as the multi file contexts of the project and consider it for output generation as context:\n"
+                            f"{multi_file_context_str}\n\n"
+                            "Moreover the user has selected the following code so consider as the main part which should be changed or answered:\n"
+                            f"{chat_completion_request.context.selected_text}\n\n"
+                        )
+                    )
+                ]
             )
+
             local_t3 = time.perf_counter()
 
             logging.info(
@@ -254,7 +259,6 @@ def request_chat_completion(
         # Create necessary IDs (this it put here to ensure the same ids are used in the generation tasks)
         created_query_id = create_uuid()
 
-        # TODO: Consider adding multi file context to chat prefix before invoking
         with ThreadPoolExecutor(max_workers=config.thread_pool_max_workers) as executor:
             future_to_model = {
                 executor.submit(

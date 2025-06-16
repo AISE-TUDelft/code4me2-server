@@ -14,6 +14,8 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.outputs import LLMResult
 from langchain_core.prompts import PromptTemplate
 from pydantic import Field
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -22,6 +24,7 @@ from transformers import (
 )
 
 from Code4meV2Config import Code4meV2Config
+from database import crud
 
 
 class StopSequenceCriteria(StoppingCriteria):
@@ -57,6 +60,7 @@ class TemplateCompletionModel(BaseLLM):
     config: Code4meV2Config = Field(..., description="Configuration for the model")
     # model_lock: Any = Field(default_factory=threading.RLock, exclude=True)
     model_name: str = Field(..., description="Name of the model")
+    meta_data: dict = Field(..., description="Metadata for the model")
 
     @property
     def _llm_type(self) -> str:
@@ -115,6 +119,9 @@ class TemplateCompletionModel(BaseLLM):
         # Infer prompt_template from meta_data if needed
         try:
             meta_data = json.loads(meta_data)
+            assert (
+                "fim_template" in meta_data and "file_separator" in meta_data
+            ), "meta_data must contain 'fim_template' and 'file_separator' key"
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in meta_data: {e}")
 
@@ -128,6 +135,7 @@ class TemplateCompletionModel(BaseLLM):
             device=device,
             config=config,
             model_name=model_name,
+            meta_data=meta_data,
         )
 
     def _warmup(self):
@@ -184,6 +192,21 @@ class TemplateCompletionModel(BaseLLM):
 
         # Process each prompt with optimized generation
         for prompt in prompts:
+            if "multi_file_contexts" in prompt and prompt.get("multi_file_contexts"):
+                prompt["multi_file_contexts"] = (
+                    self.meta_data["separator"]
+                    + self.meta_data["separator"].join(
+                        "\n\n".join(
+                            [
+                                f"{file_name}\n{file_code}"
+                                for file_name, file_code in prompt[
+                                    "multi_file_contexts"
+                                ].items()
+                            ]
+                        )
+                    )
+                    + self.meta_data["separator"]
+                )
             # Generate text using the pipeline with inference_mode for speed
             formatted_prompt = self.prompt_template.format(**prompt)
             inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(
@@ -233,7 +256,21 @@ class TemplateCompletionModel(BaseLLM):
         if max_new_tokens is None:
             max_new_tokens = self.config.model_max_new_tokens
 
+        if "multi_file_context" in prompt and prompt.get("multi_file_context"):
+            prompt["multi_file_context"] = (
+                self.meta_data["file_separator"]
+                + self.meta_data["file_separator"].join(
+                    [
+                        f"#{file_name}\n{file_code}\n"
+                        for file_name, file_code in prompt["multi_file_context"].items()
+                    ]
+                )
+                + self.meta_data["file_separator"]
+            )
+            # prompt["multi_file_context"]+= "\nONLY USE THE PREVIOUS LINES FOR CONTEXT, DO NOT REPEAT THEM IN YOUR RESPONSE!\n\n"
+
         formatted_prompt = self.prompt_template.format(**prompt)
+        logging.info("Formatted prompt: %s", formatted_prompt)
         input_len = len(
             self.tokenizer.decode(
                 self.tokenizer(formatted_prompt)["input_ids"], skip_special_tokens=True
@@ -317,46 +354,64 @@ class TemplateCompletionModel(BaseLLM):
         return result
 
 
-# if __name__ == "__main__":
-#     test_code1 = {
-#         "prefix": """
-#             def quick_sort(arr):
-#                 if len(arr) <= 1:
-#                     return arr
-#                 pivot = arr[0]
-#                 left = []
-#                 right = []
-#             """,
-#         "suffix": """
-#                     if arr[i] < pivot:
-#                         left.append(arr[i])
-#                     else:
-#                         right.append(arr[i])
-#                 return quick_sort(left) + [pivot] + quick_sort(right)
-#             """,
-#     }
-#
-#     test_code2 = {
-#         "prefix": """
-#             # define a function to calculate the factorial of a number
-#             def factorial(n):
-#             """,
-#         "suffix": "",
-#     }
-#     meta_data = '{"fim_template":"{multi_file_context}<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>", "multi_file_context_template":"#{file_name}\\n{file_code}"}'
-#
-#     # Example usage
-#     t0 = time.perf_counter()
-#     print("Setting up the model...")
-#     # https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-base
-#     completion_model = TemplateCompletionModel.from_pretrained(
-#         meta_data=meta_data,
-#         model_name="deepseek-ai/deepseek-coder-1.3b-base",
-#         config= None
-#     )
-#     print("Model setup completed in {} seconds".format(time.perf_counter() - t0))
-#     print("Generating code...")
-#     t0 = time.perf_counter()
-#     result = completion_model.invoke(test_code2)
-#     print("Code generation completed in {} seconds".format(time.perf_counter() - t0))
-#     print(result)
+if __name__ == "__main__":
+    config = Code4meV2Config()
+    # Build PostgreSQL database URL from configuration
+    database_url = f"postgresql://{config.db_user}:{config.db_password}@{config.db_host}:{str(config.db_port)}/{config.db_name}"
+
+    # Create SQLAlchemy engine for database connections
+    engine = create_engine(database_url)
+
+    # Create scoped session factory for thread-safe database operations
+    db_session_factory = scoped_session(
+        sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    )
+    with db_session_factory() as db:
+        # Example usage of the TemplateCompletionModel
+        # Ensure the model exists in the database before invoking
+        print(crud.get_all_configs(db))
+        print(crud.get_all_models(db))
+        model = crud.get_model_by_id(db, 1)
+        TemplateCompletionModel.from_pretrained(model.model_name, model.meta_data, None)
+    # test_code1 = {
+    #     "prefix": """
+    #         def quick_sort(arr):
+    #             if len(arr) <= 1:
+    #                 return arr
+    #             pivot = arr[0]
+    #             left = []
+    #             right = []
+    #         """,
+    #     "suffix": """
+    #                 if arr[i] < pivot:
+    #                     left.append(arr[i])
+    #                 else:
+    #                     right.append(arr[i])
+    #             return quick_sort(left) + [pivot] + quick_sort(right)
+    #         """,
+    # }
+    #
+    # test_code2 = {
+    #     "prefix": """
+    #         # define a function to calculate the factorial of a number
+    #         def factorial(n):
+    #         """,
+    #     "suffix": "",
+    # }
+    # meta_data = '{"fim_template":"{multi_file_context}<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>", "multi_file_context_template":"#{file_name}\\n{file_code}"}'
+    #
+    # # Example usage
+    # t0 = time.perf_counter()
+    # print("Setting up the model...")
+    # # https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-base
+    # completion_model = TemplateCompletionModel.from_pretrained(
+    #     meta_data=meta_data,
+    #     model_name="deepseek-ai/deepseek-coder-1.3b-base",
+    #     config= None
+    # )
+    # print("Model setup completed in {} seconds".format(time.perf_counter() - t0))
+    # print("Generating code...")
+    # t0 = time.perf_counter()
+    # result = completion_model.invoke(test_code2)
+    # print("Code generation completed in {} seconds".format(time.perf_counter() - t0))
+    # print(result)
