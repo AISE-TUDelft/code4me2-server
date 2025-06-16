@@ -336,14 +336,3 @@ def request_completion(
             status_code=500,
             content=GenerateCompletionsError(),
         )
-
-
-if __name__ == "__main__":
-    req = Queries.RequestCompletion.fake(1)
-    app = App.get_instance()
-    request_completion(
-        req,
-        app,
-        session_token="valid_session_token",
-        project_token="valid_project_token",
-    )
