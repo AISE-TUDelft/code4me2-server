@@ -167,7 +167,9 @@ class App:
             for model in models:
                 logging.log(logging.INFO, f"Loading {model.model_name}...")
                 t0 = time.time()  # Start timing
-                self.__completion_models.load_model(str(model.model_name))
+                self.__completion_models.load_model(
+                    str(model.model_name), str(model.meta_data)
+                )
                 loading_time = time.time() - t0  # Calculate loading time
                 logging.log(
                     logging.INFO,

@@ -1,10 +1,11 @@
 # TODO: reformat
+import json
 import logging
 import os
 
 # import threading
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -24,23 +25,24 @@ from Code4meV2Config import Code4meV2Config
 
 
 class StopSequenceCriteria(StoppingCriteria):
-    """Custom stopping criteria for text generation based on specific sequences."""
+    """Custom stopping criteria that checks for stop sequences after the input length."""
 
-    def __init__(self, tokenizer, stop_sequences, device):
+    def __init__(self, tokenizer, stop_sequences, input_len, device):
         self.tokenizer = tokenizer
         self.stop_sequences = stop_sequences
+        self.input_len = input_len  # Length of input text
         self.device = device
-        self.buffer = ""
 
     def __call__(self, input_ids, scores, **kwargs):
-        # Get the generated text so far
-        generated_text = self.tokenizer.decode(input_ids[0])
+        # Decode full sequence
+        full_text = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
 
-        # Check if any stop sequence appears in the generated text
-        if self.stop_sequences:
-            for stop_seq in self.stop_sequences:
-                if stop_seq in generated_text:
-                    return True
+        # Only check for stop sequences after the input part
+        generated_text = full_text[self.input_len :]
+
+        for stop_seq in self.stop_sequences:
+            if stop_seq in generated_text:
+                return True
 
         return False
 
@@ -64,7 +66,7 @@ class TemplateCompletionModel(BaseLLM):
     def from_pretrained(
         cls,
         model_name: str,
-        prompt_template: str,
+        meta_data: str,
         config: Code4meV2Config,
         tokenizer_name: Optional[str] = None,
         **model_kwargs,
@@ -110,6 +112,13 @@ class TemplateCompletionModel(BaseLLM):
         param_device = next(model.parameters()).device
         logging.info(f"Model successfully moved to device: {param_device}")
 
+        # Infer prompt_template from meta_data if needed
+        try:
+            meta_data = json.loads(meta_data)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON in meta_data: {e}")
+
+        prompt_template = meta_data["fim_template"]
         prompt_template_obj = PromptTemplate.from_template(prompt_template)
         # model_lock = threading.RLock()
         return cls(
@@ -119,7 +128,6 @@ class TemplateCompletionModel(BaseLLM):
             device=device,
             config=config,
             model_name=model_name,
-            # model_lock=model_lock,
         )
 
     def _warmup(self):
@@ -226,7 +234,16 @@ class TemplateCompletionModel(BaseLLM):
             max_new_tokens = self.config.model_max_new_tokens
 
         formatted_prompt = self.prompt_template.format(**prompt)
-        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.device)
+        input_len = len(
+            self.tokenizer.decode(
+                self.tokenizer(formatted_prompt)["input_ids"], skip_special_tokens=True
+            )
+        )
+
+        # Tokenize input
+        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(
+            self.model.device
+        )
 
         # Measure generation time with perf_counter for higher precision
         start_time = time.perf_counter()
@@ -235,7 +252,7 @@ class TemplateCompletionModel(BaseLLM):
         stopping_criteria = None
         if stop_sequences:
             stop_criteria = StopSequenceCriteria(
-                self.tokenizer, stop_sequences, self.device
+                self.tokenizer, stop_sequences, input_len, self.device
             )
             stopping_criteria = StoppingCriteriaList([stop_criteria])
 
@@ -300,44 +317,46 @@ class TemplateCompletionModel(BaseLLM):
         return result
 
 
-if __name__ == "__main__":
-    test_code1 = {
-        "prefix": """
-            def quick_sort(arr):
-                if len(arr) <= 1:
-                    return arr
-                pivot = arr[0]
-                left = []
-                right = []
-            """,
-        "suffix": """
-                    if arr[i] < pivot:
-                        left.append(arr[i])
-                    else:
-                        right.append(arr[i])
-                return quick_sort(left) + [pivot] + quick_sort(right)
-            """,
-    }
-
-    test_code2 = {
-        "prefix": """
-            # define a function to calculate the factorial of a number
-            def factorial(n):
-            """,
-        "suffix": "",
-    }
-    prompt_template = """<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"""
-    # Example usage
-    t0 = time.perf_counter()
-    print("Setting up the model...")
-    # https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-base
-    completion_model = TemplateCompletionModel(
-        prompt_template=prompt_template,
-        model_name="deepseek-ai/deepseek-coder-1.3b-base",
-    )
-    print("Model setup completed in {} seconds".format(time.perf_counter() - t0))
-    print("Generating code...")
-    t0 = time.perf_counter()
-    result = completion_model.invoke(test_code2)
-    print("Code generation completed in {} seconds".format(time.perf_counter() - t0))
-    print(result)
+# if __name__ == "__main__":
+#     test_code1 = {
+#         "prefix": """
+#             def quick_sort(arr):
+#                 if len(arr) <= 1:
+#                     return arr
+#                 pivot = arr[0]
+#                 left = []
+#                 right = []
+#             """,
+#         "suffix": """
+#                     if arr[i] < pivot:
+#                         left.append(arr[i])
+#                     else:
+#                         right.append(arr[i])
+#                 return quick_sort(left) + [pivot] + quick_sort(right)
+#             """,
+#     }
+#
+#     test_code2 = {
+#         "prefix": """
+#             # define a function to calculate the factorial of a number
+#             def factorial(n):
+#             """,
+#         "suffix": "",
+#     }
+#     meta_data = '{"fim_template":"{multi_file_context}<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>", "multi_file_context_template":"#{file_name}\\n{file_code}"}'
+#
+#     # Example usage
+#     t0 = time.perf_counter()
+#     print("Setting up the model...")
+#     # https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-base
+#     completion_model = TemplateCompletionModel.from_pretrained(
+#         meta_data=meta_data,
+#         model_name="deepseek-ai/deepseek-coder-1.3b-base",
+#         config= None
+#     )
+#     print("Model setup completed in {} seconds".format(time.perf_counter() - t0))
+#     print("Generating code...")
+#     t0 = time.perf_counter()
+#     result = completion_model.invoke(test_code2)
+#     print("Code generation completed in {} seconds".format(time.perf_counter() - t0))
+#     print(result)

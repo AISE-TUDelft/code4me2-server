@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS public.model_name
 (
     model_id BIGSERIAL PRIMARY KEY,
     model_name text NOT NULL,
-    is_instruction_tuned BOOLEAN NOT NULL DEFAULT FALSE
+    is_instruction_tuned BOOLEAN NOT NULL DEFAULT FALSE,
+    meta_data text DEFAULT '{}'
 );
 
 -- Plugin version table
@@ -818,8 +819,8 @@ INSERT INTO public.config (config_data) VALUES ('config {
 }');
 
 INSERT INTO public.model_name (model_name, is_instruction_tuned) VALUES
-    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE),
-    ('bigcode/starcoder2-3b', FALSE),
+    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE,'{\"fim_template\":\"{multi_file_context}<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>\"}'),
+    ('bigcode/starcoder2-3b', FALSE,'{\"fim_template\":\"<repo_name>{repo_name}<file_sep>{multi_file_context}<file_sep><fim_prefix>{file_name}\\n{prefix}<fim_suffix>{suffix}<fim_middle><|endoftext|>\"}'),
     ('mistralai/Ministral-8B-Instruct-2410', TRUE);
 
 INSERT INTO public.programming_language (language_name) VALUES
