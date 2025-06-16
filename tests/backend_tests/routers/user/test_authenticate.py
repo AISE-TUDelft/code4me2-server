@@ -1,4 +1,3 @@
-import json
 import uuid
 from unittest.mock import MagicMock, patch
 
@@ -66,7 +65,7 @@ class TestAuthenticate:
             assert response.status_code == 200
             response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response_result == AuthenticateUserNormalPostResponse(
-                user=mock_user, config=json.loads(mock_config)
+                user=mock_user, config=mock_config
             )
             assert response.cookies.get("auth_token") == auth_token
 
@@ -115,7 +114,7 @@ class TestAuthenticate:
             assert response.status_code == 200
             response_result["user"]["password"] = mock_user.password.get_secret_value()
             assert response_result == AuthenticateUserOAuthPostResponse(
-                user=mock_user, config=json.loads(mock_config)
+                user=mock_user, config=mock_config
             )
             assert response.cookies.get("auth_token") == auth_token
 

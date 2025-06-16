@@ -73,8 +73,6 @@ def delete_user(
             )
 
         user_id = auth_info["user_id"]
-        logging.info(f"Deleting user with ID: {user_id}")
-
         # Check if user exists in the database
         found_user = crud.get_user_by_id(db_session, uuid.UUID(user_id))
         if not found_user:
@@ -84,7 +82,7 @@ def delete_user(
             )
 
         # Delete session/auth token data from Redis
-        redis_manager.delete("auth_token", auth_token, db_session)
+        redis_manager.delete("user_id", user_id, db_session)
 
         # Optionally delete all associated data
         if delete_data:

@@ -120,6 +120,7 @@ services:
       # CUDA/NVML specific environment variables
       - CUDA_VISIBLE_DEVICES=2
       - TORCH_CUDA_ARCH_LIST="8.6"
+      - CELERY_WORKER=true
     volumes:
       - .:/app
       - ${DATA_DIR}/hf:/app/hf_cache

@@ -95,6 +95,18 @@ class Code4meV2Config(BaseSettings):
         ge=1,
         description="Expiration time for session tokens in seconds",
     )
+    email_verification_token_expires_in_seconds: int = Field(
+        alias="EMAIL_VERIFICATION_TOKEN_EXPIRES_IN_SECONDS",
+        frozen=True,
+        ge=1,
+        description="Expiration time for email verification tokens in seconds",
+    )
+    reset_password_token_expires_in_seconds: int = Field(
+        alias="RESET_PASSWORD_TOKEN_EXPIRES_IN_SECONDS",
+        frozen=True,
+        ge=1,
+        description="Expiration time for reset password tokens in seconds",
+    )
 
     token_hook_activation_in_seconds: int = Field(
         alias="TOKEN_HOOK_ACTIVATION_IN_SECONDS",
@@ -370,6 +382,12 @@ class Code4meV2Config(BaseSettings):
         frozen=True,
         min_length=1,
         description="Base URL for email verification links",
+    )
+    reset_password_url: str = Field(
+        alias="RESET_PASSWORD_URL",
+        frozen=True,
+        min_length=1,
+        description="Base URL for reset password links",
     )
 
     def __repr__(self) -> str:

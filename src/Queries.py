@@ -1,4 +1,4 @@
-# TODO: Reformat
+# TODO: Reformat later
 import re
 from abc import ABC
 from enum import Enum
@@ -36,6 +36,14 @@ class CreateUser(QueryBase):
         ..., description="User's password (will be hashed)", min_length=8, max_length=50
     )
     config_id: int = Field(..., description="Configuration ID to use", ge=0)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        """
+        Normalize email to lowercase.
+        """
+        return v.strip().lower()
 
     @field_validator("password")
     @classmethod
@@ -82,6 +90,14 @@ class UpdateUser(QueryBase):
     config_id: Optional[int] = Field(None, description="New configuration ID", ge=1)
     verified: Optional[bool] = Field(None, description="Whether user verified or not")
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        """
+        Normalize email to lowercase.
+        """
+        return v.strip().lower() if v else v
+
     @field_validator("password")
     @classmethod
     def validate_password(cls, v: SecretStr) -> SecretStr:
@@ -116,6 +132,14 @@ class DeleteUser(QueryBase):
 class AuthenticateUserEmailPassword(QueryBase):
     email: EmailStr = Field(..., description="User's email address")
     password: SecretStr = Field(..., description="User's password")
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        """
+        Normalize email to lowercase.
+        """
+        return v.strip().lower()
 
 
 class AuthenticateUserOAuth(QueryBase):

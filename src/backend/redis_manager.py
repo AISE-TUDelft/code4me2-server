@@ -25,6 +25,8 @@ class RedisManager:
         port: int,
         auth_token_expires_in_seconds: int = 86400,
         session_token_expires_in_seconds: int = 3600,
+        email_verification_token_expires_in_seconds: int = 86400,
+        reset_password_token_expires_in_seconds: int = 900,
         token_hook_activation_in_seconds: int = 60,
         store_multi_file_context_on_db: bool = True,
     ):
@@ -32,6 +34,12 @@ class RedisManager:
         self.__redis_client = Redis(host=host, port=port, decode_responses=True)
         self.session_token_expires_in_seconds = session_token_expires_in_seconds
         self.auth_token_expires_in_seconds = auth_token_expires_in_seconds
+        self.email_verification_token_expires_in_seconds = (
+            email_verification_token_expires_in_seconds
+        )
+        self.reset_password_token_expires_in_seconds = (
+            reset_password_token_expires_in_seconds
+        )
         self.store_multi_file_context_on_db = store_multi_file_context_on_db
         self.token_hook_activation_in_seconds = token_hook_activation_in_seconds
 
@@ -48,14 +56,18 @@ class RedisManager:
         """
         Get expiration time in seconds for different token types.
         """
-        if type == "auth_token":
+        if type == "user_token":
+            return self.session_token_expires_in_seconds
+        elif type == "auth_token":
             return self.auth_token_expires_in_seconds
         elif type == "session_token":
             return self.session_token_expires_in_seconds
         elif type == "project_token":
             return -1  # project tokens do not expire by default
         elif type == "email_verification":
-            return 86400  # 24 hours expiration
+            return self.email_verification_token_expires_in_seconds
+        elif type == "password_reset":
+            return self.reset_password_token_expires_in_seconds
         else:
             return 3600  # default 1 hour expiration
 
@@ -63,7 +75,7 @@ class RedisManager:
         """
         Determine if expiration should be reset upon access for the token type.
         """
-        return type == "session_token"
+        return type in ["session_token", "user_token"]
 
     def __get_set_hook(self, type: str) -> bool:
         """
@@ -122,15 +134,24 @@ class RedisManager:
         Delete token and related data from Redis and persist relevant info to DB.
         Handles cascading deletes for related tokens.
         """
-        key = f"{type}:{token}"
 
+        key = f"{type}:{token}"
         if type == "auth_token":
             # Deleting auth token also deletes associated session token
             auth_dict = self.get(type, token)
             self.__redis_client.delete(key)
             self.__redis_client.delete(f"{type}_hook:{token}")
             if auth_dict:
-                session_token = auth_dict.get("session_token", "")
+                user_token = auth_dict.get("user_id")
+                if user_token:
+                    self.delete("user_token", user_token, db_session)
+
+        elif type == "user_token":
+            user_dict = self.get(type, token)
+            self.__redis_client.delete(key)
+            if user_dict:
+                # Delete session token associated with user token
+                session_token = user_dict.get("session_token")
                 if session_token:
                     self.delete("session_token", session_token, db_session)
 
@@ -146,6 +167,11 @@ class RedisManager:
             self.__redis_client.delete(f"{type}_hook:{token}")
 
             if session_dict:
+                # Remove user token if exists
+                user_token = session_dict.get("user_token")
+                if user_token:
+                    self.__redis_client.delete(f"user_token:{user_token}")
+
                 # Remove this session token from related project tokens
                 for project_token in session_dict.get("project_tokens", []):
                     project_dict = self.get("project_token", project_token)
@@ -155,13 +181,6 @@ class RedisManager:
                         project_dict["session_tokens"] = new_session_tokens
                         self.set("project_token", project_token, project_dict)
                     self.delete("project_token", project_token, db_session)
-
-                # Clear session token from associated auth token
-                auth_token = session_dict.get("auth_token", "")
-                auth_dict = self.get("auth_token", auth_token)
-                if auth_token and auth_dict:
-                    auth_dict["session_token"] = ""
-                    self.set("auth_token", auth_token, auth_dict)
 
         elif type == "project_token":
             project_dict = self.get(type, token)
@@ -197,6 +216,9 @@ class RedisManager:
                             )
                     # Delete project token from Redis
                     self.__redis_client.delete(key)
+        else:
+            # For other token types, just delete the key
+            self.__redis_client.delete(key)
 
     def listen_for_expired_keys(self, db_session: Session):
         """
@@ -227,7 +249,12 @@ class RedisManager:
         Clean all tokens from Redis and persist necessary data to DB.
         WARNING: Use with caution as it flushes the entire Redis DB.
         """
-        patterns = ["session_token:*", "project_token:*", "auth_token:*"]
+        patterns = [
+            "session_token:*",
+            "project_token:*",
+            "auth_token:*",
+            "user_token:*",
+        ]
         for pattern in patterns:
             # Iterate over all keys matching pattern and delete each
             for key in self.__redis_client.keys(pattern):  # type: ignore

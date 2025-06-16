@@ -16,7 +16,7 @@ from backend.Responses import (
     ResendVerificationEmailPostResponse,
     UserNotFoundError,
     VerifyUserError,
-    VerifyUserPostHTMLResponse,
+    VerifyUserGetHTMLResponse,
 )
 from celery_app.tasks.db_tasks import send_verification_email_task
 from Queries import UpdateUser
@@ -51,9 +51,8 @@ def check_verification(
     Returns:
     - JsonResponseWithStatus: User verification status or appropriate error message.
     """
-    # Get Redis client
     redis_client = app.get_redis_manager()
-
+    db_session = app.get_db_session()
     try:
         # Retrieve authentication information from Redis
         auth_info = redis_client.get("auth_token", auth_token)
@@ -68,7 +67,6 @@ def check_verification(
         user_id = auth_info["user_id"]
 
         # Retrieve user from database using user_id
-        db_session = app.get_db_session()
         user = crud.get_user_by_id(db_session, user_id)
 
         # Return 404 if user is not found
@@ -120,7 +118,7 @@ def resend_verification_email(
     """
     # Get Redis client
     redis_client = app.get_redis_manager()
-
+    db_session = app.get_db_session()
     try:
         # Retrieve user info using the provided auth token
         auth_info = redis_client.get("auth_token", auth_token)
@@ -135,7 +133,6 @@ def resend_verification_email(
         user_id = auth_info["user_id"]
 
         # Retrieve the user from the database
-        db_session = app.get_db_session()
         user = crud.get_user_by_id(db_session, user_id)
 
         # Return 404 if the user is not found
@@ -162,10 +159,10 @@ def resend_verification_email(
         )
 
 
-@router.post(
+@router.get(
     "/",
     responses={
-        "200": {"model": VerifyUserPostHTMLResponse},
+        "200": {"model": VerifyUserGetHTMLResponse},
         "401": {"model": InvalidOrExpiredVerificationToken},
         "404": {"model": UserNotFoundError},
         "422": {"model": ErrorResponse},
@@ -226,7 +223,7 @@ def verify_email(
 
         # Return success response in HTML format
         return HTMLResponseWithStatus(
-            content=VerifyUserPostHTMLResponse(), status_code=200
+            content=VerifyUserGetHTMLResponse(), status_code=200
         )
 
     except Exception as e:

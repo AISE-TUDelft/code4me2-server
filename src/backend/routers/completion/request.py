@@ -16,7 +16,6 @@ from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,
     GenerateCompletionsError,
-    InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
@@ -50,7 +49,6 @@ API endpoint to handle code completion requests.
         "200": {"model": CompletionPostResponse},
         "401": {
             "model": Union[
-                InvalidOrExpiredAuthToken,
                 InvalidOrExpiredSessionToken,
                 InvalidOrExpiredProjectToken,
             ]
@@ -78,9 +76,6 @@ def request_completion(
     - Queue database update tasks asynchronously using Celery.
     - Return completion results or appropriate error responses.
     """
-    overall_start = time.perf_counter()
-    logging.info(f"Completion request: {completion_request.dict()}")
-
     db_auth = app.get_db_session()
     redis_manager = app.get_redis_manager()
     completion_models = app.get_completion_models()
@@ -91,30 +86,13 @@ def request_completion(
 
         # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_info is None:
+        if session_info is None or not session_info.get("user_token"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
-
-        # Extract auth token from session info and validate
-        auth_token = session_info.get("auth_token")
-        if not auth_token:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-        auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
-            return JsonResponseWithStatus(
-                status_code=401, content=InvalidOrExpiredAuthToken()
-            )
-        user_id = auth_info.get("user_id")
-        if not user_id:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
+        user_id = session_info.get("user_token")
+        # Skipped checking if the user exists in the database
 
         # Validate project token
         project_info = redis_manager.get("project_token", project_token)
@@ -138,7 +116,7 @@ def request_completion(
             completion_request.context.prefix
             + "\n"
             + completion_request.context.suffix,
-            file_name=str(completion_request.context.file_name),
+            file_name=completion_request.context.file_name,
         )
         completion_request.context.prefix = redact_secrets(
             completion_request.context.prefix, secrets
@@ -234,7 +212,7 @@ def request_completion(
                 prompt_template=completion.Template.PREFIX_SUFFIX,
             )
             if completion_model is None:
-                return CompletionErrorItem(model_name=model)
+                return CompletionErrorItem(model_name=str(model.model_name))
 
             local_t2 = time.perf_counter()
             # Invoke the model with redacted prefix and suffix
@@ -320,7 +298,7 @@ def request_completion(
                 session_id=uuid.UUID(session_token),
                 project_id=uuid.UUID(project_token),
                 multi_file_context_changes_indexes=multi_file_context_changes_indexes,
-                total_serving_time=int((time.perf_counter() - overall_start) * 1000),
+                total_serving_time=int((time.perf_counter() - t0) * 1000),
                 server_version_id=app.get_config().server_version_id,
             ).dict(),
             created_query_id,
@@ -348,10 +326,7 @@ def request_completion(
         t6 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t6 - t5) * 1000:.2f}ms")
 
-        overall_end = time.perf_counter()
-        logging.info(
-            f"TOTAL serving time: {(overall_end - overall_start) * 1000:.2f}ms"
-        )
+        logging.info(f"TOTAL serving time: {(time.perf_counter() - t0) * 1000:.2f}ms")
 
         # Return successful completion response with data
         return JsonResponseWithStatus(

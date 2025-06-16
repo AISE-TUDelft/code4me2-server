@@ -1,4 +1,3 @@
-import json
 import logging
 import uuid
 from typing import Union
@@ -53,7 +52,7 @@ def acquire_auth_token(
         redis_manager.set(
             "auth_token",
             auth_token,
-            {"user_id": str(user_id), "session_token": ""},
+            {"user_id": str(user_id)},
             force_reset_exp=True,
         )
     return auth_token
@@ -92,10 +91,6 @@ def authenticate_user(
         JsonResponseWithStatus: Authenticated user info + auth token cookie,
         or an error response.
     """
-    logging.info(
-        f"Authenticating user ({user_to_authenticate.dict(hide_secrets=True)})"
-    )
-
     db_session = app.get_db_session()
     redis_manager = app.get_redis_manager()
     config = app.get_config()
@@ -135,7 +130,7 @@ def authenticate_user(
                 status_code=200,
                 content=AuthenticateUserOAuthPostResponse(
                     user=ResponseUser.model_validate(found_user),
-                    config=json.loads(str(config_data.config_data)),
+                    config=str(config_data.config_data),
                 ),
             )
             response_obj.set_cookie(
@@ -176,7 +171,7 @@ def authenticate_user(
                 status_code=200,
                 content=AuthenticateUserNormalPostResponse(
                     user=ResponseUser.model_validate(found_user),
-                    config=json.loads(str(config_data.config_data)),
+                    config=config_data.config_data,
                 ),
             )
             response_obj.set_cookie(

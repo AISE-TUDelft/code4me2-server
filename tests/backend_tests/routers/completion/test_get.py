@@ -66,7 +66,7 @@ class TestCompletionGet:
         mock_session = MagicMock()
         mock_session.get_session.return_value = {"user_id": "test_id"}
         mock_app.get_redis_manager.return_value = {
-            "session_token": {"auth_token": "auth123"},
+            "session_token": {"auth_token": "auth123", "user_token": "test_id"},
             "auth_token": {"user_id": "test_id"},
         }
 
@@ -105,7 +105,7 @@ class TestCompletionGet:
         mock_session = MagicMock()
         mock_session.get_session.return_value = {"user_id": "test_id"}
         mock_app.get_redis_manager.return_value = {
-            "session_token": {"auth_token": "auth123"},
+            "session_token": {"user_token": "test_id"},
             "auth_token": {"user_id": "test_id"},
         }
 

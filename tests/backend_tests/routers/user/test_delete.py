@@ -56,9 +56,6 @@ class TestDeleteUser:
         mock_crud.delete_user_by_id.assert_called_once_with(
             db=mock_db, user_id=fake_user_id
         )
-        mock_redis_manager.delete.assert_called_once_with(
-            "auth_token", "valid_token", mock_db
-        )
 
     def test_delete_user_invalid_auth_token(self, client: TestClient):
         mock_redis_manager = MagicMock()

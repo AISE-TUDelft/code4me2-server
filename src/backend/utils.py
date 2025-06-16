@@ -1,6 +1,6 @@
 import inspect
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, Union, get_args, get_origin
 from uuid import UUID
@@ -49,7 +49,7 @@ class SerializableBaseModel(BaseModel):
         hide_secrets=False,
         to_json_values=False,
         *args,
-        **kwargs
+        **kwargs,
     ) -> Dict[str, Any]:
         data = {}
         for field_name, value in self.__class__.model_fields.items():
@@ -229,3 +229,20 @@ def recursive_json_loads(obj):
         return [recursive_json_loads(item) for item in obj]
     else:
         return obj
+
+
+def format_expiry(seconds: int) -> str:
+    delta = timedelta(seconds=seconds)
+    minutes = delta.total_seconds() // 60
+    if minutes < 1:
+        return "less than a minute"
+    elif minutes == 1:
+        return "1 minute"
+    elif minutes < 60:
+        return f"{int(minutes)} minutes"
+    else:
+        hours = minutes // 60
+        remaining_minutes = int(minutes % 60)
+        if remaining_minutes == 0:
+            return f"{int(hours)} hour{'s' if hours > 1 else ''}"
+        return f"{int(hours)} hour{'s' if hours > 1 else ''} and {remaining_minutes} minute{'s' if remaining_minutes > 1 else ''}"

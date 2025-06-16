@@ -125,7 +125,7 @@ class TestUserVerificationEndpoints:
         client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
             "email_verification": None
         }.get(key)
-        response = client.post("/api/user/verify/?token=some_token")
+        response = client.get("/api/user/verify/?token=some_token")
         assert response.status_code == 401
         assert response.json() == InvalidOrExpiredVerificationToken()
 
@@ -137,7 +137,7 @@ class TestUserVerificationEndpoints:
         client.mock_app.get_db_session.return_value = MagicMock()
 
         with patch("database.crud.get_user_by_id", return_value=None):
-            response = client.post(f"/api/user/verify/?token={token}")
+            response = client.get(f"/api/user/verify/?token={token}")
             assert response.status_code == 404
             assert response.json() == UserNotFoundError()
 
@@ -153,12 +153,12 @@ class TestUserVerificationEndpoints:
 
         with patch("database.crud.get_user_by_id", return_value=user):
             with patch("database.crud.update_user") as mock_update:
-                response = client.post(f"/api/user/verify/?token={token}")
+                response = client.get(f"/api/user/verify/?token={token}")
                 assert response.status_code == 200
                 mock_update.assert_called_once()
 
     def test_verify_exception(self, client):
         client.mock_app.get_redis_manager().get.side_effect = Exception("Redis failure")
-        response = client.post("/api/user/verify/?token=abc")
+        response = client.get("/api/user/verify/?token=abc")
         assert response.status_code == 500
         assert response.json() == VerifyUserError()

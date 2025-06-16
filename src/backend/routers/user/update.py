@@ -10,6 +10,7 @@ Features:
 """
 
 import logging
+import uuid
 
 from fastapi import APIRouter, Cookie, Depends
 
@@ -24,6 +25,7 @@ from backend.Responses import (
     UpdateUserError,
     UpdateUserPutResponse,
     UserAlreadyExistsWithThisEmail,
+    UserNotFoundError,
 )
 from response_models import ResponseUser
 
@@ -36,6 +38,7 @@ router = APIRouter()
     responses={
         "201": {"model": UpdateUserPutResponse},
         "401": {"model": InvalidOrExpiredAuthToken},
+        "404": {"model": UserNotFoundError},
         "409": {"model": UserAlreadyExistsWithThisEmail},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -58,8 +61,6 @@ def update_user(
     Returns:
         JsonResponseWithStatus: Contains updated user data or error info.
     """
-    logging.info(f"Updating user: {user_to_update.dict()}")
-
     db_session = app.get_db_session()
     redis_manager = app.get_redis_manager()
 
@@ -75,6 +76,13 @@ def update_user(
             )
 
         user_id = auth_info["user_id"]
+        # Check if user exists in the database
+        found_user = crud.get_user_by_id(db_session, uuid.UUID(user_id))
+        if not found_user:
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=UserNotFoundError(),
+            )
 
         # Check for email conflict if email is being updated
         if user_to_update.email:

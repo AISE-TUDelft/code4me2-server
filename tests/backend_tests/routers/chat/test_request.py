@@ -8,7 +8,6 @@ import Queries
 from App import App
 from backend.Responses import (
     GenerateChatCompletionsError,
-    InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
 )
@@ -53,8 +52,8 @@ class TestChatCompletionRequest:
         mock_app = client.mock_app
         session_token = client.cookies.get("session_token")
         project_token = client.cookies.get("project_token")
-
-        session_data = {"auth_token": "auth-token", "project_tokens": [project_token]}
+        user_id = str(uuid.uuid4())
+        session_data = {"user_token": user_id, "project_tokens": [project_token]}
         auth_data = {"user_id": str(uuid.uuid4())}
         project_data = {"chat_histories": {}}
 
@@ -120,30 +119,14 @@ class TestChatCompletionRequest:
         assert response.status_code == 401
         assert response.json()["message"] == InvalidOrExpiredSessionToken().message
 
-    def test_invalid_auth_token(self, client, chat_completion_request):
-        mock_app = client.mock_app
-        session_data = {
-            "auth_token": "invalid",
-            "project_tokens": [client.cookies.get("project_token")],
-        }
-
-        mock_redis = MagicMock()
-        mock_redis.get.side_effect = lambda key, _: (
-            session_data if key == "session_token" else None
-        )
-        mock_app.get_redis_manager.return_value = mock_redis
-
-        response = client.post("/api/chat/request", json=chat_completion_request.dict())
-        assert response.status_code == 401
-        assert response.json()["message"] == InvalidOrExpiredAuthToken().message
-
     def test_invalid_project_token(self, client, chat_completion_request):
         mock_app = client.mock_app
+        user_id = str(uuid.uuid4())
         session_data = {
-            "auth_token": "auth-token",
+            "user_token": user_id,
             "project_tokens": [],
         }
-        auth_data = {"user_id": str(uuid.uuid4())}
+        auth_data = {"user_id": user_id}
 
         mock_redis = MagicMock()
         mock_redis.get.side_effect = lambda key, _: {
@@ -160,9 +143,9 @@ class TestChatCompletionRequest:
         mock_app = client.mock_app
         session_token = client.cookies.get("session_token")
         project_token = client.cookies.get("project_token")
-
-        session_data = {"auth_token": "auth", "project_tokens": [project_token]}
-        auth_data = {"user_id": str(uuid.uuid4())}
+        user_id = str(uuid.uuid4())
+        session_data = {"user_token": user_id, "project_tokens": [project_token]}
+        auth_data = {"user_id": user_id}
         project_data = {"chat_histories": {}}
 
         mock_redis = MagicMock()
@@ -189,9 +172,10 @@ class TestChatCompletionRequest:
         mock_app = client.mock_app
         session_token = client.cookies.get("session_token")
         project_token = client.cookies.get("project_token")
+        user_id = str(uuid.uuid4())
 
-        session_data = {"auth_token": "auth", "project_tokens": [project_token]}
-        auth_data = {"user_id": str(uuid.uuid4())}
+        session_data = {"user_token": user_id, "project_tokens": [project_token]}
+        auth_data = {"user_id": user_id}
         project_data = {"chat_histories": {}}
 
         mock_redis = MagicMock()

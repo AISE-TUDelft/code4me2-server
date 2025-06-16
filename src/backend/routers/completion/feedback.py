@@ -11,7 +11,6 @@ from backend.Responses import (
     ErrorResponse,
     FeedbackRecordingError,
     GenerationNotFoundError,
-    InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
@@ -31,7 +30,6 @@ router = APIRouter()
         "401": {
             "model": Union[
                 InvalidOrExpiredSessionToken,
-                InvalidOrExpiredAuthToken,
                 InvalidOrExpiredProjectToken,
             ]
         },
@@ -67,52 +65,32 @@ def submit_completion_feedback(
     - JsonResponseWithStatus: A response indicating success or describing errors,
       including authorization failures, missing records, or internal errors.
     """
-    logging.info(f"Completion feedback: {feedback}")
-
     db_session = app.get_db_session()
     redis_manager = app.get_redis_manager()
 
     try:
-        # Validate the session token and retrieve session info from Redis
+        # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_info is None:
+        if session_info is None or not session_info.get("user_token"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
+        user_id = session_info.get("user_token")
+        # Skipped checking if the user exists in the database
 
-        # Extract and validate auth token from session info
-        auth_token = session_info.get("auth_token")
-        if not auth_token:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-        auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredAuthToken(),
-            )
-        user_id = auth_info.get("user_id")
-        if not user_id:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
-        # Validate the project token and confirm it is linked to the session
+        # Validate project token
         project_info = redis_manager.get("project_token", project_token)
         if project_info is None:
             return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredProjectToken(),
+                status_code=401, content=InvalidOrExpiredProjectToken()
             )
+
+        # Ensure project token is linked to session
         session_projects = session_info.get("project_tokens", [])
         if project_token not in session_projects:
             return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredProjectToken(),
+                status_code=401, content=InvalidOrExpiredProjectToken()
             )
 
         # Retrieve the meta query and verify ownership by the current user

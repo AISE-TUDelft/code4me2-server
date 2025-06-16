@@ -1,3 +1,4 @@
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -47,7 +48,9 @@ class TestUpdateUser:
         mock_crud.get_user_by_email.return_value = None
 
         mock_redis_manager = MagicMock()
-        mock_redis_manager.get.return_value = {"user_id": fake_updated_user.user_id}
+        mock_redis_manager.get.return_value = {
+            "user_id": str(fake_updated_user.user_id)
+        }
 
         client.mock_app.get_db_session.return_value = MagicMock()
         client.mock_app.get_redis_manager.return_value = mock_redis_manager
@@ -93,7 +96,7 @@ class TestUpdateUser:
         mock_crud.get_user_by_email.return_value = existing_user
 
         mock_redis_manager = MagicMock()
-        mock_redis_manager.get.return_value = {"user_id": "authenticated-user-id"}
+        mock_redis_manager.get.return_value = {"user_id": str(uuid.uuid4())}
 
         client.mock_app.get_db_session.return_value = MagicMock()
         client.mock_app.get_redis_manager.return_value = mock_redis_manager
@@ -112,7 +115,7 @@ class TestUpdateUser:
         mock_crud.get_user_by_id_password.return_value = None
 
         mock_redis_manager = MagicMock()
-        mock_redis_manager.get.return_value = {"user_id": "user-id"}
+        mock_redis_manager.get.return_value = {"user_id": str(uuid.uuid4())}
 
         client.mock_app.get_db_session.return_value = MagicMock()
         client.mock_app.get_redis_manager.return_value = mock_redis_manager
@@ -135,7 +138,7 @@ class TestUpdateUser:
         mock_crud.get_user_by_email.return_value = None
 
         mock_redis_manager = MagicMock()
-        mock_redis_manager.get.return_value = {"user_id": "user-id"}
+        mock_redis_manager.get.return_value = {"user_id": str(uuid.uuid4())}
 
         client.mock_app.get_db_session.return_value = MagicMock()
         client.mock_app.get_redis_manager.return_value = mock_redis_manager

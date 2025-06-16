@@ -16,7 +16,6 @@ from backend import completion
 from backend.Responses import (
     ErrorResponse,
     GenerateChatCompletionsError,
-    InvalidOrExpiredAuthToken,
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
@@ -41,7 +40,6 @@ router = APIRouter()
         "200": {"model": ChatHistoryResponse},
         "401": {
             "model": Union[
-                InvalidOrExpiredAuthToken,
                 InvalidOrExpiredSessionToken,
                 InvalidOrExpiredProjectToken,
             ]
@@ -77,35 +75,16 @@ def request_chat_completion(
     config = app.get_config()
 
     try:
-        # Authentication checks
         t0 = time.perf_counter()
-
         # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_info is None:
+        if session_info is None or not session_info.get("user_token"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
-
-        # Get user_id and auth_token from session info
-        auth_token = session_info.get("auth_token")
-        if not auth_token:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-        auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
-            return JsonResponseWithStatus(
-                status_code=401, content=InvalidOrExpiredAuthToken()
-            )
-        user_id = auth_info.get("user_id")
-        if not user_id:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
+        user_id = session_info.get("user_token")
+        # Skipped checking if the user exists in the database
 
         # Validate project token
         project_info = redis_manager.get("project_token", project_token)
@@ -114,7 +93,7 @@ def request_chat_completion(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
 
-        # Verify project is linked to this session
+        # Ensure project token is linked to session
         session_projects = session_info.get("project_tokens", [])
         if project_token not in session_projects:
             return JsonResponseWithStatus(

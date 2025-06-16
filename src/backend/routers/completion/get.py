@@ -65,42 +65,19 @@ def get_completions_by_query(
     - 422, 429: Various client errors (validation or rate limiting).
     - 500: Internal server error while retrieving completions.
     """
-    logging.info(f"Getting completions for query: {query_id}")
     db_session = app.get_db_session()
     redis_manager = app.get_redis_manager()
 
     try:
-        # Validate session token and get session info from Redis
+        # Validate session token
         session_info = redis_manager.get("session_token", session_token)
-        if session_info is None:
+        if session_info is None or not session_info.get("user_token"):
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
-
-        # Extract auth token from session and verify
-        auth_token = session_info.get("auth_token")
-        if not auth_token:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
-        # Fetch auth info from Redis using auth token and get user ID
-        auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
-        user_id = auth_info.get("user_id")
-        if not user_id:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
+        user_id = session_info.get("user_token")
+        # Skipped checking if the user exists in the database
         # Check if the meta query exists in DB
         query = crud.get_meta_query_by_id(db_session, query_id)
         if not query:

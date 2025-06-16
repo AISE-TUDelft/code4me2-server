@@ -4,8 +4,6 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Tuple, Type, Union
 
-from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHash, VerifyMismatchError
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
@@ -13,19 +11,7 @@ import Queries as Queries
 from database import db_schemas
 from database.db_schemas import DEFAULT_USER_PREFERENCE
 from database.embedding_service import encode_text
-
-ph = PasswordHasher()
-
-
-def hash_password(password: str) -> str:
-    return ph.hash(password)
-
-
-def verify_password(hashed_password: str, input_password: str) -> bool:
-    try:
-        return ph.verify(hashed_password, input_password)
-    except (InvalidHash, VerifyMismatchError):
-        return False
+from utils import hash_password, verify_password
 
 
 # User

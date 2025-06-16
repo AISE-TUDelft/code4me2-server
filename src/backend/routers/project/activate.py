@@ -15,6 +15,9 @@ from backend.Responses import (
     InvalidOrExpiredProjectToken,
     InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
+    ProjectNotFoundError,
+    SessionNotFoundError,
+    UserNotFoundError,
 )
 
 router = APIRouter()
@@ -27,6 +30,11 @@ router = APIRouter()
         "200": {"model": ActivateProjectPostResponse},
         "401": {
             "model": Union[InvalidOrExpiredSessionToken, InvalidOrExpiredAuthToken]
+        },
+        "404": {
+            "model": Union[
+                UserNotFoundError, SessionNotFoundError, ProjectNotFoundError
+            ]
         },
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -59,19 +67,37 @@ def activate_project(
     db_session = app.get_db_session()
     config = app.get_config()
     try:
-        # Retrieve auth info from Redis using auth token
         auth_info = redis_manager.get("auth_token", auth_token)
-        if auth_info is None:
-            # Auth token invalid or expired
+        # Validate auth token presence and associated user_id
+        if auth_info is None or not auth_info.get("user_id"):
             return JsonResponseWithStatus(
-                status_code=401, content=InvalidOrExpiredAuthToken()
+                status_code=401,
+                content=InvalidOrExpiredAuthToken(),
             )
-        session_token = auth_info.get("session_token", "")
-        user_id = auth_info.get("user_id", "")
+
+        user_id = auth_info["user_id"]
+        if crud.get_user_by_id(db_session, uuid.UUID(user_id)) is None:
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=UserNotFoundError(),
+            )
+
+        user_info = redis_manager.get("user_token", user_id)
+        if user_info is None or not user_info.get("session_token"):
+            return JsonResponseWithStatus(
+                status_code=401,
+                content=InvalidOrExpiredSessionToken(),
+            )
+        session_token = user_info.get("session_token")
+        if crud.get_session_by_id(db_session, uuid.UUID(session_token)) is None:
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=SessionNotFoundError(),
+            )
         # Retrieve session info from Redis
         session_info = redis_manager.get("session_token", session_token)
-        # Validate session token existence
-        if not session_token or session_info is None:
+        # Validate session token presence and validity
+        if session_info is None:
             return JsonResponseWithStatus(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
@@ -103,6 +129,12 @@ def activate_project(
                         "multi_file_context_changes": existing_project.multi_file_context_changes,
                     },
                 )
+        elif crud.get_project_by_id(db_session, uuid.UUID(project_token)) is None:
+            # Project token invalid or expired
+            return JsonResponseWithStatus(
+                status_code=404,
+                content=ProjectNotFoundError(),
+            )
 
         # Add the project token to the session's project list in Redis
         session_projects = session_info.get("project_tokens", [])
