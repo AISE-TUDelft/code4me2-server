@@ -183,6 +183,8 @@ def activate_project(
             status_code=500,
             content=ActivateProjectError(),
         )
+    finally:
+        db_session.close()
 
 
 def __init__():

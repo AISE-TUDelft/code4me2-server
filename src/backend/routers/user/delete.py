@@ -104,6 +104,8 @@ def delete_user(
             status_code=500,
             content=DeleteUserError(),
         )
+    finally:
+        db_session.close()
 
 
 def __init__():

@@ -102,6 +102,8 @@ def request_password_reset(
             status_code=500,
             content=PasswordResetError(),
         )
+    finally:
+        db_session.close()
 
 
 @router.get(
@@ -260,3 +262,5 @@ def change_password(
             ),
             status_code=500,
         )
+    finally:
+        db_session.close()

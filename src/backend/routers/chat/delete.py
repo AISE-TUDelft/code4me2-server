@@ -124,3 +124,5 @@ def delete_chat(
             status_code=500,
             content=DeleteChatError(),
         )
+    finally:
+        db_session.close()

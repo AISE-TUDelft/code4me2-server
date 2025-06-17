@@ -121,6 +121,8 @@ def get_chat_history(
             status_code=500,
             content=RetrieveChatCompletionsError(),
         )
+    finally:
+        db_session.close()
 
 
 def __parse_chat_history(db_session, chat_history_data):

@@ -126,6 +126,8 @@ def update_user(
             status_code=500,
             content=UpdateUserError(),
         )
+    finally:
+        db_session.close()
 
 
 def __init__():

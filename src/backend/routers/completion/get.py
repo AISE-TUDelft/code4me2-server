@@ -131,3 +131,5 @@ def get_completions_by_query(
             status_code=500,
             content=RetrieveCompletionsError(),
         )
+    finally:
+        db_session.close()

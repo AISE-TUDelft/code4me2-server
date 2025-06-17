@@ -88,6 +88,8 @@ def check_verification(
             status_code=500,
             content=GetVerificationError(),
         )
+    finally:
+        db_session.close()
 
 
 @router.post(
@@ -157,6 +159,8 @@ def resend_verification_email(
         return JsonResponseWithStatus(
             status_code=500, content=ResendVerificationEmailError()
         )
+    finally:
+        db_session.close()
 
 
 @router.get(
@@ -233,3 +237,5 @@ def verify_email(
             status_code=500,
             content=VerifyUserError(),
         )
+    finally:
+        db_session.close()

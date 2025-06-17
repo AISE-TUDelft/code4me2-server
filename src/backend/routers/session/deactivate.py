@@ -107,3 +107,5 @@ def deactivate_session(
             status_code=500,
             content=DeactivateSessionError(),
         )
+    finally:
+        db_session.close()
