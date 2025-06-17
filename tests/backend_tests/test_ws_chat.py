@@ -1,8 +1,7 @@
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import WebSocket, WebSocketDisconnect
 
 # Assuming the router is in a module called chat_websocket_router

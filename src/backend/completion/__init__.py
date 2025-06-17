@@ -1,5 +1,4 @@
 import logging
-from enum import Enum
 from typing import Optional, Union
 
 from backend.completion.ChatCompletionModel import ChatCompletionModel

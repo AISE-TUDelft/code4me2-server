@@ -11,7 +11,6 @@ from fastapi import APIRouter, Cookie, Depends
 import celery_app.tasks.db_tasks as db_tasks
 import Queries
 from App import App
-from backend import completion
 from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,

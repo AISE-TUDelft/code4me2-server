@@ -17,7 +17,6 @@ def mock_model():
     ) as pipeline_mock, patch(
         "backend.completion.ChatCompletionModel.HuggingFacePipeline"
     ) as hf_pipeline_mock:
-
         # Set up mocks
         tokenizer_mock.return_value = MagicMock(pad_token=None, eos_token="</s>")
         model_mock.return_value = MagicMock(hf_device_map={"": "cuda:0"})

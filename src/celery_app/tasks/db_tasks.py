@@ -1,4 +1,3 @@
-# TODO: reformat
 """
 Celery tasks for database operations in Code4meV2.
 

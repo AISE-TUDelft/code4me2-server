@@ -1,11 +1,10 @@
-# TODO: reformat
 import json
 import logging
 import os
 
 # import threading
 import time
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -14,8 +13,6 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.outputs import LLMResult
 from langchain_core.prompts import PromptTemplate
 from pydantic import Field
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, scoped_session, sessionmaker
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -24,7 +21,6 @@ from transformers import (
 )
 
 from Code4meV2Config import Code4meV2Config
-from database import crud
 
 
 class StopSequenceCriteria(StoppingCriteria):

@@ -3,8 +3,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-import pytest
-
 # Add src to path
 current_dir = Path(__file__).parent
 project_root = current_dir.parent.parent

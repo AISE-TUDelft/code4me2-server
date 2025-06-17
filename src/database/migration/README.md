@@ -2,11 +2,10 @@
 
 ## Overview
 
-The Code4me V2 migration system uses a **hybrid approach** that combines the convenience of SQL initialization files with the power of Alembic migrations. This system automatically detects first-time setups and seamlessly transitions to standard migration workflows for ongoing development.
+The Code4me V2 migration system uses a **hybrid approach** that combines the convenience of SQL initialization files with the power of Alembic migrations. This system automatically
+detects first-time setups and seamlessly transitions to standard migration workflows for ongoing development.
 
 The instructions are mainly given with test_db to ensure safe experimentation.
-
-
 
 ## 🚀 Quick Start
 
@@ -24,6 +23,7 @@ python src/database/migration/migration_manager.py status
 ```
 
 **What happens during `init`:**
+
 1. Detects empty database
 2. Executes `init.sql` to create all tables and data
 3. Sets up Alembic tracking with baseline migration
@@ -64,16 +64,19 @@ python src/database/migration/migration_manager.py migrate
 ### Core Commands
 
 #### `init` - Initialize Migration System
+
 ```bash
 python src/database/migration/migration_manager.py init
 ```
 
 **Behavior:**
+
 - **Empty Database**: Runs `init_test.sql`, sets up tracking
-- **Existing Tables**: Sets up tracking only  
+- **Existing Tables**: Sets up tracking only
 - **Already Initialized**: No-op, reports status
 
 **Output Example:**
+
 ```
 Initializing migration system...
 Database is empty - initializing from init.sql...
@@ -85,16 +88,19 @@ Use 'create' to add new migrations, 'migrate' to apply them
 ```
 
 #### `create` - Create New Migration
+
 ```bash
 python src/database/migration/migration_manager.py create "Migration description"
 ```
 
 **Features:**
+
 - Auto-generates migration from model changes
 - Creates empty migration for manual changes
 - Ensures system is initialized first
 
 **Generated Migration Example:**
+
 ```python
 """Add user last_login column
 
@@ -121,31 +127,37 @@ def downgrade() -> None:
 ```
 
 #### `migrate` - Apply Migrations
+
 ```bash
 python src/database/migration/migration_manager.py migrate
 ```
 
 **Behavior:**
+
 - Ensures system is initialized
 - Applies all pending migrations
 - Reports progress and errors
 
 #### `current` - Show Current State
+
 ```bash
 python src/database/migration/migration_manager.py current
 ```
 
 **Output Example:**
+
 ```
 abc123def456 (head)
 ```
 
 #### `history` - Show Migration History
+
 ```bash
 python src/database/migration/migration_manager.py history
 ```
 
 **Output Example:**
+
 ```
 def456abc123 -> abc123def456 (head), Add user last_login column
 123456abcdef -> def456abc123, Baseline migration from init_test.sql
@@ -153,11 +165,13 @@ def456abc123 -> abc123def456 (head), Add user last_login column
 ```
 
 #### `status` - Detailed System Status
+
 ```bash
 python src/database/migration/migration_manager.py status
 ```
 
 **Output Example:**
+
 ```
 Migration System Status
 ========================================
@@ -169,13 +183,12 @@ Current version: abc123def456
 ```
 
 #### `reset` - Reset Database (Destructive)
+
 ```bash
 python src/database/migration/migration_manager.py reset
 ```
 
 **Warning:** This drops all data and recreates the database from scratch.
-
-
 
 ### 1. Adding a New Column
 
@@ -238,8 +251,8 @@ docker-compose run --rm backend python run_tests.py
 ### Recovery Procedures
 
 #### Complete Reset (Development Only)
+
 ```bash
 # WARNING: This destroys all data!
 python src/database/migration/migration_manager.py reset
 ```
-
