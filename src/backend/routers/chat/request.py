@@ -198,19 +198,34 @@ def request_chat_completion(
                 f"#{file_name}\n{context}\n"
                 for file_name, context in multi_file_contexts.items()
             )
-            chat_completion_request.messages[0][1] += (
-                "Consider the following as the multi file contexts of the project and consider it for output generation as context:\n"
-                f"{multi_file_context_str}\n\n"
-            )
-            if chat_completion_request.context.selected_text:
-                chat_completion_request.messages[0][1] += (
-                    "Moreover the user has selected the following code so consider as the main part which should be changed or answered:\n"
-                    f"{chat_completion_request.context.selected_text}\n\n"
-                )
+
+            # Create a mutable copy of the messages list
+            messages_copy = []
+            for i, (role, content) in enumerate(chat_completion_request.messages):
+                if i == 0:  # Modify the first message
+                    enhanced_content = content + (
+                        "Consider the following as the multi file contexts of the project and consider it for output generation as context:\n"
+                        f"{multi_file_context_str}\n\n"
+                    )
+                    if chat_completion_request.context.selected_text:
+                        enhanced_content += (
+                            "Moreover the user has selected the following code so consider as the main part which should be changed or answered:\n"
+                            f"{chat_completion_request.context.selected_text}\n\n"
+                        )
+                    messages_copy.append((role, enhanced_content))
+                else:
+                    messages_copy.append((role, content))
+
+            # Temporarily replace the messages for this model's invocation
+            original_messages = chat_completion_request.messages
+            chat_completion_request.messages = messages_copy
 
             completion_result = chat_completion_model.invoke(
                 chat_completion_request.to_langchain_messages()
             )
+
+            # Restore the original messages
+            chat_completion_request.messages = original_messages
 
             local_t3 = time.perf_counter()
 
