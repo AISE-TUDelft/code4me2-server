@@ -213,7 +213,7 @@ def request_chat_completion(
                     messages_copy.append((role, enhanced_content))
                 else:
                     messages_copy.append((role, content))
-
+            logging.info(f"The messages considered by the chat:\n{messages_copy}")
             # Temporarily replace the messages for this model's invocation
             original_messages = chat_completion_request.messages
             chat_completion_request.messages = messages_copy
