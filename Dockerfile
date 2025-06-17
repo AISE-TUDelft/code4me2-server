@@ -4,6 +4,9 @@ FROM nvidia/cuda:12.6.0-runtime-ubuntu20.04
 # as the official image is based on ubuntu, we need to update the package list
 # and install some dependencies
 RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    build-essential \
     wget \
     libnvidia-ml-dev \
     software-properties-common \
