@@ -264,7 +264,8 @@ class TemplateCompletionModel(BaseLLM):
                 + self.meta_data["file_separator"]
             )
             # prompt["multi_file_context"]+= "\nONLY USE THE PREVIOUS LINES FOR CONTEXT, DO NOT REPEAT THEM IN YOUR RESPONSE!\n\n"
-
+        if prompt["multi_file_context"] == {}:
+            prompt["multi_file_context"] = ""
         formatted_prompt = self.prompt_template.format(**prompt)
         logging.info("Formatted prompt: %s", formatted_prompt)
         input_len = len(
@@ -272,10 +273,9 @@ class TemplateCompletionModel(BaseLLM):
                 self.tokenizer(formatted_prompt)["input_ids"], skip_special_tokens=True
             )
         )
-
         # Tokenize input
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(
-            self.model.device
+            self.model.device, dtype=torch.bfloat16
         )
 
         # Measure generation time with perf_counter for higher precision

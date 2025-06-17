@@ -202,9 +202,12 @@ def request_chat_completion(
             for i, (role, content) in enumerate(chat_completion_request.messages):
                 if i == 0:  # Modify the first message
                     enhanced_content = content + (
-                        "Consider the following as the multi file contexts of the project and consider it for output generation as context:\n"
+                        ". Consider the following as the multi file contexts of the project and consider it for output generation as context:\n"
                         f"{multi_file_context_str}\n\n"
+                        + ". Also the following are the prefix and suffix of where the users cursor is right now on the code:\n"
+                        f"PREFIX: {chat_completion_request.context.prefix}\n\nSUFFIX: {chat_completion_request.context.suffix}\n\n"
                     )
+
                     if chat_completion_request.context.selected_text:
                         enhanced_content += (
                             "Moreover the user has selected the following code so consider as the main part which should be changed or answered:\n"
