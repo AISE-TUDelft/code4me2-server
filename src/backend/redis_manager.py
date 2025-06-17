@@ -225,26 +225,32 @@ class RedisManager:
         Listen for Redis key expiration events on token hooks and delete expired tokens accordingly.
         Persist expired session or auth tokens into DB.
         """
-        with session_factory() as db_session:
-            pubsub = self.__redis_client.pubsub()
-            pubsub.psubscribe("__keyevent@0__:expired")
-            logging.info("Listening for expired Redis keys...")
+        pubsub = self.__redis_client.pubsub()
+        pubsub.psubscribe("__keyevent@0__:expired")
+        logging.info("Listening for expired Redis keys...")
 
-            for message in pubsub.listen():
-                if message["type"] == "pmessage":
-                    expired_key = message["data"]
-                    logging.info(f"Key {expired_key} expired in redis")
-                    token = expired_key.split(":")[1]
-                    try:
-                        if expired_key.startswith("session_token_hook:"):
-                            self.delete("session_token", token, db_session)
-                        elif expired_key.startswith("auth_token_hook:"):
-                            self.delete("auth_token", token, db_session)
-                    except Exception as e:
-                        logging.error(
-                            f"Exception occurred when trying to expire {expired_key} in redis: {e}"
-                        )
-            db_session.close()
+        for message in pubsub.listen():
+            if message["type"] == "pmessage":
+                expired_key = message["data"]
+                logging.info(f"Key {expired_key} expired in redis")
+                token = expired_key.split(":")[1]
+                try:
+                    if expired_key.startswith("session_token_hook:"):
+                        with session_factory() as db_session:
+                            try:
+                                self.delete("session_token", token, db_session)
+                            finally:
+                                db_session.close()
+                    elif expired_key.startswith("auth_token_hook:"):
+                        with session_factory() as db_session:
+                            try:
+                                self.delete("auth_token", token, db_session)
+                            finally:
+                                db_session.close()
+                except Exception as e:
+                    logging.error(
+                        f"Exception occurred when trying to expire {expired_key} in redis: {e}"
+                    )
 
     def cleanup(self, db_session: Session):
         """
