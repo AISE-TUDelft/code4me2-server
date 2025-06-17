@@ -87,6 +87,7 @@ class TemplateCompletionModel(BaseLLM):
             model_name,
             cache_dir=config.model_cache_dir,
             trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
             **model_kwargs,
         )
         model.eval()
@@ -275,7 +276,7 @@ class TemplateCompletionModel(BaseLLM):
         )
         # Tokenize input
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(
-            self.model.device, dtype=torch.bfloat16
+            self.model.device
         )
 
         # Measure generation time with perf_counter for higher precision
