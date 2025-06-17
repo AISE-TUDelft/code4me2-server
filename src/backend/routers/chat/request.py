@@ -8,6 +8,7 @@ from typing import Union
 
 from celery import chain, group
 from fastapi import APIRouter, Cookie, Depends
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 import celery_app.tasks.db_tasks as db_tasks
 import Queries
@@ -116,6 +117,55 @@ def request_chat_completion(
             chat_completion_request.context.suffix, secrets
         )
 
+        # Prepare tasks based on user preferences
+        created_context_id = None
+        add_context_task = None
+        if chat_completion_request.store_context:
+            created_context_id = create_uuid()
+            add_context_task = db_tasks.add_context_task.si(
+                chat_completion_request.context.dict(), created_context_id
+            )
+        created_contextual_telemetry_id = None
+        add_contextual_telemetry_task = None
+        if chat_completion_request.store_contextual_telemetry:
+            created_contextual_telemetry_id = create_uuid()
+            add_contextual_telemetry_task = db_tasks.add_contextual_telemetry_task.si(
+                chat_completion_request.contextual_telemetry.dict(),
+                created_contextual_telemetry_id,
+            )
+        created_behavioral_telemetry_id = None
+        add_behavioral_telemetry_task = None
+        if chat_completion_request.store_behavioral_telemetry:
+            created_behavioral_telemetry_id = create_uuid()
+            add_behavioral_telemetry_task = db_tasks.add_behavioral_telemetry_task.si(
+                chat_completion_request.behavioral_telemetry.dict(),
+                created_behavioral_telemetry_id,
+            )
+
+        # Retrieve multi-file contexts and changes from project info
+        multi_file_contexts = project_info.get("multi_file_contexts", {})
+        multi_file_context_changes = project_info.get("multi_file_context_changes", {})
+
+        # Aggregate other file contexts into the prefix if applicable
+        if chat_completion_request.context.context_files:
+            multi_file_contexts = {
+                file_name: "\n".join(context)
+                for file_name, context in multi_file_contexts.items()
+                if file_name in chat_completion_request.context.context_files
+                or chat_completion_request.context.context_files == ["*"]
+            }
+
+        # Prepare indexes of multi-file context changes counts
+        multi_file_context_changes_indexes = {}
+        if multi_file_context_changes:
+            multi_file_context_changes_indexes = {
+                file_name: len(changes)
+                for file_name, changes in multi_file_context_changes.items()
+            }
+
+        t2 = time.perf_counter()
+        logging.info(f"Multi-file context processing took {(t2 - t1) * 1000:.2f}ms")
+
         # Process chat completion
         chat_completions = []
         add_generation_tasks = []
@@ -129,7 +179,7 @@ def request_chat_completion(
 
             # Get chat completion model
             chat_completion_model = completion_models.get_model(
-                model_name=str(model.model_name),
+                model_name=str(model.model_name), meta_data=str(model.meta_data)
             )
 
             if chat_completion_model is None:
@@ -144,9 +194,24 @@ def request_chat_completion(
                     message="Model is not a ChatCompletionModel",
                 )
 
+            multi_file_context_str = "\n".join(
+                f"#{file_name}\n{context}\n"
+                for file_name, context in multi_file_contexts.items()
+            )
+            chat_completion_request.messages[0][1] += (
+                "Consider the following as the multi file contexts of the project and consider it for output generation as context:\n"
+                f"{multi_file_context_str}\n\n"
+            )
+            if chat_completion_request.context.selected_text:
+                chat_completion_request.messages[0][1] += (
+                    "Moreover the user has selected the following code so consider as the main part which should be changed or answered:\n"
+                    f"{chat_completion_request.context.selected_text}\n\n"
+                )
+
             completion_result = chat_completion_model.invoke(
                 chat_completion_request.to_langchain_messages()
             )
+
             local_t3 = time.perf_counter()
 
             logging.info(
@@ -188,12 +253,11 @@ def request_chat_completion(
             )
 
         # Process models in parallel
-        t4 = time.perf_counter()
+        t3 = time.perf_counter()
 
         # Create necessary IDs (this it put here to ensure the same ids are used in the generation tasks)
         created_query_id = create_uuid()
 
-        # TODO: Consider adding multi file context to chat prefix before invoking
         with ThreadPoolExecutor(max_workers=config.thread_pool_max_workers) as executor:
             future_to_model = {
                 executor.submit(
@@ -212,36 +276,9 @@ def request_chat_completion(
                             message="Model completion failed",
                         )
                     )
-        t5 = time.perf_counter()
-        logging.info(f"Model completion (threaded) took {(t5 - t4) * 1000:.2f}ms")
+        t4 = time.perf_counter()
+        logging.info(f"Model completion (threaded) took {(t4 - t3) * 1000:.2f}ms")
 
-        # Celery task preparation
-        t6 = time.perf_counter()
-
-        # Prepare tasks based on user preferences
-        created_context_id = None
-        add_context_task = None
-        if chat_completion_request.store_context:
-            created_context_id = create_uuid()
-            add_context_task = db_tasks.add_context_task.si(
-                chat_completion_request.context.dict(), created_context_id
-            )
-        created_contextual_telemetry_id = None
-        add_contextual_telemetry_task = None
-        if chat_completion_request.store_contextual_telemetry:
-            created_contextual_telemetry_id = create_uuid()
-            add_contextual_telemetry_task = db_tasks.add_contextual_telemetry_task.si(
-                chat_completion_request.contextual_telemetry.dict(),
-                created_contextual_telemetry_id,
-            )
-        created_behavioral_telemetry_id = None
-        add_behavioral_telemetry_task = None
-        if chat_completion_request.store_behavioral_telemetry:
-            created_behavioral_telemetry_id = create_uuid()
-            add_behavioral_telemetry_task = db_tasks.add_behavioral_telemetry_task.si(
-                chat_completion_request.behavioral_telemetry.dict(),
-                created_behavioral_telemetry_id,
-            )
         # check if the content of any of the chat completions contains a [Title], [/Title] tag pair
         title_found = None
         for completion_item in chat_completions:
@@ -296,6 +333,7 @@ def request_chat_completion(
                 total_serving_time=total_serving_time,
                 server_version_id=app.get_config().server_version_id,
                 web_enabled=chat_completion_request.web_enabled,
+                multi_file_context_changes_indexes=multi_file_context_changes_indexes,
             ).dict(),
             created_query_id,
         )
@@ -320,8 +358,8 @@ def request_chat_completion(
             group(*add_generation_tasks),
         ).apply_async(queue="db")
 
-        t7 = time.perf_counter()
-        logging.info(f"Celery task prep and queuing took {(t7 - t6) * 1000:.2f}ms")
+        t5 = time.perf_counter()
+        logging.info(f"Celery task prep and queuing took {(t5 - t4) * 1000:.2f}ms")
 
         overall_end = time.perf_counter()
         logging.info(

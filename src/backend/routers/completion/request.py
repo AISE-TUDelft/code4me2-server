@@ -151,36 +151,26 @@ def request_completion(
                 completion_request.behavioral_telemetry.dict(),
                 created_behavioral_telemetry_id,
             )
-
+        created_query_id = create_uuid()
         t3 = time.perf_counter()
         logging.info(
             f"Preparing celery tasks based on user preferences took {(t3 - t2) * 1000:.2f}ms"
         )
 
+        # user_id = str(uuid.uuid4())
+        # project_info = {"multi_file_contexts": {"main.py":["sdfdf"], "module2.py":["werewr"]}, "multi_file_context_changes": {}}
         # Retrieve multi-file contexts and changes from project info
         multi_file_contexts = project_info.get("multi_file_contexts", {})
         multi_file_context_changes = project_info.get("multi_file_context_changes", {})
 
-        created_query_id = create_uuid()
-
-        # Aggregate other file contexts into the prefix if applicable
-        if multi_file_contexts:
-            other_files_context = []
-            for file_name, context in multi_file_contexts.items():
-                if file_name != completion_request.context.file_name and (
-                    completion_request.context.context_files == ["*"]
-                    or file_name in completion_request.context.context_files
-                ):
-                    joined_context = "\n".join(context).strip()
-                    other_files_context.append(f"#{file_name}\n{joined_context}")
-
-            if other_files_context:
-                completion_request.context.prefix = (
-                    "Other files context:\n"
-                    + "\n".join(other_files_context)
-                    + "\n\n ONLY USE THE PREVIOUS LINES FOR CONTEXT, DO NOT REPEAT THEM IN YOUR RESPONSE!\n\n"
-                    + (completion_request.context.prefix or "")
-                )
+        # Filter to only include relevant multi file contexts
+        if completion_request.context.context_files:
+            multi_file_contexts = {
+                file_name: "\n".join(context)
+                for file_name, context in multi_file_contexts.items()
+                if file_name in completion_request.context.context_files
+                or completion_request.context.context_files == ["*"]
+            }
 
         # Prepare indexes of multi-file context changes counts
         multi_file_context_changes_indexes = {}
@@ -209,17 +199,17 @@ def request_completion(
             # Retrieve completion model instance
             completion_model = completion_models.get_model(
                 model_name=str(model.model_name),
-                prompt_template=completion.Template.PREFIX_SUFFIX,
+                meta_data=str(model.meta_data),
             )
             if completion_model is None:
                 return CompletionErrorItem(model_name=str(model.model_name))
-
             local_t2 = time.perf_counter()
             # Invoke the model with redacted prefix and suffix
             completion_result = completion_model.invoke(
                 {
                     "prefix": completion_request.context.prefix,
                     "suffix": completion_request.context.suffix,
+                    "multi_file_context": multi_file_contexts,
                 },
                 stop_sequences=completion_request.stop_sequences,
             )

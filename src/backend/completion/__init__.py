@@ -7,14 +7,6 @@ from backend.completion.TemplateCompletionModel import TemplateCompletionModel
 from Code4meV2Config import Code4meV2Config
 
 
-class Template(Enum):
-    """
-    Enum for model prompt templates. Currently supports FIM-style (Fill-in-the-Middle).
-    """
-
-    PREFIX_SUFFIX = """<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"""
-
-
 class CompletionModels:
     """
     Singleton class responsible for managing and caching model instances used for code completion.
@@ -48,7 +40,7 @@ class CompletionModels:
     def load_model(
         self,
         model_name: str,
-        prompt_template: Template = Template.PREFIX_SUFFIX,
+        meta_data: str,
     ) -> None:
         """
         Loads a model into memory and caches it using the specified template.
@@ -60,7 +52,7 @@ class CompletionModels:
         key = (
             f"{model_name}:instruct"
             if "instruct" in model_name.lower()
-            else f"{model_name}:{prompt_template.value}"
+            else f"{model_name}:{meta_data}"
         )
 
         if key in self.__models:
@@ -84,19 +76,17 @@ class CompletionModels:
                 # Load a fill-in-the-middle (template) model
                 self.__models[key] = TemplateCompletionModel.from_pretrained(
                     model_name=model_name,
-                    prompt_template=prompt_template.value,
+                    meta_data=meta_data,
                     config=self.__config,
                 )
         except Exception as e:
             logging.error(e)
             logging.error(
-                f"Failed to load model '{model_name}' with template '{prompt_template.value}'"
+                f"Failed to load model '{model_name}' with meta data'{meta_data}'"
             )
 
     def get_model(
-        self,
-        model_name: str,
-        prompt_template: Template = Template.PREFIX_SUFFIX,
+        self, model_name: str, meta_data: str
     ) -> Optional[Union[TemplateCompletionModel, ChatCompletionModel]]:
         """
         Retrieves a model instance. Loads and caches it if not already loaded.
@@ -111,12 +101,12 @@ class CompletionModels:
         key = (
             f"{model_name}:instruct"
             if "instruct" in model_name.lower()
-            else f"{model_name}:{prompt_template.value}"
+            else f"{model_name}:{meta_data}"
         )
 
         if key in self.__models:
             return self.__models[key]
 
         logging.info(f"Model {key} not preloaded. Loading now...")
-        self.load_model(model_name=model_name, prompt_template=prompt_template)
+        self.load_model(model_name=model_name, meta_data=meta_data)
         return self.__models.get(key)

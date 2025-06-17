@@ -65,19 +65,26 @@ def update_multi_file_context_in_session(
             updated_context = updated_contexts[file][:]
 
         for change in context_changes:
-            if change.change_type == ContextChangeType.update:
-                # Replace lines in the specified range
-                updated_context[change.start_line : change.end_line] = change.new_lines
-            elif change.change_type == ContextChangeType.insert:
-                # Insert new lines at start_line
-                updated_context[change.start_line : change.start_line] = (
-                    change.new_lines
+            try:
+                if change.change_type == ContextChangeType.update:
+                    # Replace lines in the specified range
+                    updated_context[change.start_line : change.end_line] = (
+                        change.new_lines
+                    )
+                elif change.change_type == ContextChangeType.insert:
+                    # Insert new lines at start_line
+                    updated_context[change.start_line : change.start_line] = (
+                        change.new_lines
+                    )
+                elif change.change_type == ContextChangeType.remove:
+                    # Remove lines in the specified range (clamped to length)
+                    del updated_context[
+                        change.start_line : min(change.end_line, len(updated_context))
+                    ]
+            except IndexError:
+                logging.error(
+                    f"IndexError while applying change to file '{file}': {change}"
                 )
-            elif change.change_type == ContextChangeType.remove:
-                # Remove lines in the specified range (clamped to length)
-                del updated_context[
-                    change.start_line : min(change.end_line, len(updated_context))
-                ]
 
         if updated_context:
             updated_contexts[file] = updated_context

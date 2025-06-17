@@ -90,7 +90,7 @@ def model_instance(mock_model_components, dummy_config):
 def test_stop_sequence_criteria_triggers():
     tokenizer = MagicMock()
     tokenizer.decode.return_value = "Hello stop here"
-    stop_criteria = StopSequenceCriteria(tokenizer, ["stop"], "cpu")
+    stop_criteria = StopSequenceCriteria(tokenizer, ["stop"], 0, "cpu")
     input_ids = torch.tensor([[1, 2, 3]])
     scores = torch.tensor([[0.1]])
     assert stop_criteria(input_ids, scores)
@@ -99,7 +99,7 @@ def test_stop_sequence_criteria_triggers():
 def test_stop_sequence_criteria_does_not_trigger():
     tokenizer = MagicMock()
     tokenizer.decode.return_value = "This is fine"
-    stop_criteria = StopSequenceCriteria(tokenizer, ["stop"], "cpu")
+    stop_criteria = StopSequenceCriteria(tokenizer, ["stop"], 0, "cpu")
     input_ids = torch.tensor([[1, 2, 3]])
     scores = torch.tensor([[0.1]])
     assert not stop_criteria(input_ids, scores)
