@@ -21,7 +21,7 @@ Version: 1.0.0
 """
 
 import os
-from typing import Dict
+from typing import Dict, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -337,6 +337,12 @@ class Code4meV2Config(BaseSettings):
         default=True,
         frozen=True,
         description="Perform model warmup runs to optimize performance",
+    )
+    model_quantization: Optional[str] = Field(
+        alias="MODEL_QUANTIZATION",
+        default=None,
+        frozen=True,
+        description="Model quantization method (e.g., 'int4', 'int8') for performance optimization",
     )
 
     # -----------------------

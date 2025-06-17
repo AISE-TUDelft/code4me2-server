@@ -16,6 +16,7 @@ from pydantic import Field
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    BitsAndBytesConfig,
     StoppingCriteria,
     StoppingCriteriaList,
 )
@@ -83,11 +84,23 @@ class TemplateCompletionModel(BaseLLM):
             cache_dir=config.model_cache_dir,
             trust_remote_code=True,
         )
+        bnb_config = None
+        if config.model_quantization in ("int8", "int4"):
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=(config.model_quantization == "int4"),
+                load_in_8bit=(config.model_quantization == "int8"),
+                llm_int8_threshold=6.0,
+                llm_int8_has_fp16_weight=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+            )
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             cache_dir=config.model_cache_dir,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
+            quantization_config=bnb_config,
             **model_kwargs,
         )
         model.eval()
@@ -248,7 +261,7 @@ class TemplateCompletionModel(BaseLLM):
         """
         if not isinstance(prompt, dict):
             raise ValueError("Input must be a dict for this model setup.")
-
+        t0 = time.perf_counter()
         # Use config values if not explicitly provided
         if max_new_tokens is None:
             max_new_tokens = self.config.model_max_new_tokens
@@ -265,19 +278,25 @@ class TemplateCompletionModel(BaseLLM):
                 + self.meta_data["file_separator"]
             )
             # prompt["multi_file_context"]+= "\nONLY USE THE PREVIOUS LINES FOR CONTEXT, DO NOT REPEAT THEM IN YOUR RESPONSE!\n\n"
-        if prompt["multi_file_context"] == {}:
+        if prompt.get("multi_file_context") == {}:
             prompt["multi_file_context"] = ""
         formatted_prompt = self.prompt_template.format(**prompt)
         logging.info("Formatted prompt: %s", formatted_prompt)
+        t1 = time.perf_counter()
+
+        # input_ids = self.tokenizer(formatted_prompt, return_tensors="pt").input_ids
+        # input_len = input_ids.shape[1]  # Number of input tokens
+        # inputs = {"input_ids": input_ids.to(self.model.device)}
         input_len = len(
             self.tokenizer.decode(
                 self.tokenizer(formatted_prompt)["input_ids"], skip_special_tokens=True
             )
         )
         # Tokenize input
-        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(
-            self.model.device
-        )
+        inputs = self.tokenizer(
+            formatted_prompt, return_tensors="pt", padding=True, truncation=True
+        ).to(self.model.device)
+        logging.info("Prompt formatting took %.2f seconds", t1 - t0)
 
         # Measure generation time with perf_counter for higher precision
         start_time = time.perf_counter()
@@ -298,10 +317,10 @@ class TemplateCompletionModel(BaseLLM):
                 max_new_tokens=max_new_tokens,
                 return_dict_in_generate=True,
                 output_scores=True,
-                # Add performance-optimized generation parameters from config
                 use_cache=self.config.model_use_cache,
                 num_beams=self.config.model_num_beams,
                 stopping_criteria=stopping_criteria,
+                pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
                 **kwargs,
             )
             end_time = time.perf_counter()
@@ -313,6 +332,7 @@ class TemplateCompletionModel(BaseLLM):
                 generated_ids, skip_special_tokens=True
             )
 
+            t2 = time.perf_counter()
             # with self.model_lock, torch.inference_mode():
             logits = torch.stack(output.scores, dim=1)[
                 0
@@ -333,6 +353,7 @@ class TemplateCompletionModel(BaseLLM):
                 if token_probs_list
                 else None
             )
+            logging.info(f"Calculating confidence took {time.perf_counter() - t2}")
         # Post-process the generated text to remove any content after the stop sequence
         if stop_sequences and generated_text:
             for stop_seq in stop_sequences:

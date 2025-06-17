@@ -144,13 +144,14 @@ def request_chat_completion(
         multi_file_contexts = project_info.get("multi_file_contexts", {})
         multi_file_context_changes = project_info.get("multi_file_context_changes", {})
 
-        # Aggregate other file contexts into the prefix if applicable
+        # Filter to only include relevant multi file contexts
         if chat_completion_request.context.context_files:
             multi_file_contexts = {
                 file_name: "\n".join(context)
                 for file_name, context in multi_file_contexts.items()
                 if file_name in chat_completion_request.context.context_files
                 or chat_completion_request.context.context_files == ["*"]
+                and chat_completion_request.context.file_name != file_name
             }
 
         # Prepare indexes of multi-file context changes counts
@@ -205,7 +206,9 @@ def request_chat_completion(
                         ". Consider the following as the multi file contexts of the project and consider it for output generation as context:\n"
                         f"{multi_file_context_str}\n\n"
                         + ". Also the following are the prefix and suffix of where the users cursor is right now on the code:\n"
-                        f"PREFIX: {chat_completion_request.context.prefix}\n\nSUFFIX: {chat_completion_request.context.suffix}\n\n"
+                        f"OPEN_FILE: {chat_completion_request.context.file_name if chat_completion_request.context.file_name else ''}\n\n"
+                        f"PREFIX: {chat_completion_request.context.prefix}\n\n"
+                        f"SUFFIX: {chat_completion_request.context.suffix}\n\n"
                     )
 
                     if chat_completion_request.context.selected_text:
