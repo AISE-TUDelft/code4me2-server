@@ -1,4 +1,3 @@
-# TODO: Reformat
 import json
 import uuid
 from datetime import datetime
@@ -1161,51 +1160,3 @@ def get_documentation_stats(db: Session) -> dict:
         ),
         "languages": dict(language_stats),
     }
-
-
-# Old Sessions
-# Kept in case we need to revert to the old session management
-# def get_session_by_id(db: Session, session_id: str) -> Optional[db_schemas.Session]:
-#     return (
-#         db.query(db_schemas.Session)
-#         .filter(db_schemas.Session.session_id == session_id)
-#         .first()
-#     )
-#
-#
-# def delete_session_by_id(db: Session, session_id: str) -> None:
-#     db.query(db_schemas.Session).filter(
-#         db_schemas.Session.session_id == session_id
-#     ).delete()
-#     db.commit()
-#
-#
-# def add_session(db: Session, session: db_schemas.Session) -> None:
-#     db.add(session)
-#     db.commit()
-#     db.refresh(session)
-#
-# def remove_session_by_user_id(db: Session, user_id: str) -> bool:
-#     """Remove all sessions by user ID"""
-#     result = (
-#         db.query(db_schemas.Session)
-#         .filter(db_schemas.Session.user_id == user_id)
-#         .delete()
-#     )
-#     db.commit()
-#     return result > 0
-#
-#
-# def add_session_query(db: Session, session_query: db_schemas.SessionQuery) -> None:
-#     logging.log(logging.INFO, "Add session query is called")
-#     db.add(session_query)
-#     db.commit()
-#     db.refresh(session_query)
-#
-#
-# def create_session(db: Session, user_id: str) -> db_schemas.Session:
-#     session = db_schemas.Session(session_id=uuid.uuid4(), user_id=user_id)
-#     db.add(session)
-#     db.commit()
-#     db.refresh(session)
-#     return session

@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 from langchain_core.prompts import PromptTemplate
-from transformers import StoppingCriteriaList
 
 from backend.completion.TemplateCompletionModel import (
     StopSequenceCriteria,
@@ -57,7 +56,6 @@ def mock_model_components():
     ) as tokenizer_mock, patch(
         "backend.completion.TemplateCompletionModel.AutoModelForCausalLM.from_pretrained"
     ) as model_mock:
-
         tokenizer = MagicMock()
         tokenizer.decode.side_effect = lambda ids, **kwargs: "decoded_text"
         tokenizer.return_tensors = "pt"

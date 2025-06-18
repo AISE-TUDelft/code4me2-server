@@ -115,6 +115,8 @@ def create_user(
             status_code=500,
             content=CreateUserError(),
         )
+    finally:
+        db_session.close()
 
 
 def __init__():

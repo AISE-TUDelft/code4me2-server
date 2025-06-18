@@ -11,7 +11,6 @@ from fastapi import APIRouter, Cookie, Depends
 import celery_app.tasks.db_tasks as db_tasks
 import Queries
 from App import App
-from backend import completion
 from backend.Responses import (
     CompletionPostResponse,
     ErrorResponse,
@@ -170,6 +169,7 @@ def request_completion(
                 for file_name, context in multi_file_contexts.items()
                 if file_name in completion_request.context.context_files
                 or completion_request.context.context_files == ["*"]
+                and completion_request.context.file_name != file_name
             }
 
         # Prepare indexes of multi-file context changes counts
@@ -207,7 +207,8 @@ def request_completion(
             # Invoke the model with redacted prefix and suffix
             completion_result = completion_model.invoke(
                 {
-                    "prefix": completion_request.context.prefix,
+                    "prefix": f"#{completion_request.context.file_name if completion_request.context.file_name else ''}\n"
+                    + completion_request.context.prefix,
                     "suffix": completion_request.context.suffix,
                     "multi_file_context": multi_file_contexts,
                 },

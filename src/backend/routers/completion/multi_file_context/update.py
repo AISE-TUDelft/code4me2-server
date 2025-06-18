@@ -42,55 +42,62 @@ def update_multi_file_context_in_session(
     updated_contexts = deepcopy(existing_context)
 
     for file, context_changes in context_update.items():
-        # Sort changes descending by start line so applying does not affect later line indices
-        context_changes = sorted(
-            context_changes, key=lambda c: c.start_line, reverse=True
-        )
-
-        if file not in updated_contexts:
-            # For new files, create an empty context list with length to cover updates/removes
-            max_lines = max(
-                map(
-                    lambda x: x.end_line,
-                    filter(
-                        lambda c: c.change_type != ContextChangeType.insert,
-                        context_changes,
-                    ),
-                ),
-                default=0,
+        try:
+            # Sort changes descending by start line so applying does not affect later line indices
+            context_changes = sorted(
+                context_changes, key=lambda c: c.start_line, reverse=True
             )
-            updated_context = [""] * max_lines
-        else:
-            # Existing file content - make a shallow copy of lines to update
-            updated_context = updated_contexts[file][:]
 
-        for change in context_changes:
-            try:
-                if change.change_type == ContextChangeType.update:
-                    # Replace lines in the specified range
-                    updated_context[change.start_line : change.end_line] = (
-                        change.new_lines
-                    )
-                elif change.change_type == ContextChangeType.insert:
-                    # Insert new lines at start_line
-                    updated_context[change.start_line : change.start_line] = (
-                        change.new_lines
-                    )
-                elif change.change_type == ContextChangeType.remove:
-                    # Remove lines in the specified range (clamped to length)
-                    del updated_context[
-                        change.start_line : min(change.end_line, len(updated_context))
-                    ]
-            except IndexError:
-                logging.error(
-                    f"IndexError while applying change to file '{file}': {change}"
+            if file not in updated_contexts:
+                # For new files, create an empty context list with length to cover updates/removes
+                max_lines = max(
+                    map(
+                        lambda x: x.end_line,
+                        filter(
+                            lambda c: c.change_type != ContextChangeType.insert,
+                            context_changes,
+                        ),
+                    ),
+                    default=0,
                 )
+                updated_context = [""] * max_lines
+            else:
+                # Existing file content - make a shallow copy of lines to update
+                updated_context = updated_contexts[file][:]
 
-        if updated_context:
-            updated_contexts[file] = updated_context
-        else:
-            # Remove file if its content is empty after updates
-            del updated_contexts[file]
+            for change in context_changes:
+                try:
+                    if change.change_type == ContextChangeType.update:
+                        # Replace lines in the specified range
+                        updated_context[change.start_line : change.end_line] = (
+                            change.new_lines
+                        )
+                    elif change.change_type == ContextChangeType.insert:
+                        # Insert new lines at start_line
+                        updated_context[change.start_line : change.start_line] = (
+                            change.new_lines
+                        )
+                    elif change.change_type == ContextChangeType.remove:
+                        # Remove lines in the specified range (clamped to length)
+                        del updated_context[
+                            change.start_line : min(
+                                change.end_line, len(updated_context)
+                            )
+                        ]
+                except IndexError:
+                    logging.error(
+                        f"IndexError while applying change to file '{file}': {change}"
+                    )
+
+            if updated_context:
+                updated_contexts[file] = updated_context
+            else:
+                # Remove file if its content is empty after updates
+                del updated_contexts[file]
+        except Exception as e:
+            logging.error(
+                f"Error updating context for file '{file}': {e}. Changes: {context_changes}"
+            )
 
     return updated_contexts
 

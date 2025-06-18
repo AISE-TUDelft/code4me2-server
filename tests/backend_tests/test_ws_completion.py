@@ -2,7 +2,6 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi import WebSocket, WebSocketDisconnect
 
 # Assuming the router is in a module called completions_websocket_router

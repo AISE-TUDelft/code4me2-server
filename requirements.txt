@@ -65,7 +65,6 @@ torch~=2.7.0           # Uncomment if using PyTorch
 # vllm~=0.5.0            # Uncomment if using vLLM
 huggingface_hub[cli]
 
-
 # -----------------------
 # Utilities
 # -----------------------

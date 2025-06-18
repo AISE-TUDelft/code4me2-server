@@ -1,7 +1,10 @@
 import logging
-from enum import Enum
 from typing import Optional, Union
 
+import torch
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 from backend.completion.ChatCompletionModel import ChatCompletionModel
 from backend.completion.TemplateCompletionModel import TemplateCompletionModel
 from Code4meV2Config import Code4meV2Config

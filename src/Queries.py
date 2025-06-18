@@ -1,4 +1,3 @@
-# TODO: Reformat later
 import re
 from abc import ABC
 from enum import Enum
@@ -383,7 +382,6 @@ class CreateUserProject(QueryBase):
     # role: Optional[str] = Field(default="member", description="User role in project")
 
 
-# TODO check naming consistency
 class ActivateProject(QueryBase):
     project_id: UUID = Field(..., description="Project id to activate")
 

@@ -21,7 +21,7 @@ Version: 1.0.0
 """
 
 import os
-from typing import Dict
+from typing import Dict, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -167,6 +167,27 @@ class Code4meV2Config(BaseSettings):
         frozen=True,
         min_length=1,
         description="Name of the database to connect to",
+    )
+
+    db_pool_size: int = Field(
+        alias="DB_POOL_SIZE", frozen=True, description="Database connection pool size"
+    )
+    db_max_overflow: int = Field(
+        alias="DB_MAX_OVERFLOW",
+        frozen=True,
+        description="Maximum number of connections to create beyond the pool size",
+    )
+    db_pool_timeout: int = Field(
+        alias="DB_POOL_TIMEOUT",
+        frozen=True,
+        ge=1,
+        description="Database connection timeout in seconds",
+    )
+    db_pool_recycle: int = Field(
+        alias="DB_POOL_RECYCLE",
+        frozen=True,
+        ge=1,
+        description="Time in seconds after which a connection is recycled",
     )
 
     # -----------------------
@@ -316,6 +337,12 @@ class Code4meV2Config(BaseSettings):
         default=True,
         frozen=True,
         description="Perform model warmup runs to optimize performance",
+    )
+    model_quantization: Optional[str] = Field(
+        alias="MODEL_QUANTIZATION",
+        default=None,
+        frozen=True,
+        description="Model quantization method (e.g., 'int4', 'int8') for performance optimization",
     )
 
     # -----------------------

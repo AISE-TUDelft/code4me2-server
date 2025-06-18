@@ -1,4 +1,3 @@
-# TODO: reformat
 import logging
 import time
 import uuid
@@ -8,7 +7,6 @@ from typing import Union
 
 from celery import chain, group
 from fastapi import APIRouter, Cookie, Depends
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 import celery_app.tasks.db_tasks as db_tasks
 import Queries
@@ -146,13 +144,14 @@ def request_chat_completion(
         multi_file_contexts = project_info.get("multi_file_contexts", {})
         multi_file_context_changes = project_info.get("multi_file_context_changes", {})
 
-        # Aggregate other file contexts into the prefix if applicable
+        # Filter to only include relevant multi file contexts
         if chat_completion_request.context.context_files:
             multi_file_contexts = {
                 file_name: "\n".join(context)
                 for file_name, context in multi_file_contexts.items()
                 if file_name in chat_completion_request.context.context_files
                 or chat_completion_request.context.context_files == ["*"]
+                and chat_completion_request.context.file_name != file_name
             }
 
         # Prepare indexes of multi-file context changes counts
@@ -198,19 +197,39 @@ def request_chat_completion(
                 f"#{file_name}\n{context}\n"
                 for file_name, context in multi_file_contexts.items()
             )
-            chat_completion_request.messages[0][1] += (
-                "Consider the following as the multi file contexts of the project and consider it for output generation as context:\n"
-                f"{multi_file_context_str}\n\n"
-            )
-            if chat_completion_request.context.selected_text:
-                chat_completion_request.messages[0][1] += (
-                    "Moreover the user has selected the following code so consider as the main part which should be changed or answered:\n"
-                    f"{chat_completion_request.context.selected_text}\n\n"
-                )
+
+            # Create a mutable copy of the messages list
+            messages_copy = []
+            for i, (role, content) in enumerate(chat_completion_request.messages):
+                if i == 0:  # Modify the first message
+                    enhanced_content = content + (
+                        ". Consider the following as the multi file contexts of the project and consider it for output generation as context:\n"
+                        f"{multi_file_context_str}\n\n"
+                        + ". Also the following are the prefix and suffix of where the users cursor is right now on the code:\n"
+                        f"OPEN_FILE: {chat_completion_request.context.file_name if chat_completion_request.context.file_name else ''}\n\n"
+                        f"PREFIX: {chat_completion_request.context.prefix}\n\n"
+                        f"SUFFIX: {chat_completion_request.context.suffix}\n\n"
+                    )
+
+                    if chat_completion_request.context.selected_text:
+                        enhanced_content += (
+                            "Moreover the user has selected the following code so consider as the main part which should be changed or answered:\n"
+                            f"{chat_completion_request.context.selected_text}\n\n"
+                        )
+                    messages_copy.append((role, enhanced_content))
+                else:
+                    messages_copy.append((role, content))
+            logging.info(f"The messages considered by the chat:\n{messages_copy}")
+            # Temporarily replace the messages for this model's invocation
+            original_messages = chat_completion_request.messages
+            chat_completion_request.messages = messages_copy
 
             completion_result = chat_completion_model.invoke(
                 chat_completion_request.to_langchain_messages()
             )
+
+            # Restore the original messages
+            chat_completion_request.messages = original_messages
 
             local_t3 = time.perf_counter()
 

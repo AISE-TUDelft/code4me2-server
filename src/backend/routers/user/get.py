@@ -88,3 +88,5 @@ def get_user_from_auth_token(
             status_code=500,
             content=GetUserError(),
         )
+    finally:
+        db_session.close()
