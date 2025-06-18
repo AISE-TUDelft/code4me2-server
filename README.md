@@ -10,9 +10,6 @@
 
 ## 📋 Overview & Navigation
 
-### Quick Links
-- [🚀 Quick Start](#-docker-deployment) | [🏗️ Architecture](#️-system-architecture) | [📚 API Docs](#-api-reference) | [🗄️ Database](#️-database-overview)
-
 ### 📖 Documentation Sections
 
 | Section | Description | Key Topics |
@@ -29,7 +26,6 @@
 | **[🗄️ Database Overview](#️-database-overview)** | PostgreSQL + pgvector setup | Schema design, Vector search, Migrations |
 | **[🧪 Testing & QA](#-testing--quality-assurance)** | Testing strategy & coverage | Unit tests, Integration tests, Quality gates |
 | **[🔧 Configuration](#-configuration-management)** | Environment & feature config | Variables, Feature flags, Performance tuning |
-| **[🚀 Performance](#-performance-optimization)** | Optimization strategies | Async processing, AI model caching, DB tuning |
 | **[🤝 Contributing](#-contributing--development)** | Development guidelines | Code standards, Architecture patterns |
 
 ### 🎯 Use Cases
@@ -299,7 +295,7 @@ graph TB
     Cache --> Storage
 ```
 
-### Authentication layer
+### Complete Authentication layer
 
 ```mermaid
 flowchart TD
@@ -810,7 +806,7 @@ The system supports both traditional email/password authentication and OAuth 2.0
 
 - **Password Hashing**: Argon2 with configurable work factors
 - **JWT Validation**: Google OAuth token verification with public key validation
-- **Session Security**: HttpOnly cookies, HTTPS-only transmission, SameSite protection
+- **Session Security**: HttpOnly cookies, SameSite protection
 - **Rate Limiting**: Per-IP, per-endpoint request throttling
 
 **Implementation Files:**
@@ -1044,23 +1040,6 @@ The application uses Pydantic-based configuration with validation for feature ma
 
 **Implementation:** See **[Configuration Class](src/Code4meV2Config.py)** for complete configuration options and validation.
 
-## 🚀 Performance Optimization
-
-### Application Performance
-
-- **Async Processing**: FastAPI with async/await for I/O operations
-- **Connection Pooling**: SQLAlchemy async connection management
-- **Caching Strategy**: Redis-based multi-layer caching
-- **Background Tasks**: Celery for CPU-intensive operations
-- **Database Optimization**: Indexed queries and query optimization
-
-### AI Model Performance
-
-- **Model Caching**: Pre-loaded models in memory
-- **GPU Acceleration**: CUDA support for transformer models
-- **Batch Processing**: Multiple completions in single inference
-- **Model Quantization**: Reduced precision for faster inference
-- **Response Streaming**: Progressive completion delivery
 
 ## 🤝 Contributing & Development
 
