@@ -219,10 +219,6 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 export PYTHONPATH=$PWD/src
 python src/main.py
-
-# Run frontend locally (new terminal)
-cd src/website
-npm install && npm start
 ```
 
 **Option C: Testing Setup**
