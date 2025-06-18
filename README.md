@@ -8,6 +8,38 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-blue.svg)](https://postgresql.org)
 [![Redis](https://img.shields.io/badge/Redis-7.0+-red.svg)](https://redis.io)
 
+## 📋 Overview & Navigation
+
+### Quick Links
+- [🚀 Quick Start](#-docker-deployment) | [🏗️ Architecture](#️-system-architecture) | [📚 API Docs](#-api-reference) | [🗄️ Database](#️-database-overview)
+
+### 📖 Documentation Sections
+
+| Section | Description | Key Topics |
+|---------|-------------|------------|
+| **[📖 Documentation Index](#-documentation-index)** | Official docs and resources | Auto-generated APIs, Database schemas |
+| **[🎯 Project Overview](#-project-overview)** | Core features and capabilities | AI completion, Collaboration, Analytics |
+| **[🐳 Docker Deployment](#-docker-deployment)** | Production deployment guide | Container setup, Environment config |
+| **[🏗️ System Architecture](#️-system-architecture)** | Technical architecture overview | High-level design, Data flow, Auth layer |
+| **[⚡ Asynchronous Processing](#-asynchronous-processing-with-celery)** | Celery task queue system | LLM tasks, DB tasks, Background processing |
+| **[💾 Redis Data Management](#-redis-data-management)** | Session & cache management | Token lifecycle, Data structures, Cleanup |
+| **[🔌 Real-time WebSocket](#-real-time-websocket-features)** | Live communication features | Code completion streaming, Chat system |
+| **[🔐 Security & Secrets](#-security--secret-management)** | Security implementation | Secret detection, Auth, Privacy compliance |
+| **[📚 API Reference](#-api-reference)** | REST API endpoints | Authentication, Completion, Projects |
+| **[🗄️ Database Overview](#️-database-overview)** | PostgreSQL + pgvector setup | Schema design, Vector search, Migrations |
+| **[🧪 Testing & QA](#-testing--quality-assurance)** | Testing strategy & coverage | Unit tests, Integration tests, Quality gates |
+| **[🔧 Configuration](#-configuration-management)** | Environment & feature config | Variables, Feature flags, Performance tuning |
+| **[🚀 Performance](#-performance-optimization)** | Optimization strategies | Async processing, AI model caching, DB tuning |
+| **[🤝 Contributing](#-contributing--development)** | Development guidelines | Code standards, Architecture patterns |
+
+### 🎯 Use Cases
+- **Researchers**: AI model evaluation, Developer behavior analytics, Ground truth collection
+- **Developers**: Real-time code completion, Multi-file context awareness, Project collaboration  
+- **DevOps**: Scalable deployment, Session management, Performance monitoring
+- **Security Teams**: Secret detection, Privacy compliance, Authentication systems
+
+---
+
 ## 📖 Documentation Index
 
 | Document                                                                           | Purpose                                        | Target Audience          |
@@ -60,6 +92,194 @@ docker-compose --version  # >= 2.0
 python --version          # >= 3.11
 node --version            # >= 18
 ```
+
+# 🐳 Docker Deployment
+
+## Prerequisites
+
+- Docker & Docker Compose
+- 8GB+ RAM
+- NVIDIA Docker (for GPU support)
+
+## Required Containers
+
+| Container | Image | Purpose |
+|-----------|-------|---------|
+| **db** | `pgvector/pgvector:pg16` | PostgreSQL with vector extensions |
+| **redis** | `redis:7.0` | Session storage |
+| **redis-celery** | `redis:7.0` | Task queue broker |
+| **backend** | *Built from Dockerfile* | FastAPI server |
+| **celery-worker** | *Built from Dockerfile* | AI/ML processing |
+| **website** | `node:18` | React frontend |
+| **nginx** | `nginx:1.25` | Reverse proxy |
+
+## Quick Setup
+
+### 1. Environment Configuration
+
+```bash
+cp .env.production .env  # or .env.development
+```
+
+Key variables:
+```bash
+DB_PASSWORD=your_secure_password
+DATA_DIR=./data
+SERVER_PORT=8080
+REDIS_PORT=6379
+CELERY_BROKER_PORT=6380
+```
+
+### 2. Initialize Data Directories
+
+```bash
+./setup_data_dir.sh
+```
+
+# 🐳 Docker Deployment
+
+## Prerequisites
+
+- **Docker** (version 20.10+) & **Docker Compose** (version 2.0+)
+- **8GB+ RAM** (16GB+ recommended for production)
+- **NVIDIA Docker** (for GPU support in celery workers)
+- **30GB+ free disk space** (for model cache and data storage)
+
+## Required Containers
+
+The application uses a microservices architecture with these containers:
+
+| Container | Image | Purpose | Port | Dependencies |
+|-----------|-------|---------|------|--------------|
+| **db** | `pgvector/pgvector:pg16` | PostgreSQL with vector extensions for embeddings | `5432` | None |
+| **redis** | `redis:7.0` | Session storage and general caching | `6379` | None |
+| **redis-celery** | `redis:7.0` | Celery message broker for task queues | `6380` | None |
+| **backend** | *Built from Dockerfile* | FastAPI application server | `8080` | db, redis, redis-celery |
+| **celery-worker** | *Built from Dockerfile* | AI/ML background processing with GPU support | - | redis-celery, db |
+| **website** | `node:18` | React frontend application | `3000` | backend |
+| **nginx** | `nginx:1.25` | Reverse proxy and load balancer | `8000` | website, backend |
+
+### Optional Services
+- **pgadmin** (`dpage/pgadmin4:8.11`) - Database administration UI (development only)
+- **test_db** (`pgvector/pgvector:pg16`) - Test database for isolated testing environments
+## Setup Guide
+
+### 1. Environment Configuration
+
+```bash
+# Choose your environment
+cp .env.production .env    # For production deployment
+# OR
+cp .env.development .env   # For development setup
+```
+
+**Essential Environment Variables:**
+```bash
+# Database
+DB_PASSWORD=your_secure_password
+DB_HOST=db
+DB_PORT=5432
+DB_NAME=code4meV2
+
+# Redis & Celery
+REDIS_HOST=redis
+REDIS_PORT=6379
+CELERY_BROKER_HOST=redis-celery
+CELERY_BROKER_PORT=6379
+
+# Application
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8080
+DATA_DIR=./data
+
+# Security
+AUTHENTICATION_TOKEN_EXPIRES_IN_SECONDS=3600
+SESSION_TOKEN_EXPIRES_IN_SECONDS=86400
+
+# Optional: Development tools
+PGADMIN_PORT=5050
+PGADMIN_DEFAULT_EMAIL=admin@example.com
+PGADMIN_DEFAULT_PASSWORD=admin_password
+```
+
+### 2. Initialize Data Directories
+
+Create persistent storage directories:
+```bash
+chmod +x setup_data_dir.sh
+./setup_data_dir.sh
+```
+
+This creates the directory structure:
+```
+./data/
+├── postgres/      # Database data
+├── redis/         # Cache data  
+├── redis_celery/  # Task queue data
+├── celery_worker/ # Worker data & model cache
+├── website/       # Node.js modules
+└── hf/           # Hugging Face model cache
+```
+
+### 3. Deploy
+
+**Option A: Full Production Stack**
+```bash
+# Start all services
+docker-compose up -d
+
+# Check health status
+docker-compose ps
+```
+
+**Option B: Development Environment**
+```bash
+# Start infrastructure only
+docker-compose up -d db redis redis-celery pgadmin
+
+# Run backend locally for development
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+export PYTHONPATH=$PWD/src
+python src/main.py
+
+# Run frontend locally (new terminal)
+cd src/website
+npm install && npm start
+```
+
+**Option C: Testing Setup**
+```bash
+# Start test database
+docker-compose up -d test_db
+
+# Run tests
+export TEST_MODE=true
+pytest tests/ --cov
+```
+
+## Verify Deployment
+
+```bash
+# Check container status
+docker-compose ps
+
+# View logs
+docker-compose logs -f backend
+docker-compose logs --tail=50 celery-worker
+
+# Test application endpoints
+curl http://localhost:8000/docs    # API documentation
+curl http://localhost:8000/health  # Health check
+```
+
+**Expected Services:**
+- API Documentation: `http://localhost:8000/docs`
+- Frontend Application: `http://localhost:8000`
+- Database Admin (dev): `http://localhost:5050`
+
+
 
 ## 🏗️ System Architecture
 

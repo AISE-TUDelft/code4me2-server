@@ -793,9 +793,7 @@ erDiagram
     
     GROUND_TRUTH ||--|| COMPLETION_QUERY : truth_for
 ```
-
-
-
+The Schema is also available to view in Mermaid live viewer via the following link: [Code4me V2 Database Schema](https://www.mermaidchart.com/app/projects/710c8676-a137-4336-9c5a-99304129f58c/diagrams/71f801d2-554c-4beb-885d-ac66fe3b850e/version/v0.1/edit)
 
 
 This documentation is maintained alongside the codebase and updated with each schema change. 
