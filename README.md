@@ -41,7 +41,7 @@
 | Document                                                                           | Purpose                                        | Target Audience          |
 | ---------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------ |
 | **[This README](README.md)**                                                       | Project overview, quick start, deployment      | Everyone                 |
-| **[Auto-Generated API Docs](src/backend/resources/documentation/fastapi-doc.pdf)** | Interactive FastAPI documentation (Swagger UI) | Developers, Integrators  |
+| **[Auto-Generated API Docs](https://drive.google.com/file/d/1m9aCCy-XWx4pJKxT0VUhZEepMMupFl9e/view?usp=sharing)** | Interactive FastAPI documentation (Swagger UI) | Developers, Integrators  |
 | **[Database Documentation](src/database/resources/documentation/README.md)**       | Schema, migrations, CRUD operations            | Backend Developers, DBAs |
 
 ## 🎯 Project Overview
