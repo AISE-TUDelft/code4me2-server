@@ -457,6 +457,7 @@ def create_model(db: Session, model: Queries.CreateModel) -> db_schemas.ModelNam
     db_model = db_schemas.ModelName(
         model_name=model.model_name,
         is_instruction_tuned=model.is_instruction_tuned,
+        meta_data=model.meta_data,
     )
     db.add(db_model)
     db.commit()
