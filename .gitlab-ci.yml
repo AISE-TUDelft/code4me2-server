@@ -30,12 +30,22 @@ build-openapi-docs:
   image: node:latest
   script:
     - npm install -g @redocly/cli
-    - npx @redocly/cli build-docs openapi.json -o fastapi-doc.html
+    - npx @redocly/cli build-docs openapi.json -o src/backend/resources/documentation/fastapi-doc.html
   artifacts:
     paths:
       - fastapi-doc.html
     when: always
     expire_in: 1 week
+
+pages:
+  stage: deploy
+  script:
+    - mkdir .public
+    - cp -r src/backend/resources/documentation/fastapi-doc.html .public/ # Replace 'docs/' with your folder containing the HTML/PDF
+    - mv .public public
+  artifacts:
+    paths:
+      - public
 
 # Python code style check job
 black:
