@@ -287,7 +287,6 @@ graph TB
     Web --> Nginx
     Nginx --> API
     API --> WS
-    API --> Auth
     WS --> Celery
     Celery --> Worker1
     Celery --> Worker2
