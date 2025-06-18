@@ -16,7 +16,6 @@ from pydantic import Field
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    BitsAndBytesConfig,
     StoppingCriteria,
     StoppingCriteriaList,
 )
