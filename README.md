@@ -115,23 +115,7 @@ node --version            # >= 18
 
 ## Quick Setup
 
-### 1. Environment Configuration
-
-```bash
-cp .env.production .env  # or .env.development
-```
-
-Key variables:
-```bash
-DB_PASSWORD=your_secure_password
-DATA_DIR=./data
-SERVER_PORT=8080
-REDIS_PORT=6379
-CELERY_BROKER_PORT=6380
-```
-
-### 2. Initialize Data Directories
-
+### Initialize Data Directories
 ```bash
 ./setup_data_dir.sh
 ```
@@ -165,14 +149,6 @@ The application uses a microservices architecture with these containers:
 ## Setup Guide
 
 ### 1. Environment Configuration
-
-```bash
-# Choose your environment
-cp .env.production .env    # For production deployment
-# OR
-cp .env.development .env   # For development setup
-```
-
 **Essential Environment Variables:**
 ```bash
 # Database
