@@ -10,11 +10,11 @@
 
 ## 📖 Documentation Index
 
-| Document                                                                     | Purpose                                        | Target Audience          |
-| ---------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------ |
-| **[This README](README.md)**                                                 | Project overview, quick start, deployment      | Everyone                 |
-| **[Auto-Generated API Docs](/docs)**                                         | Interactive FastAPI documentation (Swagger UI) | Developers, Integrators  |
-| **[Database Documentation](src/database/resources/documentation/README.md)** | Schema, migrations, CRUD operations            | Backend Developers, DBAs |
+| Document                                                                           | Purpose                                        | Target Audience          |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------ |
+| **[This README](README.md)**                                                       | Project overview, quick start, deployment      | Everyone                 |
+| **[Auto-Generated API Docs](src/backend/resources/documentation/fastapi-doc.pdf)** | Interactive FastAPI documentation (Swagger UI) | Developers, Integrators  |
+| **[Database Documentation](src/database/resources/documentation/README.md)**       | Schema, migrations, CRUD operations            | Backend Developers, DBAs |
 
 ## 🎯 Project Overview
 
@@ -114,6 +114,126 @@ graph TB
     API --> Redis
     Models --> DB
     Cache --> Storage
+```
+
+### Authentication layer
+
+```mermaid
+flowchart TD
+    %% === Plugin Startup ===
+    Start([Plugin Startup]) --> CheckToken{Auth Token Present?}
+
+    subgraph AuthCheckFlow [Authentication Check]
+        direction TB
+        CheckToken -->|Yes| ValidateToken[Validate Token]
+        CheckToken -->|No| ShowLoginNotification[Show Login Notification]
+
+        ValidateToken -->|Valid| LoadUserPrefs[Load Preferences]
+        ValidateToken -->|Invalid| TokenInvalid[Token Invalid Notification]
+    end
+
+    subgraph PrefSessionSetup [User Preferences & Session]
+        LoadUserPrefs -->|Exist| UpdatePrefState[Update Preference State]
+        LoadUserPrefs -->|None| DefaultPrefState[Use Default Preferences]
+
+        UpdatePrefState --> InstantiateModules
+        DefaultPrefState --> InstantiateModules
+
+        InstantiateModules --> AcquireSession["Acquire Session - Stored Token"]
+        AcquireSession -->|Success| ProjectFlowStart([Project Flow])
+        AcquireSession -->|Failure| TokenInvalid
+    end
+
+    subgraph ProjectFlow [Project Setup]
+        direction TB
+        ProjectFlowStart --> CheckProjectToken{Project Token Present?}
+        CheckProjectToken -->|Yes| ActivateProject[Activate Project]
+        CheckProjectToken -->|No| CreateProject[Create New Project]
+
+        ActivateProject --> SetProjectActivated[Set Project Activated]
+        CreateProject --> StoreProjectToken[Store Project Token]
+        StoreProjectToken --> ActivateNewProject[Activate New Project]
+        ActivateNewProject --> SetProjectActivated
+    end
+
+    %% Session State
+    SetProjectActivated --> SessionActive[Session Active]
+    SessionActive --> MonitorSession{Monitor Session}
+    MonitorSession -->|Expires| TokenInvalid
+    MonitorSession -->|Valid| SessionActive
+    MonitorSession -->|Logout| UserLogout[User Logs Out]
+    UserLogout --> DeactivateSession[Deactivate Session API]
+    DeactivateSession --> ClearUserData
+
+    %% Token Invalidation Flow
+    TokenInvalid --> ClearUserData[Clear User Data]
+    ClearUserData --> ClearTokens[Clear Tokens]
+    ClearTokens --> ClearUserInfo[Clear User Info]
+    ClearUserInfo --> ShowLoginNotification
+
+    %% Login Notification Flow
+    ShowLoginNotification --> UserAction{User Action}
+    UserAction -->|Open Settings| AuthUI[Auth UI]
+    UserAction -->|Ignore| End([End])
+
+    subgraph AuthUIFlow [Authentication UI]
+        AuthUI --> SelectMode{Auth Mode}
+        SelectMode -->|Login| LoginForm[Login Form]
+        SelectMode -->|Signup| SignupForm[Signup Form]
+        SelectMode -->|Forgot| ForgotForm[Forgot Password]
+
+        %% Login
+        LoginForm --> ValidateLoginInput{Valid Input?}
+        ValidateLoginInput -->|No| ShowLoginError[Login Error]
+        ValidateLoginInput -->|Yes| CallLogin[Call Login API]
+        CallLogin -->|Fail| ShowLoginFailure[Login Failed]
+        CallLogin -->|Success| StoreAuthResponse
+
+        %% Signup
+        SignupForm --> ValidateSignupInput{Valid Fields?}
+        ValidateSignupInput -->|No| ShowSignupError[Signup Error]
+        ValidateSignupInput -->|Yes| CallSignup[Call Signup API]
+        CallSignup -->|Fail| ShowSignupFailure[Signup Failed]
+        CallSignup -->|Success| StoreSignupResponse
+
+        %% Forgot
+        ForgotForm --> ValidateForgotInput{Valid Email?}
+        ValidateForgotInput -->|No| ShowForgotError[Forgot Error]
+        ValidateForgotInput -->|Yes| CallForgotPassword
+        CallForgotPassword -->|Fail| ShowForgotFailure[Forgot Failed]
+        CallForgotPassword -->|Success| ShowForgotSuccess[Email Sent]
+        ShowForgotSuccess --> AuthUI
+    end
+
+    %% Success Path After Auth
+    StoreAuthResponse --> ExtractSessionToken
+    StoreSignupResponse --> ExtractSessionToken
+    ExtractSessionToken --> StoreUserData
+    StoreUserData --> AcquireNewSession[Acquire New Session]
+    AcquireNewSession --> ShowAuthSuccess
+    ShowAuthSuccess --> ClearFormFields
+    ClearFormFields --> ProjectFlowStart
+
+    %% Error Loopbacks
+    ShowLoginError --> LoginForm
+    ShowLoginFailure --> LoginForm
+    ShowSignupError --> SignupForm
+    ShowSignupFailure --> SignupForm
+    ShowForgotError --> ForgotForm
+    ShowForgotFailure --> ForgotForm
+
+    %% Styling
+    classDef success fill:#A8E6CF,stroke:#333,stroke-width:1px
+    classDef error fill:#FF8B94,stroke:#333,stroke-width:1px
+    classDef process fill:#87CEFA,stroke:#333,stroke-width:1px
+    classDef decision fill:#DDA0DD,stroke:#333,stroke-width:1px
+    classDef storage fill:#FFD580,stroke:#333,stroke-width:1px
+
+    class StoreAuthResponse,StoreSignupResponse,StoreUserData,ExtractSessionToken,AcquireSession,AcquireNewSession storage
+    class ShowAuthSuccess,ShowForgotSuccess success
+    class ShowLoginError,ShowSignupError,ShowForgotError,ShowLoginFailure,ShowSignupFailure,ShowForgotFailure,TokenInvalid error
+    class LoadUserPrefs,InstantiateModules,ActivateProject,CreateProject,ClearUserData,ClearFormFields process
+    class CheckToken,ValidateToken,CheckProjectToken,UserAction,SelectMode,ValidateLoginInput,ValidateSignupInput,ValidateForgotInput,MonitorSession decision
 ```
 
 ### Data Flow Architecture
@@ -785,7 +905,7 @@ The application uses Pydantic-based configuration with validation for feature ma
 
 ### Documentation Links
 
-- **[Interactive API Reference](src/backend/resources/documentation/fastapi-doc.html)** - Swagger UI with live testing
+- **[Interactive API Reference](src/backend/resources/documentation/fastapi-doc.pdf)** - Swagger UI with live testing
 - **[Database Guide](src/database/resources/documentation/README.md)** - Schema, migrations, and CRUD operations
 
 ### External Resources
