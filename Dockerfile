@@ -1,5 +1,5 @@
 # using the official python image
-FROM nvidia/cuda:12.6.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.6.0-runtime-ubuntu20.04
 
 # as the official image is based on ubuntu, we need to update the package list
 # and install some dependencies
