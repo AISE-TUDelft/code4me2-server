@@ -46,7 +46,7 @@ def send_verification_email(
         </p>
         <p>If the button doesn't work, you can also copy and paste this link into your browser:</p>
         <p>{verification_url}</p>
-        <p>This link will expire in {config.email_verification_token_expires_in_seconds//60} minutes.</p>
+        <p>This link will expire in {config.email_verification_token_expires_in_seconds // 60} minutes.</p>
         <p>Best regards,<br>The Code4Me Team</p>
       </body>
     </html>

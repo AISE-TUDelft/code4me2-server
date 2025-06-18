@@ -190,6 +190,8 @@ def authenticate_user(
             status_code=500,
             content=AuthenticateUserError(),
         )
+    finally:
+        db_session.close()
 
 
 def __init__():

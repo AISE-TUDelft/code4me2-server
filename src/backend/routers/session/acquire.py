@@ -128,6 +128,8 @@ def acquire_session(
             status_code=500,
             content=AcquireSessionError(),
         )
+    finally:
+        db_session.close()
 
 
 def __init__():

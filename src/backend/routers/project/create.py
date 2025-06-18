@@ -152,6 +152,8 @@ def create_project(
             status_code=500,
             content=CreateProjectError(),
         )
+    finally:
+        db_session.close()
 
 
 def __init__():

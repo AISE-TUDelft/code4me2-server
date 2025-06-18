@@ -1,4 +1,3 @@
-# TODO: reformat
 """
 ChatCompletionModel: A LangChain-compatible chat model implementation using HuggingFace Transformers.
 

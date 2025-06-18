@@ -95,7 +95,13 @@ class App:
         database_url = f"postgresql://{config.db_user}:{config.db_password}@{config.db_host}:{str(config.db_port)}/{config.db_name}"
 
         # Create SQLAlchemy engine for database connections
-        engine = create_engine(database_url)
+        engine = create_engine(
+            database_url,
+            pool_size=config.db_pool_size,
+            max_overflow=config.db_max_overflow,
+            pool_timeout=config.db_pool_timeout,
+            pool_recycle=config.db_pool_recycle,
+        )
 
         # Create scoped session factory for thread-safe database operations
         self.__db_session_factory = scoped_session(
@@ -143,7 +149,7 @@ class App:
             try:
                 session_expiration_listener_thread = threading.Thread(
                     target=self.__redis_manager.listen_for_expired_keys,
-                    args=(self.__db_session_factory(),),
+                    args=(self.__db_session_factory,),
                     daemon=True,  # Thread will exit when main program exits
                 )
                 session_expiration_listener_thread.start()
@@ -160,8 +166,10 @@ class App:
         if config.preload_models:
             logging.log(logging.INFO, "Preloading llm models...")
 
+            db = self.get_db_session()
             # Get all available model names from database
-            models = crud.get_all_model_names(self.get_db_session())
+            models = crud.get_all_model_names(db)
+            db.close()
 
             # Load each model and log the time taken
             for model in models:
@@ -176,51 +184,52 @@ class App:
                     f"{model.model_name} is setup in {loading_time:.2f} seconds",
                 )
 
+    # def get_db_session(self) -> Session:
+    #     """
+    #     Provides a managed database session with automatic transaction handling.
+    #
+    #     This method returns a database session that automatically commits on success
+    #     and rolls back on exceptions. The session is automatically closed after use.
+    #
+    #     Returns:
+    #         Session: SQLAlchemy database session with transaction management
+    #
+    #     Raises:
+    #         RuntimeError: If database is not initialized
+    #     """
+    #
+    #     @contextmanager
+    #     def __get_db_session_unmanaged():
+    #         """
+    #         Internal context manager for database session lifecycle.
+    #
+    #         FastAPI-compatible get_db function that yields a session with
+    #         automatic commit/rollback and cleanup handling.
+    #
+    #         Yields:
+    #             Session: Database session for operations
+    #         """
+    #         session = self.__db_session_factory()
+    #         try:
+    #             yield session
+    #             session.commit()  # Commit transaction on success
+    #         except Exception:
+    #             session.rollback()  # Rollback on any exception
+    #             raise  # Re-raise the exception
+    #         finally:
+    #             session.close()  # Always close the session
+    #
+    #     # Check if database is initialized before providing session
+    #     if self.__db_session_factory is None:
+    #         raise RuntimeError("Database is not initialized. Call `App.setup` first.")
+    #
+    #     # Use the context manager to get and return a managed session
+    #     with __get_db_session_unmanaged() as db_session:
+    #         return db_session
+
     def get_db_session(self) -> Session:
         """
-        Provides a managed database session with automatic transaction handling.
-
-        This method returns a database session that automatically commits on success
-        and rolls back on exceptions. The session is automatically closed after use.
-
-        Returns:
-            Session: SQLAlchemy database session with transaction management
-
-        Raises:
-            RuntimeError: If database is not initialized
-        """
-
-        @contextmanager
-        def __get_db_session_unmanaged():
-            """
-            Internal context manager for database session lifecycle.
-
-            FastAPI-compatible get_db function that yields a session with
-            automatic commit/rollback and cleanup handling.
-
-            Yields:
-                Session: Database session for operations
-            """
-            session = self.__db_session_factory()
-            try:
-                yield session
-                session.commit()  # Commit transaction on success
-            except Exception:
-                session.rollback()  # Rollback on any exception
-                raise  # Re-raise the exception
-            finally:
-                session.close()  # Always close the session
-
-        # Check if database is initialized before providing session
-        if self.__db_session_factory is None:
-            raise RuntimeError("Database is not initialized. Call `App.setup` first.")
-
-        # Use the context manager to get and return a managed session
-        with __get_db_session_unmanaged() as db_session:
-            return db_session
-
-    def get_db_session_fresh(self):
-        """
+        WARNING: USE WITH CARE! MAKE SURE THE SESSION IS ROLLED BACK WHEN NEEDED AND CLOSED AFTER USE!
         Returns a new unmanaged database session.
 
         This method provides a fresh database session without automatic

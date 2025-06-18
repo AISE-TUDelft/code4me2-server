@@ -220,7 +220,7 @@ class RedisManager:
             # For other token types, just delete the key
             self.__redis_client.delete(key)
 
-    def listen_for_expired_keys(self, db_session: Session):
+    def listen_for_expired_keys(self, session_factory):
         """
         Listen for Redis key expiration events on token hooks and delete expired tokens accordingly.
         Persist expired session or auth tokens into DB.
@@ -236,9 +236,17 @@ class RedisManager:
                 token = expired_key.split(":")[1]
                 try:
                     if expired_key.startswith("session_token_hook:"):
-                        self.delete("session_token", token, db_session)
+                        with session_factory() as db_session:
+                            try:
+                                self.delete("session_token", token, db_session)
+                            finally:
+                                db_session.close()
                     elif expired_key.startswith("auth_token_hook:"):
-                        self.delete("auth_token", token, db_session)
+                        with session_factory() as db_session:
+                            try:
+                                self.delete("auth_token", token, db_session)
+                            finally:
+                                db_session.close()
                 except Exception as e:
                     logging.error(
                         f"Exception occurred when trying to expire {expired_key} in redis: {e}"

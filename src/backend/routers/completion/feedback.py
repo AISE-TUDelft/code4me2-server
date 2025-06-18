@@ -157,3 +157,5 @@ def submit_completion_feedback(
             status_code=500,
             content=FeedbackRecordingError(),
         )
+    finally:
+        db_session.close()
