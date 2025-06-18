@@ -95,12 +95,6 @@ node --version            # >= 18
 
 # 🐳 Docker Deployment
 
-## Prerequisites
-
-- Docker & Docker Compose
-- 8GB+ RAM
-- NVIDIA Docker (for GPU support)
-
 ## Required Containers
 
 | Container | Image | Purpose |
@@ -119,8 +113,6 @@ node --version            # >= 18
 ```bash
 ./setup_data_dir.sh
 ```
-
-# 🐳 Docker Deployment
 
 ## Prerequisites
 
