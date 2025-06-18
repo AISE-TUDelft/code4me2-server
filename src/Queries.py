@@ -402,6 +402,7 @@ class CreateModel(QueryBase):
     is_instruction_tuned: Optional[bool] = Field(
         default=False, description="Whether model is instruction-tuned"
     )
+    meta_data: str = Field(..., description="Model metadata as JSON string")
 
 
 class UpdateChat(QueryBase):
