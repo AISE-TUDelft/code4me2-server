@@ -10,11 +10,11 @@
 
 ## 📖 Documentation Index
 
-| Document                                                                           | Purpose                                        | Target Audience          |
-| ---------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------ |
-| **[This README](README.md)**                                                       | Project overview, quick start, deployment      | Everyone                 |
-| **[Auto-Generated API Docs](src/backend/resources/documentation/fastapi-doc.pdf)** | Interactive FastAPI documentation (Swagger UI) | Developers, Integrators  |
-| **[Database Documentation](src/database/resources/documentation/README.md)**       | Schema, migrations, CRUD operations            | Backend Developers, DBAs |
+| Document                                                                                                                  | Purpose                                        | Target Audience          |
+| ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------ |
+| **[This README](README.md)**                                                                                              | Project overview, quick start, deployment      | Everyone                 |
+| **[Auto-Generated API Docs](https://cse2000-software-project.gitlab.io/2024-2025/cluster-a/17c/server/fastapi-doc.html)** | Interactive FastAPI documentation (Swagger UI) | Developers, Integrators  |
+| **[Database Documentation](src/database/resources/documentation/README.md)**                                              | Schema, migrations, CRUD operations            | Backend Developers, DBAs |
 
 ## 🎯 Project Overview
 
@@ -905,7 +905,7 @@ The application uses Pydantic-based configuration with validation for feature ma
 
 ### Documentation Links
 
-- **[Interactive API Reference](src/backend/resources/documentation/fastapi-doc.pdf)** - Swagger UI with live testing
+- **[Interactive API Reference](https://cse2000-software-project.gitlab.io/2024-2025/cluster-a/17c/server/fastapi-doc.html)** - Swagger UI with live testing
 - **[Database Guide](src/database/resources/documentation/README.md)** - Schema, migrations, and CRUD operations
 
 ### External Resources
