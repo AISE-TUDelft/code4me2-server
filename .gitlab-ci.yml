@@ -5,7 +5,7 @@ stages:
   - test
   - security
   - docs
-  - deploy
+#  - deploy
 
 # Cache node_modules for faster builds
 cache:
