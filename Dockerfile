@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
     software-properties-common \
     nvidia-container-toolkit && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/* \
+    rm -rf /var/lib/apt/lists/*
 
 # install miniconda to manage the python environment
 # Note:
