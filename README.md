@@ -1,6 +1,5 @@
 # Code4me V2 - AI-Powered Code Completion Platform
 
-
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
 [![React](https://img.shields.io/badge/react-18+-blue.svg)](https://reactjs.org)
@@ -11,20 +10,20 @@
 
 ## 📖 Documentation Index
 
-| Document | Purpose | Target Audience |
-|----------|---------|----------------|
-| **[This README](README.md)** | Project overview, quick start, deployment | Everyone |
-| **[Auto-Generated API Docs](/docs)** | Interactive FastAPI documentation (Swagger UI) | Developers, Integrators |
-| **[Database Documentation](src/database/resources/documentation/README.md)** | Schema, migrations, CRUD operations | Backend Developers, DBAs |
+| Document                                                                     | Purpose                                        | Target Audience          |
+| ---------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------ |
+| **[This README](README.md)**                                                 | Project overview, quick start, deployment      | Everyone                 |
+| **[Auto-Generated API Docs](/docs)**                                         | Interactive FastAPI documentation (Swagger UI) | Developers, Integrators  |
+| **[Database Documentation](src/database/resources/documentation/README.md)** | Schema, migrations, CRUD operations            | Backend Developers, DBAs |
 
 ## 🎯 Project Overview
 
-Code4me V2 is an AI-powered code completion platform developed for the **AISE laboratory at TU Delft**. It's designed as a research platform that combines  transformer models with real-world developer workflows through a JetBrains Plugin integration.
-
+Code4me V2 is an AI-powered code completion platform developed for the **AISE laboratory at TU Delft**. It's designed as a research platform that combines transformer models with real-world developer workflows through a JetBrains Plugin integration.
 
 ### Core Features
 
 #### 🤖 Code Completion
+
 - **Multi-Model Support**: Simultaneous inference from multiple transformer models with performance comparison
 - **Context-Aware Suggestions**: Real-time multi-file context analysis for improved completion relevance
 - **Language Support**: Python, JavaScript, Java, C++, and more programming languages
@@ -32,17 +31,20 @@ Code4me V2 is an AI-powered code completion platform developed for the **AISE la
 - **Confidence Scoring**: Model confidence analysis for completion quality assessment
 
 #### 👥 Collaborative Development
+
 - **Project Management**: Multi-user project collaboration with role-based access control
 - **Session Tracking**: Comprehensive development session analytics and user journey mapping
 - **Chat Integration**: In-project real-time communication system with AI-assisted responses
 
 #### 📊 Advanced Analytics & Telemetry
+
 - **Behavioral Telemetry**: Typing speed, acceptance patterns, user interaction analytics
 - **Contextual Telemetry**: Code context analysis, file paths, cursor position tracking
 - **Performance Metrics**: Model response times, accuracy measurements, system performance
 - **Ground Truth Collection**: User feedback collection for model evaluation and fine-tuning
 
 #### 🔐 Enterprise Security & Privacy
+
 - **Multi-Authentication**: OAuth 2.0 (Google) and traditional email/password authentication
 - **Session Management**: Redis-based distributed session handling with automatic expiration
 - **Secret Detection**: Automatic detection and redaction of sensitive information in code
@@ -58,7 +60,6 @@ docker-compose --version  # >= 2.0
 python --version          # >= 3.11
 node --version            # >= 18
 ```
-
 
 ## 🏗️ System Architecture
 
@@ -78,7 +79,6 @@ graph TB
     subgraph "Application Layer"
         API[FastAPI Backend<br/>Async REST API]
         WS[WebSocket Handlers<br/>Real-time Communication]
-        Auth[Authentication Service<br/>OAuth + JWT]
     end
 
     subgraph "Async Processing"
@@ -111,7 +111,7 @@ graph TB
     Worker1 --> Embeddings
     Worker2 --> DB
     API --> Cache
-    Auth --> Redis
+    API --> Redis
     Models --> DB
     Cache --> Storage
 ```
@@ -130,11 +130,11 @@ sequenceDiagram
     Client->>WS: Code Completion Request
     WS->>Redis: Validate Session & Project Tokens
     Redis-->>WS: Authentication Success
-    
+
     WS->>Celery: Queue Completion Task (LLM Queue)
     Celery->>AI: Multi-Model Inference
     AI-->>Celery: Model Predictions
-    
+
     Celery->>DB: Store Telemetry & Results (DB Queue)
     Celery->>WS: Publish Results to Connection
     WS-->>Client: Stream Completions
@@ -143,7 +143,6 @@ sequenceDiagram
     WS->>Celery: Queue Feedback Task
     Celery->>DB: Update Acceptance Status
 ```
-
 
 ## ⚡ Asynchronous Processing with Celery
 
@@ -178,7 +177,7 @@ graph TB
     LLM --> CompFeed
     LLM --> ChatReq
     LLM --> CtxUpdate
-    
+
     DB --> AddQuery
     DB --> AddGen
     DB --> AddTelem
@@ -188,6 +187,7 @@ graph TB
 #### LLM Tasks (High Priority)
 
 **`completion_request_task`**
+
 - **Purpose**: Process AI model inference for code completions
 - **Input**: Connection ID, tokens, completion request parameters
 - **Process**: Multi-model parallel inference with confidence scoring
@@ -195,18 +195,21 @@ graph TB
 - **Latency**: ~1-3 seconds per request
 
 **`completion_feedback_task`**
+
 - **Purpose**: Process user feedback on AI completions
 - **Input**: Completion ID, acceptance status, feedback text
 - **Process**: Update completion acceptance status and ground truth data
 - **Output**: Feedback confirmation to client
 
 **`chat_request_task`**
+
 - **Purpose**: Handle conversational AI chat completions
 - **Input**: Chat context, message history, project context
 - **Process**: Generate contextual AI responses using project knowledge
 - **Output**: Chat response streamed to WebSocket
 
 **`update_multi_file_context_task`**
+
 - **Purpose**: Update project-wide code context for better completions
 - **Input**: File contents, project structure, context changes
 - **Process**: Parse and index multi-file context for AI models
@@ -215,21 +218,25 @@ graph TB
 #### DB Tasks (Background Processing)
 
 **`add_completion_query_task`**
+
 - **Purpose**: Store completion request metadata for analytics
 - **Data**: User ID, session, context, telemetry, model parameters
 - **Storage**: PostgreSQL with indexed fields for fast queries
 
 **`add_generation_task`**
+
 - **Purpose**: Store AI model responses and performance metrics
 - **Data**: Model outputs, generation time, confidence scores
 - **Analytics**: Model performance comparison and optimization
 
 **`add_telemetry_task`**
+
 - **Purpose**: Store comprehensive user behavior analytics
 - **Data**: Typing patterns, acceptance rates, interaction timings
 - **Research**: Developer behavior insights for research publication
 
 **`add_context_task`**
+
 - **Purpose**: Store code context with semantic embeddings
 - **Data**: Code snippets, file metadata, vector embeddings
 - **Search**: Enable semantic code search with pgvector
@@ -239,12 +246,13 @@ graph TB
 The task processing flow follows a consistent pattern across all Celery tasks:
 
 1. **Authentication Validation**: Verify session and project tokens using Redis
-2. **Model Loading**: Initialize AI models and completion services  
+2. **Model Loading**: Initialize AI models and completion services
 3. **Request Processing**: Execute the specific task (completion, feedback, chat, etc.)
 4. **Result Publishing**: Send results back to WebSocket connection via message channels
 5. **Error Handling**: Graceful error handling with client notification
 
 **Key Implementation Files:**
+
 - **[LLM Tasks](src/celery_app/tasks/llm_tasks.py)** - AI model processing tasks
 - **[DB Tasks](src/celery_app/tasks/db_tasks.py)** - Database operation tasks
 - **[Celery Configuration](src/celery_app/celery_app.py)** - Task routing and worker setup
@@ -283,18 +291,21 @@ graph TB
 #### Token Management & Expiration
 
 **Authentication Tokens (`auth_token:*`)**
+
 - **Lifetime**: 1 hour (configurable)
 - **Data**: `{"user_id": "uuid", "expires_at": "timestamp"}`
 - **Purpose**: Primary authentication credential
 - **Expiration**: Automatic cleanup with hook triggers
 
 **Session Tokens (`session_token:*`)**
+
 - **Lifetime**: 1 hour (configurable, renewable)
 - **Data**: `{"auth_token": "uuid", "project_tokens": ["uuid1", "uuid2"], "user_preferences": {...}}`
 - **Purpose**: Track active user sessions and project access
 - **Cleanup**: Cascading deletion removes associated project tokens
 
 **Project Tokens (`project_token:*`)**
+
 - **Lifetime**: Tied to session lifetime
 - **Data**: `{"project_id": "uuid", "session_tokens": ["uuid1"], "multi_file_contexts": {...}, "multi_file_context_changes": {...}}`
 - **Purpose**: Project-specific access control and context storage
@@ -305,6 +316,7 @@ graph TB
 The Redis session management system handles the complete lifecycle of user sessions:
 
 **Session Creation Process:**
+
 1. Generate unique tokens (auth, session, project tokens)
 2. Store authentication token with user metadata
 3. Create session token linking to auth token and project access
@@ -312,24 +324,28 @@ The Redis session management system handles the complete lifecycle of user sessi
 5. Set up expiration hooks for automatic cleanup
 
 **Token Hierarchy:**
+
 - **Auth Token** → Primary authentication credential
-- **Session Token** → Links to auth token + project access list  
+- **Session Token** → Links to auth token + project access list
 - **Project Tokens** → Project-specific access + multi-file contexts
 - **User Token** → User preferences and session data
 
 **Implementation Details:**
+
 - **[Redis Manager](src/backend/redis_manager.py)** - Complete session management implementation
 - **[Authentication Utils](src/backend/utils.py)** - Token validation and JWT handling
 
 #### Real-time Data Caching
 
 **Multi-file Context Caching**
+
 - **Storage**: Project tokens contain live code context
 - **Purpose**: Provide AI models with multi-file awareness
 - **Performance**: Sub-millisecond context retrieval
 - **Persistence**: Periodically synced to PostgreSQL
 
 **Connection Management**
+
 - **WebSocket Tracking**: Active connections mapped to tokens
 - **Pub/Sub Channels**: Real-time message distribution
 - **Load Balancing**: Connection affinity across multiple backend instances
@@ -339,16 +355,19 @@ The Redis session management system handles the complete lifecycle of user sessi
 The system implements automatic token cleanup using Redis key expiration events:
 
 **Expiration Hooks:**
+
 - Session and auth tokens have corresponding "hook" keys that expire before the main token
 - Hook expiration triggers cleanup processes before the main token expires
 - Cascading deletion ensures related tokens are cleaned up together
 
 **Cleanup Process:**
+
 - **Session Expiration**: Removes associated project tokens and updates database
 - **Auth Token Expiration**: Invalidates all associated sessions
 - **Project Token Cleanup**: Syncs multi-file contexts to PostgreSQL before deletion
 
 **Background Monitoring:**
+
 - Redis pub/sub listener monitors key expiration events
 - Automatic database persistence for important session data
 - Graceful handling of concurrent session cleanup
@@ -394,6 +413,7 @@ graph TB
 #### Code Completion WebSocket (`/api/ws/completion`)
 
 **Authentication Flow:**
+
 1. Accept WebSocket connection from client
 2. Validate session token from cookie against Redis
 3. Extract and validate auth token from session data
@@ -402,6 +422,7 @@ graph TB
 6. Begin listening for completion requests and feedback
 
 **Connection Management:**
+
 - Each connection gets unique ID for result routing
 - Connections are mapped to project tokens for broadcast capabilities
 - Automatic cleanup on disconnection or error
@@ -409,24 +430,24 @@ graph TB
 
 **Implementation:** See **[WebSocket Completion Handler](src/backend/routers/ws/completion.py)** for complete flow.
 
-
-
 #### Connection Management & Scaling
 
 **Connection Registration System:**
+
 - WebSocket connections are registered with unique IDs
 - Connections are mapped to authentication tokens for access control
 - Support for broadcasting messages to all connections in a project
 - Automatic cleanup when connections are terminated
 
 **Task Result Publishing:**
+
 - Celery tasks publish results to specific message channels
 - Results are routed back to the originating WebSocket connection
 - Support for real-time streaming of AI model outputs
 - Error handling with graceful degradation
 
-
 **Implementation Files:**
+
 - **[WebSocket Manager](src/backend/websocket_manager.py)** - Connection tracking and management
 - **[Celery Broker Integration](src/App.py)** - Task result publishing
 - **[WebSocket Routers](src/backend/routers/ws/)** - Completion and chat handlers
@@ -443,8 +464,9 @@ Code4me V2 implements **security measures** including automated secret detection
 The system uses the `detect-secrets` library with multiple detection plugins to identify sensitive information in code:
 
 **Supported Secret Types:**
+
 - **Cloud Providers**: AWS access keys, Azure storage keys, Google Cloud credentials
-- **Development Platforms**: GitHub tokens, GitLab keys, JetBrains licenses  
+- **Development Platforms**: GitHub tokens, GitLab keys, JetBrains licenses
 - **Communication**: Slack tokens, Discord bot tokens, Telegram credentials
 - **Payment Systems**: Stripe API keys, PayPal credentials
 - **AI/ML Services**: OpenAI API keys, Hugging Face tokens
@@ -453,6 +475,7 @@ The system uses the `detect-secrets` library with multiple detection plugins to 
 - **Authentication**: JWT tokens, basic auth credentials
 
 **Real-time Processing:**
+
 - Secrets are detected during code completion requests
 - Automatic redaction with placeholder replacement
 - Configurable sensitivity levels and detection thresholds
@@ -466,26 +489,29 @@ The system uses the `detect-secrets` library with multiple detection plugins to 
 The system supports both traditional email/password authentication and OAuth 2.0 (Google) authentication:
 
 **Authentication:**
+
 - Email and password validation against database
 - Argon2 password hashing with salt for security
 - Secure password verification with timing attack protection
 - Account creation with email verification workflow
 
 **OAuth 2.0 Flow:**
+
 - Client receives JWT token from Google OAuth
-- Server validates JWT token using Google's public keys  
+- Server validates JWT token using Google's public keys
 - User information extracted from verified token
 - Existing user lookup or account creation process
 - Session and authentication tokens generated
 
 **Security Features:**
+
 - **Password Hashing**: Argon2 with configurable work factors
 - **JWT Validation**: Google OAuth token verification with public key validation
 - **Session Security**: HttpOnly cookies, HTTPS-only transmission, SameSite protection
 - **Rate Limiting**: Per-IP, per-endpoint request throttling
 
-
 **Implementation Files:**
+
 - **[Authentication Router](src/backend/routers/user/authenticate.py)** - Login and OAuth handling
 - **[Password Utils](src/utils.py)** - Secure password hashing and verification
 - **[JWT Utils](src/backend/utils.py)** - Token validation and processing
@@ -493,41 +519,44 @@ The system supports both traditional email/password authentication and OAuth 2.0
 #### Session Security
 
 **Secure Session Management**
+
 - **HttpOnly Cookies**: Prevent XSS access to auth tokens
 - **SameSite Protection**: CSRF prevention
 - **Automatic Expiration**: Configurable session timeouts
 - **Token Rotation**: New tokens on sensitive operations
 
 **Rate Limiting**
+
 ```python
 class SimpleRateLimiter(BaseHTTPMiddleware):
     """Per-IP, per-endpoint rate limiting."""
-    
+
     def __init__(self, app: FastAPI):
         self.request_counts: Dict[str, int] = {}
         self.locks: Dict[str, threading.Lock] = {}
-    
+
     async def dispatch(self, request: Request, call_next):
         client_key = f"{request.client.host}:{request.url.path}"
-        
+
         with self.locks.get(client_key, threading.Lock()):
             current_count = self.request_counts.get(client_key, 0)
             rate_limit = self._get_rate_limit(request.url.path)
-            
+
             if current_count >= rate_limit:
                 return JsonResponseWithStatus(
-                    status_code=429, 
+                    status_code=429,
                     content=TooManyRequests()
                 )
-            
+
             self.request_counts[client_key] = current_count + 1
-        
+
         return await call_next(request)
 ```
 
 #### Data Privacy & Compliance
 
 **GDPR Compliance**
+
 - **User Consent**: opt-in for telemetry collection
 - **Data Minimization**: Only collect necessary data
 - **Right to Deletion**: Complete user data removal
@@ -535,6 +564,7 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
 - **Privacy by Design**: Privacy-preserving settings
 
 **User Preference Controls**
+
 ```python
 DEFAULT_USER_PREFERENCE = {
     "store_context": False,              # Code context storage
@@ -546,6 +576,7 @@ DEFAULT_USER_PREFERENCE = {
 ```
 
 **Encrypted Data Storage**
+
 - **Database Encryption**: TLS encryption for all connections
 - **Field-level Encryption**: Sensitive data encrypted at rest
 - **Key Management**: Secure key rotation and storage
@@ -558,6 +589,7 @@ The Code4me V2 API is fully documented using FastAPI's automatic documentation g
 ### Key API Endpoints
 
 #### Authentication
+
 ```http
 POST   /api/user/create/        # Create new user account
 POST   /api/user/authenticate/  # User login
@@ -566,6 +598,7 @@ DELETE /api/user/delete/        # Delete user account
 ```
 
 #### Code Completion
+
 ```http
 POST   /api/completion/request/                    # Request code completion
 GET    /api/completion/{query_id}                  # Retrieve completion results
@@ -574,12 +607,14 @@ POST   /api/completion/multi-file-context/update/ # Update project context
 ```
 
 #### Real-time Features
+
 ```http
 WS     /api/ws/completion   # Real-time completion streaming
 WS     /api/ws/chat         # Project chat functionality
 ```
 
 #### Project Management
+
 ```http
 POST   /api/project/create/     # Create new project
 GET    /api/project/{id}        # Get project details
@@ -595,6 +630,7 @@ POST   /api/project/{id}/join   # Join project
 The system uses PostgreSQL with pgvector extension for efficient similarity search:
 
 ### Core Tables
+
 - **Users**: Authentication and profile management with OAuth support
 - **Projects**: Collaborative development workspaces with multi-file context
 - **Sessions**: Development session tracking and analytics
@@ -603,6 +639,7 @@ The system uses PostgreSQL with pgvector extension for efficient similarity sear
 - **Context**: Multi-file code context storage with vector embeddings
 
 ### Key Features
+
 - **Polymorphic Inheritance**: Flexible query type system for different completion types
 - **Vector Embeddings**: Semantic code search with pgvector for similar code discovery
 - **Migration System**: Hybrid SQL initialization + Alembic migrations for schema evolution
@@ -625,17 +662,17 @@ pytest tests/backend_tests/
 ```
 
 ### Test Architecture
+
 - **Unit Tests**: Individual component testing (80%+ coverage target)
 - **Integration Tests**: testing with real database
 - **WebSocket Tests**: Real-time communication validation
 - **Database Tests**: CRUD operation validation and migration testing
 
 ### Quality Gates
+
 - **Pre-commit Hooks**: Automatic code formatting and linting
 - **CI/CD Pipeline**: Automated testing on every commit
 - **Security Scanning**: Automated vulnerability detection
-
-
 
 ## 🔧 Configuration Management
 
@@ -695,8 +732,9 @@ STORE_MULTI_FILE_CONTEXT_ON_DB=true
 The application uses Pydantic-based configuration with validation for feature management:
 
 **Key Configuration Categories:**
+
 - **Feature Toggles**: Enable/disable secret detection, multi-model inference, telemetry collection
-- **Performance Tuning**: Max completion tokens, timeout settings, concurrent request limits  
+- **Performance Tuning**: Max completion tokens, timeout settings, concurrent request limits
 - **Security Settings**: Token expiration times, rate limiting thresholds
 - **AI Model Configuration**: Default model selection, inference parameters
 - **Data Storage**: Context storage preferences, retention policies
@@ -706,6 +744,7 @@ The application uses Pydantic-based configuration with validation for feature ma
 ## 🚀 Performance Optimization
 
 ### Application Performance
+
 - **Async Processing**: FastAPI with async/await for I/O operations
 - **Connection Pooling**: SQLAlchemy async connection management
 - **Caching Strategy**: Redis-based multi-layer caching
@@ -713,18 +752,19 @@ The application uses Pydantic-based configuration with validation for feature ma
 - **Database Optimization**: Indexed queries and query optimization
 
 ### AI Model Performance
+
 - **Model Caching**: Pre-loaded models in memory
 - **GPU Acceleration**: CUDA support for transformer models
 - **Batch Processing**: Multiple completions in single inference
 - **Model Quantization**: Reduced precision for faster inference
 - **Response Streaming**: Progressive completion delivery
 
-
 ## 🤝 Contributing & Development
 
 ### Code Quality Standards
 
 **Development Standards:**
+
 - **Type Hints**: Full type annotations for better IDE support and runtime validation
 - **Documentation**: Comprehensive docstrings using Google/NumPy style
 - **Testing**: Unit tests with coverage requirement
@@ -733,6 +773,7 @@ The application uses Pydantic-based configuration with validation for feature ma
 - **Performance**: Consider performance implications and async best practices
 
 **Code Structure:**
+
 - Pydantic models for request/response validation with detailed field descriptions
 - FastAPI dependency injection for clean separation of concerns
 - SQLAlchemy ORM with proper relationship definitions
@@ -740,21 +781,21 @@ The application uses Pydantic-based configuration with validation for feature ma
 
 **Example Standards:** See existing codebase files like **[Queries.py](src/Queries.py)** and **[database models](src/database/db_schemas.py)** for implementation examples.
 
-
 ## Resources
 
 ### Documentation Links
-- **[Interactive API Reference](/docs)** - Swagger UI with live testing 
+
+- **[Interactive API Reference](src/backend/resources/documentation/fastapi-doc.html)** - Swagger UI with live testing
 - **[Database Guide](src/database/resources/documentation/README.md)** - Schema, migrations, and CRUD operations
 
 ### External Resources
+
 - **[FastAPI Documentation](https://fastapi.tiangolo.com/)** - Web framework reference
 - **[PostgreSQL Documentation](https://www.postgresql.org/docs/)** - Database documentation
 - **[Redis Documentation](https://redis.io/docs/)** - Caching and session management
 - **[Celery Documentation](https://docs.celeryproject.org/)** - Async task processing
 - **[React Documentation](https://reactjs.org/docs/)** - Frontend framework
 - **[Transformers Documentation](https://huggingface.co/docs/transformers/)** - AI model library
-
 
 ## 🙏 Acknowledgments
 
@@ -764,4 +805,3 @@ The application uses Pydantic-based configuration with validation for feature ma
 - **FastAPI Community** for excellent async web framework and documentation
 
 ---
-
