@@ -84,23 +84,11 @@ class TemplateCompletionModel(BaseLLM):
             cache_dir=config.model_cache_dir,
             trust_remote_code=True,
         )
-        bnb_config = None
-        if config.model_quantization in ("int8", "int4"):
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=(config.model_quantization == "int4"),
-                load_in_8bit=(config.model_quantization == "int8"),
-                llm_int8_threshold=6.0,
-                llm_int8_has_fp16_weight=True,
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             cache_dir=config.model_cache_dir,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16,
-            quantization_config=bnb_config,
             **model_kwargs,
         )
         model.eval()

@@ -4,8 +4,6 @@ FROM nvidia/cuda:12.6.0-runtime-ubuntu22.04
 # as the official image is based on ubuntu, we need to update the package list
 # and install some dependencies
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
     wget \
     libnvidia-ml-dev \
     software-properties-common \
@@ -13,7 +11,6 @@ RUN apt-get update && apt-get install -y \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* \
 
-ENV CC=/usr/bin/gcc
 # install miniconda to manage the python environment
 # Note:
 # Why did I install miniconda?

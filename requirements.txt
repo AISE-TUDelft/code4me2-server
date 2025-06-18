@@ -64,9 +64,6 @@ accelerate~=1.7.0
 torch~=2.7.0           # Uncomment if using PyTorch
 # vllm~=0.5.0            # Uncomment if using vLLM
 huggingface_hub[cli]
-bitsandbytes~= 0.43.0
-triton~=3.3.0
-
 
 # -----------------------
 # Utilities
