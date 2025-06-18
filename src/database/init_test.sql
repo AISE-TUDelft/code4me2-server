@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS public.model_name
 (
     model_id BIGSERIAL PRIMARY KEY,
     model_name text NOT NULL,
+    meta_data text NOT NULL,
     is_instruction_tuned BOOLEAN NOT NULL DEFAULT FALSE
 );
 
@@ -369,12 +370,458 @@ CREATE INDEX IF NOT EXISTS idx_had_generation_meta_query_model ON public.had_gen
 CREATE INDEX IF NOT EXISTS idx_ground_truth_completion_query_timestamp ON public.ground_truth (completion_query_id, truth_timestamp);
 
 -- Insert default data
-INSERT INTO public.config (config_data) VALUES ('{"default": true, "version": "1.0"}');
+INSERT INTO public.config (config_data) VALUES ('config {
+  // module configuration
+  modules {
+    // List of available modules
+    available = [
+      {
+        id = "BehavioralTelemetryAggregator"
+        class = "me.code4me.services.modules.aggregators.BaseBehavioralTelemetryAggregator"
+        name = "Behavioral Telemetry Aggregator"
+        type = "aggregator"
+        description = "Module for aggregating behavioral telemetry data"
+        enabled = true
+        // Example of submodules
+        submodules = [
+          {
+            id = "TimeSinceLastAcceptedCompletion"
+            class = "me.code4me.services.modules.telemetry.behavioral.TimeSinceLastAcceptedCompletion"
+            name = "Time Since Last Accepted Completion"
+            type = "telemetry"
+            description = "Calculates the time since the last accepted completion"
+            enabled = true
+          },
+          {
+            id = "TimeSinceLastShownCompletion"
+            class = "me.code4me.services.modules.telemetry.behavioral.TimeSinceLastShownCompletion"
+            name = "Time Since Last Shown Completion"
+            type = "telemetry"
+            description = "Calculates the time since the last shown completion"
+            enabled = true
+          },
+          {
+            id = "TypingSpeed"
+            class = "me.code4me.services.modules.telemetry.behavioral.TypingSpeed"
+            name = "Typing Speed"
+            type = "telemetry"
+            description = "Calculates the typing speed of the user"
+            enabled = true
+          }
+        ]
+        // Example of dependencies
+        dependencies = [
+          {
+            moduleId = "TimeSinceLastAcceptedCompletion"
+            isHard = false
+          },
+          {
+            moduleId = "TimeSinceLastShownCompletion"
+            isHard = false
+          },
+          {
+            moduleId = "TypingSpeed"
+            isHard = false
+          }
+        ]
+      },
 
-INSERT INTO public.model_name (model_name, is_instruction_tuned) VALUES
-    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE),
---     ('bigcode/starcoder2-3b', FALSE),
-    ('mistralai/Ministral-8B-Instruct-2410', TRUE);
+      {
+          id = "ContextualTelemetryAggregator"
+          class = "me.code4me.services.modules.aggregators.BaseContextualTelemetryAggregator"
+          name = "Contextual Telemetry Aggregator"
+          type = "aggregator"
+          description = "Module for aggregating contextual telemetry data"
+          enabled = true
+          // Example of submodules
+          submodules = [
+          {
+              id = "EditorContextRetrievalModule"
+              class = "me.code4me.services.modules.telemetry.contextual.EditorContextRetrievalModule"
+              name = "Editor Context Retrieval Module"
+              type = "telemetry"
+              description = "Retrieves context from the editor"
+              enabled = true
+          }
+          ]
+          // Example of dependencies
+          dependencies = [
+          {
+              moduleId = "EditorContextRetrievalModule"
+              isHard = false
+          }
+          ]
+      },
+
+      {
+        id = "contextAggregator"
+        class = "me.code4me.services.modules.aggregators.BaseContextAggregator"
+        name = "Context Aggregator"
+        type = "aggregator"
+        description = "Module for aggregating context data"
+        enabled = true
+        // Example of submodules
+        submodules = [
+          {
+            id = "FileContextRetrievalModule"
+            class = "me.code4me.services.modules.context.FileContextRetrievalModule"
+            name = "File Context Retrieval Module"
+            type = "context"
+            description = "Retrieves context from the file"
+            enabled = true
+          },
+          {
+            id = "MultiFileContextRetrievalModule"
+            class = "me.code4me.services.modules.context.MultiFileContextRetrievalModule"
+            name = "Multi File Context Retrieval Module"
+            type = "context"
+            description = "Retrieves context from multiple files"
+            enabled = true
+          }
+        ]
+        // Example of dependencies
+        dependencies = [
+          {
+            moduleId = "FileContextRetrievalModule"
+            isHard = true  // This is a hard dependency
+          },
+          {
+            moduleId = "MultiFileContextRetrievalModule"
+            isHard = false
+          }
+        ]
+      },
+
+      {
+        id = "BaseModelAggregator"
+        class = "me.code4me.services.modules.aggregators.BaseModelAggregator"
+        name = "Model Aggregator"
+        type = "aggregator"
+        description = "Module for aggregating model data"
+        enabled = true
+        submodules = [
+          {
+            id = "ChatModel"
+            class = "me.code4me.services.modules.model.ChatModel"
+            name = "Model Selection and Settings for Chat"
+            type = "model"
+            description = "Module for selecting the appropriate model for chat interactions"
+            enabled = true
+          }
+          {
+            id = "CompletionModel"
+            class = "me.code4me.services.modules.model.CompletionModel"
+            name = "Model Selection and Settings for Code Completion"
+            type = "model"
+            description = "Module for selecting the appropriate model for code generation"
+            enabled = true
+          }
+        ]
+
+        dependencies = [
+          {
+            moduleId = "ChatModel"
+            isHard = true
+          },
+          {
+            moduleId = "CompletionModel"
+            isHard = true
+          }
+        ]
+      },
+
+      {
+        id = "AfterInsertionAggregator"
+        class = "me.code4me.services.modules.aggregators.BaseAfterInsertionAggregator"
+        name = "After Insertion Aggregator"
+        type = "aggregator"
+        description = "Module for aggregating after code insertion activities"
+        enabled = true
+        submodules = [
+          {
+            id = "GroundTruth"
+            class = "me.code4me.services.modules.afterInsertion.GroundTruth"
+            name = "Ground Truth Module"
+            type = "afterInsertion"
+            description = "Module for handling actions after code insertion"
+            enabled = true
+          }
+          {
+            id = "AcceptanceFeedback"
+            class = "me.code4me.services.modules.afterInsertion.AcceptanceFeedback"
+            name = "Code Insertion Acceptance Feedback Module"
+            type = "afterInsertion"
+            description = "Module for sending acceptance feedback after code insertion"
+            enabled = true
+          }
+        ]
+        dependencies = [
+          {
+            moduleId = "GroundTruth"
+            isHard = false
+          }
+          {
+            moduleId = "AcceptanceFeedback"
+            isHard = false
+          }
+        ]
+      }
+
+    ]
+
+    // Module categories
+    categories = {
+      behavioralTelemetry = {
+        path = "me.code4me.services.modules.telemetry.behavioral"
+        description = "Modules for behavioral telemetry collection"
+      }
+      contextualTelemetry = {
+        path = "me.code4me.services.modules.telemetry.contextual"
+        description = "Modules for contextual telemetry collection"
+      }
+      context = {
+        path = "me.code4me.services.modules.context"
+        description = "Modules for context retrieval"
+      }
+      aggregators = {
+        path = "me.code4me.services.modules.aggregators"
+        description = "Modules for data aggregation"
+      }
+      models = {
+        path = "me.code4me.services.modules.model"
+        description = "Modules for model selection and settings"
+      }
+      afterInsertion = {
+        path = "me.code4me.services.modules.afterInsertion"
+        description = "Modules for actions after code insertion"
+      }
+    }
+  }
+  // Server Settings
+  server {
+    host = "http://127.0.0.1"
+    port = 8008
+    contextPath = ""
+    timeout = 5000
+  }
+  // Authentication Settings
+  auth {
+    google {
+      clientId = "67736337656-un249ihklv5i93n033i1v46q12bfv5g2.apps.googleusercontent.com"
+    }
+  }
+  // model configuration
+  models {
+    available = [
+      {
+        id = 1
+        name = "deepseek-coder-1.3b"
+        isChatModel = false
+        isDefault = true
+      }
+      {
+        id = 2,
+        name = "starcoder2-3b"
+        isChatModel = false
+        isDefault = false
+      }
+      {
+        id = 3
+        name = "Ministral-8B-Instruct"
+        isChatModel = true
+        isDefault = true
+      }
+    ]
+    systemPrompt = "You are a helpful assistant that provides information and answers questions to the best of your ability. Please respond in a clear and concise manner."
+  }
+
+  languages {
+    "Oracle NetSuite" = 1,
+    "GoPlusBuild" = 2,
+    "HelmJSON" = 3,
+    "USS" = 4,
+    "UnityYaml" = 5,
+    "Blade" = 6,
+    "Xaml" = 7,
+    "Meson" = 8,
+    "Angular SVG template" = 9,
+    "Pug (ex-Jade)" = 10,
+    "Java" = 11,
+    "DTD" = 12,
+    "SQL" = 13,
+    "LinkerScript" = 14,
+    "Asp" = 15,
+    "ClickHouse" = 16,
+    "CMakeCache" = 17,
+    "Chameleon template" = 18,
+    "VB" = 19,
+    ".ignore (IgnoreLang)" = 20,
+    "Vue template" = 21,
+    "UastContextLanguage" = 22,
+    "EditorConfig" = 23,
+    "XPath" = 24,
+    "MariaDB" = 25,
+    "MySQL based" = 26,
+    "MongoJS" = 27,
+    "Angular SVG template (17+)" = 28,
+    "IBM Db2 LUW" = 29,
+    "SCSS" = 30,
+    "DotEnv" = 31,
+    "Kotlin/Native Def" = 32,
+    "JSONPath" = 33,
+    "Microsoft SQL Server" = 34,
+    "Flow JS" = 35,
+    "Devicetree" = 36,
+    "JSON5" = 37,
+    "protobase" = 38,
+    "Angular HTML template (17+)" = 39,
+    "BladeHTML" = 40,
+    "TypeScript" = 41,
+    "Metadata JSON" = 42,
+    "Greenplum" = 43,
+    "Handlebars" = 44,
+    "Oracle SQL*Plus" = 45,
+    "JVM languages" = 46,
+    "Python" = 47,
+    "GoBuild" = 48,
+    "VueTS" = 49,
+    "JSON" = 50,
+    "ASM" = 51,
+    "VueExpr" = 52,
+    "DynamoDB" = 53,
+    "MSBuild" = 54,
+    "C#" = 55,
+    "Exasol" = 56,
+    "Sybase ASE" = 57,
+    "XML" = 58,
+    ".gitignore (GitIgnore)" = 59,
+    "vgo" = 60,
+    "prototext" = 61,
+    "Groovy" = 62,
+    "ECMAScript 6" = 63,
+    "TypeScript JSX" = 64,
+    "CSS" = 65,
+    "Config" = 66,
+    "DjangoUrlPath" = 67,
+    "Composer Log" = 68,
+    "Jinja2" = 69,
+    "Injectable PHP" = 70,
+    "HelmTEXT" = 71,
+    "PythonStub" = 72,
+    "GoTag" = 73,
+    "JSON Lines" = 74,
+    "PyTypeHint" = 75,
+    "Angular HTML template (18.1+)" = 76,
+    "JSUnicodeRegexp" = 77,
+    "Razor" = 78,
+    "CMake" = 79,
+    "HTML" = 80,
+    "HtmlCompatible" = 81,
+    "Go" = 82,
+    "Angular2" = 83,
+    "XHTML" = 84,
+    "VueJS" = 85,
+    "Apache Cassandra" = 86,
+    "IBM Db2 iSeries" = 87,
+    "SQL2016" = 88,
+    "exclude (GitExclude)" = 89,
+    "ShaderLab" = 90,
+    ".hgignore (HgIgnore)" = 91,
+    "Angular HTML template" = 92,
+    "YouTrack" = 93,
+    "Markdown" = 94,
+    "WerfYAML" = 95,
+    "RELAX-NG" = 96,
+    "UXML" = 97,
+    "Kotlin" = 98,
+    "GDB" = 99,
+    "Redis" = 100,
+    "XPath2" = 101,
+    "PostCSS" = 102,
+    "Jupyter" = 103,
+    "Twig" = 104,
+    "JShell Snippet" = 105,
+    "Go Template" = 106,
+    "SQLite" = 107,
+    "PyFunctionTypeComment" = 108,
+    "Angular SVG template (18.1+)" = 109,
+    "HTTP Request" = 110,
+    "Scmp" = 111,
+    "Plain text" = 112,
+    "H2" = 113,
+    "Gradle Declarative Configuration" = 114,
+    "RuleSet" = 115,
+    "plan9_x86" = 116,
+    "WebSymbolsEnabledLanguage" = 117,
+    "Properties" = 118,
+    "Asxx" = 119,
+    "Vertica" = 120,
+    "JVM" = 121,
+    "ModuleMap" = 122,
+    "C/C++" = 123,
+    "Resx" = 124,
+    "Blazor" = 125,
+    "HSQLDB" = 126,
+    "Cookie" = 127,
+    "Generic SQL" = 128,
+    "XsdRegExp" = 129,
+    "SlnLaunchLanguage" = 130,
+    "Dockerfile" = 131,
+    "MySQL" = 132,
+    "IL" = 133,
+    "HelmYAML" = 134,
+    "Terminal Prompt" = 135,
+    "Requirements" = 136,
+    "Apache Spark" = 137,
+    "HttpClientHandlerJavaScriptDialect" = 138,
+    "textmate" = 139,
+    "QML" = 140,
+    "GoTime" = 141,
+    "F#" = 142,
+    "PostgreSQL" = 143,
+    "Rest language" = 144,
+    "protobuf" = 145,
+    "Oracle" = 146,
+    "Cgo" = 147,
+    ".dockerignore (DockerIgnore)" = 148,
+    "JQL" = 149,
+    "Manifest" = 150,
+    "LLDB" = 151,
+    "Makefile" = 152,
+    "RegExp" = 153,
+    "GoFuzzCorpus" = 154,
+    "Cython" = 155,
+    "Sass" = 156,
+    "TOML" = 157,
+    "Shell Script" = 158,
+    "Ini" = 159,
+    "Less" = 160,
+    "CockroachDB" = 161,
+    "Apache Derby" = 162,
+    "GoDebug" = 163,
+    "SolutionFile" = 164,
+    "YAML" = 165,
+    "ActionScript" = 166,
+    "JSRegexp" = 167,
+    "T4" = 168,
+    "JavaScript" = 169,
+    "Gherkin" = 170,
+    "TerminalOutput" = 171,
+    "SVG" = 172,
+    "SPI" = 173,
+    "Doxygen" = 174,
+    "Notebook" = 175,
+    "Apache Hive" = 176,
+    "GithubExpressionLanguage" = 177,
+    "PythonRegExp" = 178,
+    "unknown" = 179,
+  }
+}');
+
+INSERT INTO public.model_name (model_name, is_instruction_tuned, meta_data) VALUES
+    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE,'{"fim_template":"{multi_file_context}<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>", "file_separator":"\n\n"}'),
+    ('bigcode/starcoder2-3b', FALSE,'{"fim_template":"{multi_file_context}<fim_prefix>{prefix}<fim_suffix>{suffix}<fim_middle>", "file_separator":"<file_sep>"}'),
+    ('mistralai/Ministral-8B-Instruct-2410', TRUE, '{}');
 
 INSERT INTO public.programming_language (language_name) VALUES
     ('Oracle NetSuite'), ('GoPlusBuild'), ('HelmJSON'), ('USS'), ('UnityYaml'),
@@ -393,7 +840,6 @@ INSERT INTO public.programming_language (language_name) VALUES
     ('exclude (GitExclude)'), ('ShaderLab'), ('.hgignore (HgIgnore)'), ('Angular HTML template'), ('YouTrack'), ('Markdown'), ('WerfYAML'), ('RELAX-NG'),
     ('UXML'), ('Kotlin'), ('GDB'), ('Redis'), ('XPath2'), ('PostCSS'), ('Jupyter'), ('Twig'), ('JShell Snippet'), ('Go Template'),
     ('SQLite'), ('PyFunctionTypeComment'), ('Angular SVG template (18.1+)'), ('HTTP Request'), ('Scmp'), ('Plain text'), ('H2'), ('Gradle Declarative Configuration'), ('RuleSet'), ('plan9_x86'), ('WebSymbolsEnabledLanguage'), ('Properties'), ('Asxx'), ('Vertica'), ('JVM'), ('ModuleMap'), ('C/C++'), ('Resx'), ('Blazor'), ('HSQLDB'), ('Cookie'), ('Generic SQL'), ('XsdRegExp'), ('SlnLaunchLanguage'), ('Dockerfile'), ('MySQL'), ('IL'), ('HelmYAML'), ('Terminal Prompt'), ('Requirements'), ('Apache Spark'), ('HttpClientHandlerJavaScriptDialect'), ('textmate'), ('QML'), ('GoTime'), ('F#'), ('PostgreSQL'), ('Rest language'), ('protobuf'), ('Oracle'), ('Cgo'), ('.dockerignore (DockerIgnore)'), ('JQL'), ('Manifest'), ('LLDB'), ('Makefile'), ('RegExp'), ('GoFuzzCorpus'), ('Cython'), ('Sass'), ('TOML'), ('Shell Script'), ('Ini'), ('Less'), ('CockroachDB'), ('Apache Derby'), ('GoDebug'), ('SolutionFile'), ('YAML'), ('ActionScript'), ('JSRegexp'), ('T4'), ('JavaScript'), ('Gherkin'), ('TerminalOutput'), ('SVG'), ('SPI'), ('Doxygen'), ('Notebook'), ('Apache Hive'), ('GithubExpressionLanguage'), ('PythonRegExp'),('unknown');
-
 
 INSERT INTO public.trigger_type (trigger_type_name) VALUES ('manual'), ('auto'), ('idle');
 
