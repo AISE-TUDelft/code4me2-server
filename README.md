@@ -962,7 +962,7 @@ pytest tests/backend_tests/
 
 ### Test Architecture
 
-- **Unit Tests**: Individual component testing (80%+ coverage target)
+- **Unit Tests**: Individual component testing ([80%+ coverage target](src/backend/resources/documentation/testing report/index.html) ) 
 - **Integration Tests**: testing with real database
 - **WebSocket Tests**: Real-time communication validation
 - **Database Tests**: CRUD operation validation and migration testing

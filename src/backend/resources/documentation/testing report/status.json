@@ -1,0 +1,1862 @@
+{
+  "note": "This file is an internal implementation detail to speed up HTML report generation. Its format can change at any time. You might be looking for the JSON report: https://coverage.rtfd.io/cmd.html#cmd-json",
+  "format": 5,
+  "version": "7.8.0",
+  "globals": "306d9691986cc244faf156c63e640f17",
+  "files": {
+    "z_dccf1bbefc6e0961_App_py": {
+      "hash": "f758c0932c4e55cb9120f7269db9724b",
+      "index": {
+        "url": "z_dccf1bbefc6e0961_App_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\App.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 94,
+          "n_excluded": 0,
+          "n_missing": 68,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_dccf1bbefc6e0961_Code4meV2Config_py": {
+      "hash": "3331f27de50759ece02fdd1ddf02e947",
+      "index": {
+        "url": "z_dccf1bbefc6e0961_Code4meV2Config_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\Code4meV2Config.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 51,
+          "n_excluded": 0,
+          "n_missing": 1,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_dccf1bbefc6e0961_Queries_py": {
+      "hash": "dae7bb44ca7e0f97b27de0223a32be56",
+      "index": {
+        "url": "z_dccf1bbefc6e0961_Queries_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\Queries.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 227,
+          "n_excluded": 0,
+          "n_missing": 13,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4bcf5e2c18a7f1a2_Responses_py": {
+      "hash": "bbb99f67bac33dffc03876b277776a61",
+      "index": {
+        "url": "z_4bcf5e2c18a7f1a2_Responses_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\Responses.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 167,
+          "n_excluded": 0,
+          "n_missing": 3,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4bcf5e2c18a7f1a2___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_4bcf5e2c18a7f1a2___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4bcf5e2c18a7f1a2_celery_broker_py": {
+      "hash": "8f63cee2eb749aee2d837460e9230eed",
+      "index": {
+        "url": "z_4bcf5e2c18a7f1a2_celery_broker_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\celery_broker.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 94,
+          "n_excluded": 0,
+          "n_missing": 62,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_5091266e7f2f06a0_ChatCompletionModel_py": {
+      "hash": "c150c7b4712141449f8624e08b243e37",
+      "index": {
+        "url": "z_5091266e7f2f06a0_ChatCompletionModel_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\completion\\ChatCompletionModel.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 161,
+          "n_excluded": 0,
+          "n_missing": 48,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_5091266e7f2f06a0_TemplateCompletionModel_py": {
+      "hash": "614ec7ea4960e5b5ee19a52730c87971",
+      "index": {
+        "url": "z_5091266e7f2f06a0_TemplateCompletionModel_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\completion\\TemplateCompletionModel.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 133,
+          "n_excluded": 0,
+          "n_missing": 88,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_5091266e7f2f06a0___init___py": {
+      "hash": "4b67103e2cd186f15faceb68dedceced",
+      "index": {
+        "url": "z_5091266e7f2f06a0___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\completion\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 39,
+          "n_excluded": 0,
+          "n_missing": 26,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4bcf5e2c18a7f1a2_email_utils_py": {
+      "hash": "d99976982e269e99f45dfe856003176d",
+      "index": {
+        "url": "z_4bcf5e2c18a7f1a2_email_utils_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\email_utils.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 48,
+          "n_excluded": 0,
+          "n_missing": 20,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4bcf5e2c18a7f1a2_redis_manager_py": {
+      "hash": "eb16820fd412b1d5d87dd0e0b46e0a7c",
+      "index": {
+        "url": "z_4bcf5e2c18a7f1a2_redis_manager_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\redis_manager.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 140,
+          "n_excluded": 0,
+          "n_missing": 78,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_270c80446b0ae180___init___py": {
+      "hash": "5e2131b468a77f615cf0688ffc59c27e",
+      "index": {
+        "url": "z_270c80446b0ae180___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 17,
+          "n_excluded": 0,
+          "n_missing": 1,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_21422a9dcfbd7695___init___py": {
+      "hash": "24cb10f037a9cbc4f3a409ccfbf082e8",
+      "index": {
+        "url": "z_21422a9dcfbd7695___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\chat\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 6,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_21422a9dcfbd7695_delete_py": {
+      "hash": "0120f8b5c4a199e5fb44590d68c4c1fc",
+      "index": {
+        "url": "z_21422a9dcfbd7695_delete_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\chat\\delete.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 36,
+          "n_excluded": 0,
+          "n_missing": 3,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_21422a9dcfbd7695_get_py": {
+      "hash": "952ab545a9fffaf412a1cd5b1a44efe9",
+      "index": {
+        "url": "z_21422a9dcfbd7695_get_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\chat\\get.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 51,
+          "n_excluded": 0,
+          "n_missing": 4,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_21422a9dcfbd7695_request_py": {
+      "hash": "67b1cda2b787d0ffa672c9633000fa03",
+      "index": {
+        "url": "z_21422a9dcfbd7695_request_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\chat\\request.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 125,
+          "n_excluded": 0,
+          "n_missing": 23,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4d5084838f3dcb40___init___py": {
+      "hash": "65e22f4fd83081663ec08f36300954cf",
+      "index": {
+        "url": "z_4d5084838f3dcb40___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\completion\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 10,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4d5084838f3dcb40_feedback_py": {
+      "hash": "6ab8adaace238db871c14759a96bcafc",
+      "index": {
+        "url": "z_4d5084838f3dcb40_feedback_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\completion\\feedback.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 41,
+          "n_excluded": 0,
+          "n_missing": 2,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4d5084838f3dcb40_get_py": {
+      "hash": "4d875c8b8b103beea6a9ec320008f006",
+      "index": {
+        "url": "z_4d5084838f3dcb40_get_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\completion\\get.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 33,
+          "n_excluded": 0,
+          "n_missing": 6,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_02a283a30322b45f___init___py": {
+      "hash": "7fd9cc283565e56f0cecc44774336d6d",
+      "index": {
+        "url": "z_02a283a30322b45f___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\completion\\multi_file_context\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 4,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_02a283a30322b45f_update_py": {
+      "hash": "4a95521d151b8d0c5cd0d4ddf53cc2ba",
+      "index": {
+        "url": "z_02a283a30322b45f_update_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\completion\\multi_file_context\\update.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 70,
+          "n_excluded": 0,
+          "n_missing": 9,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4d5084838f3dcb40_request_py": {
+      "hash": "9c66078d095f3664202be1f9d3e97c8c",
+      "index": {
+        "url": "z_4d5084838f3dcb40_request_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\completion\\request.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 108,
+          "n_excluded": 0,
+          "n_missing": 5,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4b0fbbae1f1379d5___init___py": {
+      "hash": "66a88957afa6f3c398c0f470400d71e3",
+      "index": {
+        "url": "z_4b0fbbae1f1379d5___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\project\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 6,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4b0fbbae1f1379d5_activate_py": {
+      "hash": "2b3f1e4ecdd4511637dad321bc74e23c",
+      "index": {
+        "url": "z_4b0fbbae1f1379d5_activate_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\project\\activate.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 57,
+          "n_excluded": 0,
+          "n_missing": 8,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4b0fbbae1f1379d5_create_py": {
+      "hash": "8f8dba9437523030141e4e406d9fd898",
+      "index": {
+        "url": "z_4b0fbbae1f1379d5_create_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\project\\create.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 48,
+          "n_excluded": 0,
+          "n_missing": 4,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7046671a6b297bba___init___py": {
+      "hash": "95902c668dd0bddc026779c79b5d7f97",
+      "index": {
+        "url": "z_7046671a6b297bba___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\session\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 6,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7046671a6b297bba_acquire_py": {
+      "hash": "67e21be8f1344dcd54e270ec36806a72",
+      "index": {
+        "url": "z_7046671a6b297bba_acquire_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\session\\acquire.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 38,
+          "n_excluded": 0,
+          "n_missing": 3,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7046671a6b297bba_deactivate_py": {
+      "hash": "55812c780372e362f465f3ed41fa9941",
+      "index": {
+        "url": "z_7046671a6b297bba_deactivate_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\session\\deactivate.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 36,
+          "n_excluded": 0,
+          "n_missing": 3,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37a9b3078b043b98___init___py": {
+      "hash": "7fb8df2839f6dd5acc924e3379dd65bc",
+      "index": {
+        "url": "z_37a9b3078b043b98___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\user\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 16,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37a9b3078b043b98_authenticate_py": {
+      "hash": "157e8ea1fc149bcb1338f3747ecf151e",
+      "index": {
+        "url": "z_37a9b3078b043b98_authenticate_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\user\\authenticate.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 61,
+          "n_excluded": 0,
+          "n_missing": 12,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37a9b3078b043b98_create_py": {
+      "hash": "bf39b2d8a9a1fa49e6c6be2c1f87cec6",
+      "index": {
+        "url": "z_37a9b3078b043b98_create_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\user\\create.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 30,
+          "n_excluded": 0,
+          "n_missing": 1,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37a9b3078b043b98_delete_py": {
+      "hash": "a7953635c675cfff519660fe9d81234e",
+      "index": {
+        "url": "z_37a9b3078b043b98_delete_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\user\\delete.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 31,
+          "n_excluded": 0,
+          "n_missing": 3,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37a9b3078b043b98_get_py": {
+      "hash": "645ad0822be41cc7a1680e3fa67050d5",
+      "index": {
+        "url": "z_37a9b3078b043b98_get_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\user\\get.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 27,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37a9b3078b043b98_reset_password_py": {
+      "hash": "d6b539314a91810cd8d626e38516bfea",
+      "index": {
+        "url": "z_37a9b3078b043b98_reset_password_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\user\\reset_password.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 58,
+          "n_excluded": 0,
+          "n_missing": 6,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37a9b3078b043b98_update_py": {
+      "hash": "e9a5e3816f40eebc4621ba5a9050edfe",
+      "index": {
+        "url": "z_37a9b3078b043b98_update_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\user\\update.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 37,
+          "n_excluded": 0,
+          "n_missing": 2,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37a9b3078b043b98_verify_py": {
+      "hash": "6e3d7e21fac1fc583eaa6f0a1877a3d1",
+      "index": {
+        "url": "z_37a9b3078b043b98_verify_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\user\\verify.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 59,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_1f14b76704f82473___init___py": {
+      "hash": "ed355892efa48f07e516a4deb8f07836",
+      "index": {
+        "url": "z_1f14b76704f82473___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\ws\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 8,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_1f14b76704f82473_chat_py": {
+      "hash": "50d0be3c02af8077bd13d683855b4621",
+      "index": {
+        "url": "z_1f14b76704f82473_chat_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\ws\\chat.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 70,
+          "n_excluded": 0,
+          "n_missing": 6,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_1f14b76704f82473_completion_py": {
+      "hash": "4d7200a99f138f2a5513fc3b14b14104",
+      "index": {
+        "url": "z_1f14b76704f82473_completion_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\ws\\completion.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 66,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_1f14b76704f82473_multi_file_context_py": {
+      "hash": "68c45bfacbe1d093fb1eb0f37e5d4ed0",
+      "index": {
+        "url": "z_1f14b76704f82473_multi_file_context_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\routers\\ws\\multi_file_context.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 62,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4bcf5e2c18a7f1a2_utils_py": {
+      "hash": "a19af90df3254737ec39639961d204c9",
+      "index": {
+        "url": "z_4bcf5e2c18a7f1a2_utils_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\backend\\utils.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 136,
+          "n_excluded": 0,
+          "n_missing": 34,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_c1ce05b66066ac1d___init___py": {
+      "hash": "45258aa4f5ddf4c25819edc1e7ff440c",
+      "index": {
+        "url": "z_c1ce05b66066ac1d___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\celery_app\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 1,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7bb81ca6a81cfa6f___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_7bb81ca6a81cfa6f___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\celery_app\\tasks\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7bb81ca6a81cfa6f_chat_tasks_py": {
+      "hash": "a0c14009f6b68608daa65a8e0987f883",
+      "index": {
+        "url": "z_7bb81ca6a81cfa6f_chat_tasks_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\celery_app\\tasks\\chat_tasks.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 45,
+          "n_excluded": 0,
+          "n_missing": 34,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7191fadab69e0870___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_7191fadab69e0870___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\database\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7191fadab69e0870_crud_py": {
+      "hash": "3f4bdb51eefd0b7a78c419c53fb2b3d6",
+      "index": {
+        "url": "z_7191fadab69e0870_crud_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\database\\crud.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 418,
+          "n_excluded": 0,
+          "n_missing": 125,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7191fadab69e0870_db_py": {
+      "hash": "c39d569906d231c09bfd814ad06c0274",
+      "index": {
+        "url": "z_7191fadab69e0870_db_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\database\\db.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 2,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7191fadab69e0870_db_schemas_py": {
+      "hash": "8ee87eb4a43ded6025c987aa8200d4ff",
+      "index": {
+        "url": "z_7191fadab69e0870_db_schemas_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\database\\db_schemas.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 164,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_7191fadab69e0870_embedding_service_py": {
+      "hash": "7f7aad32bd7c77c6cb54588ee516a64f",
+      "index": {
+        "url": "z_7191fadab69e0870_embedding_service_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\database\\embedding_service.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 90,
+          "n_excluded": 0,
+          "n_missing": 21,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_fa66ad8cd0cbc4e0_migration_manager_py": {
+      "hash": "c1927e220a390942af081ca756ad3b9c",
+      "index": {
+        "url": "z_fa66ad8cd0cbc4e0_migration_manager_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\database\\migration\\migration_manager.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 226,
+          "n_excluded": 0,
+          "n_missing": 18,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_dccf1bbefc6e0961_main_py": {
+      "hash": "5046328795801e806f6bc3f65aa25578",
+      "index": {
+        "url": "z_dccf1bbefc6e0961_main_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\main.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 84,
+          "n_excluded": 0,
+          "n_missing": 41,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_dccf1bbefc6e0961_response_models_py": {
+      "hash": "31b5166828399ea6e9ff74874d478111",
+      "index": {
+        "url": "z_dccf1bbefc6e0961_response_models_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\response_models.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 82,
+          "n_excluded": 0,
+          "n_missing": 1,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_dccf1bbefc6e0961_utils_py": {
+      "hash": "7a86b7886e9a33397218ad023067c7f3",
+      "index": {
+        "url": "z_dccf1bbefc6e0961_utils_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\src\\utils.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 52,
+          "n_excluded": 0,
+          "n_missing": 9,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_a656052e0137ffd7___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7_conftest_py": {
+      "hash": "c89d3919da1184cdc7cbde232f51484b",
+      "index": {
+        "url": "z_a656052e0137ffd7_conftest_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\conftest.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 6,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_f3baed4e0eb243bd___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_f3baed4e0eb243bd___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_907d9fb50540bd67___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_907d9fb50540bd67___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\chat\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_907d9fb50540bd67_test_delete_py": {
+      "hash": "9d12953a0512ba4cfa5269bd10d4256b",
+      "index": {
+        "url": "z_907d9fb50540bd67_test_delete_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\chat\\test_delete.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 90,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_907d9fb50540bd67_test_get_py": {
+      "hash": "391b9c275f439139daf03ad0186b5e3d",
+      "index": {
+        "url": "z_907d9fb50540bd67_test_get_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\chat\\test_get.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 78,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_907d9fb50540bd67_test_request_py": {
+      "hash": "05f6dca148e3223482eba485284bc61c",
+      "index": {
+        "url": "z_907d9fb50540bd67_test_request_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\chat\\test_request.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 121,
+          "n_excluded": 0,
+          "n_missing": 5,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4c41101c4fbf529e___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_4c41101c4fbf529e___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\completion\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37dfa15860e20ae1___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_37dfa15860e20ae1___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\completion\\multi_file_context\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_37dfa15860e20ae1_test_update_py": {
+      "hash": "5b64c8a19ff7de61ece7e8f46fe0fe52",
+      "index": {
+        "url": "z_37dfa15860e20ae1_test_update_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\completion\\multi_file_context\\test_update.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 47,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4c41101c4fbf529e_test_feedback_py": {
+      "hash": "913119836c26c3c4463407bf6bbe7c92",
+      "index": {
+        "url": "z_4c41101c4fbf529e_test_feedback_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\completion\\test_feedback.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 102,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4c41101c4fbf529e_test_get_py": {
+      "hash": "7969b4ce1d57b845d16a6f47dcdc1bce",
+      "index": {
+        "url": "z_4c41101c4fbf529e_test_get_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\completion\\test_get.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 61,
+          "n_excluded": 0,
+          "n_missing": 1,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4c41101c4fbf529e_test_request_py": {
+      "hash": "9e4271682d220a719bb332bc330e2f00",
+      "index": {
+        "url": "z_4c41101c4fbf529e_test_request_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\completion\\test_request.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 144,
+          "n_excluded": 0,
+          "n_missing": 3,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4e89ad3f3b888a8b___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_4e89ad3f3b888a8b___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\project\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4e89ad3f3b888a8b_test_activate_py": {
+      "hash": "fe14dcced349e1da28f00992ba304c64",
+      "index": {
+        "url": "z_4e89ad3f3b888a8b_test_activate_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\project\\test_activate.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 81,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_4e89ad3f3b888a8b_test_create_py": {
+      "hash": "2ec21adfc9b58862bcc97e13abace263",
+      "index": {
+        "url": "z_4e89ad3f3b888a8b_test_create_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\project\\test_create.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 70,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_2196bf77b2005c36___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_2196bf77b2005c36___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\session\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_2196bf77b2005c36_test_aquire_py": {
+      "hash": "09606e8309bcb0efc1bb309f76a92987",
+      "index": {
+        "url": "z_2196bf77b2005c36_test_aquire_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\session\\test_aquire.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 49,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_2196bf77b2005c36_test_deactivate_py": {
+      "hash": "9c7ac77546a8a3f9a9df4bdbc42073d1",
+      "index": {
+        "url": "z_2196bf77b2005c36_test_deactivate_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\session\\test_deactivate.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 61,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_826358a357417ab0___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_826358a357417ab0___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\user\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_826358a357417ab0_test_authenticate_py": {
+      "hash": "97409a0fc07f2c56480305bc1be83c34",
+      "index": {
+        "url": "z_826358a357417ab0_test_authenticate_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\user\\test_authenticate.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 101,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_826358a357417ab0_test_create_py": {
+      "hash": "267d3521dfdd573d9c779aaba657f470",
+      "index": {
+        "url": "z_826358a357417ab0_test_create_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\user\\test_create.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 71,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_826358a357417ab0_test_delete_py": {
+      "hash": "e8484ae77e3be3241f34f5c77fd4ffda",
+      "index": {
+        "url": "z_826358a357417ab0_test_delete_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\user\\test_delete.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 71,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_826358a357417ab0_test_get_py": {
+      "hash": "cba32b5d61aa6675e25759a826ef140b",
+      "index": {
+        "url": "z_826358a357417ab0_test_get_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\user\\test_get.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 69,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_826358a357417ab0_test_reset_password_py": {
+      "hash": "c25701b63b6983dc23c7812598332047",
+      "index": {
+        "url": "z_826358a357417ab0_test_reset_password_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\user\\test_reset_password.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 87,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_826358a357417ab0_test_update_py": {
+      "hash": "fda0be36c302de8aed29b2a9e4e39b03",
+      "index": {
+        "url": "z_826358a357417ab0_test_update_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\user\\test_update.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 88,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_826358a357417ab0_test_verify_py": {
+      "hash": "fef4f7075d34247030462c4013c57279",
+      "index": {
+        "url": "z_826358a357417ab0_test_verify_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\routers\\user\\test_verify.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 106,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7_test_TemplateCompletionModel_py": {
+      "hash": "0cad4f031b537024069505868bf7f4fd",
+      "index": {
+        "url": "z_a656052e0137ffd7_test_TemplateCompletionModel_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\test_TemplateCompletionModel.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 41,
+          "n_excluded": 0,
+          "n_missing": 14,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7_test_celery_broker_py": {
+      "hash": "a3674a61811d49ca45f5f2f6bd36af59",
+      "index": {
+        "url": "z_a656052e0137ffd7_test_celery_broker_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\test_celery_broker.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 29,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7_test_chat_completion_model_py": {
+      "hash": "a912dcbff6d5ded81d339f8d78bd338a",
+      "index": {
+        "url": "z_a656052e0137ffd7_test_chat_completion_model_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\test_chat_completion_model.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 43,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7_test_email_utils_py": {
+      "hash": "1e07ec6ade896f1340f10e8201b917bc",
+      "index": {
+        "url": "z_a656052e0137ffd7_test_email_utils_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\test_email_utils.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 52,
+          "n_excluded": 0,
+          "n_missing": 1,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7_test_redis_manager_py": {
+      "hash": "dcb3c1d2b9cfd933fc4f3ab585eb515d",
+      "index": {
+        "url": "z_a656052e0137ffd7_test_redis_manager_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\test_redis_manager.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 33,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7_test_ws_chat_py": {
+      "hash": "278e3b0ba711ebb72718ef2c3f8a207f",
+      "index": {
+        "url": "z_a656052e0137ffd7_test_ws_chat_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\test_ws_chat.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 309,
+          "n_excluded": 0,
+          "n_missing": 134,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7_test_ws_completion_py": {
+      "hash": "2cc59f7ad817dae42014e989cd42e729",
+      "index": {
+        "url": "z_a656052e0137ffd7_test_ws_completion_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\test_ws_completion.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 289,
+          "n_excluded": 0,
+          "n_missing": 15,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_a656052e0137ffd7_test_ws_multifile_py": {
+      "hash": "8632b816cdee084ea6be348b12e3c31e",
+      "index": {
+        "url": "z_a656052e0137ffd7_test_ws_multifile_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\backend_tests\\test_ws_multifile.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 276,
+          "n_excluded": 0,
+          "n_missing": 15,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_1b3478531c0054be___init___py": {
+      "hash": "e6baa73cda2916dad605215f937a92e1",
+      "index": {
+        "url": "z_1b3478531c0054be___init___py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\database_tests\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 0,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_1b3478531c0054be_test_crud_py": {
+      "hash": "a27bbadad53fefb1163c79b18c3b8906",
+      "index": {
+        "url": "z_1b3478531c0054be_test_crud_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\database_tests\\test_crud.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 483,
+          "n_excluded": 0,
+          "n_missing": 15,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_1b3478531c0054be_test_migration_logic_py": {
+      "hash": "45782db21dbb7e0b257383315262e6fd",
+      "index": {
+        "url": "z_1b3478531c0054be_test_migration_logic_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\database_tests\\test_migration_logic.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 301,
+          "n_excluded": 0,
+          "n_missing": 84,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_1b3478531c0054be_test_migration_manager_py": {
+      "hash": "f9b776e2a772a39b994bd83f4b028c85",
+      "index": {
+        "url": "z_1b3478531c0054be_test_migration_manager_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\database_tests\\test_migration_manager.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 253,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_1b3478531c0054be_test_pgvector_py": {
+      "hash": "82289da95c270973ca18c22138d7dcf6",
+      "index": {
+        "url": "z_1b3478531c0054be_test_pgvector_py.html",
+        "file": "D:\\SP 2025\\gitlab\\server\\tests\\database_tests\\test_pgvector.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 241,
+          "n_excluded": 0,
+          "n_missing": 100,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_fe52bcdcfd51e772__jb_pytest_runner_py": {
+      "hash": "44589a6046b3bd1d61fe7a1355bad161",
+      "index": {
+        "url": "z_fe52bcdcfd51e772__jb_pytest_runner_py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\_jb_pytest_runner.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 45,
+          "n_excluded": 0,
+          "n_missing": 8,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_fe52bcdcfd51e772__jb_runner_tools_py": {
+      "hash": "334a0bd7182d8303db26394c6538944c",
+      "index": {
+        "url": "z_fe52bcdcfd51e772__jb_runner_tools_py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\_jb_runner_tools.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 204,
+          "n_excluded": 0,
+          "n_missing": 54,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_fe52bcdcfd51e772__jb_serial_tree_manager_py": {
+      "hash": "9b00834be385da743fd97ae0c3dc04fd",
+      "index": {
+        "url": "z_fe52bcdcfd51e772__jb_serial_tree_manager_py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\_jb_serial_tree_manager.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 57,
+          "n_excluded": 0,
+          "n_missing": 8,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_fe52bcdcfd51e772__jb_utils_py": {
+      "hash": "39ffb50318b4c8bb818d2036b0137d0d",
+      "index": {
+        "url": "z_fe52bcdcfd51e772__jb_utils_py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\_jb_utils.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 71,
+          "n_excluded": 0,
+          "n_missing": 34,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_ef0cc05669cd3899___init___py": {
+      "hash": "269b68ba3afbbf0d5cefcce7be758e01",
+      "index": {
+        "url": "z_ef0cc05669cd3899___init___py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\teamcity\\__init__.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 6,
+          "n_excluded": 0,
+          "n_missing": 0,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_ef0cc05669cd3899_common_py": {
+      "hash": "1f87503897e4c5f3abb9807336a5be69",
+      "index": {
+        "url": "z_ef0cc05669cd3899_common_py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\teamcity\\common.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 98,
+          "n_excluded": 0,
+          "n_missing": 60,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_ef0cc05669cd3899_diff_tools_py": {
+      "hash": "629e578f3a8d198c16dc3958187c8c0b",
+      "index": {
+        "url": "z_ef0cc05669cd3899_diff_tools_py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\teamcity\\diff_tools.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 62,
+          "n_excluded": 0,
+          "n_missing": 21,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_ef0cc05669cd3899_jb_local_exc_store_py": {
+      "hash": "d0d32d8671482bd23666f8effaa8149d",
+      "index": {
+        "url": "z_ef0cc05669cd3899_jb_local_exc_store_py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\teamcity\\jb_local_exc_store.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 11,
+          "n_excluded": 0,
+          "n_missing": 3,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_ef0cc05669cd3899_messages_py": {
+      "hash": "8df52671c605758568ab24a039439510",
+      "index": {
+        "url": "z_ef0cc05669cd3899_messages_py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\teamcity\\messages.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 154,
+          "n_excluded": 0,
+          "n_missing": 56,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    },
+    "z_ef0cc05669cd3899_pytest_plugin_py": {
+      "hash": "e901efdf80a531675d581e3a6398341a",
+      "index": {
+        "url": "z_ef0cc05669cd3899_pytest_plugin_py.html",
+        "file": "D:\\other apps\\PyCharm 2024.2.1\\plugins\\python-ce\\helpers\\pycharm\\teamcity\\pytest_plugin.py",
+        "description": "",
+        "nums": {
+          "precision": 0,
+          "n_files": 1,
+          "n_statements": 293,
+          "n_excluded": 0,
+          "n_missing": 128,
+          "n_branches": 0,
+          "n_partial_branches": 0,
+          "n_missing_branches": 0
+        }
+      }
+    }
+  }
+}
