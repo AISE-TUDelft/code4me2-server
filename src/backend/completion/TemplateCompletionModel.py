@@ -83,6 +83,9 @@ class TemplateCompletionModel(BaseLLM):
             cache_dir=config.model_cache_dir,
             trust_remote_code=True,
         )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             cache_dir=config.model_cache_dir,
@@ -289,13 +292,31 @@ class TemplateCompletionModel(BaseLLM):
         start_time = time.perf_counter()
 
         # Set up stopping criteria if stop_sequences is provided
+        # Always include EOS token in stop sequences if defined
+        eos_text = (
+            self.tokenizer.decode([self.tokenizer.eos_token_id])
+            if self.tokenizer.eos_token_id is not None
+            else None
+        )
+
+        # Combine user-provided stop sequences with EOS
+        combined_stop_sequences = stop_sequences or []
+        if eos_text and eos_text not in combined_stop_sequences:
+            combined_stop_sequences.append(eos_text)
+
+        if self.meta_data.get("file_separator"):
+            # Ensure file separator is included in stop sequences
+            file_separator = self.meta_data["file_separator"]
+            if file_separator not in combined_stop_sequences:
+                combined_stop_sequences.append(file_separator)
+
+        # Create stopping criteria
         stopping_criteria = None
-        if stop_sequences:
+        if combined_stop_sequences:
             stop_criteria = StopSequenceCriteria(
-                self.tokenizer, stop_sequences, input_len, self.device
+                self.tokenizer, combined_stop_sequences, input_len, self.device
             )
             stopping_criteria = StoppingCriteriaList([stop_criteria])
-
         # Use model_lock for thread safety and inference_mode for faster inference
         # with self.model_lock, torch.inference_mode():
         with torch.inference_mode():
