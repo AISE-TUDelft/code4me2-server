@@ -304,6 +304,12 @@ class TemplateCompletionModel(BaseLLM):
         if eos_text and eos_text not in combined_stop_sequences:
             combined_stop_sequences.append(eos_text)
 
+        if self.meta_data.get("file_separator"):
+            # Ensure file separator is included in stop sequences
+            file_separator = self.meta_data["file_separator"]
+            if file_separator not in combined_stop_sequences:
+                combined_stop_sequences.append(file_separator)
+
         # Create stopping criteria
         stopping_criteria = None
         if combined_stop_sequences:
