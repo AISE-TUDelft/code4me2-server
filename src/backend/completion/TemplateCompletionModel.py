@@ -289,13 +289,25 @@ class TemplateCompletionModel(BaseLLM):
         start_time = time.perf_counter()
 
         # Set up stopping criteria if stop_sequences is provided
+        # Always include EOS token in stop sequences if defined
+        eos_text = (
+            self.tokenizer.decode([self.tokenizer.eos_token_id])
+            if self.tokenizer.eos_token_id is not None
+            else None
+        )
+
+        # Combine user-provided stop sequences with EOS
+        combined_stop_sequences = stop_sequences or []
+        if eos_text and eos_text not in combined_stop_sequences:
+            combined_stop_sequences.append(eos_text)
+
+        # Create stopping criteria
         stopping_criteria = None
-        if stop_sequences:
+        if combined_stop_sequences:
             stop_criteria = StopSequenceCriteria(
-                self.tokenizer, stop_sequences, input_len, self.device
+                self.tokenizer, combined_stop_sequences, input_len, self.device
             )
             stopping_criteria = StoppingCriteriaList([stop_criteria])
-
         # Use model_lock for thread safety and inference_mode for faster inference
         # with self.model_lock, torch.inference_mode():
         with torch.inference_mode():
