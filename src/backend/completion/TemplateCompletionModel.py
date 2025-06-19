@@ -83,6 +83,9 @@ class TemplateCompletionModel(BaseLLM):
             cache_dir=config.model_cache_dir,
             trust_remote_code=True,
         )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             cache_dir=config.model_cache_dir,
