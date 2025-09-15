@@ -34,13 +34,14 @@ class StopSequenceCriteria(StoppingCriteria):
 
     def __call__(self, input_ids, scores, **kwargs):
         # Decode full sequence
-        full_text = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        full_text = self.tokenizer.decode(input_ids[0], skip_special_tokens=False)
 
         # Only check for stop sequences after the input part
         generated_text = full_text[self.input_len :]
 
         for stop_seq in self.stop_sequences:
             if stop_seq in generated_text:
+                logging.info(f"Stopping at: {stop_seq} in generated text: {repr(generated_text)}")
                 return True
 
         return False
@@ -49,7 +50,10 @@ class StopSequenceCriteria(StoppingCriteria):
 class TemplateCompletionModel(BaseLLM):
     tokenizer: Any = Field(..., description="The tokenizer to use for text generation")
     model: Any = Field(..., description="The model to use for text generation")
-    prompt_template: PromptTemplate = Field(
+    single_file_prompt_template: PromptTemplate = Field(
+        ..., description="The prompt to use for text generation"
+    )
+    multi_file_prompt_template: PromptTemplate = Field(
         ..., description="The prompt to use for text generation"
     )
     device: torch.device = Field(..., description="The device to use")
@@ -126,10 +130,12 @@ class TemplateCompletionModel(BaseLLM):
             raise ValueError(f"Invalid JSON in meta_data: {e}")
 
         prompt_template = meta_data["fim_template"]
-        prompt_template_obj = PromptTemplate.from_template(prompt_template)
+        single_file_prompt_template_obj = PromptTemplate.from_template(prompt_template["single_file_template"])
+        multi_file_prompt_template_obj = PromptTemplate.from_template(prompt_template["multi_file_template"])
         # model_lock = threading.RLock()
         return cls(
-            prompt_template=prompt_template_obj,
+            single_file_prompt_template=single_file_prompt_template_obj,
+            multi_file_prompt_template=multi_file_prompt_template_obj,
             tokenizer=tokenizer,
             model=model,
             device=device,
@@ -190,43 +196,13 @@ class TemplateCompletionModel(BaseLLM):
         if "num_beams" not in kwargs:
             kwargs["num_beams"] = self.config.model_num_beams
 
-        # Process each prompt with optimized generation
+        # Use _invoke to process each prompt and avoid code duplication
         for prompt in prompts:
-            if "multi_file_contexts" in prompt and prompt.get("multi_file_contexts"):
-                prompt["multi_file_contexts"] = (
-                    self.meta_data["separator"]
-                    + self.meta_data["separator"].join(
-                        "\n\n".join(
-                            [
-                                f"{file_name}\n{file_code}"
-                                for file_name, file_code in prompt[
-                                    "multi_file_contexts"
-                                ].items()
-                            ]
-                        )
-                    )
-                    + self.meta_data["separator"]
-                )
-            # Generate text using the pipeline with inference_mode for speed
-            formatted_prompt = self.prompt_template.format(**prompt)
-            inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(
-                self.device
-            )
+            # The _invoke method should handle multi_file_context and formatting
+            result = self._invoke(prompt, stop=stop, **kwargs)
+            # result is expected to be a dict with a "completion" key
+            generations.append([{"text": result["completion"].strip()}])
 
-            # Use model_lock for thread safety and inference_mode for faster inference
-            # with self.model_lock, torch.inference_mode():
-            with torch.inference_mode():
-                outputs = self.model.generate(**inputs, **kwargs)
-
-            # Extract generated text, skipping the input prompt
-            generated_text = self.tokenizer.decode(
-                outputs[0], skip_special_tokens=True
-            )[len(formatted_prompt) :]
-
-            # Append the result
-            generations.append([{"text": generated_text.strip()}])
-
-        # Return the results wrapped in an LLMResult
         return LLMResult(generations=generations)
 
     def invoke(
@@ -256,36 +232,24 @@ class TemplateCompletionModel(BaseLLM):
         if max_new_tokens is None:
             max_new_tokens = self.config.model_max_new_tokens
 
-        if "multi_file_context" in prompt and prompt.get("multi_file_context"):
-            prompt["multi_file_context"] = (
-                self.meta_data["file_separator"]
-                + self.meta_data["file_separator"].join(
-                    [
-                        f"#{file_name}\n{file_code}\n"
-                        for file_name, file_code in prompt["multi_file_context"].items()
-                    ]
-                )
-                + self.meta_data["file_separator"]
-            )
-            # prompt["multi_file_context"]+= "\nONLY USE THE PREVIOUS LINES FOR CONTEXT, DO NOT REPEAT THEM IN YOUR RESPONSE!\n\n"
-        if prompt.get("multi_file_context") == {}:
-            prompt["multi_file_context"] = ""
-        formatted_prompt = self.prompt_template.format(**prompt)
+        if "multi_file_context" in prompt:
+            multi_file_context_prompt = ""
+            for file_name, file_code in prompt["multi_file_context"].items():
+                multi_file_context_prompt +=self.meta_data["file_separator"].replace("{file_name}", file_name) + file_code + "\n"
+            prompt["multi_file_context"] = multi_file_context_prompt
+        formatted_prompt = ""
+        if prompt.get("multi_file_context"):
+            formatted_prompt = self.multi_file_prompt_template.format(**prompt)
+        else:
+            formatted_prompt = self.single_file_prompt_template.format(**prompt)
         logging.info("Formatted prompt: %s", formatted_prompt)
         t1 = time.perf_counter()
 
-        # input_ids = self.tokenizer(formatted_prompt, return_tensors="pt").input_ids
-        # input_len = input_ids.shape[1]  # Number of input tokens
-        # inputs = {"input_ids": input_ids.to(self.model.device)}
+        input_ids = self.tokenizer(formatted_prompt, return_tensors="pt").input_ids
         input_len = len(
-            self.tokenizer.decode(
-                self.tokenizer(formatted_prompt)["input_ids"], skip_special_tokens=True
-            )
-        )
-        # Tokenize input
-        inputs = self.tokenizer(
-            formatted_prompt, return_tensors="pt", padding=True, truncation=True
-        ).to(self.model.device)
+            self.tokenizer.decode(input_ids[0], skip_special_tokens=False)
+        )  # Character length of input text (including special tokens)
+        inputs = {"input_ids": input_ids.to(self.model.device)}
         logging.info("Prompt formatting took %.2f seconds", t1 - t0)
 
         # Measure generation time with perf_counter for higher precision
@@ -299,22 +263,17 @@ class TemplateCompletionModel(BaseLLM):
             else None
         )
 
-        # Combine user-provided stop sequences with EOS
-        combined_stop_sequences = stop_sequences or []
-        if eos_text and eos_text not in combined_stop_sequences:
-            combined_stop_sequences.append(eos_text)
+        # Combine user-provided stop sequences with EOS and model-specific stop sequences
+        stop_sequences = (stop_sequences or []) + (self.meta_data.get("stop_tokens", []) or [])
+        if eos_text and eos_text not in stop_sequences:
+            stop_sequences.append(eos_text)
 
-        if self.meta_data.get("file_separator"):
-            # Ensure file separator is included in stop sequences
-            file_separator = self.meta_data["file_separator"]
-            if file_separator not in combined_stop_sequences:
-                combined_stop_sequences.append(file_separator)
-
+        logging.info("Stop sequences: %s", stop_sequences)
         # Create stopping criteria
         stopping_criteria = None
-        if combined_stop_sequences:
+        if stop_sequences:
             stop_criteria = StopSequenceCriteria(
-                self.tokenizer, combined_stop_sequences, input_len, self.device
+                self.tokenizer, stop_sequences, input_len, self.device
             )
             stopping_criteria = StoppingCriteriaList([stop_criteria])
         # Use model_lock for thread safety and inference_mode for faster inference
@@ -333,6 +292,8 @@ class TemplateCompletionModel(BaseLLM):
             )
             end_time = time.perf_counter()
 
+            logging.info("Output: %s", self.tokenizer.decode(output.sequences[0], skip_special_tokens=False))
+            logging.info("Output filtered: %s", self.tokenizer.decode(output.sequences[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False))
             generated_ids = output.sequences[0][
                 inputs["input_ids"].shape[1] :
             ]  # Only new tokens
@@ -362,6 +323,7 @@ class TemplateCompletionModel(BaseLLM):
                 else None
             )
             logging.info(f"Calculating confidence took {time.perf_counter() - t2}")
+
         # Post-process the generated text to remove any content after the stop sequence
         if stop_sequences and generated_text:
             for stop_seq in stop_sequences:

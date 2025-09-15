@@ -207,10 +207,10 @@ def request_completion(
             # Invoke the model with redacted prefix and suffix
             completion_result = completion_model.invoke(
                 {
-                    "prefix": f"#{completion_request.context.file_name if completion_request.context.file_name else ''}\n"
-                    + completion_request.context.prefix,
+                    "prefix": completion_request.context.prefix,
                     "suffix": completion_request.context.suffix,
                     "multi_file_context": multi_file_contexts,
+                    "file_name": completion_request.context.file_name,
                 },
                 stop_sequences=completion_request.stop_sequences,
             )

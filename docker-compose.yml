@@ -135,7 +135,7 @@ services:
           "-c",
           "source activate myenv && celery -A celery_app.celery_app status",
         ]
-      start_interval: 0s
+      start_period: 0s
       interval: 60s
       timeout: 10s
       retries: 3
@@ -202,7 +202,7 @@ services:
           "--spider",
           "http://${SERVER_HOST}:${SERVER_PORT}/api/ping",
         ]
-      start_interval: 0s
+      start_period: 0s
       interval: 60s
       timeout: 5s
       retries: 3
@@ -223,7 +223,7 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "http://localhost:3000"]
-      start_interval: 0s
+      start_period: 0s
       interval: 60s
       timeout: 5s
       retries: 3
@@ -240,7 +240,7 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost"]
-      start_interval: 0s
+      start_period: 0s
       interval: 60s
       timeout: 5s
       retries: 3
