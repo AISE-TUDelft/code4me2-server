@@ -199,7 +199,8 @@ def request_completion(
             # Retrieve completion model instance
             completion_model = completion_models.get_model(
                 model_name=str(model.model_name),
-                meta_data=str(model.meta_data),
+                prompt_templates=str(model.prompt_templates),
+                model_parameters=str(model.model_parameters),
             )
             if completion_model is None:
                 return CompletionErrorItem(model_name=str(model.model_name))

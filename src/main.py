@@ -254,8 +254,9 @@ def main() -> None:
 
     uvicorn.run(
         "main:app",
-        host=config.server_host,
-        port=config.server_port,
+        host=config.server_host,  
+        port=config.server_port,# TODO: uncomment this when the server is ready to be deployed
+        # port=6666,
         reload=config.debug_mode if hasattr(config, "debug_mode") else False,
         log_level="info",
         access_log=True,

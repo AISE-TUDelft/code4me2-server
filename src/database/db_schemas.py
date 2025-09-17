@@ -118,7 +118,8 @@ class ModelName(Base):
 
     model_id = Column(BigInteger, primary_key=True)  # Unique model identifier
     model_name = Column(Text, nullable=False)  # Human-readable model name
-    meta_data = Column(Text, nullable=False)
+    prompt_templates = Column(Text, nullable=False)
+    model_parameters = Column(Text, nullable=False)
     is_instruction_tuned = Column(
         Boolean, server_default="false", nullable=False, default=False
     )  # Whether model is fine-tuned for following instructions

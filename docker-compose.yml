@@ -98,6 +98,8 @@ services:
     depends_on:
       redis-celery:
         condition: service_healthy
+      db:
+        condition: service_healthy
     environment:
       - NVIDIA_VISIBLE_DEVICES=2
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -187,6 +189,7 @@ services:
       # CUDA/NVML specific environment variables
       - CUDA_VISIBLE_DEVICES=0
       - TORCH_CUDA_ARCH_LIST="8.6"
+      - PRELOAD_MODELS=true
     depends_on:
       db:
         condition: service_healthy
