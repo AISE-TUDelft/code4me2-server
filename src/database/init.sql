@@ -631,6 +631,12 @@ INSERT INTO public.config (config_data) VALUES ('config {
         isChatModel = true
         isDefault = true
       }
+      {
+        id = 4
+        name = "Mellum-4b-base"
+        isChatModel = false
+        isDefault = false
+      }
     ]
     systemPrompt = "You are a helpful assistant that provides information and answers questions to the best of your ability. Please respond in a clear and concise manner."
   }
