@@ -24,14 +24,18 @@ class StopSequenceCriteria(StoppingCriteria):
     def __init__(self, tokenizer, stop_sequences, input_len):
         self.tokenizer = tokenizer
         self.stop_sequences = stop_sequences
-        self.input_len = input_len  # Length of input text
+        self.input_len = input_len  # Length of input tokens
 
     def __call__(self, input_ids, scores, **kwargs):
         # Decode full sequence
         full_text = self.tokenizer.decode(input_ids[0], skip_special_tokens=False)
+        
+        # Decode only the input tokens to get the input text
+        input_text = self.tokenizer.decode(input_ids[0][:self.input_len], skip_special_tokens=False)
+        input_text_len = len(input_text)
 
         # Only check for stop sequences after the input part
-        generated_text = full_text[self.input_len :]
+        generated_text = full_text[input_text_len:]
 
         for stop_seq in self.stop_sequences:
             if stop_seq in generated_text:
@@ -61,8 +65,12 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
             prompt = {**prompt, "multi_file_context": multi_file_context_prompt}
 
         
-        template =PromptTemplate.from_template(self.prompt_templates["fim_template"]["multi_file_template" if "multi_file_context" in prompt else "single_file_template"]).format(**prompt) 
-        return template.format(**prompt)
+        formatted = PromptTemplate.from_template(
+            self.prompt_templates["fim_template"][
+                "multi_file_template" if "multi_file_context" in prompt else "single_file_template"
+            ]
+        ).format(**prompt)
+        return formatted
     
     def warmup(self) -> None:
         """
@@ -203,12 +211,63 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
 
 if __name__ == "__main__":
     import json
-    template = '{"fim_template":{"multi_file_template":"{multi_file_context}#{file_name}\\n{prefix}","single_file_template":"{prefix}"},"file_separator":"#{file_name}\\n"}'
+    import requests
+    
+    template = '{"fim_template":{"multi_file_template":"{multi_file_context}#{file_name}\\n{prefix}","single_file_template":"{prefix}"},"file_separator":"#{file_name}\\n","stop_tokens":["\\n\\n"]}'
     prompt_templates = json.loads(template)
+    
     model = TemplateCompletionModel(
         model_name="deepseek-ai/deepseek-coder-1.3b-base",
         prompt_templates=prompt_templates,
-        device_map="cpu",
+        model_warmup=True,
+        model_use_compile= True,
+        do_sample=False,
     )
-    response = model.invoke({"prefix": "def hello_world():", "suffix": ""})
+    # response = model.invoke({"prefix": "warmup", "suffix": ""})
+    t0 = time.perf_counter()
+    response = model.invoke({"prefix": "\n\ndef bubble_sort(arr):", "suffix": ""})
+    t1 = time.perf_counter()
+    print(f"Time taken: {t1 - t0} seconds")
     print(response)
+
+
+    # response = requests.post("http://localhost:8008/api/user/authenticate", json={"email":"mo.bateni@gmail.com", "password":"Par123456789"})
+    # # print(response.json())
+    # cookies1 = response.cookies
+    # # print(cookies1)
+    # response = requests.get("http://localhost:8008/api/session/acquire", cookies=cookies1)
+    # # print(response.json())
+    # cookies2 = response.cookies
+    # # print(cookies2)
+    # response = requests.post("http://localhost:8008/api/project/create", json={"project_name": "test"}, cookies={**cookies1.get_dict(), **cookies2.get_dict()})
+    # # print(response.json())
+    # cookies3 = response.cookies
+    # # print(cookies3)
+    # t2 = time.perf_counter()
+    # response = requests.post("http://localhost:8008/api/completion/request", 
+    # json = {
+    #     "model_ids": [1],
+    #     "context": {
+    #         "prefix": "def hello_world():",
+    #         "suffix": "",
+    #         "file_name": "main.py",
+    #         "context_files": []
+    #     },
+    #     "store_context":True,
+    #     "contextual_telemetry": {
+    #         "language_id": 45,
+    #         "trigger_type_id": 1,
+    #         "version_id": 1,
+    #         "document_char_length": 1500
+    #     },
+    #     "store_contextual_telemetry":True,
+    #     "behavioral_telemetry": {
+    #         "time_since_last_completion": 5000,
+    #         "typing_speed": 300,
+    #         "relative_document_position": 0.4
+    #     },
+    #     "store_behavioral_telemetry":True
+    #     }, cookies={**cookies1.get_dict(), **cookies2.get_dict(), **cookies3.get_dict()})
+    # t3 = time.perf_counter()
+    # print(f"Time taken: {t3 - t2} seconds") 
+    # print(response.json())

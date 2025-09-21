@@ -273,7 +273,7 @@ class ChatCompletionModel(CompletionModel, BaseChatModel):
 
 
 # CLI
-def chat_cli():
+def chat_cli(model):
     messages = [SystemMessage(content="You are a helpful assistant.")]
     print("Chat started. Type 'exit' to quit, 'clear' to restart conversation.")
 
@@ -306,12 +306,11 @@ if __name__ == "__main__":
     try:
         model = ChatCompletionModel(
             model_name="codellama/CodeLlama-7b-Instruct-hf",
-            temperature=0.8,
-            max_new_tokens=256,
         )
+
         print("Model loaded successfully.\n")
     except Exception as e:
         print(f"Error during model loading: {e}")
         exit(1)
 
-    chat_cli()
+    chat_cli(model)

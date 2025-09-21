@@ -3,6 +3,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+import traceback
 from typing import Union
 
 from celery import chain, group
@@ -171,14 +172,16 @@ def request_completion(
                 or completion_request.context.context_files == ["*"]
                 and completion_request.context.file_name != file_name
             }
-
-        # Prepare indexes of multi-file context changes counts
-        multi_file_context_changes_indexes = {}
-        if multi_file_context_changes:
             multi_file_context_changes_indexes = {
                 file_name: len(changes)
                 for file_name, changes in multi_file_context_changes.items()
+                if file_name in completion_request.context.context_files
+                or completion_request.context.context_files == ["*"]
             }
+        else:
+            multi_file_contexts = {}
+            multi_file_context_changes_indexes = {}
+    
 
         t4 = time.perf_counter()
         logging.info(f"Multi-file context processing took {(t4 - t3) * 1000:.2f}ms")
@@ -318,8 +321,6 @@ def request_completion(
         t6 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t6 - t5) * 1000:.2f}ms")
 
-        logging.info(f"TOTAL serving time: {(time.perf_counter() - t0) * 1000:.2f}ms")
-
         # Return successful completion response with data
         return JsonResponseWithStatus(
             status_code=200,
@@ -333,8 +334,12 @@ def request_completion(
     except Exception as e:
         # Log error and rollback DB transaction on failure
         logging.error(f"Error processing completion request: {str(e)}")
+        logging.error(f"Error processing completion request: {traceback.format_exc()}")
         db_auth.rollback()
         return JsonResponseWithStatus(
             status_code=500,
             content=GenerateCompletionsError(),
         )
+    finally:
+        db_auth.close()
+        logging.info(f"Time taken for request_completion in total: {(time.perf_counter() - t0)*1000} milli seconds")

@@ -826,10 +826,10 @@ INSERT INTO public.config (config_data) VALUES ('config {
 }');
 
 INSERT INTO public.model_name (model_name, is_instruction_tuned, prompt_templates, model_parameters) VALUES
-    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE,'{"fim_template":{"multi_file_template":"{multi_file_context}#{file_name}\n<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>","single_file_template":"<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"},"file_separator":"#{file_name}\n","stop_tokens":[]}', '{"max_new_tokens": 64}'),
-    ('bigcode/starcoder2-3b', FALSE,'{"fim_template":{"multi_file_template":"{multi_file_context}<file_sep><fim_prefix>{file_name}\n{prefix}<fim_suffix>{suffix}<fim_middle>","single_file_template":"<fim_prefix>{prefix}<fim_suffix>{suffix}<fim_middle>"},"file_separator":"<file_sep>\n{file_name}\n","stop_tokens":["<file_sep>"]}', '{"max_new_tokens": 64}'),
+    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE,'{"fim_template":{"multi_file_template":"{multi_file_context}#{file_name}\n<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>","single_file_template":"<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"},"file_separator":"#{file_name}\n","stop_tokens":["\n\n"]}', '{"max_new_tokens": 64}'),
+    ('bigcode/starcoder2-3b', FALSE,'{"fim_template":{"multi_file_template":"{multi_file_context}<file_sep><fim_prefix>{file_name}\n{prefix}<fim_suffix>{suffix}<fim_middle>","single_file_template":"<fim_prefix>{prefix}<fim_suffix>{suffix}<fim_middle>"},"file_separator":"<file_sep>\n{file_name}\n","stop_tokens":["<file_sep>","\n\n"]}', '{"max_new_tokens": 64}'),
     ('mistralai/Ministral-8B-Instruct-2410', TRUE, '{}', '{"max_new_tokens": 256}'),
-    ('JetBrains/Mellum-4b-base', FALSE, '{"fim_template":{"multi_file_template":"{multi_file_context}<filename>{file_name}\n<fim_suffix>{suffix}<fim_prefix>{prefix}<fim_middle>","single_file_template":"<fim_suffix>{suffix}<fim_prefix>{prefix}<fim_middle>"},"file_separator":"<filename>{file_name}\n","stop_tokens":["<filename>"]}', '{"max_new_tokens": 64}');
+    ('JetBrains/Mellum-4b-base', FALSE, '{"fim_template":{"multi_file_template":"{multi_file_context}<filename>{file_name}\n<fim_suffix>{suffix}<fim_prefix>{prefix}<fim_middle>","single_file_template":"<fim_suffix>{suffix}<fim_prefix>{prefix}<fim_middle>"},"file_separator":"<filename>{file_name}\n","stop_tokens":["<filename>", "\n\n"]}', '{"max_new_tokens": 64}');
 
 INSERT INTO public.programming_language (language_name) VALUES
     ('Oracle NetSuite'), ('GoPlusBuild'), ('HelmJSON'), ('USS'), ('UnityYaml'),

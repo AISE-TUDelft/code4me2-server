@@ -1,11 +1,11 @@
 import os
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import torch
 from pydantic import BaseModel, Field
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
 from langchain_huggingface import HuggingFacePipeline
 import logging
 
@@ -22,14 +22,15 @@ class CompletionModel(BaseModel, ABC):
     )
 
     # Generation defaults (subclasses may use some/all)
-    temperature: float = Field(default=1.0, description="The temperature to use for the model")
+    # TODO: Check later with Roham
+    temperature: float = Field(default=0.2, description="The temperature to use for the model") 
     max_new_tokens: int = Field(default=64, description="The maximum number of new tokens to generate")
     num_beams: int = Field(default=1, description="The number of beams to use for the model")
     top_p: float = Field(default=0.95, description="The top p to use for the model")
     top_k: int = Field(default=50, description="The top k to use for the model")
-    do_sample: bool = Field(default=False, description="Whether to use the sample")
-    repetition_penalty: float = Field(default=1.0, description="The repetition penalty to use for the model")
-
+    do_sample: bool = Field(default=True, description="Whether to use the sample")
+    repetition_penalty: float = Field(default=1.1, description="The repetition penalty to use for the model (1.1 is mild, not too strong)")
+    
     # Caching / loading
     cache_dir: str = Field(default="./.cache", description="Local cache directory")
     trust_remote_code: bool = Field(default=True, description="Whether to trust remote code")
@@ -40,15 +41,15 @@ class CompletionModel(BaseModel, ABC):
     low_cpu_mem_usage: bool = Field(default=True, description="Whether to use low CPU memory usage")
     load_in_8bit: bool = Field(default=False, description="Whether to load the model in 8bit")
     load_in_4bit: bool = Field(default=False, description="Whether to load the model in 4bit")
-
+    
     # Additional model-wide knobs used by some subclasses
-    model_max_new_tokens: int = Field(default=512, description="The maximum number of new tokens to generate")
     model_use_cache: bool = Field(default=True, description="Whether to use the cache")
     model_num_beams: int = Field(default=1, description="The number of beams to use for the model")
     model_use_compile: bool = Field(default=False, description="Whether to use the compile")
     model_warmup: bool = Field(default=False, description="Whether to use the warmup")
-    model_quantization: Optional[str] = Field(default=None, description="The quantization to use for the model")
-
+    
+    # Performance optimization settings
+    use_flash_attention: bool = Field(default=True, description="Whether to use Flash Attention for faster attention computation")
     # Runtime instances
     tokenizer: Any = Field(default=None, description="The tokenizer to use for the model")
     model: Any = Field(default=None, description="The model to use for the model")
@@ -71,21 +72,28 @@ class CompletionModel(BaseModel, ABC):
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **self.model_kwargs)
         self.model.eval()
 
-        # Optionally compile model
-        if self.model_use_compile and hasattr(torch, "compile"):
-            try:
-                logging.info(f"Compiling model {self.model_name} with torch.compile...")
-                self.model = torch.compile(self.model)
-                logging.info("Model compilation successful")
-            except Exception as e:
-                logging.error(f"Failed to compile model: {str(e)}")
-
         # Log the device of the first parameter (layers are already on proper devices)
         param_device = next(self.model.parameters()).device
         logging.info(f"Model loaded on device: {param_device}")
 
         text_gen_pipeline = pipeline(task="text-generation", model=self.model, tokenizer=self.tokenizer, **self.model_generation_kwargs)
         self.pipeline = HuggingFacePipeline(pipeline=text_gen_pipeline)
+        # Optionally compile model with advanced optimizations
+        if self.model_use_compile and hasattr(torch, "compile"):
+            try:
+                logging.info(f"Compiling model {self.model_name} with torch.compile...")
+                # Use advanced compilation modes for better performance
+                compiled_model = torch.compile(
+                    self.pipeline.pipeline.model,
+                    mode="reduce-overhead",  # Optimize for inference speed
+                    fullgraph=True,  # Compile the entire model graph
+                    dynamic=False,   # Static shapes for better optimization
+                )
+                self.model = compiled_model
+                self.pipeline.pipeline.model = compiled_model
+                logging.info("Model compilation successful")
+            except Exception as e:
+                logging.error(f"Failed to compile model: {str(e)}")
 
         if self.model_warmup:
             self.warmup()
@@ -115,15 +123,27 @@ class CompletionModel(BaseModel, ABC):
 
     @property
     def model_kwargs(self) -> dict:
-        return {
+        kwargs = {
             "cache_dir": self.cache_dir,
             "trust_remote_code": self.trust_remote_code,
             "device_map": self.device_map,
             "torch_dtype": getattr(torch, self.torch_dtype) if hasattr(torch, self.torch_dtype) else torch.bfloat16,
             "low_cpu_mem_usage": self.low_cpu_mem_usage,
-            "load_in_8bit": self.load_in_8bit if not self.load_in_4bit else False,
-            "load_in_4bit": self.load_in_4bit,
         }
+        
+        # Add quantization config only if needed
+        if self.load_in_8bit or self.load_in_4bit:
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=self.load_in_8bit if not self.load_in_4bit else False,
+                load_in_4bit=self.load_in_4bit,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_8bit_compute_dtype=torch.float16,
+            )
+            kwargs["quantization_config"] = quantization_config
+            # Override torch_dtype to float16 when using quantization
+            kwargs["torch_dtype"] = torch.float16
+            
+        return kwargs
     @property
     def model_generation_kwargs(self) -> dict:
         generation_kwargs = {
@@ -138,6 +158,9 @@ class CompletionModel(BaseModel, ABC):
             generation_kwargs["top_p"] = self.top_p
             generation_kwargs["top_k"] = self.top_k
             generation_kwargs["temperature"] = self.temperature
+        # Add Flash Attention if available and enabled
+        if self.use_flash_attention and hasattr(self.model.config, 'attn_implementation'):
+            generation_kwargs["attn_implementation"] = "flash_attention_2"
         return generation_kwargs
     @property
     def tokenizer_generation_kwargs(self) -> dict:

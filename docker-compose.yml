@@ -3,9 +3,9 @@ services:
     image: pgvector/pgvector:pg16
     container_name: postgres
     ports:
-      - ${DB_PORT}:5432
+      - ${DB_PORT}:${DB_PORT}
     expose:
-      - 5432
+      - ${DB_PORT}
     volumes:
       - .:/app
       - ./src/database/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -13,8 +13,10 @@ services:
       - POSTGRES_PASSWORD=${DB_PASSWORD}
       - POSTGRES_USER=${DB_USER}
       - POSTGRES_DB=${DB_NAME}
+      - PGPORT=${DB_PORT}
+    command: ["postgres", "-p", "${DB_PORT}"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -p ${DB_PORT}"]
       start_period: 0s
       start_interval: 0s
       interval: 60s
@@ -47,15 +49,15 @@ services:
     image: redis:7.0
     container_name: redis
     ports:
-      - ${REDIS_PORT}:6379
+      - ${REDIS_PORT}:${REDIS_PORT}
     expose:
-      - 6379
+      - ${REDIS_PORT}
     volumes:
       - .:/app
       - ./redis.conf:/usr/local/etc/redis/redis.conf
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--port", "${REDIS_PORT}"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-p", "${REDIS_PORT}", "ping"]
       start_period: 0s
       start_interval: 0s
       interval: 60s
@@ -66,11 +68,14 @@ services:
     image: redis:7.0
     container_name: redis-celery
     ports:
-      - ${CELERY_BROKER_PORT}:6379
+      - ${CELERY_BROKER_PORT}:${CELERY_BROKER_PORT}
+    expose:
+      - ${CELERY_BROKER_PORT}
+    command: ["redis-server", "--port", "${CELERY_BROKER_PORT}"]
     volumes:
       - .:/app
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-p", "${CELERY_BROKER_PORT}", "ping"]
       start_period: 0s
       start_interval: 0s
       interval: 30s
@@ -93,7 +98,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2"]
+              device_ids: ["0"]
               capabilities: [gpu]
     depends_on:
       redis-celery:
@@ -101,15 +106,15 @@ services:
       db:
         condition: service_healthy
     environment:
-      - NVIDIA_VISIBLE_DEVICES=2
+      - NVIDIA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - NVIDIA_REQUIRE_CUDA=cuda>=12.0
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_PORT=${REDIS_PORT}
       - CELERY_BROKER_HOST=redis-celery
-      - CELERY_BROKER_PORT=6379
+      - CELERY_BROKER_PORT=${CELERY_BROKER_PORT}
       - DB_HOST=db
-      - DB_PORT=5432
+      - DB_PORT=${DB_PORT}
       - PYTHONPATH=/app/src
       - PYTHONMULTIPROCESSING_START_METHOD=spawn
       - TOKENIZERS_PARALLELISM=false
@@ -120,7 +125,7 @@ services:
       - TRANSFORMERS_CACHE=/app/hf_cache
       - MODEL_CACHE_DIR=/app/hf_cache
       # CUDA/NVML specific environment variables
-      - CUDA_VISIBLE_DEVICES=2
+      - CUDA_VISIBLE_DEVICES=0
       - TORCH_CUDA_ARCH_LIST="8.6"
       - CELERY_WORKER=true
     volumes:
@@ -145,6 +150,7 @@ services:
   backend:
     build: .
     container_name: backend
+    # network_mode: "host"
     command:
       [
         "/bin/bash",
@@ -161,7 +167,7 @@ services:
     expose:
       - ${SERVER_PORT}
     ports:
-      - "8008:8008"
+      - "${SERVER_PORT}:8008"
     volumes:
       - .:/app
       - ${DATA_DIR}/hf:/app/hf_cache
@@ -172,14 +178,15 @@ services:
       - NVIDIA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - NVIDIA_REQUIRE_CUDA=cuda>=12.0
+      - SERVER_PORT=${SERVER_PORT}
       - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_PORT=${REDIS_PORT}
       - CELERY_BROKER_HOST=redis-celery
-      - CELERY_BROKER_PORT=6379
+      - CELERY_BROKER_PORT=${CELERY_BROKER_PORT}
       - DB_HOST=db
-      - DB_PORT=5432
+      - DB_PORT=${DB_PORT}
       - WEBSITE_HOST=website
-      - WEBSITE_PORT=3000
+      - WEBSITE_PORT=${WEBSITE_PORT}
       - PYTHONPATH=/app/src
       - HF_TOKEN=${HF_TOKEN}
       - HF_HOME=/app/hf_cache
@@ -203,7 +210,8 @@ services:
           "CMD",
           "wget",
           "--spider",
-          "http://${SERVER_HOST}:${SERVER_PORT}/api/ping",
+          # "http://${SERVER_HOST}:${SERVER_PORT}/api/ping",
+          "http://127.0.0.1:8008/api/ping",
         ]
       start_period: 0s
       interval: 60s
@@ -214,18 +222,18 @@ services:
     image: node:18
     container_name: website
     working_dir: /website
-    command: bash -c "npm install && npm start"
+    command: bash -c "npm install && npm start -- --port ${WEBSITE_PORT}"
     expose:
-      - 3000
+      - ${WEBSITE_PORT}
     ports:
-      - "3000:3000"
+      - "${WEBSITE_PORT}:${WEBSITE_PORT}"
     volumes:
       - ./src/website:/website
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:3000"]
+      test: ["CMD", "wget", "--spider", "http://localhost:${WEBSITE_PORT}"]
       start_period: 0s
       interval: 60s
       timeout: 5s

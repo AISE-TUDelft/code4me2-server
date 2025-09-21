@@ -50,12 +50,6 @@ class Code4meV2Config(BaseSettings):
     # General & Server Settings
     # -----------------------
 
-    test_mode: bool = Field(
-        alias="TEST_MODE",
-        frozen=True,
-        description="Enable test mode to disable certain features like rate limiting",
-    )
-
     server_version_id: int = Field(
         alias="SERVER_VERSION_ID",
         frozen=True,
@@ -395,4 +389,4 @@ class Code4meV2Config(BaseSettings):
 
     def __repr__(self) -> str:
         """Return a string representation of the configuration."""
-        return f"Code4meV2Config(server={self.server_host}:{self.server_port}, test_mode={self.test_mode})"
+        return f"Code4meV2Config(server={self.server_host}:{self.server_port})"
