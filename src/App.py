@@ -317,6 +317,9 @@ class App:
         """
         # Clean up Redis manager with a database session for final operations
         self.__redis_manager.cleanup(db_session=self.__db_session_factory())
+        
+        # Close Redis connection to stop background threads gracefully
+        self.__redis_manager.close()
 
         # Clean up Celery broker connections
         self.__celery_broker.cleanup()

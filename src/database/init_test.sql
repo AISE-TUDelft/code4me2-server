@@ -30,8 +30,9 @@ CREATE TABLE IF NOT EXISTS public.model_name
 (
     model_id BIGSERIAL PRIMARY KEY,
     model_name text NOT NULL,
-    meta_data text NOT NULL,
-    is_instruction_tuned BOOLEAN NOT NULL DEFAULT FALSE
+    is_instruction_tuned BOOLEAN NOT NULL DEFAULT FALSE,
+    prompt_templates text NOT NULL,
+    model_parameters text NOT NULL
 );
 
 -- Plugin version table
@@ -327,7 +328,7 @@ ALTER TABLE public.ground_truth
     REFERENCES public.completion_query (meta_query_id)
     ON UPDATE NO ACTION
     ON DELETE CASCADE;
-
+    
 ALTER TABLE public.session_projects
     ADD CONSTRAINT fk_session
     FOREIGN KEY (session_id)
@@ -631,6 +632,12 @@ INSERT INTO public.config (config_data) VALUES ('config {
         isChatModel = true
         isDefault = true
       }
+      {
+        id = 4
+        name = "Mellum-4b-base"
+        isChatModel = false
+        isDefault = false
+      }
     ]
     systemPrompt = "You are a helpful assistant that provides information and answers questions to the best of your ability. Please respond in a clear and concise manner."
   }
@@ -818,10 +825,11 @@ INSERT INTO public.config (config_data) VALUES ('config {
   }
 }');
 
-INSERT INTO public.model_name (model_name, is_instruction_tuned, meta_data) VALUES
-    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE,'{"fim_template":"{multi_file_context}<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>", "file_separator":"\n\n"}'),
-    ('bigcode/starcoder2-3b', FALSE,'{"fim_template":"{multi_file_context}<fim_prefix>{prefix}<fim_suffix>{suffix}<fim_middle>", "file_separator":"<file_sep>"}'),
-    ('mistralai/Ministral-8B-Instruct-2410', TRUE, '{}');
+INSERT INTO public.model_name (model_name, is_instruction_tuned, prompt_templates, model_parameters) VALUES
+    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE,'{"fim_template":{"multi_file_template":"{multi_file_context}#{file_name}\n<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>","single_file_template":"<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"},"file_separator":"#{file_name}\n","stop_tokens":["\n\n"]}', '{"max_new_tokens": 64}'),
+    ('bigcode/starcoder2-3b', FALSE,'{"fim_template":{"multi_file_template":"{multi_file_context}<file_sep><fim_prefix>{file_name}\n{prefix}<fim_suffix>{suffix}<fim_middle>","single_file_template":"<fim_prefix>{prefix}<fim_suffix>{suffix}<fim_middle>"},"file_separator":"<file_sep>\n{file_name}\n","stop_tokens":["<file_sep>","\n\n"]}', '{"max_new_tokens": 64}'),
+    ('mistralai/Ministral-8B-Instruct-2410', TRUE, '{}', '{"max_new_tokens": 256}'),
+    ('JetBrains/Mellum-4b-base', FALSE, '{"fim_template":{"multi_file_template":"{multi_file_context}<filename>{file_name}\n<fim_suffix>{suffix}<fim_prefix>{prefix}<fim_middle>","single_file_template":"<fim_suffix>{suffix}<fim_prefix>{prefix}<fim_middle>"},"file_separator":"<filename>{file_name}\n","stop_tokens":["<filename>", "\n\n"]}', '{"max_new_tokens": 64}');
 
 INSERT INTO public.programming_language (language_name) VALUES
     ('Oracle NetSuite'), ('GoPlusBuild'), ('HelmJSON'), ('USS'), ('UnityYaml'),

@@ -87,17 +87,31 @@ def model_instance(mock_model_components, dummy_config):
 
 def test_stop_sequence_criteria_triggers():
     tokenizer = MagicMock()
-    tokenizer.decode.return_value = "Hello stop here"
-    stop_criteria = StopSequenceCriteria(tokenizer, ["stop"], 0, "cpu")
-    input_ids = torch.tensor([[1, 2, 3]])
+    # Mock the tokenizer to return different text for full sequence vs input portion
+    def mock_decode(ids, skip_special_tokens=False):
+        if len(ids) == 3:  # Input portion (first 3 tokens)
+            return "Hello"
+        else:  # Full sequence
+            return "Hello stop here"
+    
+    tokenizer.decode.side_effect = mock_decode
+    stop_criteria = StopSequenceCriteria(tokenizer, ["stop"], 3)
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])  # Full sequence with more tokens
     scores = torch.tensor([[0.1]])
     assert stop_criteria(input_ids, scores)
 
 
 def test_stop_sequence_criteria_does_not_trigger():
     tokenizer = MagicMock()
-    tokenizer.decode.return_value = "This is fine"
-    stop_criteria = StopSequenceCriteria(tokenizer, ["stop"], 0, "cpu")
-    input_ids = torch.tensor([[1, 2, 3]])
+    # Mock the tokenizer to return different text for full sequence vs input portion
+    def mock_decode(ids, skip_special_tokens=False):
+        if len(ids) == 3:  # Input portion (first 3 tokens)
+            return "This"
+        else:  # Full sequence
+            return "This is fine"
+    
+    tokenizer.decode.side_effect = mock_decode
+    stop_criteria = StopSequenceCriteria(tokenizer, ["stop"], 3)
+    input_ids = torch.tensor([[1, 2, 3, 4, 5]])  # Full sequence with more tokens
     scores = torch.tensor([[0.1]])
     assert not stop_criteria(input_ids, scores)
