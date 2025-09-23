@@ -22,7 +22,6 @@ class CompletionModel(BaseModel, ABC):
     )
 
     # Generation defaults (subclasses may use some/all)
-    # TODO: Check later with Roham
     temperature: float = Field(default=0.2, description="The temperature to use for the model") 
     max_new_tokens: int = Field(default=64, description="The maximum number of new tokens to generate")
     num_beams: int = Field(default=1, description="The number of beams to use for the model")
