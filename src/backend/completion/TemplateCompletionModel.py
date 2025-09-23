@@ -52,10 +52,22 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
         Initialize the TemplateCompletionModel.
         """
         super().__init__(**data)
-        assert (
-            "fim_template" in self.prompt_templates and "file_separator" in self.prompt_templates and "single_file_template" in self.prompt_templates["fim_template"] and "multi_file_template" in self.prompt_templates["fim_template"]
-        ), "prompt_templates must contain 'fim_template' with 'single_file_template' and 'multi_file_template' keys and 'file_separator' key"
-     
+        self._validate_prompt_templates(self.prompt_templates)
+
+    def _validate_prompt_templates(self, prompt_templates: dict) -> None:
+        if not isinstance(prompt_templates, dict):
+            raise ValueError("prompt_templates must be a dictionary.")
+        if "fim_template" not in prompt_templates:
+            raise KeyError("prompt_templates must contain the 'fim_template' key.")
+        if "file_separator" not in prompt_templates:
+            raise KeyError("prompt_templates must contain the 'file_separator' key.")
+        fim_template = prompt_templates["fim_template"]
+        if not isinstance(fim_template, dict):
+            raise ValueError("'fim_template' must be a dictionary.")
+        if "single_file_template" not in fim_template:
+            raise KeyError("'fim_template' must contain the 'single_file_template' key.")
+        if "multi_file_template" not in fim_template:
+            raise KeyError("'fim_template' must contain the 'multi_file_template' key.")
     def _format_prompt_from_dict(self, prompt: dict) -> str:
         """Build a formatted prompt from a prompt dict using configured templates."""
         if "multi_file_context" in prompt:
