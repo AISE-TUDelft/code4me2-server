@@ -243,43 +243,4 @@ if __name__ == "__main__":
     print(response)
 
 
-    # response = requests.post("http://localhost:8008/api/user/authenticate", json={"email":"mo.bateni@gmail.com", "password":"Par123456789"})
-    # # print(response.json())
-    # cookies1 = response.cookies
-    # # print(cookies1)
-    # response = requests.get("http://localhost:8008/api/session/acquire", cookies=cookies1)
-    # # print(response.json())
-    # cookies2 = response.cookies
-    # # print(cookies2)
-    # response = requests.post("http://localhost:8008/api/project/create", json={"project_name": "test"}, cookies={**cookies1.get_dict(), **cookies2.get_dict()})
-    # # print(response.json())
-    # cookies3 = response.cookies
-    # # print(cookies3)
-    # t2 = time.perf_counter()
-    # response = requests.post("http://localhost:8008/api/completion/request", 
-    # json = {
-    #     "model_ids": [1],
-    #     "context": {
-    #         "prefix": "def hello_world():",
-    #         "suffix": "",
-    #         "file_name": "main.py",
-    #         "context_files": []
-    #     },
-    #     "store_context":True,
-    #     "contextual_telemetry": {
-    #         "language_id": 45,
-    #         "trigger_type_id": 1,
-    #         "version_id": 1,
-    #         "document_char_length": 1500
-    #     },
-    #     "store_contextual_telemetry":True,
-    #     "behavioral_telemetry": {
-    #         "time_since_last_completion": 5000,
-    #         "typing_speed": 300,
-    #         "relative_document_position": 0.4
-    #     },
-    #     "store_behavioral_telemetry":True
-    #     }, cookies={**cookies1.get_dict(), **cookies2.get_dict(), **cookies3.get_dict()})
-    # t3 = time.perf_counter()
-    # print(f"Time taken: {t3 - t2} seconds") 
-    # print(response.json())
+# (Commented code containing hardcoded credentials removed for security reasons)
