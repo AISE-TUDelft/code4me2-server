@@ -25,11 +25,9 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
 
   const closeModal = () => {
     setModal({ ...modal, isOpen: false });
-
-    // If it was a success modal, switch to login
-    if (modal.type === "success") {
-      onSwitchToLogin();
-    }
+    
+    // Note: We no longer automatically switch to login on success modal close
+    // because we now auto-login the user after successful signup
   };
 
   const handleSubmit = async (e) => {
@@ -63,7 +61,7 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
     // Check if password is strong enough
     const isStrongPassword = (password) => {
       const strongPasswordPattern =
-        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d]{8,}$/;
+        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
       return strongPasswordPattern.test(password);
     };
     if (!isStrongPassword(password)) {
@@ -81,8 +79,17 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
       const response = await createUser({ name, email, password });
 
       if (response.ok) {
-        // Show success modal
-        showModal("Account Created", response.message, "success");
+        // Show success modal briefly
+        showModal("Account Created", "Welcome! Logging you in...", "success");
+        
+        // Call the parent's signup handler for auto-login
+        setTimeout(() => {
+          onSignup({
+            ...response,
+            email,
+            password
+          });
+        }, 1000); // Brief delay to show the success message
       } else {
         // Show error modal
         showModal("Signup Failed", response.error, "error");

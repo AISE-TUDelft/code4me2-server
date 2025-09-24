@@ -38,7 +38,7 @@ const PasswordCreationModal = ({ isOpen, onClose, googleUser, onSubmit }) => {
     // Check if password is strong enough
     const isStrongPassword = (password) => {
       const strongPasswordPattern =
-        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d]{8,}$/;
+        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
       return strongPasswordPattern.test(password);
     };
     if (!isStrongPassword(password)) {

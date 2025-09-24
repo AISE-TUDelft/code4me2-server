@@ -7,6 +7,7 @@ from .project import router as project_router
 from .session import router as session_router
 from .user import router as user_router
 from .ws import router as ws_routers
+from .analytics import router as analytics_router
 
 # Main API router to aggregate and expose sub-routes
 router = APIRouter()
@@ -28,6 +29,9 @@ router.include_router(chat_router, prefix="/chat", tags=["Chat"])
 
 # Include WebSocket-based endpoints (e.g., completions, chat)
 router.include_router(ws_routers, prefix="/ws", tags=["WebSocket"])
+
+# Include analytics and monitoring endpoints  
+router.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
 
 
 @router.api_route("/ping", methods=["HEAD"])

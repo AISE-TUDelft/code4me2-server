@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS public."user"
     verified BOOLEAN DEFAULT FALSE,
     config_id BIGINT NOT NULL,
     preference TEXT,
-    auth_token uuid NULL
+    auth_token uuid NULL,
+    is_admin BOOLEAN DEFAULT FALSE
 );
 
 -- Model name table with instruction tuning flag
@@ -198,6 +199,30 @@ CREATE TABLE IF NOT EXISTS public.documentation
     created_at timestamp with time zone NOT NULL DEFAULT NOW()
 );
 
+-- Study table for A/B testing and user experiments
+CREATE TABLE IF NOT EXISTS public.study
+(
+    study_id uuid NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_by uuid NOT NULL,
+    starts_at timestamp with time zone NOT NULL,
+    ends_at timestamp with time zone,
+    is_active BOOLEAN DEFAULT FALSE,
+    default_config_id BIGINT NOT NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT NOW()
+);
+
+-- Config assignment history for tracking user treatments
+CREATE TABLE IF NOT EXISTS public.config_assignment_history
+(
+    user_id uuid NOT NULL,
+    study_id uuid NOT NULL,
+    assigned_config_id BIGINT NOT NULL,
+    assigned_at timestamp with time zone NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, study_id)
+);
+
 -- Indexes for documentation table
 CREATE INDEX IF NOT EXISTS idx_documentation_language ON public.documentation (language);
 CREATE INDEX IF NOT EXISTS idx_documentation_embedding ON public.documentation
@@ -341,9 +366,41 @@ ALTER TABLE public.session_projects
     REFERENCES public.project(project_id)
     ON DELETE CASCADE;
 
+-- Foreign keys for study management
+ALTER TABLE public.study
+    ADD CONSTRAINT fk_study_created_by FOREIGN KEY (created_by)
+    REFERENCES public."user" (user_id)
+    ON UPDATE NO ACTION
+    ON DELETE CASCADE;
+
+ALTER TABLE public.study
+    ADD CONSTRAINT fk_study_default_config FOREIGN KEY (default_config_id)
+    REFERENCES public.config (config_id)
+    ON UPDATE NO ACTION
+    ON DELETE NO ACTION;
+
+ALTER TABLE public.config_assignment_history
+    ADD CONSTRAINT fk_config_assignment_user FOREIGN KEY (user_id)
+    REFERENCES public."user" (user_id)
+    ON UPDATE NO ACTION
+    ON DELETE CASCADE;
+
+ALTER TABLE public.config_assignment_history
+    ADD CONSTRAINT fk_config_assignment_study FOREIGN KEY (study_id)
+    REFERENCES public.study (study_id)
+    ON UPDATE NO ACTION
+    ON DELETE CASCADE;
+
+ALTER TABLE public.config_assignment_history
+    ADD CONSTRAINT fk_config_assignment_config FOREIGN KEY (assigned_config_id)
+    REFERENCES public.config (config_id)
+    ON UPDATE NO ACTION
+    ON DELETE NO ACTION;
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_user_email ON public."user" (email);
 CREATE INDEX IF NOT EXISTS idx_user_config_id ON public."user" (config_id);
+CREATE INDEX IF NOT EXISTS idx_user_is_admin ON public."user" (is_admin);
 
 CREATE INDEX IF NOT EXISTS idx_ctxt_telemetry_version_id ON public.contextual_telemetry (version_id);
 CREATE INDEX IF NOT EXISTS idx_ctxt_telemetry_trigger_type_id ON public.contextual_telemetry (trigger_type_id);
@@ -359,16 +416,32 @@ CREATE INDEX IF NOT EXISTS idx_session_projects_project_id ON public.session_pro
 CREATE INDEX IF NOT EXISTS idx_chat_project_id ON public.chat (project_id);
 CREATE INDEX IF NOT EXISTS idx_chat_user_id ON public.chat (user_id);
 
+-- Analytics-optimized indexes
 CREATE INDEX IF NOT EXISTS idx_meta_query_user_id ON public.meta_query (user_id);
 CREATE INDEX IF NOT EXISTS idx_meta_query_project_id ON public.meta_query (project_id);
 CREATE INDEX IF NOT EXISTS idx_meta_query_session_id ON public.meta_query (session_id);
 CREATE INDEX IF NOT EXISTS idx_meta_query_type ON public.meta_query (query_type);
+CREATE INDEX IF NOT EXISTS idx_meta_query_timestamp ON public.meta_query ("timestamp");
+CREATE INDEX IF NOT EXISTS idx_meta_query_timestamp_type ON public.meta_query ("timestamp", query_type);
 
 CREATE INDEX IF NOT EXISTS idx_chat_query_chat_id ON public.chat_query (chat_id);
 
 CREATE INDEX IF NOT EXISTS idx_had_generation_meta_query_model ON public.had_generation (meta_query_id, model_id);
+CREATE INDEX IF NOT EXISTS idx_had_generation_model_id ON public.had_generation (model_id);
+CREATE INDEX IF NOT EXISTS idx_had_generation_was_accepted ON public.had_generation (was_accepted);
+CREATE INDEX IF NOT EXISTS idx_had_generation_confidence ON public.had_generation (confidence);
 
 CREATE INDEX IF NOT EXISTS idx_ground_truth_completion_query_timestamp ON public.ground_truth (completion_query_id, truth_timestamp);
+
+-- Study management indexes
+CREATE INDEX IF NOT EXISTS idx_study_is_active ON public.study (is_active);
+CREATE INDEX IF NOT EXISTS idx_study_created_by ON public.study (created_by);
+CREATE INDEX IF NOT EXISTS idx_study_starts_at ON public.study (starts_at);
+CREATE INDEX IF NOT EXISTS idx_study_ends_at ON public.study (ends_at);
+
+CREATE INDEX IF NOT EXISTS idx_config_assignment_user_id ON public.config_assignment_history (user_id);
+CREATE INDEX IF NOT EXISTS idx_config_assignment_study_id ON public.config_assignment_history (study_id);
+CREATE INDEX IF NOT EXISTS idx_config_assignment_assigned_at ON public.config_assignment_history (assigned_at);
 
 -- Insert default data
 INSERT INTO public.config (config_data) VALUES ('config {
@@ -608,7 +681,7 @@ INSERT INTO public.config (config_data) VALUES ('config {
   // Authentication Settings
   auth {
     google {
-      clientId = "67736337656-un249ihklv5i93n033i1v46q12bfv5g2.apps.googleusercontent.com"
+      clientId = "288822392430-se6cmstnkje31e5kv32u95lo8544ltu4.apps.googleusercontent.com"
     }
   }
   // model configuration
@@ -618,7 +691,7 @@ INSERT INTO public.config (config_data) VALUES ('config {
         id = 1
         name = "deepseek-coder-1.3b"
         isChatModel = false
-        isDefault = true
+        isDefault = false
       }
       {
         id = 2,
@@ -636,7 +709,7 @@ INSERT INTO public.config (config_data) VALUES ('config {
         id = 4
         name = "Mellum-4b-base"
         isChatModel = false
-        isDefault = false
+        isDefault = true
       }
     ]
     systemPrompt = "You are a helpful assistant that provides information and answers questions to the best of your ability. Please respond in a clear and concise manner."

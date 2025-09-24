@@ -21,12 +21,10 @@ const Auth = ({ onAuthenticated }) => {
     try {
       console.log("Logging in user:", userData);
 
-      await new Promise((resolve) => setTimeout(resolve, 800));
-
-      // Pass the user data and session token to the parent component
+      // Pass the user data directly from API response
       onAuthenticated({
         user: userData.user || userData,
-        sessionToken: userData.sessionToken,
+        config: userData.config,
       });
     } catch (error) {
       console.error("Login error:", error);
@@ -39,15 +37,37 @@ const Auth = ({ onAuthenticated }) => {
     setIsLoading(true);
     try {
       console.log("Signing up user:", userData);
-
-      await new Promise((resolve) => setTimeout(resolve, 800));
-
-      onAuthenticated({
-        user: userData.user || userData,
-        sessionToken: userData.sessionToken,
-      });
+      
+      // userData should contain the response from the createUser API call
+      if (userData.ok) {
+        console.log("User created successfully, now logging in...");
+        
+        // After successful signup, automatically log the user in
+        // This will use the same credentials they just signed up with
+        const loginResult = await import('../../utils/api').then(api => 
+          api.authenticateUser({
+            email: userData.email,
+            password: userData.password
+          })
+        );
+        
+        if (loginResult.ok) {
+          console.log("Auto-login successful after signup");
+          onAuthenticated({
+            user: loginResult.user,
+            config: loginResult.config,
+          });
+        } else {
+          console.log("Auto-login failed, redirecting to login screen");
+          setIsLogin(true);
+        }
+      } else {
+        console.error("Signup failed:", userData.error);
+        setIsLogin(true);
+      }
     } catch (error) {
       console.error("Signup error:", error);
+      setIsLogin(true);
     } finally {
       setIsLoading(false);
     }
@@ -57,8 +77,8 @@ const Auth = ({ onAuthenticated }) => {
     try {
       await handleGoogleAuth(
         googleUser,
-        (user) => {
-          handleLogin(user);
+        (authResult) => {
+          handleLogin(authResult);
         },
         (user) => {
           setPasswordModal({
@@ -86,12 +106,26 @@ const Auth = ({ onAuthenticated }) => {
 
       if (response.ok) {
         setPasswordModal({ isOpen: false, googleUser: null });
-
-        // Pass the user data and session token to the parent component
-        onAuthenticated({
-          user: { name, email },
-          sessionToken: response.sessionToken,
+        
+        console.log("Google OAuth user created successfully, now logging in...");
+        
+        // After successful signup, automatically log the user in using OAuth
+        const { authenticateWithOAuth } = await import('../../utils/api');
+        const loginResult = await authenticateWithOAuth({
+          provider: "google",
+          token: credential,
         });
+        
+        if (loginResult.ok) {
+          console.log("Auto-login successful after Google OAuth signup");
+          onAuthenticated({
+            user: loginResult.user,
+            config: loginResult.config,
+          });
+        } else {
+          console.log("Auto-login failed, redirecting to login screen");
+          setIsLogin(true);
+        }
       } else {
         throw new Error(response.error || "Failed to create account");
       }
