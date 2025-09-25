@@ -4,7 +4,7 @@ import Dashboard from "./pages/Dashboard";
 import "./App.css";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { ThemeProvider } from "./context/ThemeContext";
-import { getCurrentUser } from "./utils/api";
+import { getCurrentUser, logoutUser } from "./utils/api";
 function App() {
   // we manage the state for the uer but setting it to null by default
   const [user, setUser] = useState(null);
@@ -14,6 +14,7 @@ function App() {
   useEffect(() => {
     const checkAuthStatus = async () => {
       try {
+        // First check if we have a valid server session
         const response = await getCurrentUser();
         if (response.ok) {
           setUser(response.user);
@@ -23,31 +24,22 @@ function App() {
             config: response.config
           }));
         } else {
-          // Clear any stale localStorage data
+          // Server says no valid session, clear everything
+          setUser(null);
           localStorage.removeItem("user");
         }
       } catch (error) {
         console.error("Error checking auth status:", error);
+        // Network error or server issue, clear local state to be safe
+        setUser(null);
         localStorage.removeItem("user");
       } finally {
         setIsLoading(false);
       }
     };
 
-    // Try to get user from current auth token first
+    // Always check server-side auth status first
     checkAuthStatus();
-
-    // Fallback to localStorage for offline scenarios
-    const storedUserData = localStorage.getItem("user");
-    if (storedUserData && !user) {
-      try {
-        const userData = JSON.parse(storedUserData);
-        setUser(userData.user);
-      } catch (error) {
-        console.error("Error parsing stored user:", error);
-        localStorage.removeItem("user");
-      }
-    }
   }, []);
 
   // handleAuthenticated function to set the user state
@@ -56,21 +48,29 @@ function App() {
     localStorage.setItem("user", JSON.stringify(userData));
   };
 
-  // handleLogout function to set the user state to null
+  // handleLogout function to properly clear user session
   const handleLogout = async () => {
+    console.log("Logging out user...");
+    
     try {
-      // Call the logout API to clear server-side session
-      // await logoutUser();
-    } catch (error) {
-      console.error("Error during logout:", error);
-    } finally {
-      // Clear local state and storage regardless of API success
-      setUser(null);
-      localStorage.removeItem("user");
+      // Call the logout API - this will clear server-side session and cookies
+      const logoutResponse = await logoutUser();
+      console.log("Logout API response:", logoutResponse);
       
-      // Force a page refresh to ensure clean state
-      window.location.reload();
+      if (!logoutResponse.ok) {
+        console.warn("Logout API failed, but continuing with local cleanup");
+      }
+    } catch (error) {
+      console.error("Error during logout API call:", error);
+      console.log("Continuing with local cleanup despite API error");
     }
+    
+    // Clear local state (server handles cookie clearing now)
+    setUser(null);
+    localStorage.removeItem("user");
+    sessionStorage.clear();
+    
+    console.log("Logout completed successfully");
   };
 
   // Show loading screen while checking authentication status

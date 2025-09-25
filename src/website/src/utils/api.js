@@ -749,3 +749,61 @@ export const getStudyEvaluation = async (studyId) => {
     };
   }
 };
+
+/**
+ * Logout the current user by deactivating their session
+ *
+ * @returns {Promise} - Promise that resolves with logout result
+ */
+export const logoutUser = async () => {
+  console.log("Starting logout API call...");
+  
+  try {
+    const url = `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/session/deactivate/`;
+    console.log("Logout URL:", url);
+    console.log("Cookies before logout:", document.cookie);
+    
+    const response = await fetch(url, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include", // Include cookies for auth token
+    });
+    
+    console.log("Logout response status:", response.status);
+    console.log("Logout response headers:", response.headers);
+    
+    // Parse response if available
+    let responseBody = {};
+    try {
+      responseBody = await response.json();
+      console.log("📦 Logout response body:", responseBody);
+    } catch (parseError) {
+      console.warn("Could not parse logout response:", parseError);
+    }
+
+    console.log("Cookies after logout:", document.cookie);
+
+    if (!response.ok) {
+      console.warn("Logout API failed with status:", response.status, responseBody);
+      return {
+        ok: false,
+        error: responseBody.message || `HTTP ${response.status}`,
+        status: response.status
+      };
+    }
+
+    console.log("Logout API succeeded");
+    return {
+      ok: true,
+      message: "Session deactivated successfully",
+    };
+  } catch (error) {
+    console.error("Error during logout API call:", error);
+    return {
+      ok: false,
+      error: error.message || "Network error during logout",
+    };
+  }
+};

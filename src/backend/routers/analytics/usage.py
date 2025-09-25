@@ -80,13 +80,24 @@ def get_queries_over_time(
         GROUP BY 1, 2, 3, 4
         ORDER BY 1 ASC
         """
+
+        # Add granularity mapping
+        granularity_map = {
+            "5m": "minute",  # Rounds to nearest minute
+            "15m": "minute",
+            "1h": "hour",
+            "1d": "day"
+        }
+
+        if granularity not in granularity_map:
+            raise HTTPException(status_code=400, detail="Invalid granularity")
         
         # Execute query
         result = db_session.execute(
-            text(base_query), 
+            text(base_query),
             {
                 **query_params,
-                "granularity": granularity,
+                "granularity": granularity_map[granularity],
                 "query_type": query_type,
                 "language": language,
                 "trigger_type": trigger_type
@@ -198,7 +209,7 @@ def get_acceptance_rates(
             # 95% confidence interval using normal approximation
             import math
             n = row.sample_size
-            p = row.acceptance_rate or 0
+            p = float(row.acceptance_rate or 0)
             if n > 0 and p > 0 and p < 1:
                 se = math.sqrt(p * (1 - p) / n)
                 margin = 1.96 * se
@@ -206,10 +217,10 @@ def get_acceptance_rates(
                 ci_upper = min(1, p + margin)
             else:
                 ci_lower = ci_upper = p
-                
+
             data.append({
                 "group_name": row.group_name,
-                "acceptance_rate": float(p) if p else 0.0,
+                "acceptance_rate": p if p else 0.0,
                 "sample_size": row.sample_size,
                 "confidence_interval": {
                     "lower": float(ci_lower),

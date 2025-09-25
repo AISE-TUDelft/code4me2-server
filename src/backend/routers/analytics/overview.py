@@ -317,10 +317,21 @@ def get_activity_timeline(
         GROUP BY time_bucket
         ORDER BY time_bucket ASC
         """
-        
+
+        # Add granularity mapping
+        granularity_map = {
+            "5m": "minute",  # Rounds to nearest minute
+            "15m": "minute",
+            "1h": "hour",
+            "1d": "day"
+        }
+
+        if granularity not in granularity_map:
+            raise HTTPException(status_code=400, detail="Invalid granularity")
+
         result = db_session.execute(
-            text(timeline_query), 
-            {**query_params, "granularity": granularity}
+            text(timeline_query),
+            {**query_params, "granularity": granularity_map[granularity]}
         ).fetchall()
         
         timeline_data = []
