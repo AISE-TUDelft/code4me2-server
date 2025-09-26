@@ -40,19 +40,17 @@ const ModelAnalytics = () => {
 
   const formatModelPerformanceChart = (models) => {
     if (!models) return [];
-    
-    return models.map((model, index) => ({
-      timestamp: Date.now() - (models.length - index) * 3600000,
-      value: Math.round(model.metrics.acceptance_rate * 100)
+    return models.map((model) => ({
+      label: (model.model_name.split('/').pop() || model.model_name),
+      value: Math.round(model.metrics.acceptance_rate * 100),
     }));
   };
 
   const formatLatencyChart = (models) => {
     if (!models) return [];
-    
-    return models.map((model, index) => ({
-      timestamp: Date.now() - (models.length - index) * 3600000,
-      value: Math.round(model.metrics.avg_generation_time)
+    return models.map((model) => ({
+      label: (model.model_name.split('/').pop() || model.model_name),
+      value: Math.round(model.metrics.avg_generation_time),
     }));
   };
 
@@ -139,6 +137,8 @@ const ModelAnalytics = () => {
               data={formatModelPerformanceChart(models)}
               title="Acceptance Rate (%)"
               color="#4285f4"
+              xKey="label"
+              xType="category"
             />
           </div>
         </div>
@@ -217,6 +217,8 @@ const ModelAnalytics = () => {
               data={formatLatencyChart(models)}
               title="Avg Generation Time (ms)"
               color="#ff9800"
+              xKey="label"
+              xType="category"
             />
           </div>
           <div className="latency-insights">

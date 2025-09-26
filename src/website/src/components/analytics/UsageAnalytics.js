@@ -77,10 +77,9 @@ const UsageAnalytics = () => {
 
   const formatAcceptanceRatesChart = (data) => {
     if (!data?.data) return [];
-    
-    return data.data.slice(0, 8).map((item, index) => ({
-      timestamp: Date.now() - (data.data.length - index) * 3600000,
-      value: Math.round(item.acceptance_rate * 100)
+    return data.data.slice(0, 8).map((item) => ({
+      label: item.group_name,
+      value: Math.round(item.acceptance_rate * 100),
     }));
   };
 
@@ -161,6 +160,8 @@ const UsageAnalytics = () => {
               data={formatAcceptanceRatesChart(acceptanceData)}
               title="Acceptance Rate (%)"
               color="#34a853"
+              xKey="label"
+              xType="category"
             />
           </div>
           <div className="acceptance-table">

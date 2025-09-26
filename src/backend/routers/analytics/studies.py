@@ -382,7 +382,7 @@ def activate_study(
             raise HTTPException(status_code=404, detail="Study not found")
         
         # Check if study can be activated (not ended)
-        now = datetime.now()
+        now = datetime.now(study.ends_at.tzinfo if study.ends_at else None)
         if study.ends_at and study.ends_at < now:
             raise HTTPException(status_code=400, detail="Cannot activate an ended study")
         

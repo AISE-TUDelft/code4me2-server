@@ -751,6 +751,86 @@ export const getStudyEvaluation = async (studyId) => {
 };
 
 /**
+ * Get study details (assignments and metadata)
+ *
+ * @param {string} studyId - Study ID
+ * @returns {Promise}
+ */
+export const getStudyDetails = async (studyId) => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/details`,
+      {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+      },
+    );
+    const responseBody = await response.json();
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
+      };
+    } else {
+      return {
+        ok: true,
+        data: responseBody,
+      };
+    }
+  } catch (error) {
+    console.error("Error fetching study details:", error);
+    return {
+      ok: false,
+      error: "An unexpected error occurred. Please try again.",
+    };
+  }
+};
+
+/**
+ * Deactivate a study
+ *
+ * @param {string} studyId - Study ID
+ * @returns {Promise}
+ */
+export const deactivateStudy = async (studyId) => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/deactivate`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+      },
+    );
+    const responseBody = await response.json();
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
+      };
+    } else {
+      return {
+        ok: true,
+        data: responseBody,
+      };
+    }
+  } catch (error) {
+    console.error("Error deactivating study:", error);
+    return {
+      ok: false,
+      error: "An unexpected error occurred. Please try again.",
+    };
+  }
+};
+
+/**
  * Logout the current user by deactivating their session
  *
  * @returns {Promise} - Promise that resolves with logout result
@@ -805,5 +885,131 @@ export const logoutUser = async () => {
       ok: false,
       error: error.message || "Network error during logout",
     };
+  }
+};
+
+
+// ===== MODEL CALIBRATION ANALYTICS FUNCTIONS =====
+
+/**
+ * Get reliability diagram data (bins of predicted confidence vs empirical accuracy)
+ * @param {Object} params - { start_time, end_time, model_id, bins, user_id }
+ */
+export const getReliabilityDiagram = async (params = {}) => {
+  try {
+    const queryParams = new URLSearchParams({
+      bins: params.bins || 10,
+      ...params,
+    }).toString();
+
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/calibration/reliability-diagram?${queryParams}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      }
+    );
+    const responseBody = await response.json();
+
+    if (!response.ok) {
+      return { ok: false, error: responseBody["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: responseBody };
+  } catch (error) {
+    console.error("Error fetching reliability diagram:", error);
+    return { ok: false, error: "An unexpected error occurred. Please try again." };
+  }
+};
+
+/**
+ * Get Brier score summary
+ * @param {Object} params - { start_time, end_time, model_id, group_by, user_id }
+ */
+export const getBrierScore = async (params = {}) => {
+  try {
+    const queryParams = new URLSearchParams({
+      group_by: params.group_by || "model",
+      ...params,
+    }).toString();
+
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/calibration/brier-score?${queryParams}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      }
+    );
+    const responseBody = await response.json();
+
+    if (!response.ok) {
+      return { ok: false, error: responseBody["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: responseBody };
+  } catch (error) {
+    console.error("Error fetching Brier score:", error);
+    return { ok: false, error: "An unexpected error occurred. Please try again." };
+  }
+};
+
+/**
+ * Get confidence score distribution (histogram)
+ * @param {Object} params - { start_time, end_time, model_id, bins, user_id }
+ */
+export const getConfidenceDistribution = async (params = {}) => {
+  try {
+    const queryParams = new URLSearchParams({
+      bins: params.bins || 20,
+      ...params,
+    }).toString();
+
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/calibration/confidence-distribution?${queryParams}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      }
+    );
+    const responseBody = await response.json();
+
+    if (!response.ok) {
+      return { ok: false, error: responseBody["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: responseBody };
+  } catch (error) {
+    console.error("Error fetching confidence distribution:", error);
+    return { ok: false, error: "An unexpected error occurred. Please try again." };
+  }
+};
+
+/**
+ * Get calibration summary across models
+ * @param {Object} params - { start_time, end_time, user_id }
+ */
+export const getCalibrationSummary = async (params = {}) => {
+  try {
+    const queryParams = new URLSearchParams({
+      ...params,
+    }).toString();
+
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/calibration/calibration-summary?${queryParams}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      }
+    );
+    const responseBody = await response.json();
+
+    if (!response.ok) {
+      return { ok: false, error: responseBody["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: responseBody };
+  } catch (error) {
+    console.error("Error fetching calibration summary:", error);
+    return { ok: false, error: "An unexpected error occurred. Please try again." };
   }
 };

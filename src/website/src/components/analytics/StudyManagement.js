@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { getStudies, getStudyEvaluation, activateStudy, createStudy } from '../../utils/api';
+import { getStudies, getStudyEvaluation, getStudyDetails, activateStudy, deactivateStudy, createStudy } from '../../utils/api';
 import './StudyManagement.css';
 
 const StudyManagement = ({ user }) => {
   const [studies, setStudies] = useState([]);
   const [selectedStudy, setSelectedStudy] = useState(null);
   const [evaluationData, setEvaluationData] = useState(null);
+  const [studyDetails, setStudyDetails] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -48,9 +49,27 @@ const StudyManagement = ({ user }) => {
     }
   };
 
+  const fetchStudyDetails = async (studyId) => {
+    try {
+      const response = await getStudyDetails(studyId);
+      if (response.ok) {
+        setStudyDetails(response.data);
+      } else {
+        console.warn("Details error:", response.error);
+        setStudyDetails(null);
+      }
+    } catch (err) {
+      console.error("Details fetch error:", err);
+      setStudyDetails(null);
+    }
+  };
+
   const handleStudySelect = (study) => {
     setSelectedStudy(study);
+    setEvaluationData(null);
+    setStudyDetails(null);
     fetchStudyEvaluation(study.study_id);
+    fetchStudyDetails(study.study_id);
   };
 
   const handleActivateStudy = async (studyId) => {
@@ -59,12 +78,33 @@ const StudyManagement = ({ user }) => {
       if (response.ok) {
         fetchStudies(); // Refresh the list
         alert("Study activated successfully!");
+        if (selectedStudy?.study_id === studyId) {
+          setSelectedStudy({ ...selectedStudy, is_active: true });
+        }
       } else {
         alert(`Failed to activate study: ${response.error}`);
       }
     } catch (err) {
       alert("Failed to activate study");
       console.error("Activation error:", err);
+    }
+  };
+
+  const handleDeactivateStudy = async (studyId) => {
+    try {
+      const response = await deactivateStudy(studyId);
+      if (response.ok) {
+        fetchStudies();
+        alert("Study deactivated successfully!");
+        if (selectedStudy?.study_id === studyId) {
+          setSelectedStudy({ ...selectedStudy, is_active: false, ends_at: new Date().toISOString() });
+        }
+      } else {
+        alert(`Failed to deactivate study: ${response.error}`);
+      }
+    } catch (err) {
+      alert("Failed to deactivate study");
+      console.error("Deactivation error:", err);
     }
   };
 
@@ -158,7 +198,7 @@ const StudyManagement = ({ user }) => {
                     </div>
                   )}
                   <div className="study-actions">
-                    {!study.is_active && (
+                    {!study.is_active ? (
                       <button
                         className="activate-btn"
                         onClick={(e) => {
@@ -167,6 +207,16 @@ const StudyManagement = ({ user }) => {
                         }}
                       >
                         Activate
+                      </button>
+                    ) : (
+                      <button
+                        className="deactivate-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeactivateStudy(study.study_id);
+                        }}
+                      >
+                        Deactivate
                       </button>
                     )}
                   </div>
@@ -209,6 +259,31 @@ const StudyManagement = ({ user }) => {
                   )}
                 </div>
               </div>
+
+              {studyDetails && studyDetails.assignments?.length > 0 && (
+                <div className="study-assignments">
+                  <h4>Configuration Assignments</h4>
+                  <div className="assignments-grid">
+                    {studyDetails.assignments.map((a) => (
+                      <div key={a.config_id} className="assignment-item">
+                        <div className="assignment-header">
+                          <span className="config-name">Config {a.config_id}</span>
+                        </div>
+                        <div className="assignment-metrics">
+                          <div className="metric-row">
+                            <span className="metric-label">Users:</span>
+                            <span className="metric-value">{a.user_count}</span>
+                          </div>
+                          <div className="metric-row">
+                            <span className="metric-label">Engagement:</span>
+                            <span className="metric-value">{(a.engagement_rate * 100).toFixed(1)}%</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {evaluationData && (
                 <div className="evaluation-results">
