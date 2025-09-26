@@ -265,10 +265,11 @@
   color: #ff9800;
 }
 
-.rating.needs.improvement {
+.rating.needs-improvement {
   background-color: rgba(244, 67, 54, 0.2);
   color: #f44336;
 }
+
 
 /* Latency Insights */
 .latency-insights {
@@ -495,41 +496,67 @@
   .analytics-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .model-controls {
     flex-direction: column;
     align-items: flex-start;
     gap: 16px;
   }
-  
+
   .model-checkboxes {
     width: 100%;
   }
-  
+
   .checkbox-label {
     flex: 1;
     min-width: 120px;
   }
-  
+
   .model-table-container {
     font-size: 11px;
   }
-  
+
   .model-table th,
   .model-table td {
     padding: 8px 4px;
   }
-  
+
   .quality-details {
     gap: 8px;
   }
-  
+
   .quality-stat {
     min-width: 50px;
   }
-  
+
   .usage-stats {
     flex-wrap: wrap;
     gap: 4px;
   }
+}
+
+
+/* Scoped table layout fixes to avoid conflicts with global .model-row in other modules */
+.model-table {
+  table-layout: auto;
+}
+
+/* Force proper table semantics for rows within the comparison table */
+.model-table .model-row {
+  display: table-row !important;
+  width: 100%;
+}
+
+.model-table thead tr,
+.model-table tbody tr {
+  display: table-row;
+}
+
+/* Ensure cells render as table-cells */
+.model-table .model-row > td,
+.model-table .model-row > th,
+.model-table td,
+.model-table th {
+  display: table-cell;
+  vertical-align: middle;
 }
