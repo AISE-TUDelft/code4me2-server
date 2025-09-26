@@ -38,6 +38,13 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
       description: 'Experiment management and evaluation',
       adminOnly: true
     });
+    navigationItems.push({
+      id: 'configs',
+      label: 'Config Management',
+      icon: '🧩',
+      description: 'Create and manage server/config modules',
+      adminOnly: true
+    });
   }
 
   return (

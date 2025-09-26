@@ -1013,3 +1013,157 @@ export const getCalibrationSummary = async (params = {}) => {
     return { ok: false, error: "An unexpected error occurred. Please try again." };
   }
 };
+
+
+// ===== ADMIN-ONLY CONFIG MANAGEMENT FUNCTIONS =====
+
+export const listConfigs = async () => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/config/`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: body.configs || [] };
+  } catch (e) {
+    console.error("Error listing configs:", e);
+    return { ok: false, error: "Failed to load configs" };
+  }
+};
+
+export const getConfigById = async (configId) => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/config/${configId}`,
+      { method: "GET", headers: { "Content-Type": "application/json" }, credentials: "include" },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: body };
+  } catch (e) {
+    console.error("Error getting config:", e);
+    return { ok: false, error: "Failed to get config" };
+  }
+};
+
+export const createConfigApi = async (configData) => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/config/`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ config_data: configData }),
+      },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: body };
+  } catch (e) {
+    console.error("Error creating config:", e);
+    return { ok: false, error: "Failed to create config" };
+  }
+};
+
+export const updateConfigApi = async (configId, configData) => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/config/${configId}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ config_data: configData }),
+      },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: body };
+  } catch (e) {
+    console.error("Error updating config:", e);
+    return { ok: false, error: "Failed to update config" };
+  }
+};
+
+export const deleteConfigApi = async (configId) => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/config/${configId}`,
+      { method: "DELETE", headers: { "Content-Type": "application/json" }, credentials: "include" },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: body };
+  } catch (e) {
+    console.error("Error deleting config:", e);
+    return { ok: false, error: "Failed to delete config" };
+  }
+};
+
+export const getLanguagesMapping = async () => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/config/languages`,
+      { method: "GET", headers: { "Content-Type": "application/json" }, credentials: "include" },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: body };
+  } catch (e) {
+    console.error("Error fetching languages:", e);
+    return { ok: false, error: "Failed to load languages" };
+  }
+};
+
+export const getAvailableModels = async () => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/config/models`,
+      { method: "GET", headers: { "Content-Type": "application/json" }, credentials: "include" },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: body.models || [] };
+  } catch (e) {
+    console.error("Error fetching available models:", e);
+    return { ok: false, error: "Failed to load models" };
+  }
+};
+
+export const validateHuggingFaceModel = async (name) => {
+  if (!name || !name.trim()) return { ok: true, exists: false };
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/config/models/validate?name=${encodeURIComponent(name)}`,
+      { method: "GET", headers: { "Content-Type": "application/json" }, credentials: "include" },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, exists: !!body.exists, status_code: body.status_code, error: body.error };
+  } catch (e) {
+    console.error("Error validating HF model:", e);
+    return { ok: false, error: "Validation failed" };
+  }
+};

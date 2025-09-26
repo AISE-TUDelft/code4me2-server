@@ -7,6 +7,7 @@ import UsageAnalytics from "../components/analytics/UsageAnalytics";
 import ModelAnalytics from "../components/analytics/ModelAnalytics";
 import CalibrationAnalytics from "../components/analytics/CalibrationAnalytics";
 import StudyManagement from "../components/analytics/StudyManagement";
+import ConfigManagement from "../components/analytics/ConfigManagement";
 import "./Dashboard.css";
 
 const Dashboard = ({ user, onLogout }) => {
@@ -17,6 +18,7 @@ const Dashboard = ({ user, onLogout }) => {
     const baseViews = new Set(['overview','usage','models','calibration']);
     if (baseViews.has(view)) return true;
     if (view === 'studies') return !!user?.is_admin;
+    if (view === 'configs') return !!user?.is_admin;
     return false;
   };
 
@@ -80,6 +82,8 @@ const Dashboard = ({ user, onLogout }) => {
         return <CalibrationAnalytics />;
       case 'studies':
         return <StudyManagement user={user} />;
+      case 'configs':
+        return <ConfigManagement user={user} />;
       default:
         return <OverviewDashboard 
           timeWindow={timeWindow} 

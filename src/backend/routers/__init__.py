@@ -8,6 +8,7 @@ from .session import router as session_router
 from .user import router as user_router
 from .ws import router as ws_routers
 from .analytics import router as analytics_router
+from .config import router as config_router
 
 # Main API router to aggregate and expose sub-routes
 router = APIRouter()
@@ -20,6 +21,9 @@ router.include_router(project_router, prefix="/project", tags=["Project"])
 
 # Include user-related endpoints
 router.include_router(user_router, prefix="/user", tags=["User"])
+
+# Include config management endpoints (admin only)
+router.include_router(config_router, prefix="/config", tags=["Config"])
 
 # Include code completion endpoints (no tags assigned here)
 router.include_router(completion_router, prefix="/completion")

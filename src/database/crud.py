@@ -674,6 +674,27 @@ def get_all_configs(db: Session) -> list[db_schemas.Config]:
     return db.query(db_schemas.Config).all()
 
 
+def update_config(db: Session, config_id: int, config_data: str) -> Optional[db_schemas.Config]:
+    """Update the JSON string of a config by ID."""
+    cfg = get_config_by_id(db, config_id)
+    if not cfg:
+        return None
+    cfg.config_data = config_data
+    db.commit()
+    db.refresh(cfg)
+    return cfg
+
+
+def delete_config(db: Session, config_id: int) -> bool:
+    """Delete a config by ID. Returns True if deleted."""
+    cfg = get_config_by_id(db, config_id)
+    if not cfg:
+        return False
+    db.delete(cfg)
+    db.commit()
+    return True
+
+
 # Project Operations
 def create_project(
     db: Session, project: Queries.CreateProject, id: str = ""
