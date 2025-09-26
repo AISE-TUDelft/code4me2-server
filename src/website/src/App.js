@@ -5,6 +5,8 @@ import "./App.css";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { ThemeProvider } from "./context/ThemeContext";
 import { getCurrentUser, logoutUser } from "./utils/api";
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import Start from "./pages/Start";
 function App() {
   // we manage the state for the uer but setting it to null by default
   const [user, setUser] = useState(null);
@@ -73,6 +75,30 @@ function App() {
     console.log("Logout completed successfully");
   };
 
+  // Small helper components for routing
+  const ProtectedRoute = ({ children }) => {
+    if (!user) return <Navigate to="/login" replace />;
+    return children;
+  };
+
+  const AuthPage = ({ mode }) => {
+    const navigate = useNavigate();
+    const onAuth = (userData) => {
+      handleAuthenticated(userData);
+      navigate("/dashboard", { replace: true });
+    };
+    return <Auth onAuthenticated={onAuth} initialMode={mode} />;
+  };
+
+  const DashboardPage = () => {
+    const navigate = useNavigate();
+    const onLogoutWrapped = async () => {
+      await handleLogout();
+      navigate("/", { replace: true });
+    };
+    return <Dashboard user={user} onLogout={onLogoutWrapped} />;
+  };
+
   // Show loading screen while checking authentication status
   if (isLoading) {
     return (
@@ -89,17 +115,33 @@ function App() {
     );
   }
 
-  // when the user is logged in simply render the dashboard, otherwise render the auth component
+  // Render application with routing
   return (
     <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}>
       <ThemeProvider>
-        <div className="App">
-          {user ? (
-            <Dashboard user={user} onLogout={handleLogout} />
-          ) : (
-            <Auth onAuthenticated={handleAuthenticated} />
-          )}
-        </div>
+        <BrowserRouter>
+          <div className="App">
+            <Routes>
+              <Route
+                path="/"
+                element={
+                  user ? <Navigate to="/dashboard" replace /> : <Start isAuthenticated={!!user} />
+                }
+              />
+              <Route path="/login" element={<AuthPage mode="login" />} />
+              <Route path="/signup" element={<AuthPage mode="signup" />} />
+              <Route
+                path="/dashboard"
+                element={
+                  <ProtectedRoute>
+                    <DashboardPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </div>
+        </BrowserRouter>
       </ThemeProvider>
     </GoogleOAuthProvider>
   );

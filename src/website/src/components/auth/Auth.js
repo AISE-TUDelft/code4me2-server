@@ -7,8 +7,8 @@ import { handleGoogleAuth } from "../../utils/auth";
 import "./Auth.css";
 import { createUser } from "../../utils/api";
 
-const Auth = ({ onAuthenticated }) => {
-  const [isLogin, setIsLogin] = useState(true);
+const Auth = ({ onAuthenticated, initialMode = "login" }) => {
+  const [isLogin, setIsLogin] = useState(initialMode === "login");
   const [isLoading, setIsLoading] = useState(false);
   const [passwordModal, setPasswordModal] = useState({
     isOpen: false,
