@@ -71,6 +71,16 @@ Code4me V2 is an AI-powered code completion platform developed for the **AISE la
 - **Performance Metrics**: Model response times, accuracy measurements, system performance
 - **Ground Truth Collection**: User feedback collection for model evaluation and fine-tuning
 
+#### 📈 Analytics Platform
+
+- Dashboard Overview: system-wide KPIs and trends over configurable windows
+- Usage Analytics: time-series volumes, acceptance rates by model/config/language/trigger, latency distributions, user behavior metrics
+- Model Analytics: model comparison (acceptance, latency p50/p95, confidence) and slices
+- Model Calibration: reliability diagrams and expected calibration error (ECE) per model
+- A/B Testing (Admin): create/manage/evaluate studies with randomized config assignment
+- Config Management (Admin): CRUD configs, list languages/models, validate HF models
+- Access Control: All analytics endpoints require authentication. Non-admin users only see their own data; admin users can view cross-user aggregates and manage studies/configs.
+
 #### 🔐 Enterprise Security & Privacy
 
 - **Multi-Authentication**: OAuth 2.0 (Google) and traditional email/password authentication
@@ -883,7 +893,7 @@ DEFAULT_USER_PREFERENCE = {
 
 ## 📚 API Reference
 
-The Code4me V2 API is fully documented using FastAPI's automatic documentation generation:
+The Code4me V2 API is fully documented using FastAPI's automatic documentation generation. The analytics and config routers described below are browsable in Swagger under tags `Analytics`, `Usage Analytics`, `Model Analytics`, `Model Calibration`, `A/B Testing`, and `Config`: 
 
 ### Key API Endpoints
 
@@ -921,6 +931,53 @@ PUT    /api/project/{id}        # Update project
 DELETE /api/project/{id}        # Delete project
 POST   /api/project/{id}/join   # Join project
 ```
+
+#### Analytics
+
+```http
+GET    /api/analytics/overview/dashboard?time_window=1d|7d|30d&user_id=<admin>   # Dashboard KPIs and trends
+GET    /api/analytics/usage/queries-over-time                                    # Time-bucketed query volumes
+GET    /api/analytics/usage/acceptance-rates                                      # Acceptance rates by model/config/language/trigger
+GET    /api/analytics/usage/latency-distribution                                  # Latency percentiles and raw samples
+GET    /api/analytics/usage/user-behavior                                         # Per-user behavior metrics
+GET    /api/analytics/models/comparison                                           # Multi-model comparison
+GET    /api/analytics/calibration/reliability-diagram                             # Reliability bins + ECE
+POST   /api/analytics/studies/create                                              # Create A/B study (Admin)
+PUT    /api/analytics/studies/update/{study_id}                                   # Update study (Admin)
+POST   /api/analytics/studies/assign                                              # Assign users (Admin)
+GET    /api/analytics/studies/list                                                # List studies (Admin)
+GET    /api/analytics/studies/active                                              # Get active study (Admin)
+POST   /api/analytics/studies/deactivate/{study_id}                               # Deactivate study (Admin)
+GET    /api/analytics/studies/evaluate                                            # Evaluate outcomes (Admin)
+```
+
+Common parameters:
+- All analytics endpoints require authentication.
+- Non-admin users: automatically filtered to their own data; user_id is ignored.
+- Admin users: may supply user_id for cross-user slices.
+- Time filters accept ISO 8601 timestamps; overview uses time_window.
+- Granularity values: 5m, 15m, 1h, 1d (where applicable).
+
+#### Config (Admin)
+
+```http
+GET    /api/config/                                     # List all configs
+GET    /api/config/{config_id}                          # Get a config
+POST   /api/config/                                     # Create a config
+PUT    /api/config/{config_id}                          # Update a config
+DELETE /api/config/{config_id}                          # Delete a config
+GET    /api/config/languages                            # Supported languages
+GET    /api/config/models                               # Available models
+GET    /api/config/models/validate?name=org/model       # Validate HF model exists
+```
+
+#### User
+
+```http
+GET    /api/user/get                                    # Get current user (from auth_token cookie)
+```
+
+Note: User objects in responses include `is_admin: boolean`. The website enables admin-only analytics tabs (A/B Testing, Config Management) when `is_admin` is true, and the backend authorizes cross-user analytics only for admins.
 
 > **💡 Pro Tip**: When running the server locally, visit `http://localhost:8008/docs` for the full interactive API documentation with request/response schemas, authentication details, and live testing capabilities.
 

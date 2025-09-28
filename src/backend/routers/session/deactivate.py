@@ -90,13 +90,36 @@ def deactivate_session(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
-        # Step 3: Delete the session from Redis and return success
+        # Step 3: Delete the session from Redis and clear cookies
         redis_manager.delete("user_token", user_id, db_session)
         redis_manager.delete("session_token", session_token, db_session)
-        return JsonResponseWithStatus(
+        redis_manager.delete("auth_token", auth_token, db_session)
+        
+        # Create response and clear cookies
+        response_obj = JsonResponseWithStatus(
             status_code=200,
             content=DeactivateSessionPostResponse(),
         )
+        
+        # Clear auth_token cookie
+        response_obj.set_cookie(
+            key="auth_token",
+            value="",
+            httponly=True,
+            samesite="lax",
+            expires=-1,  # Expire immediately
+        )
+        
+        # Clear session_token cookie  
+        response_obj.set_cookie(
+            key="session_token",
+            value="",
+            httponly=True,
+            samesite="lax", 
+            expires=-1,  # Expire immediately
+        )
+        
+        return response_obj
 
     except Exception as e:
         # Log the error and roll back any pending DB transaction

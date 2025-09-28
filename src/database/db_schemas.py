@@ -77,6 +77,8 @@ class User(Base):
         Index("idx_user_email", "email"),
         # Index on config_id for efficient joins
         Index("idx_user_config_id", "config_id"),
+        # Index on admin status for efficient filtering
+        Index("idx_user_is_admin", "is_admin"),
         {"schema": "public"},
     )
 
@@ -100,6 +102,9 @@ class User(Base):
     auth_token = Column(
         UUID(as_uuid=True), nullable=True
     )  # Current authentication token
+    is_admin = Column(
+        Boolean, server_default="false", default=False
+    )  # Admin status for access control
 
     # Relationship to configuration data
     config = relationship("Config")
@@ -627,6 +632,65 @@ class Documentation(Base):
         Vector(384), nullable=True
     )  # 384 dimensions for all-MiniLM-L6-v2
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+
+
+class Study(Base):
+    """
+    A/B testing and user experiment management.
+    
+    Manages user studies for configuration testing and analysis.
+    Only one study can be active at a time per server instance.
+    """
+    
+    __tablename__ = "study"
+    __table_args__ = (
+        Index("idx_study_is_active", "is_active"),
+        Index("idx_study_created_by", "created_by"),
+        Index("idx_study_starts_at", "starts_at"),
+        Index("idx_study_ends_at", "ends_at"),
+        {"schema": "public"},
+    )
+    
+    study_id = Column(UUID(as_uuid=True), primary_key=True)
+    name = Column(Text, nullable=False)
+    description = Column(Text)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("public.user.user_id"), nullable=False)
+    starts_at = Column(DateTime(timezone=True), nullable=False)
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, server_default="false", default=False)
+    default_config_id = Column(BigInteger, ForeignKey("public.config.config_id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    
+    # Relationships
+    creator = relationship("User")
+    default_config = relationship("Config")
+
+
+class ConfigAssignmentHistory(Base):
+    """
+    Tracks user assignments to different configurations during studies.
+    
+    Maintains history of which users were assigned which configurations
+    for later analysis and cross-referencing.
+    """
+    
+    __tablename__ = "config_assignment_history"
+    __table_args__ = (
+        Index("idx_config_assignment_user_id", "user_id"),
+        Index("idx_config_assignment_study_id", "study_id"),
+        Index("idx_config_assignment_assigned_at", "assigned_at"),
+        {"schema": "public"},
+    )
+    
+    user_id = Column(UUID(as_uuid=True), ForeignKey("public.user.user_id"), primary_key=True)
+    study_id = Column(UUID(as_uuid=True), ForeignKey("public.study.study_id"), primary_key=True)
+    assigned_config_id = Column(BigInteger, ForeignKey("public.config.config_id"), nullable=False)
+    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    
+    # Relationships
+    user = relationship("User")
+    study = relationship("Study")
+    assigned_config = relationship("Config")
 
 
 #

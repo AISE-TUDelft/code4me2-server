@@ -35,6 +35,7 @@ class ResponseUser(Queries.CreateUser):
     auth_token: Optional[UUID] = Field(
         default=None, description="Last authentication token used by the user"
     )
+    is_admin: bool = Field(False, description="Whether the user is an admin")
 
     @field_validator("preference", mode="before")
     @classmethod

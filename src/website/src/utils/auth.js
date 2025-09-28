@@ -56,8 +56,8 @@ export const handleGoogleAuth = async (
       // Authentication successful, call the callback with the authenticated user
       console.log("Existing user, proceeding with OAuth login");
       onExistingUser({
-        ...googleUser,
-        sessionToken: authResponse.sessionToken,
+        user: authResponse.user,
+        config: authResponse.config,
       });
     } else {
       // New user, need to create account with password

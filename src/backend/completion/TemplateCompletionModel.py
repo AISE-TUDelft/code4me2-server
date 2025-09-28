@@ -84,13 +84,22 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
         - Optional: `stop_tokens`: List[str]
         """
         super().__init__(**data)
-        assert (
-            "fim_template" in self.prompt_templates
-            and "file_separator" in self.prompt_templates
-            and "single_file_template" in self.prompt_templates["fim_template"]
-            and "multi_file_template" in self.prompt_templates["fim_template"]
-        ), "prompt_templates must contain 'fim_template' with 'single_file_template' and 'multi_file_template' keys and 'file_separator' key"
+        self._validate_prompt_templates(self.prompt_templates)
 
+    def _validate_prompt_templates(self, prompt_templates: dict) -> None:
+        if not isinstance(prompt_templates, dict):
+            raise ValueError("prompt_templates must be a dictionary.")
+        if "fim_template" not in prompt_templates:
+            raise KeyError("prompt_templates must contain the 'fim_template' key.")
+        if "file_separator" not in prompt_templates:
+            raise KeyError("prompt_templates must contain the 'file_separator' key.")
+        fim_template = prompt_templates["fim_template"]
+        if not isinstance(fim_template, dict):
+            raise ValueError("'fim_template' must be a dictionary.")
+        if "single_file_template" not in fim_template:
+            raise KeyError("'fim_template' must contain the 'single_file_template' key.")
+        if "multi_file_template" not in fim_template:
+            raise KeyError("'fim_template' must contain the 'multi_file_template' key.")
     def _format_prompt_from_dict(self, prompt: dict) -> str:
         """Build a formatted prompt from a prompt dict using configured templates.
 
@@ -288,43 +297,4 @@ if __name__ == "__main__":
     print(f"Time taken: {t1 - t0} seconds")
     print(response)
 
-    # response = requests.post("http://localhost:8008/api/user/authenticate", json={"email":"mo.bateni@gmail.com", "password":"Par123456789"})
-    # # print(response.json())
-    # cookies1 = response.cookies
-    # # print(cookies1)
-    # response = requests.get("http://localhost:8008/api/session/acquire", cookies=cookies1)
-    # # print(response.json())
-    # cookies2 = response.cookies
-    # # print(cookies2)
-    # response = requests.post("http://localhost:8008/api/project/create", json={"project_name": "test"}, cookies={**cookies1.get_dict(), **cookies2.get_dict()})
-    # # print(response.json())
-    # cookies3 = response.cookies
-    # # print(cookies3)
-    # t2 = time.perf_counter()
-    # response = requests.post("http://localhost:8008/api/completion/request",
-    # json = {
-    #     "model_ids": [1],
-    #     "context": {
-    #         "prefix": "def hello_world():",
-    #         "suffix": "",
-    #         "file_name": "main.py",
-    #         "context_files": []
-    #     },
-    #     "store_context":True,
-    #     "contextual_telemetry": {
-    #         "language_id": 45,
-    #         "trigger_type_id": 1,
-    #         "version_id": 1,
-    #         "document_char_length": 1500
-    #     },
-    #     "store_contextual_telemetry":True,
-    #     "behavioral_telemetry": {
-    #         "time_since_last_completion": 5000,
-    #         "typing_speed": 300,
-    #         "relative_document_position": 0.4
-    #     },
-    #     "store_behavioral_telemetry":True
-    #     }, cookies={**cookies1.get_dict(), **cookies2.get_dict(), **cookies3.get_dict()})
-    # t3 = time.perf_counter()
-    # print(f"Time taken: {t3 - t2} seconds")
-    # print(response.json())
+# (Commented code containing hardcoded credentials removed for security reasons)
