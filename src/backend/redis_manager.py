@@ -254,7 +254,9 @@ class RedisManager:
                         )
         except (redis.exceptions.ConnectionError, ValueError) as e:
             # Handle connection errors gracefully during shutdown
-            logging.info(f"Redis connection closed, stopping expired keys listener: {e}")
+            logging.info(
+                f"Redis connection closed, stopping expired keys listener: {e}"
+            )
         except Exception as e:
             logging.error(f"Unexpected error in expired keys listener: {e}")
         finally:

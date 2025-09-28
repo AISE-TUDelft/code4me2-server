@@ -181,7 +181,6 @@ def request_completion(
         else:
             multi_file_contexts = {}
             multi_file_context_changes_indexes = {}
-    
 
         t4 = time.perf_counter()
         logging.info(f"Multi-file context processing took {(t4 - t3) * 1000:.2f}ms")
@@ -342,4 +341,6 @@ def request_completion(
         )
     finally:
         db_auth.close()
-        logging.info(f"Time taken for request_completion in total: {(time.perf_counter() - t0)*1000} milli seconds")
+        logging.info(
+            f"Time taken for request_completion in total: {(time.perf_counter() - t0)*1000} milli seconds"
+        )

@@ -178,7 +178,9 @@ def request_chat_completion(
 
             # Get chat completion model
             chat_completion_model = completion_models.get_model(
-                model_name=str(model.model_name), prompt_templates=str(model.prompt_templates), model_parameters=str(model.model_parameters)
+                model_name=str(model.model_name),
+                prompt_templates=str(model.prompt_templates),
+                model_parameters=str(model.model_parameters),
             )
 
             if chat_completion_model is None:

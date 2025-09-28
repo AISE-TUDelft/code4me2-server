@@ -17,6 +17,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from backend.completion.CompletionModel import CompletionModel
 import logging
 
+
 class ChatCompletionModel(CompletionModel, BaseChatModel):
     """
     A LangChain-compatible chat model that uses HuggingFace transformers for local text generation.
@@ -55,6 +56,7 @@ class ChatCompletionModel(CompletionModel, BaseChatModel):
         >>> response = model.invoke(messages)
         >>> print(response["completion"])
     """
+
     # Message Formatting
     system_prefix: str = "[SYSTEM]"
     user_prefix: str = "[USER]"
@@ -141,7 +143,7 @@ class ChatCompletionModel(CompletionModel, BaseChatModel):
         """
         # Combine stop sequences
         # Configure stop sequences
-        stop_sequences = [self.system_prefix,self.user_prefix,self.assistant_prefix]
+        stop_sequences = [self.system_prefix, self.user_prefix, self.assistant_prefix]
         combined_stop = list(stop_sequences)
         if stop:
             combined_stop.extend(stop)
@@ -256,7 +258,7 @@ class ChatCompletionModel(CompletionModel, BaseChatModel):
             "role": "assistant",
             "model_name": self.model_name,
         }
-    
+
     def warmup(self) -> None:
         """
         Perform a warm-up run to initialize the model and reduce cold-start latency.
@@ -265,8 +267,15 @@ class ChatCompletionModel(CompletionModel, BaseChatModel):
         logging.info(f"Performing warm-up for model {self.model_name}...")
         try:
 
-            response= self.invoke([SystemMessage(content="You are a helpful assistant."),HumanMessage(content="Hello, how are you?")])
-            logging.info(f"Warm-up completed successfully for model {self.model_name}.\nQuestion: Hello, how are you?\nResponse: {response['completion']}")
+            response = self.invoke(
+                [
+                    SystemMessage(content="You are a helpful assistant."),
+                    HumanMessage(content="Hello, how are you?"),
+                ]
+            )
+            logging.info(
+                f"Warm-up completed successfully for model {self.model_name}.\nQuestion: Hello, how are you?\nResponse: {response['completion']}"
+            )
         except Exception as e:
             logging.error(f"Warm-up failed for model {self.model_name}: {str(e)}")
             raise e

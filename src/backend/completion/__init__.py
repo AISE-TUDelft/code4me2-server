@@ -3,6 +3,7 @@ from typing import Optional, Union
 
 import torch
 import json
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 from backend.completion.ChatCompletionModel import ChatCompletionModel
@@ -68,7 +69,6 @@ class CompletionModels:
                 f"Loading model with cache directory: {self.__config.model_cache_dir}"
             )
 
-            
             model_parameters = json.loads(model_parameters)
             if "instruct" in model_name.lower():
                 # Load an instruct-style chat model
@@ -78,7 +78,7 @@ class CompletionModels:
                     model_use_cache=self.__config.model_use_cache,
                     model_use_compile=self.__config.model_use_compile,
                     model_warmup=self.__config.model_warmup,
-                    **model_parameters
+                    **model_parameters,
                 )
             else:
                 prompt_templates = json.loads(prompt_templates)
@@ -90,12 +90,18 @@ class CompletionModels:
                     model_use_cache=self.__config.model_use_cache,
                     model_use_compile=self.__config.model_use_compile,
                     model_warmup=self.__config.model_warmup,
-                    **model_parameters
+                    **model_parameters,
                 )
             model_parameters = self.__models[key].model_dump()
-            del model_parameters["model"] # Remove the model from the model parameters for better logging
-            del model_parameters["tokenizer"] # Remove the tokenizer from the model parameters for better logging
-            logging.log(logging.INFO, f"Model {key} is loaded successfully: {model_parameters}")
+            del model_parameters[
+                "model"
+            ]  # Remove the model from the model parameters for better logging
+            del model_parameters[
+                "tokenizer"
+            ]  # Remove the tokenizer from the model parameters for better logging
+            logging.log(
+                logging.INFO, f"Model {key} is loaded successfully: {model_parameters}"
+            )
         except Exception as e:
             logging.error(e)
             logging.error(
@@ -125,5 +131,9 @@ class CompletionModels:
             return self.__models[key]
 
         logging.info(f"Model {key} not preloaded. Loading now...")
-        self.load_model(model_name=model_name, prompt_templates=prompt_templates, model_parameters=model_parameters)
+        self.load_model(
+            model_name=model_name,
+            prompt_templates=prompt_templates,
+            model_parameters=model_parameters,
+        )
         return self.__models.get(key)

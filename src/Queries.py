@@ -181,9 +181,7 @@ class BehavioralTelemetryData(QueryBase):
     time_since_last_accepted: Optional[int] = Field(
         None, description="Time since last completion accepted (ms)", ge=0
     )
-    typing_speed: Optional[float] = Field(
-        None, description="Typing speed", ge=0
-    )
+    typing_speed: Optional[float] = Field(None, description="Typing speed", ge=0)
 
 
 class RequestCompletion(QueryBase):
@@ -400,7 +398,9 @@ class CreateModel(QueryBase):
     is_instruction_tuned: Optional[bool] = Field(
         default=False, description="Whether model is instruction-tuned"
     )
-    prompt_templates: str = Field(..., description="Model prompt templates as JSON string")
+    prompt_templates: str = Field(
+        ..., description="Model prompt templates as JSON string"
+    )
     model_parameters: str = Field(..., description="Model parameters as JSON string")
 
 

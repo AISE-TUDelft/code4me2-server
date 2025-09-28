@@ -1,3 +1,19 @@
+"""
+Shared completion-model primitives built on top of HuggingFace Transformers.
+
+This module defines `CompletionModel`, an abstract, Pydantic-powered base class that
+standardizes how local language models are configured, loaded, and invoked across
+the codebase. It encapsulates:
+
+- Model/tokenizer initialization (with caching, device mapping, quantization)
+- A ready-to-use text-generation pipeline wrapped for LangChain compatibility
+- Tunable generation defaults (sampling, beams, penalties, attention impl)
+- Optional model compilation and warm-up helpers for lower latency
+
+Subclasses implement model-specific request/response handling by overriding
+`_generate`, `invoke`, and `warmup`.
+"""
+
 import os
 import json
 from abc import ABC, abstractmethod
@@ -5,78 +21,129 @@ from typing import Any, Dict, Optional, List
 
 import torch
 from pydantic import BaseModel, Field
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    pipeline,
+    BitsAndBytesConfig,
+)
 from langchain_huggingface import HuggingFacePipeline
 import logging
 
+
 class CompletionModel(BaseModel, ABC):
     """
-    Base class for completion models providing shared configuration, fields,
-    and helper methods for tokenizer/model initialization.
+    Base class for completion models providing shared configuration and
+    initialization helpers.
+
+    Responsibilities:
+    - Own the lifecycle of tokenizer/model objects and a text-generation pipeline
+    - Provide consistent, overridable generation defaults via properties
+    - Optionally apply quantization and torch.compile optimizations
+    - Offer warm-up hooks to amortize first-token latency
     """
 
     # Model identifiers
     model_name: str = Field(..., description="The HuggingFace model identifier")
     tokenizer_name: Optional[str] = Field(
-        default=None, description="Optional tokenizer identifier; defaults to model_name"
+        default=None,
+        description="Optional tokenizer identifier; defaults to model_name",
     )
 
     # Generation defaults (subclasses may use some/all)
     # TODO: Check later with Roham
-    temperature: float = Field(default=0.2, description="The temperature to use for the model") 
-    max_new_tokens: int = Field(default=64, description="The maximum number of new tokens to generate")
-    num_beams: int = Field(default=1, description="The number of beams to use for the model")
+    temperature: float = Field(
+        default=0.2, description="The temperature to use for the model"
+    )
+    max_new_tokens: int = Field(
+        default=64, description="The maximum number of new tokens to generate"
+    )
+    num_beams: int = Field(
+        default=1, description="The number of beams to use for the model"
+    )
     top_p: float = Field(default=0.95, description="The top p to use for the model")
     top_k: int = Field(default=50, description="The top k to use for the model")
     do_sample: bool = Field(default=True, description="Whether to use the sample")
-    repetition_penalty: float = Field(default=1.1, description="The repetition penalty to use for the model (1.1 is mild, not too strong)")
-    
+    repetition_penalty: float = Field(
+        default=1.1,
+        description="The repetition penalty to use for the model (1.1 is mild, not too strong)",
+    )
+
     # Caching / loading
     cache_dir: str = Field(default="./.cache", description="Local cache directory")
-    trust_remote_code: bool = Field(default=True, description="Whether to trust remote code")
-    device_map: str = Field(default="auto", description="The device map to use for the model")
+    trust_remote_code: bool = Field(
+        default=True, description="Whether to trust remote code"
+    )
+    device_map: str = Field(
+        default="auto", description="The device map to use for the model"
+    )
 
     # Torch/model loading knobs
-    torch_dtype: str = Field(default="bfloat16", description="The torch dtype to use for the model")
-    low_cpu_mem_usage: bool = Field(default=True, description="Whether to use low CPU memory usage")
-    load_in_8bit: bool = Field(default=False, description="Whether to load the model in 8bit")
-    load_in_4bit: bool = Field(default=False, description="Whether to load the model in 4bit")
-    
+    torch_dtype: str = Field(
+        default="bfloat16", description="The torch dtype to use for the model"
+    )
+    low_cpu_mem_usage: bool = Field(
+        default=True, description="Whether to use low CPU memory usage"
+    )
+    load_in_8bit: bool = Field(
+        default=False, description="Whether to load the model in 8bit"
+    )
+    load_in_4bit: bool = Field(
+        default=False, description="Whether to load the model in 4bit"
+    )
+
     # Additional model-wide knobs used by some subclasses
     model_use_cache: bool = Field(default=True, description="Whether to use the cache")
-    model_num_beams: int = Field(default=1, description="The number of beams to use for the model")
-    model_use_compile: bool = Field(default=False, description="Whether to use the compile")
+    model_num_beams: int = Field(
+        default=1, description="The number of beams to use for the model"
+    )
+    model_use_compile: bool = Field(
+        default=False, description="Whether to use the compile"
+    )
     model_warmup: bool = Field(default=False, description="Whether to use the warmup")
-    
+
     # Performance optimization settings
-    use_flash_attention: bool = Field(default=True, description="Whether to use Flash Attention for faster attention computation")
+    use_flash_attention: bool = Field(
+        default=True,
+        description="Whether to use Flash Attention for faster attention computation",
+    )
     # Runtime instances
-    tokenizer: Any = Field(default=None, description="The tokenizer to use for the model")
+    tokenizer: Any = Field(
+        default=None, description="The tokenizer to use for the model"
+    )
     model: Any = Field(default=None, description="The model to use for the model")
     pipeline: Any = Field(default=None, description="The pipeline to use for the model")
-
 
     def __init__(self, **data: Any):
         super().__init__(**data)
         self.tokenizer_name = self.tokenizer_name or self.model_name
-        os.makedirs(self.cache_dir, exist_ok=True) 
+        os.makedirs(self.cache_dir, exist_ok=True)
 
         # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_name, **self.tokenizer_kwargs)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.tokenizer_name, **self.tokenizer_kwargs
+        )
         if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token 
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         # Change it to "left" → truncates from the beginning
         # self.tokenizer.truncation_side = "left" # TODO: Investigate if this is the correct way to truncate from the beginning specially in the ChatBased models
-        
+
         # Load model
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, **self.model_kwargs)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name, **self.model_kwargs
+        )
         self.model.eval()
 
         # Log the device of the first parameter (layers are already on proper devices)
         param_device = next(self.model.parameters()).device
         logging.info(f"Model loaded on device: {param_device}")
 
-        text_gen_pipeline = pipeline(task="text-generation", model=self.model, tokenizer=self.tokenizer, **self.model_generation_kwargs)
+        text_gen_pipeline = pipeline(
+            task="text-generation",
+            model=self.model,
+            tokenizer=self.tokenizer,
+            **self.model_generation_kwargs,
+        )
         self.pipeline = HuggingFacePipeline(pipeline=text_gen_pipeline)
         # Optionally compile model with advanced optimizations
         if self.model_use_compile and hasattr(torch, "compile"):
@@ -87,7 +154,7 @@ class CompletionModel(BaseModel, ABC):
                     self.pipeline.pipeline.model,
                     mode="reduce-overhead",  # Optimize for inference speed
                     fullgraph=True,  # Compile the entire model graph
-                    dynamic=False,   # Static shapes for better optimization
+                    dynamic=False,  # Static shapes for better optimization
                 )
                 self.model = compiled_model
                 self.pipeline.pipeline.model = compiled_model
@@ -116,6 +183,11 @@ class CompletionModel(BaseModel, ABC):
 
     @property
     def tokenizer_kwargs(self) -> dict:
+        """Arguments passed to `AutoTokenizer.from_pretrained`.
+
+        Includes the shared cache directory and remote-code trust setting so that
+        subclasses inherit consistent behavior without duplicating configuration.
+        """
         return {
             "cache_dir": self.cache_dir,
             "trust_remote_code": self.trust_remote_code,
@@ -123,14 +195,23 @@ class CompletionModel(BaseModel, ABC):
 
     @property
     def model_kwargs(self) -> dict:
+        """Arguments passed to `AutoModelForCausalLM.from_pretrained`.
+
+        Handles device placement, dtype selection, low-CPU-memory mode, and—when
+        requested—BitsAndBytes 8-bit/4-bit quantization with appropriate compute dtypes.
+        """
         kwargs = {
             "cache_dir": self.cache_dir,
             "trust_remote_code": self.trust_remote_code,
             "device_map": self.device_map,
-            "torch_dtype": getattr(torch, self.torch_dtype) if hasattr(torch, self.torch_dtype) else torch.bfloat16,
+            "torch_dtype": (
+                getattr(torch, self.torch_dtype)
+                if hasattr(torch, self.torch_dtype)
+                else torch.bfloat16
+            ),
             "low_cpu_mem_usage": self.low_cpu_mem_usage,
         }
-        
+
         # Add quantization config only if needed
         if self.load_in_8bit or self.load_in_4bit:
             quantization_config = BitsAndBytesConfig(
@@ -142,10 +223,17 @@ class CompletionModel(BaseModel, ABC):
             kwargs["quantization_config"] = quantization_config
             # Override torch_dtype to float16 when using quantization
             kwargs["torch_dtype"] = torch.float16
-            
+
         return kwargs
+
     @property
     def model_generation_kwargs(self) -> dict:
+        """Default keyword arguments for generation/pipeline calls.
+
+        Centralizes decoding parameters (sampling, beams, penalties) and ensures a
+        valid `pad_token_id`. If FlashAttention v2 is available and enabled on the
+        model, it is configured here for faster attention.
+        """
         generation_kwargs = {
             "max_new_tokens": self.max_new_tokens,
             "num_beams": self.model_num_beams,
@@ -153,22 +241,27 @@ class CompletionModel(BaseModel, ABC):
             "do_sample": self.do_sample,
             "repetition_penalty": self.repetition_penalty,
             "pad_token_id": self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
-        } 
+        }
         if self.do_sample:
             generation_kwargs["top_p"] = self.top_p
             generation_kwargs["top_k"] = self.top_k
             generation_kwargs["temperature"] = self.temperature
         # Add Flash Attention if available and enabled
-        if self.use_flash_attention and hasattr(self.model.config, 'attn_implementation'):
+        if self.use_flash_attention and hasattr(
+            self.model.config, "attn_implementation"
+        ):
             generation_kwargs["attn_implementation"] = "flash_attention_2"
         return generation_kwargs
+
     @property
     def tokenizer_generation_kwargs(self) -> dict:
+        """Default tokenizer parameters used when preparing inputs for generation.
+
+        Ensures consistent padding/truncation and returns tensors suitable for direct
+        model invocation.
+        """
         return {
             "padding": True,
             "truncation": True,
             "return_tensors": "pt",
         }
-
-
-    

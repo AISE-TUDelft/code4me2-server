@@ -1,6 +1,22 @@
+"""
+Template-driven completion model with prompt assembly and custom stop handling.
+
+This module implements `TemplateCompletionModel`, a concrete completion model
+that formats inputs using configurable File-In-the-Middle (FIM) templates, then
+generates continuations via a shared HuggingFace causal LM. It also exposes a
+custom `StoppingCriteria` that halts decoding when any user/model-defined stop
+sequence appears after the input portion of the prompt.
+
+Key features:
+- Multi-file context assembly with explicit file separators
+- Pluggable single-file and multi-file FIM templates via `prompt_templates`
+- Vectorized token log-probabilities and a simple confidence heuristic
+- EOS-aware, template-aware stop sequences to prevent prompt echo
+"""
+
 import logging
 import numpy as np
-# import threading
+
 import time
 from typing import Any, List, Optional
 
@@ -19,7 +35,11 @@ from backend.completion.CompletionModel import CompletionModel
 
 
 class StopSequenceCriteria(StoppingCriteria):
-    """Custom stopping criteria that checks for stop sequences after the input length."""
+    """Stop when any stop sequence occurs after the original input segment.
+
+    This ensures we do not prematurely stop on tokens that are part of the prompt
+    itself. The check is performed on decoded text for simplicity and clarity.
+    """
 
     def __init__(self, tokenizer, stop_sequences, input_len):
         self.tokenizer = tokenizer
@@ -29,9 +49,11 @@ class StopSequenceCriteria(StoppingCriteria):
     def __call__(self, input_ids, scores, **kwargs):
         # Decode full sequence
         full_text = self.tokenizer.decode(input_ids[0], skip_special_tokens=False)
-        
+
         # Decode only the input tokens to get the input text
-        input_text = self.tokenizer.decode(input_ids[0][:self.input_len], skip_special_tokens=False)
+        input_text = self.tokenizer.decode(
+            input_ids[0][: self.input_len], skip_special_tokens=False
+        )
         input_text_len = len(input_text)
 
         # Only check for stop sequences after the input part
@@ -39,39 +61,66 @@ class StopSequenceCriteria(StoppingCriteria):
 
         for stop_seq in self.stop_sequences:
             if stop_seq in generated_text:
-                logging.info(f"Stopping at: {stop_seq} in generated text: {repr(generated_text)}")
+                logging.info(
+                    f"Stopping at: {stop_seq} in generated text: {repr(generated_text)}"
+                )
                 return True
 
         return False
 
 
 class TemplateCompletionModel(CompletionModel, BaseLLM):
-    prompt_templates: dict = Field(..., description="The prompt templates for the model")
+    prompt_templates: dict = Field(
+        ..., description="The prompt templates for the model"
+    )
+
     def __init__(self, **data: Any) -> "TemplateCompletionModel":
-        """
-        Initialize the TemplateCompletionModel.
+        """Initialize the template-based completion model.
+
+        Expects `prompt_templates` with the following shape:
+        - `fim_template.single_file_template`: str
+        - `fim_template.multi_file_template`: str
+        - `file_separator`: str (expects a "{file_name}" placeholder)
+        - Optional: `stop_tokens`: List[str]
         """
         super().__init__(**data)
         assert (
-            "fim_template" in self.prompt_templates and "file_separator" in self.prompt_templates and "single_file_template" in self.prompt_templates["fim_template"] and "multi_file_template" in self.prompt_templates["fim_template"]
+            "fim_template" in self.prompt_templates
+            and "file_separator" in self.prompt_templates
+            and "single_file_template" in self.prompt_templates["fim_template"]
+            and "multi_file_template" in self.prompt_templates["fim_template"]
         ), "prompt_templates must contain 'fim_template' with 'single_file_template' and 'multi_file_template' keys and 'file_separator' key"
-     
+
     def _format_prompt_from_dict(self, prompt: dict) -> str:
-        """Build a formatted prompt from a prompt dict using configured templates."""
+        """Build a formatted prompt from a prompt dict using configured templates.
+
+        When `multi_file_context` exists, each entry is preceded by the configured
+        file separator (with the filename injected) before concatenation, and the
+        resulting block is inserted into the selected FIM template.
+        """
         if "multi_file_context" in prompt:
             multi_file_context_prompt = ""
             for file_name, file_code in prompt["multi_file_context"].items():
-                multi_file_context_prompt += self.prompt_templates["file_separator"].replace("{file_name}", file_name) + file_code + "\n"
+                multi_file_context_prompt += (
+                    self.prompt_templates["file_separator"].replace(
+                        "{file_name}", file_name
+                    )
+                    + file_code
+                    + "\n"
+                )
             prompt = {**prompt, "multi_file_context": multi_file_context_prompt}
 
-        
         formatted = PromptTemplate.from_template(
             self.prompt_templates["fim_template"][
-                "multi_file_template" if "multi_file_context" in prompt else "single_file_template"
+                (
+                    "multi_file_template"
+                    if "multi_file_context" in prompt
+                    else "single_file_template"
+                )
             ]
         ).format(**prompt)
         return formatted
-    
+
     def warmup(self) -> None:
         """
         Perform a warm-up run to initialize the model and reduce cold-start latency.
@@ -83,7 +132,9 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
             warm_up_prompt = {"prefix": "def hello_world():", "suffix": ""}
             # Run a single inference to warm up the model
             response = self.invoke(warm_up_prompt, max_new_tokens=32)
-            logging.info(f"Warm-up completed successfully for model {self.model_name}. prefix: {warm_up_prompt['prefix']}, suffix: {warm_up_prompt['suffix']}\nResponse: {response['completion']}")
+            logging.info(
+                f"Warm-up completed successfully for model {self.model_name}. prefix: {warm_up_prompt['prefix']}, suffix: {warm_up_prompt['suffix']}\nResponse: {response['completion']}"
+            )
         except Exception as e:
             logging.error(f"Warm-up failed for model {self.model_name}: {str(e)}")
             raise e
@@ -114,13 +165,13 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
         self, prompt: dict, max_new_tokens=None, stop_sequences=None, **kwargs
     ) -> dict:
         """
-        Generate text completions using the model with optimized performance.
+        Generate a completion and token-level stats with optimized inference.
 
         This method includes several optimizations:
         1. Inference mode: Uses torch.inference_mode() for faster inference
         2. Vectorized operations: Token probabilities are calculated in a vectorized way
         3. KV caching: Enables key-value caching in the transformer for faster generation
-        4. Thread safety: Uses a lock to ensure thread-safe access to the model
+        4. Template-aware stopping: Applies EOS and configured stop tokens post-input
 
         Args:
             prompt (dict): Dictionary containing 'prefix' and 'suffix' for the prompt
@@ -146,14 +197,16 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
         )
 
         # Combine user-provided stop sequences with EOS and model-specific stop sequences
-        stop_sequences = (stop_sequences or []) + (self.prompt_templates.get("stop_tokens", []) or [])
+        stop_sequences = (stop_sequences or []) + (
+            self.prompt_templates.get("stop_tokens", []) or []
+        )
         if eos_text and eos_text not in stop_sequences:
             stop_sequences.append(eos_text)
 
         logging.info("Stop sequences: %s", stop_sequences)
 
         # Tokenize prompt to get token count
-        
+
         inputs = self.tokenizer(formatted_prompt, **self.tokenizer_generation_kwargs)
         input_ids = inputs.input_ids.to(self.model.device)
         attention_mask = inputs.attention_mask.to(self.model.device)
@@ -163,7 +216,7 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
         generation_kwargs.update(**kwargs)
         if max_new_tokens is not None:
             generation_kwargs["max_new_tokens"] = max_new_tokens
-       
+
         with torch.inference_mode():
             start_time = time.perf_counter()
             # Generate output
@@ -172,8 +225,10 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
                 attention_mask=attention_mask,
                 return_dict_in_generate=True,
                 output_scores=True,
-                stopping_criteria=StoppingCriteriaList([StopSequenceCriteria(self.tokenizer, stop_sequences, input_len)]),
-                **generation_kwargs
+                stopping_criteria=StoppingCriteriaList(
+                    [StopSequenceCriteria(self.tokenizer, stop_sequences, input_len)]
+                ),
+                **generation_kwargs,
             )
             end_time = time.perf_counter()
         # Slice only newly generated tokens
@@ -188,8 +243,11 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
         token_probs = torch.exp(token_log_probs)
         token_logprobs = np.round(token_log_probs.tolist(), decimals=4)
         token_probs_list = token_probs.tolist()
-        confidence = np.round(sum(token_probs_list) / len(token_probs_list), decimals=4) if token_probs_list else None
-
+        confidence = (
+            np.round(sum(token_probs_list) / len(token_probs_list), decimals=4)
+            if token_probs_list
+            else None
+        )
 
         # Post-process the generated text to remove any content after the stop sequence
         if stop_sequences and generated_text:
@@ -212,15 +270,15 @@ class TemplateCompletionModel(CompletionModel, BaseLLM):
 if __name__ == "__main__":
     import json
     import requests
-    
+
     template = '{"fim_template":{"multi_file_template":"{multi_file_context}#{file_name}\\n{prefix}","single_file_template":"{prefix}"},"file_separator":"#{file_name}\\n","stop_tokens":["\\n\\n"]}'
     prompt_templates = json.loads(template)
-    
+
     model = TemplateCompletionModel(
         model_name="deepseek-ai/deepseek-coder-1.3b-base",
         prompt_templates=prompt_templates,
         model_warmup=True,
-        model_use_compile= True,
+        model_use_compile=True,
         do_sample=False,
     )
     # response = model.invoke({"prefix": "warmup", "suffix": ""})
@@ -229,7 +287,6 @@ if __name__ == "__main__":
     t1 = time.perf_counter()
     print(f"Time taken: {t1 - t0} seconds")
     print(response)
-
 
     # response = requests.post("http://localhost:8008/api/user/authenticate", json={"email":"mo.bateni@gmail.com", "password":"Par123456789"})
     # # print(response.json())
@@ -244,7 +301,7 @@ if __name__ == "__main__":
     # cookies3 = response.cookies
     # # print(cookies3)
     # t2 = time.perf_counter()
-    # response = requests.post("http://localhost:8008/api/completion/request", 
+    # response = requests.post("http://localhost:8008/api/completion/request",
     # json = {
     #     "model_ids": [1],
     #     "context": {
@@ -269,5 +326,5 @@ if __name__ == "__main__":
     #     "store_behavioral_telemetry":True
     #     }, cookies={**cookies1.get_dict(), **cookies2.get_dict(), **cookies3.get_dict()})
     # t3 = time.perf_counter()
-    # print(f"Time taken: {t3 - t2} seconds") 
+    # print(f"Time taken: {t3 - t2} seconds")
     # print(response.json())

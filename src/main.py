@@ -198,6 +198,7 @@ class TimingMiddleware(BaseHTTPMiddleware):
         logging.info(f"Full server-side request time: {duration:.2f}ms")
         return response
 
+
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application instance.
@@ -215,7 +216,7 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan,
         docs_url="/docs",
-        redoc_url="/redoc"
+        redoc_url="/redoc",
     )
 
     # Configure CORS middleware
@@ -228,9 +229,8 @@ def create_app() -> FastAPI:
     )
 
     # Add rate limiting middleware
-    app.add_middleware(SimpleRateLimiter)
-    logging.info("Rate limiting middleware enabled")
-    
+    # app.add_middleware(SimpleRateLimiter)
+    # logging.info("Rate limiting middleware enabled")
 
     # Include API routes
     app.include_router(router, prefix="/api")
@@ -256,7 +256,7 @@ def main() -> None:
 
     uvicorn.run(
         "main:app",
-        host=config.server_host,  
+        host=config.server_host,
         port=config.server_port,
         log_level="info",
         access_log=True,
