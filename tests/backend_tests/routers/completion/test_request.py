@@ -106,7 +106,7 @@ class TestCompletionRequest:
         def get_model_by_id(db, model_id):
             return {1: mock_model_1, 2: mock_model_2}.get(model_id, None)
 
-        def get_model(model_name, prompt_templates=None, model_parameters=None, meta_data=None):
+        def get_model(model_name, prompt_templates=None, model_parameters=None):
             mock_completion_model = MagicMock()
             mock_completion_model.invoke.return_value = {
                 "completion": f"Completion from {model_name}",

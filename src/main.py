@@ -229,8 +229,8 @@ def create_app() -> FastAPI:
     )
 
     # Add rate limiting middleware
-    # app.add_middleware(SimpleRateLimiter)
-    # logging.info("Rate limiting middleware enabled")
+    app.add_middleware(SimpleRateLimiter)
+    logging.info("Rate limiting middleware enabled")
 
     # Include API routes
     app.include_router(router, prefix="/api")

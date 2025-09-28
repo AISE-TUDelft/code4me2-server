@@ -135,6 +135,12 @@ def activate_project(
                 status_code=404,
                 content=ProjectNotFoundError(),
             )
+        else:
+            # Project already in Redis, update its session list
+            project_sessions = project_info.get("session_tokens", [])
+            project_sessions.append(session_token)
+            project_info["session_tokens"] = project_sessions
+            redis_manager.set("project_token", project_token, project_info)
 
         # Add the project token to the session's project list in Redis
         session_projects = session_info.get("project_tokens", [])
