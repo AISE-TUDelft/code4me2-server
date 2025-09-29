@@ -691,7 +691,7 @@ INSERT INTO public.config (config_data) VALUES ('config {
         id = 1
         name = "deepseek-coder-1.3b"
         isChatModel = false
-        isDefault = false
+        isDefault = true
       }
       {
         id = 2,
@@ -709,7 +709,7 @@ INSERT INTO public.config (config_data) VALUES ('config {
         id = 4
         name = "Mellum-4b-base"
         isChatModel = false
-        isDefault = true
+        isDefault = false
       }
     ]
     systemPrompt = "You are a helpful assistant that provides information and answers questions to the best of your ability. Please respond in a clear and concise manner."
