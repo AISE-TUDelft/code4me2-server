@@ -67,17 +67,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Note:
         Only initializes resources when not in test mode.
     """
-    if not config.test_mode:
-        logging.info("Starting the server and initializing resources...")
-        _app = App()
-        try:
-            yield
-        finally:
-            logging.warning("Shutting down the server and cleaning up resources...")
-            _app.cleanup()
-    else:
-        logging.info("Running in test mode - skipping resource initialization")
+    logging.info("Starting the server and initializing resources...")
+    _app = App()
+    try:
         yield
+    finally:
+        logging.warning("Shutting down the server and cleaning up resources...")
+        _app.cleanup()
 
 
 class SimpleRateLimiter(BaseHTTPMiddleware):
@@ -194,6 +190,15 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+class TimingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration = (time.perf_counter() - start) * 1000
+        logging.info(f"Full server-side request time: {duration:.2f}ms")
+        return response
+
+
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application instance.
@@ -210,8 +215,8 @@ def create_app() -> FastAPI:
         description="The complete API for Code4Me V2",
         version="1.0.0",
         lifespan=lifespan,
-        docs_url="/docs" if not config.test_mode else None,
-        redoc_url="/redoc" if not config.test_mode else None,
+        docs_url="/docs",
+        redoc_url="/redoc",
     )
 
     # Configure CORS middleware
@@ -223,12 +228,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
     )
 
-    # Add rate limiting middleware (skip in test mode)
-    if not config.test_mode:
-        app.add_middleware(SimpleRateLimiter)
-        logging.info("Rate limiting middleware enabled")
-    else:
-        logging.info("Rate limiting middleware disabled (test mode)")
+    # Add rate limiting middleware
+    app.add_middleware(SimpleRateLimiter)
+    logging.info("Rate limiting middleware enabled")
 
     # Include API routes
     app.include_router(router, prefix="/api")
@@ -256,9 +258,11 @@ def main() -> None:
         "main:app",
         host=config.server_host,
         port=config.server_port,
-        reload=config.debug_mode if hasattr(config, "debug_mode") else False,
         log_level="info",
         access_log=True,
+        # loop="uvloop",
+        # http="httptools",
+        # workers=4,
     )
 
 

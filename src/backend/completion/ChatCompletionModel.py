@@ -6,21 +6,19 @@ using HuggingFace transformers for local text generation. It supports various la
 and provides a convenient interface for chat-based interactions.
 """
 
-import os
 import time
 from typing import Any, Dict, List, Optional
 
-import torch
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_huggingface import HuggingFacePipeline
-from pydantic import BaseModel, Field
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+
+from backend.completion.CompletionModel import CompletionModel
+import logging
 
 
-class ChatCompletionModel(BaseChatModel, BaseModel):
+class ChatCompletionModel(CompletionModel, BaseChatModel):
     """
     A LangChain-compatible chat model that uses HuggingFace transformers for local text generation.
 
@@ -31,7 +29,6 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
     Attributes:
         model_name (str): The HuggingFace model identifier to load.
                          Default: "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct"
-        model_type (str): Type of model deployment. Currently only "local" is supported.
         tokenizer_name (Optional[str]): Override tokenizer name. If None, uses model_name.
         temperature (float): Controls randomness in generation (0.0-1.0). Default: 0.7
         max_new_tokens (int): Maximum number of new tokens to generate. Default: 512
@@ -43,7 +40,6 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
         user_prefix (str): Prefix for user messages. Default: "[USER]"
         assistant_prefix (str): Prefix for assistant messages. Default: "[ASSISTANT]"
         unknown_prefix (str): Prefix for unknown message types. Default: "[UNKNOWN]"
-        stop_sequences (List[str]): List of sequences that stop generation.
         cache_dir (str): Directory for model caching. Default: "./.cache"
         trust_remote_code (bool): Whether to trust remote code in models. Default: True
         device_map (str): Device mapping strategy for model loading. Default: "auto"
@@ -61,163 +57,17 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
         >>> print(response["completion"])
     """
 
-    # model configuration
-    model_name: str = Field(default="deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct")
-    model_type: str = Field(default="local")
-    tokenizer_name: Optional[str] = None
-
-    # generation parameters
-    temperature: float = 0.7
-    max_new_tokens: int = 512
-    top_p: float = 0.95
-    top_k: int = 50
-    do_sample: bool = True
-    repetition_penalty: float = 1.0
-
     # Message Formatting
     system_prefix: str = "[SYSTEM]"
     user_prefix: str = "[USER]"
     assistant_prefix: str = "[ASSISTANT]"
     unknown_prefix: str = "[UNKNOWN]"
 
-    # model loading configuration
-    stop_sequences: List[str] = Field(default_factory=list)
-    cache_dir: str = Field(default="../chat/.cache")
-    trust_remote_code: bool = True
-    device_map: str = Field(default="auto")
-
-    # additional torch configuration
-    torch_dtype: str = Field(default="float16")  # or "bfloat16" for newer GPUs
-    low_cpu_mem_usage: bool = Field(default=True)
-    load_in_8bit: bool = Field(default=False)  # Set to True for 8-bit quantization
-    load_in_4bit: bool = Field(default=False)  # Set to True for 4-bit quantization
-
-    # Internal model instances
-    model: Any = Field(default=None)
-    tokenizer: Any = Field(default=None)
-
-    @staticmethod
-    def _check_gpu_availability() -> bool:
-        """
-        Check if a GPU is available for model inference.
-
-        Returns:
-            bool: True if a GPU is available, False otherwise.
-        """
-        return torch.cuda.is_available() and torch.cuda.device_count() > 0
-
     def __init__(self, **data: Any):
         """
         Initialize the ChatCompletionModel.
         """
         super().__init__(**data)
-
-        # Set default tokenizer name
-        self.tokenizer_name = self.tokenizer_name or self.model_name
-        os.makedirs(self.cache_dir, exist_ok=True)
-
-        # Check GPU availability
-        gpu_available = self._check_gpu_availability()
-
-        # Validate model type
-        if self.model_type.lower() != "local":
-            raise NotImplementedError("Only 'local' model_type is currently supported.")
-
-        # Load tokenizer
-        start_time = time.time()
-        print(f"Loading tokenizer {self.tokenizer_name}...")
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.tokenizer_name,
-            cache_dir=self.cache_dir,
-            trust_remote_code=self.trust_remote_code,
-        )
-        print(f"Tokenizer loaded in {time.time() - start_time:.2f} seconds")
-
-        # Set pad token if not available
-        if self.tokenizer.pad_token is None and self.tokenizer.eos_token is not None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        # Load model with optimizations
-        start_time = time.time()
-        print(f"Loading model {self.model_name}...")
-
-        # Configure model loading parameters - FIXED
-        model_kwargs = {
-            "cache_dir": self.cache_dir,
-            "trust_remote_code": self.trust_remote_code,
-        }
-
-        # Add GPU-specific parameters if available
-        if gpu_available:
-            print("Using GPU for model loading")
-            model_kwargs["device_map"] = self.device_map
-            model_kwargs["torch_dtype"] = (
-                getattr(torch, self.torch_dtype)
-                if hasattr(torch, self.torch_dtype)
-                else torch.float16
-            )
-            model_kwargs["low_cpu_mem_usage"] = self.low_cpu_mem_usage
-
-            # Optional: Add quantization for large models
-            if self.load_in_8bit:
-                model_kwargs["load_in_8bit"] = True
-            elif self.load_in_4bit:
-                model_kwargs["load_in_4bit"] = True
-        else:
-            print("Using CPU")
-
-        raw_model = AutoModelForCausalLM.from_pretrained(
-            self.model_name, **model_kwargs
-        )
-        print(f"Model loaded in {time.time() - start_time:.2f} seconds")
-
-        # Print actual device placement
-        if hasattr(raw_model, "hf_device_map"):
-            print(f"Model device map: {raw_model.hf_device_map}")
-
-        # Create HuggingFace pipeline - FIXED
-        start_time = time.time()
-        print("Setting up text generation pipeline...")
-
-        pipeline_kwargs = {
-            "model": raw_model,
-            "tokenizer": self.tokenizer,
-            "max_new_tokens": self.max_new_tokens,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "top_k": self.top_k,
-            "do_sample": self.do_sample,
-            "repetition_penalty": self.repetition_penalty,
-        }
-
-        # Add device for pipeline if not using device_map
-        if gpu_available and self.device_map != "auto":
-            pipeline_kwargs["device"] = 0  # Use first GPU
-
-        text_gen_pipeline = pipeline("text-generation", **pipeline_kwargs)
-        print(f"Pipeline set up in {time.time() - start_time:.2f} seconds")
-
-        # Wrap in LangChain HuggingFacePipeline
-        self.model = HuggingFacePipeline(pipeline=text_gen_pipeline)
-
-        # Configure stop sequences
-        self.stop_sequences = self.stop_sequences or [
-            self.system_prefix,
-            self.user_prefix,
-            self.assistant_prefix,
-        ]
-
-        print("ChatCompletionModel initialization completed")
-
-    @property
-    def _llm_type(self) -> str:
-        """
-        Return the LLM type identifier for LangChain compatibility.
-
-        Returns:
-            str: The LLM type identifier "huggingface_chat_model".
-        """
-        return "huggingface_chat_model"
 
     def _format_messages(self, messages: List[BaseMessage]) -> str:
         """
@@ -292,25 +142,14 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
             for this specific generation call.
         """
         # Combine stop sequences
-        combined_stop = list(self.stop_sequences)
+        # Configure stop sequences
+        stop_sequences = [self.system_prefix, self.user_prefix, self.assistant_prefix]
+        combined_stop = list(stop_sequences)
         if stop:
             combined_stop.extend(stop)
 
         # Format messages into prompt
         prompt = self._format_messages(messages)
-
-        # Prepare generation parameters
-        generation_params = {
-            "max_new_tokens": kwargs.pop("max_new_tokens", self.max_new_tokens),
-            "temperature": kwargs.pop("temperature", self.temperature),
-            "top_p": kwargs.pop("top_p", self.top_p),
-            "top_k": kwargs.pop("top_k", self.top_k),
-            "do_sample": kwargs.pop("do_sample", self.do_sample),
-            "repetition_penalty": kwargs.pop(
-                "repetition_penalty", self.repetition_penalty
-            ),
-        }
-        generation_params.update(kwargs)
 
         # Notify callback manager of generation start
         if run_manager:
@@ -319,8 +158,8 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
             )
 
         try:
-            # Generate text using the model
-            generated_text = self.model.invoke(prompt, **generation_params)
+            # Generate text using the shared pipeline
+            generated_text = self.pipeline.invoke(prompt, **kwargs)
 
             # Remove prompt from generated text if present
             if generated_text.startswith(prompt):
@@ -405,9 +244,6 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
             >>> print(f"Response: {response['completion']}")
             >>> print(f"Generated in: {response['generation_time']}ms")
         """
-        if not isinstance(messages, list):
-            raise ValueError("Input must be a list of messages.")
-
         # Time the generation
         t0 = time.time()
         result = self._generate(messages, **kwargs)
@@ -423,9 +259,30 @@ class ChatCompletionModel(BaseChatModel, BaseModel):
             "model_name": self.model_name,
         }
 
+    def warmup(self) -> None:
+        """
+        Perform a warm-up run to initialize the model and reduce cold-start latency.
+        This helps with initial compilation overhead when using torch.compile.
+        """
+        logging.info(f"Performing warm-up for model {self.model_name}...")
+        try:
+
+            response = self.invoke(
+                [
+                    SystemMessage(content="You are a helpful assistant."),
+                    HumanMessage(content="Hello, how are you?"),
+                ]
+            )
+            logging.info(
+                f"Warm-up completed successfully for model {self.model_name}.\nQuestion: Hello, how are you?\nResponse: {response['completion']}"
+            )
+        except Exception as e:
+            logging.error(f"Warm-up failed for model {self.model_name}: {str(e)}")
+            raise e
+
 
 # CLI
-def chat_cli():
+def chat_cli(model):
     messages = [SystemMessage(content="You are a helpful assistant.")]
     print("Chat started. Type 'exit' to quit, 'clear' to restart conversation.")
 
@@ -458,12 +315,11 @@ if __name__ == "__main__":
     try:
         model = ChatCompletionModel(
             model_name="codellama/CodeLlama-7b-Instruct-hf",
-            temperature=0.8,
-            max_new_tokens=256,
         )
+
         print("Model loaded successfully.\n")
     except Exception as e:
         print(f"Error during model loading: {e}")
         exit(1)
 
-    chat_cli()
+    chat_cli(model)

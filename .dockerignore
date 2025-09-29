@@ -1,0 +1,32 @@
+# Python/venv
+.venv
+venv/
+**/__pycache__/
+*.pyc
+
+# Git
+.git
+.gitignore
+
+# Node/website (handled by separate container)
+node_modules
+src/website/node_modules
+
+# Local caches and data
+.cache
+.hypothesis
+.coverage
+secrets
+
+# Project data directories
+Data
+.data
+
+data/
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+
+# OS
+.DS_Store

@@ -176,7 +176,9 @@ class App:
                 logging.log(logging.INFO, f"Loading {model.model_name}...")
                 t0 = time.time()  # Start timing
                 self.__completion_models.load_model(
-                    str(model.model_name), model.meta_data
+                    str(model.model_name),
+                    model.prompt_templates,
+                    model.model_parameters,
                 )
                 loading_time = time.time() - t0  # Calculate loading time
                 logging.log(
@@ -317,6 +319,9 @@ class App:
         """
         # Clean up Redis manager with a database session for final operations
         self.__redis_manager.cleanup(db_session=self.__db_session_factory())
+
+        # Close Redis connection to stop background threads gracefully
+        self.__redis_manager.close()
 
         # Clean up Celery broker connections
         self.__celery_broker.cleanup()

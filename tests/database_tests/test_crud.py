@@ -76,17 +76,20 @@ def setup_reference_data(db_session):
             db_schemas.ModelName(
                 model_name="deepseek-1.3b",
                 is_instruction_tuned=False,
-                meta_data='{"type": "completion", "size": "1.3B"}',
+                prompt_templates= '{"prompt_template": "test"}',
+                model_parameters= '{"parameters": "test"}',
             ),
             db_schemas.ModelName(
                 model_name="starcoder2-3b",
                 is_instruction_tuned=False,
-                meta_data='{"type": "completion", "size": "3B"}',
+                prompt_templates= '{"prompt_template": "test"}',
+                model_parameters= '{"parameters": "test"}',
             ),
             db_schemas.ModelName(
                 model_name="gpt-4-turbo",
                 is_instruction_tuned=True,
-                meta_data='{"type": "chat", "provider": "openai"}',
+                prompt_templates= '{"prompt_template": "test"}',
+                model_parameters= '{"parameters": "test"}',
             ),
         ]
         db_session.add_all(models)
@@ -897,14 +900,16 @@ def test_create_model(db_session):
     model_data = Queries.CreateModel(
         model_name="test-model-1b",
         is_instruction_tuned=True,
-        meta_data='{"type": "test", "description": "A test model"}',  # FIX: Provide meta_data
+        prompt_templates='{"prompt_template": "test"}',
+        model_parameters='{"parameters": "test"}',
     )
 
     created_model = crud.create_model(db_session, model_data)
     assert created_model is not None
     assert created_model.model_name == "test-model-1b"
     assert created_model.is_instruction_tuned is True
-    assert created_model.meta_data == '{"type": "test", "description": "A test model"}'
+    assert created_model.prompt_templates == '{"prompt_template": "test"}'
+    assert created_model.model_parameters == '{"parameters": "test"}'
 
 
 def test_get_model_by_id(db_session, setup_reference_data):

@@ -229,28 +229,51 @@ class RedisManager:
         pubsub.psubscribe("__keyevent@0__:expired")
         logging.info("Listening for expired Redis keys...")
 
-        for message in pubsub.listen():
-            if message["type"] == "pmessage":
-                expired_key = message["data"]
-                logging.info(f"Key {expired_key} expired in redis")
-                token = expired_key.split(":")[1]
-                try:
-                    if expired_key.startswith("session_token_hook:"):
-                        with session_factory() as db_session:
-                            try:
-                                self.delete("session_token", token, db_session)
-                            finally:
-                                db_session.close()
-                    elif expired_key.startswith("auth_token_hook:"):
-                        with session_factory() as db_session:
-                            try:
-                                self.delete("auth_token", token, db_session)
-                            finally:
-                                db_session.close()
-                except Exception as e:
-                    logging.error(
-                        f"Exception occurred when trying to expire {expired_key} in redis: {e}"
-                    )
+        try:
+            for message in pubsub.listen():
+                if message["type"] == "pmessage":
+                    expired_key = message["data"]
+                    logging.info(f"Key {expired_key} expired in redis")
+                    token = expired_key.split(":")[1]
+                    try:
+                        if expired_key.startswith("session_token_hook:"):
+                            with session_factory() as db_session:
+                                try:
+                                    self.delete("session_token", token, db_session)
+                                finally:
+                                    db_session.close()
+                        elif expired_key.startswith("auth_token_hook:"):
+                            with session_factory() as db_session:
+                                try:
+                                    self.delete("auth_token", token, db_session)
+                                finally:
+                                    db_session.close()
+                    except Exception as e:
+                        logging.error(
+                            f"Exception occurred when trying to expire {expired_key} in redis: {e}"
+                        )
+        except (redis.exceptions.ConnectionError, ValueError) as e:
+            # Handle connection errors gracefully during shutdown
+            logging.info(
+                f"Redis connection closed, stopping expired keys listener: {e}"
+            )
+        except Exception as e:
+            logging.error(f"Unexpected error in expired keys listener: {e}")
+        finally:
+            # Ensure pubsub connection is properly closed
+            try:
+                pubsub.close()
+            except Exception:
+                pass
+
+    def close(self):
+        """
+        Close the Redis connection gracefully.
+        """
+        try:
+            self.__redis_client.close()
+        except Exception:
+            pass
 
     def cleanup(self, db_session: Session):
         """

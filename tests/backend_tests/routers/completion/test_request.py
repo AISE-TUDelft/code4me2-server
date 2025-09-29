@@ -106,7 +106,7 @@ class TestCompletionRequest:
         def get_model_by_id(db, model_id):
             return {1: mock_model_1, 2: mock_model_2}.get(model_id, None)
 
-        def get_model(model_name, meta_data=None):
+        def get_model(model_name, prompt_templates=None, model_parameters=None):
             mock_completion_model = MagicMock()
             mock_completion_model.invoke.return_value = {
                 "completion": f"Completion from {model_name}",
@@ -128,12 +128,8 @@ class TestCompletionRequest:
             get_model_by_id=patch(
                 "database.crud.get_model_by_id", side_effect=get_model_by_id
             ).start(),
-        ), patch.multiple(
+        ), patch(
             "celery_app.tasks.db_tasks",
-            add_generation_task=MagicMock(),
-            add_context_task=MagicMock(),
-            add_telemetry_task=MagicMock(),
-            add_completion_query_task=MagicMock(),
         ), patch(
             "celery.chain"
         ) as mock_chain:

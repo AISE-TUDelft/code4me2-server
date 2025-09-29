@@ -1,0 +1,7 @@
+# Requirements for the test data populator script
+# Install with: pip install -r requirements-test.txt
+
+psycopg2-binary>=2.9.0    # PostgreSQL adapter
+faker>=18.0.0             # Generate fake realistic data
+numpy>=1.21.0             # For statistical distributions
+

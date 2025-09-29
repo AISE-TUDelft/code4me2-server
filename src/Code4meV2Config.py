@@ -50,12 +50,6 @@ class Code4meV2Config(BaseSettings):
     # General & Server Settings
     # -----------------------
 
-    test_mode: bool = Field(
-        alias="TEST_MODE",
-        frozen=True,
-        description="Enable test mode to disable certain features like rate limiting",
-    )
-
     server_version_id: int = Field(
         alias="SERVER_VERSION_ID",
         frozen=True,
@@ -300,29 +294,11 @@ class Code4meV2Config(BaseSettings):
         description="Directory path for caching downloaded models",
     )
 
-    model_max_new_tokens: int = Field(
-        alias="MODEL_MAX_NEW_TOKENS",
-        default=64,
-        frozen=True,
-        ge=1,
-        le=4096,
-        description="Maximum number of new tokens to generate in model responses",
-    )
-
     model_use_cache: bool = Field(
         alias="MODEL_USE_CACHE",
         default=True,
         frozen=True,
         description="Enable caching for model predictions to improve performance",
-    )
-
-    model_num_beams: int = Field(
-        alias="MODEL_NUM_BEAMS",
-        default=1,
-        frozen=True,
-        ge=1,
-        le=10,
-        description="Number of beams for beam search in text generation",
     )
 
     model_use_compile: bool = Field(
@@ -337,12 +313,6 @@ class Code4meV2Config(BaseSettings):
         default=True,
         frozen=True,
         description="Perform model warmup runs to optimize performance",
-    )
-    model_quantization: Optional[str] = Field(
-        alias="MODEL_QUANTIZATION",
-        default=None,
-        frozen=True,
-        description="Model quantization method (e.g., 'int4', 'int8') for performance optimization",
     )
 
     # -----------------------
@@ -419,4 +389,4 @@ class Code4meV2Config(BaseSettings):
 
     def __repr__(self) -> str:
         """Return a string representation of the configuration."""
-        return f"Code4meV2Config(server={self.server_host}:{self.server_port}, test_mode={self.test_mode})"
+        return f"Code4meV2Config(server={self.server_host}:{self.server_port})"
