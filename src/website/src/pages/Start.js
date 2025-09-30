@@ -59,6 +59,16 @@ const Start = ({ isAuthenticated }) => {
                   Code4me2 Server (Backend + Web)
                 </a>
               </li>
+              <li>
+                <a href="https://www.youtube.com/watch?v=8uCJpgCCwFA" target="_blank" rel="noreferrer">
+                  (video demo of the tool with explanation)
+                </a>
+              </li>
+              <li>
+                <a href="https://plugins.jetbrains.com/vendor/code4me-team" target="_blank" rel="noreferrer">
+                  JetBrains Marketplace — Code4me Team
+                </a>
+              </li>
             </ul>
           </section>
 
