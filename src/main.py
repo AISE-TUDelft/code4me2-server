@@ -220,9 +220,26 @@ def create_app() -> FastAPI:
     )
 
     # Configure CORS middleware
+    # IMPORTANT: When allow_credentials=True, Access-Control-Allow-Origin cannot be '*'.
+    # Read allowed origins from env CORS_ALLOWED_ORIGINS (comma-separated). Fallback to common origins.
+    import os
+    raw_origins = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    if raw_origins:
+        allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+    else:
+        allowed_origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "https://code4me.me",
+            "https://www.code4me.me",
+            "https://app.code4me.me",
+            "https://code4me.me/*",
+            "https://api.code4me.me/*",
+            "https://app.code4me.me/*",
+        ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Consider restricting in production
+        allow_origins=allowed_origins,
         allow_methods=["*"],
         allow_headers=["*"],
         allow_credentials=True,

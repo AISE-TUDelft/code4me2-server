@@ -1,5 +1,68 @@
 import CryptoJS from "crypto-js";
 
+// Build backend base URL with optional port. Default host points to production API.
+const BACKEND_HOST = process.env.REACT_APP_BACKEND_HOST || "https://api.code4me.me";
+const BACKEND_PORT = Number(process.env.REACT_APP_BACKEND_PORT || 0);
+export const BASE_URL = (() => {
+  const host = BACKEND_HOST.replace(/\/$/, "");
+  return BACKEND_PORT > 0 ? `${host}:${BACKEND_PORT}` : host;
+})();
+
+// Intercept fetch calls globally to normalize backend URLs (host/port + trailing slash)
+const __origFetch = typeof window !== "undefined" ? window.fetch : undefined;
+if (__origFetch) {
+  // Wrap only once per module load
+  const PREFIX = `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}`;
+  window.fetch = (input, init) => {
+    try {
+      if (typeof input === "string") {
+        let urlStr = input;
+        // Normalize host + optional port to computed BASE_URL
+        if (PREFIX && urlStr.startsWith(PREFIX)) {
+          urlStr = BASE_URL + urlStr.substring(PREFIX.length);
+        }
+        // If URL appears absolute, normalize trailing slash for /api/* paths
+        try {
+          const u = new URL(urlStr);
+          if (u.pathname.startsWith("/api/") && u.pathname !== "/api" && u.pathname.endsWith("/")) {
+            // Strip only trailing slashes to match FastAPI canonical paths and avoid 307 redirects
+            u.pathname = u.pathname.replace(/\/+$/, "");
+            urlStr = u.toString();
+          }
+        } catch (_) {
+          // not an absolute URL (e.g., relative path). Leave as-is.
+        }
+        input = urlStr;
+      }
+    } catch (e) {
+      // no-op
+    }
+    return __origFetch(input, init);
+  };
+}
+
+// Safely parse a fetch Response into JSON if possible; otherwise return a fallback
+const parseResponseSafe = async (response) => {
+  try {
+    const clone = response.clone();
+    const ct = clone.headers.get("content-type") || "";
+    if (ct.toLowerCase().includes("application/json")) {
+      return await clone.json();
+    }
+  } catch (_) {
+    // ignore
+  }
+  try {
+    const text = await response.clone().text();
+    if (text && text.trim()) {
+      return { message: text };
+    }
+  } catch (_) {
+    // ignore
+  }
+  return null;
+};
+
 /**
  * Hash a password with a salt
  *
@@ -88,14 +151,18 @@ export const authenticateUser = async (credentials) => {
         body: JSON.stringify({ email: email, password: password }),
       },
     );
-    const responseBody = await response.json();
+    const responseBody = await parseResponseSafe(response);
 
     if (!response.ok) {
+      const errMsg = (responseBody && (responseBody["message"] || responseBody["detail"])) || `${response.status}: ${response.statusText}`;
       return {
         ok: false,
-        error: responseBody["message"] || `${response.status}: ${response.statusText}`,
+        error: errMsg,
       };
     } else {
+      if (!responseBody || typeof responseBody !== "object") {
+        return { ok: false, error: "Empty or invalid server response." };
+      }
       return {
         ok: true,
         message: responseBody["message"],
@@ -134,14 +201,18 @@ export const authenticateWithOAuth = async (oauthData) => {
         body: JSON.stringify({ token: token, provider: provider }),
       },
     );
-    const responseBody = await response.json();
+    const responseBody = await parseResponseSafe(response);
 
     if (!response.ok) {
+      const errMsg = (responseBody && (responseBody["message"] || responseBody["detail"])) || `${response.status}: ${response.statusText}`;
       return {
         ok: false,
-        error: responseBody["message"] || `${response.status}: ${response.statusText}`,
+        error: errMsg,
       };
     } else {
+      if (!responseBody || typeof responseBody !== "object") {
+        return { ok: false, error: "Empty or invalid server response." };
+      }
       return {
         ok: true,
         message: responseBody["message"],
