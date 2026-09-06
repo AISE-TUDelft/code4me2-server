@@ -1,0 +1,112 @@
+/* Agent A/B results comparison — per-arm bars and metric cards.
+ *
+ * Shares the card/metric-row/baseline-tag classes already defined in
+ * StudyManagement.css; only the agent-specific additions live here so the
+ * shared stylesheet doesn't have to change.
+ */
+
+.agent-results h4 {
+  margin-bottom: 12px;
+}
+.agent-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.agent-bar-metric {
+  background-color: var(--secondary-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.agent-bar-metric-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+.agent-bar-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.agent-bar-better {
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+.agent-bar-row {
+  display: grid;
+  grid-template-columns: 140px 1fr 90px;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+.agent-bar-arm {
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.agent-bar-track {
+  background-color: var(--border-color);
+  border-radius: 4px;
+  height: 14px;
+  overflow: hidden;
+}
+.agent-bar-fill {
+  height: 100%;
+  background-color: var(--primary-color);
+  border-radius: 4px;
+  min-width: 2px;
+  transition: width 0.3s ease;
+}
+.agent-bar-fill.baseline {
+  background-color: #ff9800;
+}
+.agent-bar-value {
+  font-size: 0.8rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.finish-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.finish-reason-chip {
+  font-size: 0.72rem;
+  background-color: var(--hover-color);
+  border-radius: 10px;
+  padding: 2px 8px;
+}
+
+/* Human-in-the-loop panel: the accept/reject/modify signal on agent proposals.
+ * Highlighted separately because it is the metric that says whether developers
+ * actually took the agent's work, rather than just how much it produced. */
+.agent-edit-panel {
+  background-color: var(--secondary-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 20px;
+}
+.agent-edit-panel h5 {
+  margin: 0 0 4px 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.agent-edit-hint {
+  font-size: 0.75rem;
+  opacity: 0.7;
+  margin: 0 0 10px 0;
+}
+.agent-runtime-chip {
+  font-size: 0.7rem;
+  background-color: var(--hover-color);
+  border-radius: 10px;
+  padding: 2px 8px;
+  margin-left: 6px;
+  white-space: nowrap;
+}

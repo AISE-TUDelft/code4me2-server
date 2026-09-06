@@ -1,3 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code4me2-agent"
+version = "0.1.0"
+description = "Code4Me ACP agent runtime"
+requires-python = ">=3.10"
+dependencies = [
+    "agent-client-protocol>=0.8",
+    "openai>=1.0,<2",
+]
+
+[project.scripts]
+code4me2-agent = "code4me2_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["code4me2_agent*"]
+
 [tool.ruff]
 line-length = 99
 

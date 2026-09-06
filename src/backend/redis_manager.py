@@ -62,6 +62,16 @@ class RedisManager:
             return self.auth_token_expires_in_seconds
         elif type == "session_token":
             return self.session_token_expires_in_seconds
+        elif type == "acp_grant":
+            # One-time launch grant handed to a locally-spawned agent process.
+            # Short-lived on purpose: it only has to survive the gap between the
+            # plugin writing the handoff file and the agent starting up.
+            return 300
+        elif type == "acp_pending_grant":
+            return 300
+        elif type == "acp_session":
+            # The agent process's working credential, refreshed on every use.
+            return 3600
         elif type == "project_token":
             return -1  # project tokens do not expire by default
         elif type == "email_verification":
@@ -128,6 +138,26 @@ class RedisManager:
                     )
             return recursive_json_loads(data)  # Parse JSON string to dict
         return None
+
+    def consume(self, type: str, token: str) -> Optional[dict]:
+        """Atomically retrieve and invalidate a one-time token.
+
+        Used for ACP launch grants, where a replayable token would let anyone
+        who reads the handoff file mint an agent session. GETDEL makes the
+        exchange single-use even under concurrent attempts.
+        """
+        if not token:
+            return None
+        data = self.__redis_client.getdel(f"{type}:{token}")
+        if data:
+            return recursive_json_loads(data)
+        return None
+
+    def discard(self, type: str, token: str) -> None:
+        """Remove an ephemeral token without the DB-persistence side effects of
+        ``delete`` (which tears down whole session graphs)."""
+        if token:
+            self.__redis_client.delete(f"{type}:{token}")
 
     def delete(self, type: str, token: str, db_session: Session):
         """

@@ -384,6 +384,23 @@ class ActivateProject(QueryBase):
     project_id: UUID = Field(..., description="Project id to activate")
 
 
+class PrepareAcpGrant(QueryBase):
+    """Plugin request for a one-time launch grant for a local agent process.
+
+    Both fields are *bound into* the grant, so the agent that redeems it can
+    only ever act on this project and inside this workspace directory.
+    """
+
+    project_id: UUID = Field(
+        ..., description="Activated project id for the ACP process"
+    )
+    workspace: str = Field(..., description="Canonical project workspace", min_length=1)
+
+
+class ExchangeAcpGrant(QueryBase):
+    grant: str = Field(..., description="One-time ACP launch grant", min_length=1)
+
+
 class CreateSession(QueryBase):
     user_id: UUID = Field(..., description="User ID")
 

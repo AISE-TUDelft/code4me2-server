@@ -32,9 +32,16 @@ class CreateStudyRequest(BaseModel):
     name: str
     description: Optional[str] = None
     starts_at: str  # ISO datetime
-    ends_at: Optional[str] = None  # ISO datetime  
+    ends_at: Optional[str] = None  # ISO datetime
     config_ids: List[int]  # List of configuration IDs to test
     default_config_id: int  # Configuration to use when study ends
+    # Optional agent-profile arms. Empty → a completion-only study, behaving
+    # exactly as before this field existed (backwards compatible).
+    agent_profile_ids: List[str] = []  # agent_profile UUIDs acting as A/B arms
+    # Which arm agent uplift is measured against; must be one of
+    # agent_profile_ids when set. Analogous to default_config_id on the
+    # completion side.
+    baseline_agent_profile_id: Optional[str] = None
 
 
 class UpdateStudyRequest(BaseModel):
@@ -77,7 +84,37 @@ def create_study(
             config = crud.get_config_by_id(db_session, config_id)
             if not config:
                 raise HTTPException(status_code=400, detail=f"Configuration {config_id} not found")
-        
+
+        # Validate the optional agent-profile arms. Done before any writes so a
+        # bad arm list can't leave a half-configured study behind.
+        agent_profile_uuids: List[uuid.UUID] = []
+        baseline_profile_uuid: Optional[uuid.UUID] = None
+        try:
+            agent_profile_uuids = [
+                uuid.UUID(pid) for pid in study_request.agent_profile_ids
+            ]
+            if study_request.baseline_agent_profile_id is not None:
+                baseline_profile_uuid = uuid.UUID(
+                    study_request.baseline_agent_profile_id
+                )
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid agent profile ID format")
+
+        for profile_uuid in agent_profile_uuids:
+            if crud.get_agent_profile_by_id(db_session, profile_uuid) is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Agent profile {profile_uuid} not found",
+                )
+        if (
+            baseline_profile_uuid is not None
+            and baseline_profile_uuid not in agent_profile_uuids
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Baseline agent profile must be one of the selected profiles",
+            )
+
         # Check if there's already an active study
         active_study_query = """
         SELECT study_id FROM study WHERE is_active = true LIMIT 1
@@ -115,15 +152,33 @@ def create_study(
         # If study is active, assign configurations to users
         if is_active:
             assign_users_to_study(db_session, study_id, study_request.config_ids)
-        
+
+        # Attach the agent-profile arms. Persisted regardless of active state:
+        # only an *active* study's arms are drawn from
+        # (crud.list_active_study_agent_profiles), and agent assignment is
+        # sticky-lazy — drawn on a user's first agent task rather than
+        # pre-assigned like completion configs — so there's nothing to backfill
+        # here.
+        if agent_profile_uuids:
+            crud.set_study_agent_profiles(
+                db_session,
+                study_id=study_id,
+                profile_ids=agent_profile_uuids,
+                baseline_profile_id=baseline_profile_uuid,
+            )
+
         db_session.commit()
-        
+
         return JsonResponseWithStatus(
             status_code=201,
             content={
                 "study_id": str(study_id),
                 "name": study_request.name,
                 "is_active": is_active,
+                "agent_profile_ids": [str(p) for p in agent_profile_uuids],
+                "baseline_agent_profile_id": (
+                    str(baseline_profile_uuid) if baseline_profile_uuid else None
+                ),
                 "message": "Study created successfully"
             }
         )
@@ -326,6 +381,22 @@ def get_study_details(
                 "engagement_rate": float(assignment.engagement_rate) if assignment.engagement_rate else 0.0
             })
         
+        # Agent-profile arms attached to this study. Empty for completion-only
+        # studies, which is the backwards-compatible default.
+        agent_profiles = [
+            {
+                "profile_id": str(link.profile_id),
+                "name": link.profile.name if link.profile else None,
+                "model": link.profile.model if link.profile else None,
+                "framework_version": (
+                    link.profile.framework_version if link.profile else None
+                ),
+                "is_active": link.profile.is_active if link.profile else None,
+                "is_baseline": link.is_baseline,
+            }
+            for link in crud.list_study_agent_profiles(db_session, study_uuid)
+        ]
+
         return JsonResponseWithStatus(
             status_code=200,
             content={
@@ -340,7 +411,8 @@ def get_study_details(
                     "default_config_id": study.default_config_id,
                     "created_at": study.created_at.isoformat()
                 },
-                "assignments": assignment_data
+                "assignments": assignment_data,
+                "agent_profiles": agent_profiles
             }
         )
         
@@ -624,3 +696,250 @@ def evaluate_study(
     finally:
         db_session.close()
 
+
+
+@router.get("/{study_id}/agent-evaluation")
+def evaluate_study_agents(
+    study_id: str,
+    current_user: AuthenticatedUser = Depends(require_admin),
+    app: App = Depends(App.get_instance)
+):
+    """
+    Evaluate an A/B study's *agent* arms.
+
+    The agent-side mirror of ``evaluate_study``: aggregates agent telemetry
+    (``agent_task`` + ``agent_event``) per attached agent profile, within the
+    study's time window, and reports uplift against the baseline arm.
+
+    A task counts toward an arm when its ``agent_profile`` name matches a study
+    profile and it was created inside ``[starts_at, ends_at]``. Matching by name
+    rather than profile_id is deliberate — the name is what gets snapshotted
+    onto the task, so historical tasks stay attributable even if the profile row
+    is later edited or deleted.
+
+    Because both telemetry paths write into the same ``agent_event`` table, the
+    same aggregation works whether an arm ran Goose, Codex, or the built-in
+    ``code4me2-agent`` runtime — which is the whole point of the unified schema.
+
+    Admin only endpoint.
+    """
+    db_session = app.get_db_session()
+
+    try:
+        study_uuid = uuid.UUID(study_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid study ID format")
+
+    try:
+        study_query = """
+        SELECT study_id, name, starts_at, ends_at
+        FROM study WHERE study_id = :study_id
+        """
+        study = db_session.execute(
+            text(study_query), {"study_id": study_uuid}
+        ).fetchone()
+        if not study:
+            raise HTTPException(status_code=404, detail="Study not found")
+
+        window = {
+            "study_id": study_uuid,
+            "starts_at": study.starts_at,
+            "ends_at": study.ends_at,
+        }
+
+        # Per-arm task-level aggregates. LEFT JOIN so an arm with zero tasks
+        # still appears as a row with zeros, rather than vanishing from the
+        # comparison (an arm nobody used is itself a finding).
+        task_query = """
+        SELECT
+            ap.profile_id,
+            ap.name AS profile_name,
+            ap.model,
+            ap.framework_version,
+            sap.is_baseline,
+            COUNT(DISTINCT t.task_id) AS total_tasks,
+            COUNT(DISTINCT t.task_id) FILTER (WHERE t.status = 'done') AS completed_tasks,
+            COUNT(DISTINCT COALESCE(t.owner_user_id, t.session_id)) AS total_participants,
+            AVG(t.total_steps) AS avg_steps,
+            SUM(t.input_tokens) AS total_input_tokens,
+            SUM(t.output_tokens) AS total_output_tokens
+        FROM study_agent_profile sap
+        JOIN agent_profile ap ON ap.profile_id = sap.profile_id
+        LEFT JOIN agent_task t
+            ON t.agent_profile = ap.name
+            AND t.created_at BETWEEN :starts_at AND COALESCE(:ends_at, NOW())
+        WHERE sap.study_id = :study_id
+        GROUP BY ap.profile_id, ap.name, ap.model, ap.framework_version, sap.is_baseline
+        ORDER BY ap.name
+        """
+        task_rows = db_session.execute(text(task_query), window).fetchall()
+
+        # Per-arm event-level aggregates, kept as a separate query so the task
+        # aggregates above aren't inflated by the event-row fan-out.
+        event_query = """
+        SELECT
+            ap.name AS profile_name,
+            COUNT(e.event_id) FILTER (WHERE e.event_type = 'model_call') AS model_calls,
+            COUNT(e.event_id) FILTER (WHERE e.event_type = 'tool_call') AS tool_calls,
+            AVG(e.latency_ms) FILTER (WHERE e.event_type = 'model_call') AS avg_model_latency_ms,
+            SUM(e.total_tokens) AS total_tokens
+        FROM study_agent_profile sap
+        JOIN agent_profile ap ON ap.profile_id = sap.profile_id
+        LEFT JOIN agent_task t
+            ON t.agent_profile = ap.name
+            AND t.created_at BETWEEN :starts_at AND COALESCE(:ends_at, NOW())
+        LEFT JOIN agent_event e ON e.task_id = t.task_id
+        WHERE sap.study_id = :study_id
+        GROUP BY ap.name
+        """
+        event_rows = {
+            row.profile_name: row
+            for row in db_session.execute(text(event_query), window).fetchall()
+        }
+
+        # Human-in-the-loop signal: what the developer actually did with the
+        # agent's proposals. This is the metric group-5 couldn't report at all,
+        # and it's arguably the most important one — an arm that proposes more
+        # edits but gets fewer accepted is worse, not better.
+        edit_query = """
+        SELECT
+            ap.name AS profile_name,
+            COUNT(ed.edit_id) AS total_edits,
+            COUNT(ed.edit_id) FILTER (WHERE ed.was_accepted IS TRUE) AS accepted_edits,
+            COUNT(ed.edit_id) FILTER (WHERE ed.was_accepted IS FALSE) AS rejected_edits,
+            COUNT(ed.edit_id) FILTER (WHERE ed.was_modified IS TRUE) AS modified_edits
+        FROM study_agent_profile sap
+        JOIN agent_profile ap ON ap.profile_id = sap.profile_id
+        LEFT JOIN agent_task t
+            ON t.agent_profile = ap.name
+            AND t.created_at BETWEEN :starts_at AND COALESCE(:ends_at, NOW())
+        LEFT JOIN agent_edit ed ON ed.task_id = t.task_id
+        WHERE sap.study_id = :study_id
+        GROUP BY ap.name
+        """
+        edit_rows = {
+            row.profile_name: row
+            for row in db_session.execute(text(edit_query), window).fetchall()
+        }
+
+        def _f(value) -> float:
+            return float(value) if value is not None else 0.0
+
+        def _i(value) -> int:
+            return int(value) if value is not None else 0
+
+        arm_results = []
+        baseline_arm = None
+
+        for row in task_rows:
+            events = event_rows.get(row.profile_name)
+            edits = edit_rows.get(row.profile_name)
+            total_tasks = _i(row.total_tasks)
+            total_edits = _i(edits.total_edits) if edits else 0
+            accepted_edits = _i(edits.accepted_edits) if edits else 0
+
+            arm = {
+                "profile_id": str(row.profile_id),
+                "profile_name": row.profile_name,
+                "model": row.model,
+                "framework_version": row.framework_version,
+                "is_baseline": bool(row.is_baseline),
+                "metrics": {
+                    "total_tasks": total_tasks,
+                    "completed_tasks": _i(row.completed_tasks),
+                    "completion_rate": _i(row.completed_tasks) / max(total_tasks, 1),
+                    "total_participants": _i(row.total_participants),
+                    "avg_steps": _f(row.avg_steps),
+                    "total_input_tokens": _i(row.total_input_tokens),
+                    "total_output_tokens": _i(row.total_output_tokens),
+                    "model_calls": _i(events.model_calls) if events else 0,
+                    "tool_calls": _i(events.tool_calls) if events else 0,
+                    "avg_model_latency_ms": (
+                        _f(events.avg_model_latency_ms) if events else 0.0
+                    ),
+                    "total_tokens": _i(events.total_tokens) if events else 0,
+                    "total_edits": total_edits,
+                    "accepted_edits": accepted_edits,
+                    "rejected_edits": _i(edits.rejected_edits) if edits else 0,
+                    "modified_edits": _i(edits.modified_edits) if edits else 0,
+                    # Undecided edits are excluded from the denominator: an edit
+                    # the developer hasn't ruled on yet is not a rejection.
+                    "edit_acceptance_rate": (
+                        accepted_edits
+                        / max(
+                            accepted_edits + (_i(edits.rejected_edits) if edits else 0),
+                            1,
+                        )
+                    ),
+                },
+            }
+
+            if arm["is_baseline"]:
+                baseline_arm = arm
+            arm_results.append(arm)
+
+        # Uplift vs the baseline arm, when one is designated.
+        if baseline_arm:
+            base = baseline_arm["metrics"]
+            for arm in arm_results:
+                if arm["is_baseline"]:
+                    continue
+                metrics = arm["metrics"]
+                arm["uplift"] = {
+                    "completion_rate_change_pct": _pct_change(
+                        metrics["completion_rate"], base["completion_rate"]
+                    ),
+                    "edit_acceptance_change_pct": _pct_change(
+                        metrics["edit_acceptance_rate"], base["edit_acceptance_rate"]
+                    ),
+                    "avg_steps_change_pct": _pct_change(
+                        metrics["avg_steps"], base["avg_steps"]
+                    ),
+                    "latency_change_pct": _pct_change(
+                        metrics["avg_model_latency_ms"], base["avg_model_latency_ms"]
+                    ),
+                    "is_better_completion": (
+                        metrics["completion_rate"] > base["completion_rate"]
+                    ),
+                    "is_better_acceptance": (
+                        metrics["edit_acceptance_rate"] > base["edit_acceptance_rate"]
+                    ),
+                    "is_faster": (
+                        metrics["avg_model_latency_ms"] < base["avg_model_latency_ms"]
+                    ),
+                }
+
+        return JsonResponseWithStatus(
+            status_code=200,
+            content={
+                "study": {
+                    "study_id": str(study.study_id),
+                    "name": study.name,
+                    "starts_at": study.starts_at.isoformat(),
+                    "ends_at": study.ends_at.isoformat() if study.ends_at else None,
+                },
+                "results": arm_results,
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_session.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"Error evaluating study agents: {str(e)}"
+        )
+    finally:
+        db_session.close()
+
+
+def _pct_change(value: float, baseline: float) -> float:
+    """Percentage change of ``value`` against ``baseline``.
+
+    Returns 0.0 when the baseline is zero: with no baseline to compare against,
+    a made-up ratio would read as a real effect. The absolute metrics are
+    reported alongside, so a caller can see that the baseline arm had no data.
+    """
+    if not baseline:
+        return 0.0
+    return ((value - baseline) / baseline) * 100

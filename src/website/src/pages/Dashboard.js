@@ -8,6 +8,8 @@ import ModelAnalytics from "../components/analytics/ModelAnalytics";
 import CalibrationAnalytics from "../components/analytics/CalibrationAnalytics";
 import StudyManagement from "../components/analytics/StudyManagement";
 import ConfigManagement from "../components/analytics/ConfigManagement";
+import AgentProfiles from "./AgentProfiles";
+import AgentAssignments from "./AgentAssignments";
 import "./Dashboard.css";
 
 const Dashboard = ({ user, onLogout }) => {
@@ -19,6 +21,8 @@ const Dashboard = ({ user, onLogout }) => {
     if (baseViews.has(view)) return true;
     if (view === 'studies') return !!user?.is_admin;
     if (view === 'configs') return !!user?.is_admin;
+    if (view === 'agent-profiles') return !!user?.is_admin;
+    if (view === 'agent-assignments') return !!user?.is_admin;
     return false;
   };
 
@@ -84,6 +88,10 @@ const Dashboard = ({ user, onLogout }) => {
         return <StudyManagement user={user} />;
       case 'configs':
         return <ConfigManagement user={user} />;
+      case 'agent-profiles':
+        return <AgentProfiles />;
+      case 'agent-assignments':
+        return <AgentAssignments />;
       default:
         return <OverviewDashboard 
           timeWindow={timeWindow} 

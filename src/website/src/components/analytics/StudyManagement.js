@@ -1,11 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { getStudies, getStudyEvaluation, getStudyDetails, activateStudy, deactivateStudy, createStudy } from '../../utils/api';
+import { getStudies, getStudyEvaluation, getStudyDetails, activateStudy, deactivateStudy, createStudy, getStudyAgentEvaluation } from '../../utils/api';
+import AgentResults from './AgentResults';
 import './StudyManagement.css';
 
 const StudyManagement = ({ user }) => {
   const [studies, setStudies] = useState([]);
   const [selectedStudy, setSelectedStudy] = useState(null);
   const [evaluationData, setEvaluationData] = useState(null);
+  // Agent A/B arms attached to the selected study, and their per-arm results.
+  // Both stay empty for completion-only studies, which is the common case.
+  const [agentEvaluationData, setAgentEvaluationData] = useState(null);
+  const [agentProfiles, setAgentProfiles] = useState([]);
   const [studyDetails, setStudyDetails] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -47,6 +52,21 @@ const StudyManagement = ({ user }) => {
       console.error("Evaluation fetch error:", err);
       setEvaluationData(null);
     }
+    // Agent arms are evaluated by a separate endpoint, because the metrics are
+    // entirely different (steps, tool calls, edit acceptance) and a study can
+    // have completion arms, agent arms, or both.
+    try {
+      const agentResponse = await getStudyAgentEvaluation(studyId);
+      if (agentResponse.ok) {
+        setAgentEvaluationData(agentResponse.data);
+      } else {
+        console.warn("Agent evaluation error:", agentResponse.error);
+        setAgentEvaluationData(null);
+      }
+    } catch (err) {
+      console.error("Agent evaluation fetch error:", err);
+      setAgentEvaluationData(null);
+    }
   };
 
   const fetchStudyDetails = async (studyId) => {
@@ -54,13 +74,17 @@ const StudyManagement = ({ user }) => {
       const response = await getStudyDetails(studyId);
       if (response.ok) {
         setStudyDetails(response.data);
+        // agent_profiles is empty for completion-only studies.
+        setAgentProfiles(response.data?.agent_profiles || []);
       } else {
         console.warn("Details error:", response.error);
         setStudyDetails(null);
+        setAgentProfiles([]);
       }
     } catch (err) {
       console.error("Details fetch error:", err);
       setStudyDetails(null);
+      setAgentProfiles([]);
     }
   };
 
@@ -68,6 +92,8 @@ const StudyManagement = ({ user }) => {
     setSelectedStudy(study);
     setEvaluationData(null);
     setStudyDetails(null);
+    setAgentEvaluationData(null);
+    setAgentProfiles([]);
     fetchStudyEvaluation(study.study_id);
     fetchStudyDetails(study.study_id);
   };
@@ -348,6 +374,15 @@ const StudyManagement = ({ user }) => {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {agentEvaluationData?.results?.length > 0 && (
+                <div className="evaluation-results">
+                  <AgentResults
+                    data={agentEvaluationData}
+                    profiles={agentProfiles}
+                  />
                 </div>
               )}
             </div>

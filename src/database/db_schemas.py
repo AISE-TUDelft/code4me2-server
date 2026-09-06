@@ -42,7 +42,24 @@ DEFAULT_USER_PREFERENCE = {
     "store_context": False,  # Whether to store code context
     "store_contextual_telemetry": True,  # Whether to collect contextual data
     "store_behavioral_telemetry": True,  # Whether to collect behavioral data
+    # Whether to store agent task/event/edit *content* (message text, tool
+    # arguments/results, diffs). Structural telemetry (tokens, latency, span
+    # tree, tool names) is always stored and is not covered by this flag.
+    #
+    # Default ON: this is a research platform where study participants give
+    # informed consent through a separate process before using it, so opt-out
+    # is the right default for research data collection. The *mechanism* stays
+    # strict — enforcement is server-side only (see
+    # backend.routers.agent.consent.resolve_store_agent_content); a
+    # client-supplied flag is never trusted.
+    "store_agent_content": True,
 }
+
+# Preference key gating persistence of agent content columns.
+STORE_AGENT_CONTENT_KEY = "store_agent_content"
+# Server-side default applied when a user row predates this preference (i.e. the
+# key is absent from their stored preference JSON).
+STORE_AGENT_CONTENT_DEFAULT = True
 
 
 class Config(Base):
@@ -691,6 +708,386 @@ class ConfigAssignmentHistory(Base):
     user = relationship("User")
     study = relationship("Study")
     assigned_config = relationship("Config")
+
+
+# ── Agent tables ──────────────────────────────────────────────────────────────
+#
+# One schema serves both agent runtimes:
+#
+#   * the built-in ``code4me2-agent`` ReAct loop, which runs locally and
+#     self-reports its steps to POST /api/agent/events/ingest, and
+#   * third-party ACP agents (Goose, Codex), which are observed transparently
+#     by the plugin's local proxy relaying through POST /api/agent/inference.
+#
+# Shape: "columnar core + JSON overflow". Fields both runtimes produce get
+# first-class typed columns (span tree, token counts, latency, tool names,
+# finish reason); runtime-specific or experimental extras go into the single
+# ``extra_json`` overflow column so adding an adapter never needs a migration.
+#
+# Privacy split: structural columns (status, timings, token counts, decisions)
+# are always stored. Content columns (task_description, first_system_message,
+# last_user_message, response_text, tool_arguments, tool_result, payload_json,
+# diff_text, edit_delta_json) are nullable and only ever written when the
+# requesting user's ``store_agent_content`` preference resolves True — checked
+# server-side, never taken from a client-supplied flag.
+
+
+class AgentProfile(Base):
+    """Named experiment variant — defines runtime, provider, tools and policy.
+
+    ``framework_version`` selects which agent runtime the profile targets
+    (``code4me2-agent``, ``goose``, ``codex``), and therefore which telemetry
+    path a task created from it will use.
+
+    The provider triple (``base_url``, ``api_key_ref``, ``model``) is
+    deliberately generic: any endpoint speaking the OpenAI-compatible
+    chat-completions wire format works, so a local Ollama install, Groq,
+    OpenRouter and OpenAI itself are all a config change rather than a code
+    change. ``base_url`` NULL falls back to the server's configured default
+    (see ``agents.provider.resolve_upstream``).
+    """
+
+    __tablename__ = "agent_profile"
+    __table_args__ = (
+        Index("idx_agent_profile_is_active", "is_active"),
+        {"schema": "public"},
+    )
+
+    profile_id = Column(UUID(as_uuid=True), primary_key=True)
+    name = Column(String, unique=True, nullable=False)
+    model = Column(String, nullable=False)
+    # Agent runtime this profile targets: code4me2-agent | goose | codex
+    framework_version = Column(
+        String, nullable=False, server_default="code4me2-agent"
+    )
+    # OpenAI-compatible base URL, e.g. http://localhost:11434/v1 (Ollama),
+    # https://api.groq.com/openai/v1, https://api.openai.com/v1. NULL = server default.
+    base_url = Column(String, nullable=True)
+    # Name of the environment variable holding the upstream API key — never the
+    # key itself, so profiles stay safe to dump from the admin UI or the DB.
+    api_key_ref = Column(String, nullable=True)
+    tools_json = Column(Text, nullable=False)  # JSON array of tool names
+    approval_policy = Column(String, nullable=False)  # suggestion_only | per_step | …
+    max_steps = Column(Integer, nullable=False)
+    # Sampling temperature injected into the upstream request, server-side, the same
+    # way `model` is overridden. NULL = don't inject; let the provider use its default.
+    temperature = Column(Double, nullable=True)
+    max_context_tokens = Column(
+        Integer, nullable=True
+    )  # per-turn rolling window; NULL = model max
+    # Only active profiles are candidate arms for new A/B assignments. Inactive
+    # profiles stay in the table (drafts, or arms retired mid-study) and existing
+    # users keep any assignment already pinned to them.
+    is_active = Column(Boolean, server_default="true", default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class AgentProfileAssignment(Base):
+    """Sticky user→profile mapping for A/B testing.
+
+    Resolution is server-authoritative: on a user's first agent task we draw a
+    random active profile and persist it here, so the user keeps the same arm for
+    the life of the experiment regardless of later changes to the active set.
+    `source` distinguishes randomized assignments ("auto") from admin overrides
+    ("manual"); manual rows are excluded from re-rolls and from A/B analysis.
+    """
+
+    __tablename__ = "agent_profile_assignment"
+    __table_args__ = (
+        Index("idx_agent_profile_assignment_profile_id", "profile_id"),
+        {"schema": "public"},
+    )
+
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_profile.profile_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source = Column(String, nullable=False, server_default="auto")  # auto | manual
+    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+
+    # Relationships
+    user = relationship("User")
+    profile = relationship("AgentProfile")
+
+
+class AgentTask(Base):
+    """One row per agent session a developer starts.
+
+    A "session" here is one run of whichever agent runtime the assigned profile
+    selects — Goose, Codex, or the built-in ``code4me2-agent`` ReAct loop.
+
+    The profile's config (model, temperature, approval_policy, tools_json) is
+    *snapshotted* onto this row at creation time, so later edits to the profile
+    never retroactively change the conditions a completed task ran under.
+    """
+
+    __tablename__ = "agent_task"
+    __table_args__ = (
+        Index("idx_agent_task_status", "status"),
+        Index("idx_agent_task_session_id", "session_id"),
+        Index("idx_agent_task_owner_user_id", "owner_user_id"),
+        {"schema": "public"},
+    )
+
+    task_id = Column(UUID(as_uuid=True), primary_key=True)
+    # nullable — populated when the task is minted via the authenticated plugin endpoint
+    session_id = Column(
+        UUID(as_uuid=True), ForeignKey("public.session.session_id"), nullable=True
+    )
+    # Which path created this task: "plugin" (proxy relay, third-party agents),
+    # "code4me2_agent" (self-reporting built-in runtime), or "benchmark".
+    source = Column(String, nullable=False, server_default="plugin")
+    # Owner attribution for tasks that arrive over the ACP bearer path, where
+    # there is no session cookie to resolve the user from.
+    owner_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("public.user.user_id"), nullable=True
+    )
+    owner_project_id = Column(UUID(as_uuid=True), nullable=True)
+    # The runtime's *own* identifiers, which are not guaranteed to be UUIDs
+    # (code4me2-agent uses uuid4().hex; ACP session ids are opaque strings).
+    # Kept alongside the server-side UUID PK so self-reported batches can be
+    # matched back to their task without forcing the runtime to adopt our ids.
+    external_run_id = Column(String, unique=True, nullable=True)
+    agent_session_id = Column(String, nullable=True)
+    agent_profile = Column(String, nullable=False)
+    model = Column(String, nullable=False)
+    # Snapshotted from the assigned profile at task-creation time, like `model`, so
+    # the value is stable for the life of the task. NULL = provider default.
+    temperature = Column(Double, nullable=True)
+    approval_policy = Column(String, nullable=False)
+    tools_json = Column(Text, nullable=False)
+    # Agent runtime (e.g. "goose", "codex", "code4me2-agent") — snapshotted from
+    # the profile, but left nullable so the proxy can backfill the concrete
+    # version string it observes ("goose 1.x") on the first inference call.
+    framework_version = Column(String, nullable=True)
+    status = Column(String, nullable=False)  # pending | running | done | failed
+    created_at = Column(DateTime, default=datetime.now)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    total_steps = Column(Integer, nullable=True)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    # Points at the most recent event, so a dashboard can show "where is this
+    # task now" without scanning agent_event.
+    #
+    # agent_task and agent_event reference each other, which is a deliberate
+    # cycle. `use_alter=True` tells SQLAlchemy to emit this constraint as a
+    # separate ALTER after both tables exist, so metadata.create_all() can
+    # order the DDL instead of erroring on the cycle. The Alembic migration
+    # does the same thing by hand.
+    latest_event_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "public.agent_event.event_id",
+            use_alter=True,
+            name="agent_task_latest_event_id_fkey",
+        ),
+        nullable=True,
+    )
+    # Content — written only when store_agent_content resolves True
+    task_description = Column(Text, nullable=True)
+
+
+class AgentEvent(Base):
+    """One row per agent step, from either telemetry path.
+
+    ``event_type`` is the unified vocabulary both paths emit into:
+    ``model_call`` and ``tool_call`` are the two that carry typed columns;
+    ``thought`` / ``observation`` / ``run_started`` / ``run_completed`` /
+    ``decision`` are structural markers.
+
+    Rows form a span tree via ``span_id`` / ``parent_span_id`` (tool calls nest
+    under the model_call whose response requested them). Anything a specific
+    adapter reports that has no typed column lands in ``extra_json``.
+    """
+
+    __tablename__ = "agent_event"
+    __table_args__ = (
+        Index("idx_agent_event_task_id", "task_id"),
+        Index("idx_agent_event_event_type", "event_type"),
+        Index("idx_agent_event_created_at", "created_at"),
+        {"schema": "public"},
+    )
+
+    event_id = Column(UUID(as_uuid=True), primary_key=True)
+    task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_task.task_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_index = Column(Integer, nullable=False)
+    # model_call | tool_call | thought | observation | test_run | decision |
+    # run_started | run_completed | accepted | rejected
+    event_type = Column(String, nullable=False)
+    # Which telemetry path wrote this row: "proxy" (client-side relay observing
+    # a third-party agent) or "code4me2_agent" (runtime self-report).
+    source = Column(String, nullable=True)
+    # Envelope schema version reported by a self-reporting runtime, so old
+    # batches stay interpretable after the envelope evolves.
+    schema_version = Column(String, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    # Client-side event timestamp, as reported by a self-reporting runtime.
+    # Distinct from created_at, which is when the server persisted the row.
+    occurred_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Shared span identifiers (model_call and tool_call).
+    # Events are grouped by task via task_id; there is no separate trace_id column —
+    # it was always a duplicate of task_id.
+    span_id = Column(String, nullable=True)
+    parent_span_id = Column(UUID(as_uuid=True), nullable=True)
+    # Correlates every event emitted while serving one user prompt.
+    request_id = Column(String, nullable=True)
+    chat_session_index = Column(Integer, nullable=True)
+
+    # ── model_call fields — null for tool_call rows ──
+    model = Column(String, nullable=True)
+    agent_profile = Column(String, nullable=True)
+    streaming = Column(Boolean, nullable=True)
+    message_count = Column(Integer, nullable=True)
+    # Per-role message counts (the shape of the context window).
+    role_system_count = Column(Integer, nullable=True)
+    role_user_count = Column(Integer, nullable=True)
+    role_assistant_count = Column(Integer, nullable=True)
+    role_tool_count = Column(Integer, nullable=True)
+    tools_kept = Column(Integer, nullable=True)
+    tools_stripped = Column(Integer, nullable=True)
+    tool_names_requested = Column(ARRAY(String), nullable=True)
+    max_tokens = Column(Integer, nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    finish_reason = Column(String, nullable=True)
+    upstream_status = Column(Integer, nullable=True)
+    step_index = Column(Integer, nullable=True)
+    context_window_size_bytes = Column(Integer, nullable=True)
+    active_file = Column(Text, nullable=True)
+    first_message_hash = Column(String, nullable=True)
+    chat_new_session_detected = Column(Boolean, nullable=True)
+    experiment_tool_access_enabled = Column(Boolean, nullable=True)
+    experiment_approval_policy = Column(String, nullable=True)
+    # Content — written only when store_agent_content resolves True
+    first_system_message = Column(Text, nullable=True)
+    last_user_message = Column(Text, nullable=True)
+    response_text = Column(Text, nullable=True)
+
+    # ── tool_call fields — null for model_call rows ──
+    tool_name = Column(String, nullable=True)
+    tool_arguments_length = Column(Integer, nullable=True)
+    tool_result_length = Column(Integer, nullable=True)
+    # Content — written only when store_agent_content resolves True
+    tool_arguments = Column(Text, nullable=True)
+    tool_result = Column(Text, nullable=True)
+
+    # ── JSON overflow ──
+    # Adapter-specific / experimental structural metrics that don't warrant a
+    # typed column (e.g. the ReAct adapter's per-iteration counters, an
+    # adapter's own observability block). Never content — see payload_json.
+    extra_json = Column(Text, nullable=True)
+    # Free-form event payload from a self-reporting runtime. May quote user
+    # prompts, model output, or file contents, so this is Content — written only
+    # when store_agent_content resolves True.
+    payload_json = Column(Text, nullable=True)
+
+
+class AgentEdit(Base):
+    """One row per file the agent proposed changing.
+
+    The accept / reject / modified decision plus the diff is the
+    human-in-the-loop signal: it records not just what the agent suggested but
+    what the developer actually did with it.
+    """
+
+    __tablename__ = "agent_edit"
+    __table_args__ = (
+        Index("idx_agent_edit_task_id", "task_id"),
+        {"schema": "public"},
+    )
+
+    edit_id = Column(UUID(as_uuid=True), primary_key=True)
+    task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_task.task_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    file_path = Column(Text, nullable=False)
+    was_accepted = Column(Boolean, nullable=True)  # True/False after developer decides
+    was_modified = Column(
+        Boolean, nullable=True
+    )  # True if developer edited before accepting
+    decided_at = Column(DateTime, nullable=True)
+    # Content — written only when store_agent_content resolves True
+    diff_text = Column(Text, nullable=True)
+    edit_delta_json = Column(
+        Text, nullable=True
+    )  # what developer changed before accepting
+
+
+class AgentMemory(Base):
+    """Durable per-session agent memory snapshot.
+
+    Holds the latest serialized memory window for one agent chat session, so
+    conversation state survives an IDE (or agent process) restart. Ownership is
+    server-derived from the ACP token, matching agent telemetry authorization —
+    the client cannot claim a session it doesn't own.
+    """
+
+    __tablename__ = "agent_memory"
+    __table_args__ = (
+        Index("idx_agent_memory_owner_user_id", "owner_user_id"),
+        Index("idx_agent_memory_owner_project_id", "owner_project_id"),
+        Index("idx_agent_memory_updated_at", "updated_at"),
+        {"schema": "public"},
+    )
+
+    # ACP session ids are opaque strings, not guaranteed to be UUIDs.
+    session_id = Column(String, primary_key=True)
+    owner_user_id = Column(String, nullable=False)
+    owner_project_id = Column(String, nullable=False)
+    memory_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+
+
+class StudyAgentProfile(Base):
+    """Links a study to the agent profiles that serve as its experiment arms.
+
+    A study with rows here drives agent-profile A/B assignment: its selected
+    profiles become the candidate pool for new auto-draws (see
+    ``registry.resolve_assignment``). Studies with no rows here are
+    completion-only and behave exactly as before this table existed.
+
+    ``is_baseline`` marks the arm that agent-evaluation uplift is measured
+    against (analogous to ``study.default_config_id`` on the completion side).
+    """
+
+    __tablename__ = "study_agent_profile"
+    __table_args__ = (
+        Index("idx_study_agent_profile_profile_id", "profile_id"),
+        {"schema": "public"},
+    )
+
+    study_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.study.study_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_profile.profile_id"),
+        primary_key=True,
+    )
+    is_baseline = Column(Boolean, server_default="false", default=False, nullable=False)
+
+    # Relationships
+    study = relationship("Study")
+    profile = relationship("AgentProfile")
 
 
 #

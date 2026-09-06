@@ -45,6 +45,20 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
       description: 'Create and manage server/config modules',
       adminOnly: true
     });
+    navigationItems.push({
+      id: 'agent-profiles',
+      label: 'Agent Profiles',
+      icon: '🛠️',
+      description: 'Agent runtime, provider, tools and policy variants',
+      adminOnly: true
+    });
+    navigationItems.push({
+      id: 'agent-assignments',
+      label: 'Agent Assignments',
+      icon: '🎲',
+      description: 'A/B bucket distribution and manual pins',
+      adminOnly: true
+    });
   }
 
   return (

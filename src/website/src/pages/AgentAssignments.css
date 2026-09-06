@@ -1,0 +1,244 @@
+.agent-assignments-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.agent-assignments-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.agent-assignments-header h2 {
+  color: var(--text-color);
+  margin: 0;
+}
+
+.agent-assignments-header p {
+  color: var(--text-secondary);
+  margin: 8px 0 0;
+  line-height: 1.5;
+  max-width: 720px;
+}
+
+.assignment-message {
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.assignment-message.error {
+  color: #b3261e;
+  background: rgba(179, 38, 30, 0.08);
+  border: 1px solid rgba(179, 38, 30, 0.25);
+}
+
+.assignment-message.success {
+  color: #0b6b35;
+  background: rgba(11, 107, 53, 0.08);
+  border: 1px solid rgba(11, 107, 53, 0.25);
+}
+
+.distribution-panel,
+.pin-form,
+.assignments-table-panel {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px var(--shadow-color);
+  padding: 20px;
+}
+
+.distribution-panel h3,
+.pin-form h3 {
+  color: var(--text-color);
+  margin: 0 0 16px;
+}
+
+.distribution-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.distribution-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 12px 14px;
+}
+
+.distribution-name {
+  color: var(--text-color);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.distribution-total {
+  color: var(--primary-color);
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.distribution-breakdown {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.pin-form-row {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.pin-form label {
+  color: var(--text-color);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1 1 200px;
+}
+
+.pin-form input,
+.pin-form select,
+.assignments-table select {
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-color);
+  font-size: 14px;
+  padding: 10px 12px;
+}
+
+.pin-form input:focus,
+.pin-form select:focus {
+  border-color: var(--primary-color);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(66, 133, 244, 0.18);
+}
+
+.table-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.primary-button,
+.secondary-button,
+.danger-button {
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 14px;
+  transition: all 0.2s ease;
+}
+
+.primary-button {
+  background-color: var(--primary-color);
+  border: 1px solid var(--primary-color);
+  color: white;
+}
+
+.secondary-button {
+  background-color: var(--secondary-color);
+  border: 1px solid var(--border-color);
+  color: var(--text-color);
+}
+
+.danger-button {
+  background-color: transparent;
+  border: 1px solid rgba(179, 38, 30, 0.45);
+  color: #b3261e;
+}
+
+.primary-button:hover,
+.secondary-button:hover,
+.danger-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px var(--shadow-color);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled,
+.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  transform: none;
+}
+
+.assignments-table-panel {
+  overflow-x: auto;
+  padding: 0;
+}
+
+.assignments-table {
+  border-collapse: collapse;
+  min-width: 720px;
+  width: 100%;
+}
+
+.assignments-table th,
+.assignments-table td {
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-color);
+  padding: 14px 16px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.assignments-table th {
+  background-color: var(--secondary-color);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.assignments-table tbody tr:hover {
+  background-color: var(--hover-color);
+}
+
+.source-badge {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  text-transform: capitalize;
+}
+
+.source-badge.auto {
+  color: #0b6b35;
+  background: rgba(11, 107, 53, 0.1);
+  border: 1px solid rgba(11, 107, 53, 0.25);
+}
+
+.source-badge.manual {
+  color: #92500a;
+  background: rgba(146, 80, 10, 0.1);
+  border: 1px solid rgba(146, 80, 10, 0.3);
+}
+
+.assignments-empty {
+  color: var(--text-secondary);
+  line-height: 1.5;
+  padding: 28px;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .agent-assignments-header {
+    flex-direction: column;
+  }
+}

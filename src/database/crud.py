@@ -1183,3 +1183,707 @@ def get_documentation_stats(db: Session) -> dict:
         ),
         "languages": dict(language_stats),
     }
+
+
+# ── Agent CRUD ────────────────────────────────────────────────────────────────
+#
+# Content parameters (task_description, first_system_message, last_user_message,
+# response_text, tool_arguments, tool_result, payload_json, diff_text,
+# edit_delta_json) are optional and default to None. Callers are responsible for
+# passing None unless the user's store_agent_content preference resolves True —
+# see backend.routers.agent.consent.resolve_store_agent_content. These helpers
+# deliberately do not re-check consent, so there is exactly one place where that
+# decision is made.
+
+
+class DuplicateAgentEventError(ValueError):
+    """Raised when a self-reported event batch replays already-ingested ids.
+
+    Ingestion is idempotent by ``span_id`` (the runtime's own event id), so a
+    retried upload is rejected rather than duplicated.
+    """
+
+    def __init__(self, event_ids: List[str]) -> None:
+        self.event_ids = event_ids
+        super().__init__(f"Duplicate agent event IDs: {', '.join(event_ids)}")
+
+
+def create_agent_profile(
+    db: Session,
+    name: str,
+    model: str,
+    tools_json: str,
+    approval_policy: str,
+    max_steps: int,
+    framework_version: str = "code4me2-agent",
+    base_url: Optional[str] = None,
+    api_key_ref: Optional[str] = None,
+    is_active: bool = True,
+    max_context_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+) -> db_schemas.AgentProfile:
+    profile = db_schemas.AgentProfile(
+        profile_id=uuid.uuid4(),
+        name=name,
+        model=model,
+        framework_version=framework_version,
+        base_url=base_url,
+        api_key_ref=api_key_ref,
+        tools_json=tools_json,
+        approval_policy=approval_policy,
+        max_steps=max_steps,
+        is_active=is_active,
+        max_context_tokens=max_context_tokens,
+        temperature=temperature,
+    )
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def get_agent_profile(db: Session, name: str) -> Optional[db_schemas.AgentProfile]:
+    return (
+        db.query(db_schemas.AgentProfile)
+        .filter(db_schemas.AgentProfile.name == name)
+        .first()
+    )
+
+
+def get_agent_profile_by_id(
+    db: Session, profile_id: uuid.UUID
+) -> Optional[db_schemas.AgentProfile]:
+    return (
+        db.query(db_schemas.AgentProfile)
+        .filter(db_schemas.AgentProfile.profile_id == profile_id)
+        .first()
+    )
+
+
+def list_agent_profiles(db: Session) -> List[db_schemas.AgentProfile]:
+    return db.query(db_schemas.AgentProfile).order_by(db_schemas.AgentProfile.name).all()
+
+
+def list_active_agent_profiles(db: Session) -> List[db_schemas.AgentProfile]:
+    """Candidate arms for new A/B assignments — only profiles flagged active.
+
+    Ordered deterministically by name so behaviour is reproducible across calls
+    (relevant for tests and for any future deterministic bucketing).
+    """
+    return (
+        db.query(db_schemas.AgentProfile)
+        .filter(db_schemas.AgentProfile.is_active.is_(True))
+        .order_by(db_schemas.AgentProfile.name)
+        .all()
+    )
+
+
+def update_agent_profile(
+    db: Session,
+    profile_id: uuid.UUID,
+    name: str,
+    model: str,
+    tools_json: str,
+    approval_policy: str,
+    max_steps: int,
+    framework_version: str = "code4me2-agent",
+    base_url: Optional[str] = None,
+    api_key_ref: Optional[str] = None,
+    is_active: bool = True,
+    max_context_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+) -> Optional[db_schemas.AgentProfile]:
+    result = (
+        db.query(db_schemas.AgentProfile)
+        .filter(db_schemas.AgentProfile.profile_id == profile_id)
+        .update(
+            {
+                "name": name,
+                "model": model,
+                "framework_version": framework_version,
+                "base_url": base_url,
+                "api_key_ref": api_key_ref,
+                "tools_json": tools_json,
+                "approval_policy": approval_policy,
+                "max_steps": max_steps,
+                "is_active": is_active,
+                "max_context_tokens": max_context_tokens,
+                "temperature": temperature,
+            }
+        )
+    )
+    db.commit()
+    if result:
+        return get_agent_profile_by_id(db, profile_id)
+    return None
+
+
+def delete_agent_profile(db: Session, profile_id: uuid.UUID) -> bool:
+    result = (
+        db.query(db_schemas.AgentProfile)
+        .filter(db_schemas.AgentProfile.profile_id == profile_id)
+        .delete()
+    )
+    db.commit()
+    return result > 0
+
+
+# ── Agent profile assignments (A/B testing) ─────────────────────────────────
+
+
+def get_agent_profile_assignment(
+    db: Session, user_id: uuid.UUID
+) -> Optional[db_schemas.AgentProfileAssignment]:
+    return (
+        db.query(db_schemas.AgentProfileAssignment)
+        .filter(db_schemas.AgentProfileAssignment.user_id == user_id)
+        .first()
+    )
+
+
+def set_agent_profile_assignment(
+    db: Session,
+    user_id: uuid.UUID,
+    profile_id: uuid.UUID,
+    source: str = "auto",
+) -> db_schemas.AgentProfileAssignment:
+    """Upsert a user's profile assignment.
+
+    Used both for the first-contact random draw (source="auto") and for admin
+    overrides (source="manual"). Re-assigning overwrites the existing row.
+    """
+    assignment = get_agent_profile_assignment(db, user_id)
+    if assignment is None:
+        assignment = db_schemas.AgentProfileAssignment(
+            user_id=user_id,
+            profile_id=profile_id,
+            source=source,
+        )
+        db.add(assignment)
+    else:
+        assignment.profile_id = profile_id
+        assignment.source = source
+        assignment.assigned_at = datetime.now()
+    db.commit()
+    db.refresh(assignment)
+    return assignment
+
+
+def delete_agent_profile_assignment(db: Session, user_id: uuid.UUID) -> bool:
+    result = (
+        db.query(db_schemas.AgentProfileAssignment)
+        .filter(db_schemas.AgentProfileAssignment.user_id == user_id)
+        .delete()
+    )
+    db.commit()
+    return result > 0
+
+
+def list_agent_profile_assignments(
+    db: Session,
+) -> List[db_schemas.AgentProfileAssignment]:
+    return db.query(db_schemas.AgentProfileAssignment).all()
+
+
+# ── Study ↔ agent profile links (A/B studies for agents) ────────────────────
+
+
+def set_study_agent_profiles(
+    db: Session,
+    study_id: uuid.UUID,
+    profile_ids: List[uuid.UUID],
+    baseline_profile_id: Optional[uuid.UUID] = None,
+) -> None:
+    """Replace the agent-profile arms attached to a study.
+
+    Idempotent: clears any existing rows for the study and writes one row per
+    profile, flagging ``baseline_profile_id`` (if given) as the baseline arm.
+    Does not commit — the caller owns the transaction (study create/activate
+    writes several tables atomically).
+    """
+    db.query(db_schemas.StudyAgentProfile).filter(
+        db_schemas.StudyAgentProfile.study_id == study_id
+    ).delete()
+    for profile_id in profile_ids:
+        db.add(
+            db_schemas.StudyAgentProfile(
+                study_id=study_id,
+                profile_id=profile_id,
+                is_baseline=(profile_id == baseline_profile_id),
+            )
+        )
+
+
+def list_study_agent_profiles(
+    db: Session, study_id: uuid.UUID
+) -> List[db_schemas.StudyAgentProfile]:
+    """All agent-profile arm links for a study (with the joined profile loaded)."""
+    return (
+        db.query(db_schemas.StudyAgentProfile)
+        .filter(db_schemas.StudyAgentProfile.study_id == study_id)
+        .all()
+    )
+
+
+def list_active_study_agent_profiles(db: Session) -> List[db_schemas.AgentProfile]:
+    """Candidate arms drawn from the currently-active study's selected profiles.
+
+    Returns only profiles that are both attached to the active study and still
+    flagged ``is_active``. Empty when there is no active study, or the active
+    study selected no agent profiles — callers fall back to
+    ``list_active_agent_profiles`` in that case (backwards compatible).
+    Ordered by name for reproducibility, matching ``list_active_agent_profiles``.
+    """
+    return (
+        db.query(db_schemas.AgentProfile)
+        .join(
+            db_schemas.StudyAgentProfile,
+            db_schemas.StudyAgentProfile.profile_id
+            == db_schemas.AgentProfile.profile_id,
+        )
+        .join(
+            db_schemas.Study,
+            db_schemas.Study.study_id == db_schemas.StudyAgentProfile.study_id,
+        )
+        .filter(db_schemas.Study.is_active.is_(True))
+        .filter(db_schemas.AgentProfile.is_active.is_(True))
+        .order_by(db_schemas.AgentProfile.name)
+        .all()
+    )
+
+
+# ── Agent tasks ─────────────────────────────────────────────────────────────
+
+
+def create_agent_task(
+    db: Session,
+    agent_profile: str,
+    model: str,
+    approval_policy: str,
+    tools_json: str,
+    task_description: Optional[str] = None,
+    session_id: Optional[uuid.UUID] = None,
+    task_id: Optional[uuid.UUID] = None,
+    temperature: Optional[float] = None,
+    framework_version: Optional[str] = None,
+    source: str = "plugin",
+    owner_user_id: Optional[uuid.UUID] = None,
+    owner_project_id: Optional[uuid.UUID] = None,
+    external_run_id: Optional[str] = None,
+    agent_session_id: Optional[str] = None,
+    status: str = "pending",
+    started_at: Optional[datetime] = None,
+) -> db_schemas.AgentTask:
+    task = db_schemas.AgentTask(
+        task_id=task_id or uuid.uuid4(),
+        agent_profile=agent_profile,
+        model=model,
+        temperature=temperature,
+        approval_policy=approval_policy,
+        tools_json=tools_json,
+        framework_version=framework_version,
+        status=status,
+        source=source,
+        session_id=session_id,
+        owner_user_id=owner_user_id,
+        owner_project_id=owner_project_id,
+        external_run_id=external_run_id,
+        agent_session_id=agent_session_id,
+        started_at=started_at,
+        task_description=task_description,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def get_agent_task(db: Session, task_id: uuid.UUID) -> Optional[db_schemas.AgentTask]:
+    return (
+        db.query(db_schemas.AgentTask)
+        .filter(db_schemas.AgentTask.task_id == task_id)
+        .first()
+    )
+
+
+def get_agent_task_by_external_run_id(
+    db: Session, external_run_id: str
+) -> Optional[db_schemas.AgentTask]:
+    """Look a task up by the *runtime's* own run id.
+
+    The self-reporting ``code4me2-agent`` runtime mints its own run id before it
+    ever talks to the backend, so ingestion resolves the task this way rather
+    than requiring the runtime to adopt a server-issued UUID.
+    """
+    return (
+        db.query(db_schemas.AgentTask)
+        .filter(db_schemas.AgentTask.external_run_id == external_run_id)
+        .first()
+    )
+
+
+def get_open_agent_tasks_for_session(
+    db: Session, session_id: uuid.UUID
+) -> List[db_schemas.AgentTask]:
+    """Tasks belonging to this session that haven't reached a terminal state yet."""
+    return (
+        db.query(db_schemas.AgentTask)
+        .filter(
+            db_schemas.AgentTask.session_id == session_id,
+            db_schemas.AgentTask.status.notin_(["done", "failed"]),
+        )
+        .all()
+    )
+
+
+def update_agent_task_status(
+    db: Session,
+    task_id: uuid.UUID,
+    status: str,
+    completed_at: Optional[datetime] = None,
+    total_steps: Optional[int] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    latest_event_id: Optional[uuid.UUID] = None,
+) -> bool:
+    data: dict = {"status": status}
+    if completed_at is not None:
+        data["completed_at"] = completed_at
+    if total_steps is not None:
+        data["total_steps"] = total_steps
+    if input_tokens is not None:
+        data["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        data["output_tokens"] = output_tokens
+    if latest_event_id is not None:
+        data["latest_event_id"] = latest_event_id
+    result = (
+        db.query(db_schemas.AgentTask)
+        .filter(db_schemas.AgentTask.task_id == task_id)
+        .update(data)
+    )
+    db.commit()
+    return result > 0
+
+
+def update_agent_task_tools(
+    db: Session,
+    task_id: uuid.UUID,
+    tools: List[str],
+) -> None:
+    db.query(db_schemas.AgentTask).filter(
+        db_schemas.AgentTask.task_id == task_id
+    ).update({"tools_json": json.dumps(tools)})
+    db.commit()
+
+
+def set_agent_task_description(
+    db: Session, task_id: uuid.UUID, description: str
+) -> None:
+    db.query(db_schemas.AgentTask).filter(
+        db_schemas.AgentTask.task_id == task_id
+    ).update({"task_description": description})
+    db.commit()
+
+
+def set_agent_task_framework_version(
+    db: Session, task_id: uuid.UUID, framework_version: str
+) -> None:
+    db.query(db_schemas.AgentTask).filter(
+        db_schemas.AgentTask.task_id == task_id
+    ).update({"framework_version": framework_version})
+    db.commit()
+
+
+# ── Agent events ────────────────────────────────────────────────────────────
+
+
+def get_agent_events_by_task(
+    db: Session,
+    task_id: uuid.UUID,
+    event_type: Optional[str] = None,
+) -> List[db_schemas.AgentEvent]:
+    q = db.query(db_schemas.AgentEvent).filter(db_schemas.AgentEvent.task_id == task_id)
+    if event_type is not None:
+        q = q.filter(db_schemas.AgentEvent.event_type == event_type)
+    return q.order_by(db_schemas.AgentEvent.event_index).all()
+
+
+def get_last_agent_event_for_session(
+    db: Session,
+    session_id: uuid.UUID,
+    event_type: Optional[str] = None,
+) -> Optional[db_schemas.AgentEvent]:
+    """Most recent event across all tasks belonging to this session — used to detect
+    chat-session boundaries that span idle-close task gaps."""
+    q = (
+        db.query(db_schemas.AgentEvent)
+        .join(
+            db_schemas.AgentTask,
+            db_schemas.AgentEvent.task_id == db_schemas.AgentTask.task_id,
+        )
+        .filter(db_schemas.AgentTask.session_id == session_id)
+    )
+    if event_type is not None:
+        q = q.filter(db_schemas.AgentEvent.event_type == event_type)
+    return q.order_by(db_schemas.AgentEvent.created_at.desc()).first()
+
+
+def count_agent_events_for_task(db: Session, task_id: uuid.UUID) -> int:
+    """Next free ``event_index`` for a task (events are 0-indexed and append-only)."""
+    return (
+        db.query(func.count(db_schemas.AgentEvent.event_id))
+        .filter(db_schemas.AgentEvent.task_id == task_id)
+        .scalar()
+        or 0
+    )
+
+
+def find_existing_agent_event_span_ids(
+    db: Session, span_ids: List[str]
+) -> List[str]:
+    """Which of ``span_ids`` have already been ingested for this task set.
+
+    Used to make self-report ingestion idempotent: a retried batch is detected
+    rather than duplicated.
+    """
+    if not span_ids:
+        return []
+    return [
+        row.span_id
+        for row in db.query(db_schemas.AgentEvent.span_id)
+        .filter(db_schemas.AgentEvent.span_id.in_(span_ids))
+        .all()
+    ]
+
+
+def append_agent_event(
+    db: Session,
+    task_id: uuid.UUID,
+    event_index: int,
+    event_type: str,
+    latency_ms: Optional[int] = None,
+    source: Optional[str] = None,
+    schema_version: Optional[str] = None,
+    occurred_at: Optional[datetime] = None,
+    # Shared span identifiers (model_call and tool_call)
+    span_id: Optional[str] = None,
+    parent_span_id: Optional[uuid.UUID] = None,
+    request_id: Optional[str] = None,
+    chat_session_index: Optional[int] = None,
+    # model_call fields
+    model: Optional[str] = None,
+    agent_profile: Optional[str] = None,
+    streaming: Optional[bool] = None,
+    message_count: Optional[int] = None,
+    role_system_count: Optional[int] = None,
+    role_user_count: Optional[int] = None,
+    role_assistant_count: Optional[int] = None,
+    role_tool_count: Optional[int] = None,
+    tools_kept: Optional[int] = None,
+    tools_stripped: Optional[int] = None,
+    tool_names_requested: Optional[list] = None,
+    max_tokens: Optional[int] = None,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    finish_reason: Optional[str] = None,
+    upstream_status: Optional[int] = None,
+    step_index: Optional[int] = None,
+    context_window_size_bytes: Optional[int] = None,
+    active_file: Optional[str] = None,
+    first_message_hash: Optional[str] = None,
+    chat_new_session_detected: Optional[bool] = None,
+    experiment_tool_access_enabled: Optional[bool] = None,
+    experiment_approval_policy: Optional[str] = None,
+    # model_call content (only when store_agent_content resolves True)
+    first_system_message: Optional[str] = None,
+    last_user_message: Optional[str] = None,
+    response_text: Optional[str] = None,
+    # tool_call fields
+    tool_name: Optional[str] = None,
+    tool_arguments_length: Optional[int] = None,
+    tool_result_length: Optional[int] = None,
+    # tool_call content (only when store_agent_content resolves True)
+    tool_arguments: Optional[str] = None,
+    tool_result: Optional[str] = None,
+    # JSON overflow
+    extra_json: Optional[str] = None,
+    # content (only when store_agent_content resolves True)
+    payload_json: Optional[str] = None,
+    commit: bool = True,
+) -> db_schemas.AgentEvent:
+    """Append one event row.
+
+    ``commit=False`` lets a caller stage a whole batch and commit once (used by
+    the self-report ingestion path, where a partially-written batch would leave
+    gaps in ``event_index``).
+    """
+    event = db_schemas.AgentEvent(
+        event_id=uuid.uuid4(),
+        task_id=task_id,
+        event_index=event_index,
+        event_type=event_type,
+        source=source,
+        schema_version=schema_version,
+        latency_ms=latency_ms,
+        occurred_at=occurred_at,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        request_id=request_id,
+        chat_session_index=chat_session_index,
+        model=model,
+        agent_profile=agent_profile,
+        streaming=streaming,
+        message_count=message_count,
+        role_system_count=role_system_count,
+        role_user_count=role_user_count,
+        role_assistant_count=role_assistant_count,
+        role_tool_count=role_tool_count,
+        tools_kept=tools_kept,
+        tools_stripped=tools_stripped,
+        tool_names_requested=tool_names_requested,
+        max_tokens=max_tokens,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        finish_reason=finish_reason,
+        upstream_status=upstream_status,
+        step_index=step_index,
+        context_window_size_bytes=context_window_size_bytes,
+        active_file=active_file,
+        first_message_hash=first_message_hash,
+        chat_new_session_detected=chat_new_session_detected,
+        experiment_tool_access_enabled=experiment_tool_access_enabled,
+        experiment_approval_policy=experiment_approval_policy,
+        first_system_message=first_system_message,
+        last_user_message=last_user_message,
+        response_text=response_text,
+        tool_name=tool_name,
+        tool_arguments_length=tool_arguments_length,
+        tool_result_length=tool_result_length,
+        tool_arguments=tool_arguments,
+        tool_result=tool_result,
+        extra_json=extra_json,
+        payload_json=payload_json,
+    )
+    db.add(event)
+    if commit:
+        db.commit()
+        db.refresh(event)
+    else:
+        db.flush()
+    return event
+
+
+# ── Agent edits (human-in-the-loop decisions) ───────────────────────────────
+
+
+def create_agent_edit(
+    db: Session,
+    task_id: uuid.UUID,
+    file_path: str,
+    diff_text: Optional[str] = None,
+) -> db_schemas.AgentEdit:
+    edit = db_schemas.AgentEdit(
+        edit_id=uuid.uuid4(),
+        task_id=task_id,
+        file_path=file_path,
+        diff_text=diff_text,
+    )
+    db.add(edit)
+    db.commit()
+    db.refresh(edit)
+    return edit
+
+
+def get_agent_edits_by_task(
+    db: Session, task_id: uuid.UUID
+) -> List[db_schemas.AgentEdit]:
+    return (
+        db.query(db_schemas.AgentEdit)
+        .filter(db_schemas.AgentEdit.task_id == task_id)
+        .all()
+    )
+
+
+def update_agent_edit_decision(
+    db: Session,
+    edit_id: uuid.UUID,
+    was_accepted: bool,
+    was_modified: Optional[bool] = None,
+    edit_delta_json: Optional[str] = None,
+) -> bool:
+    data: dict = {"was_accepted": was_accepted, "decided_at": datetime.now()}
+    if was_modified is not None:
+        data["was_modified"] = was_modified
+    if edit_delta_json is not None:
+        data["edit_delta_json"] = edit_delta_json
+    result = (
+        db.query(db_schemas.AgentEdit)
+        .filter(db_schemas.AgentEdit.edit_id == edit_id)
+        .update(data)
+    )
+    db.commit()
+    return result > 0
+
+
+# ── Agent memory (survives IDE restarts) ────────────────────────────────────
+
+
+def get_agent_memory_by_session_id(
+    db: Session, session_id: str
+) -> Optional[db_schemas.AgentMemory]:
+    return (
+        db.query(db_schemas.AgentMemory)
+        .filter(db_schemas.AgentMemory.session_id == session_id)
+        .first()
+    )
+
+
+def upsert_agent_memory(
+    db: Session,
+    *,
+    session_id: str,
+    owner_user_id: str,
+    owner_project_id: str,
+    messages: List[dict],
+) -> db_schemas.AgentMemory:
+    """Replace the stored memory snapshot for one agent session.
+
+    Ownership is written from the server-derived ACP scope, never from the
+    request body, so a client cannot attach its memory to someone else's
+    session.
+    """
+    memory_json = json.dumps({"messages": messages}, sort_keys=True)
+    existing_memory = get_agent_memory_by_session_id(db, session_id)
+    now = datetime.now()
+    if existing_memory is None:
+        agent_memory = db_schemas.AgentMemory(
+            session_id=session_id,
+            owner_user_id=owner_user_id,
+            owner_project_id=owner_project_id,
+            memory_json=memory_json,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(agent_memory)
+    else:
+        existing_memory.owner_user_id = owner_user_id
+        existing_memory.owner_project_id = owner_project_id
+        existing_memory.memory_json = memory_json
+        existing_memory.updated_at = now
+        agent_memory = existing_memory
+    db.commit()
+    db.refresh(agent_memory)
+    return agent_memory
+
+
+def delete_agent_memory(db: Session, session_id: str) -> bool:
+    result = (
+        db.query(db_schemas.AgentMemory)
+        .filter(db_schemas.AgentMemory.session_id == session_id)
+        .delete()
+    )
+    db.commit()
+    return result > 0

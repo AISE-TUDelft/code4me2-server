@@ -1,4 +1,5 @@
 from abc import ABC
+from typing import Optional
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
@@ -234,6 +235,97 @@ class ProjectNotFoundError(ErrorResponse):
     message: str = Field(
         default="Project not found. You may need to create or activate it again."
     )
+
+
+# /api/acp — grant handoff for a locally launched agent process
+class PrepareAcpGrantPostResponse(BaseResponse):
+    message: str = Field(default="ACP agent session prepared successfully.")
+    grant: str = Field(..., description="One-time ACP launch grant.")
+    workspace: str = Field(..., description="Authorized canonical workspace.")
+    expires_in_seconds: int = Field(default=300, description="Grant lifetime.")
+
+
+class ExchangeAcpGrantPostResponse(BaseResponse):
+    message: str = Field(default="ACP grant exchanged successfully.")
+    acp_token: str = Field(..., description="ACP process authorization token.")
+    project_id: str = Field(..., description="Authorized project id.")
+    workspace: str = Field(..., description="Authorized canonical workspace.")
+    expires_in_seconds: int = Field(default=3600, description="ACP session lifetime.")
+
+
+class ValidateAcpSessionPostResponse(BaseResponse):
+    message: str = Field(default="ACP authorization validated successfully.")
+    project_id: str = Field(..., description="Authorized project id.")
+    workspace: str = Field(..., description="Authorized canonical workspace.")
+    expires_in_seconds: int = Field(
+        default=3600, description="Renewed ACP session lifetime."
+    )
+
+
+class AcpAgentConfigGetResponse(BaseResponse):
+    """Runtime configuration handed to a locally launched agent process.
+
+    This is how the assigned A/B profile reaches the built-in runtime: rather
+    than the agent reading a local config file, the backend tells it which
+    model, provider endpoint, tools and step budget to use — so a study
+    assignment actually takes effect.
+
+    ``api_key_ref`` is the *name* of an environment variable, never a key
+    value: the agent runs on the developer's machine and resolves the
+    credential from its own environment, so no secret transits this endpoint.
+    """
+
+    message: str = Field(default="ACP agent configuration retrieved successfully.")
+    agent_profile: Optional[str] = Field(
+        default=None, description="Assigned agent profile name."
+    )
+    framework_version: Optional[str] = Field(
+        default=None, description="Agent runtime this profile targets."
+    )
+    model: str = Field(description="Model the agent should use for completions.")
+    base_url: Optional[str] = Field(
+        default=None,
+        description="OpenAI-compatible provider base URL. Null = agent default.",
+    )
+    api_key_ref: Optional[str] = Field(
+        default=None,
+        description="Name of the environment variable holding the provider API key.",
+    )
+    commands_allowlist: list[str] = Field(
+        default_factory=list,
+        description="Terminal commands the agent may execute.",
+    )
+    tools: list[str] = Field(
+        default_factory=list, description="Tool names the agent may call."
+    )
+    max_iterations: int = Field(
+        default=8, description="Maximum tool-calling iterations.", ge=1
+    )
+    max_context_tokens: Optional[int] = Field(
+        default=None, description="Per-turn context window; null = model maximum."
+    )
+    approval_policy: Optional[str] = Field(
+        default=None, description="How tool calls should be confirmed."
+    )
+    temperature: Optional[float] = Field(
+        default=None, description="Sampling temperature; null = provider default."
+    )
+    store_agent_content: bool = Field(
+        default=True,
+        description="Whether the server will persist content for this user. "
+        "Advisory only — the server enforces this regardless of what the agent "
+        "sends, so the agent may use it to avoid transmitting content "
+        "needlessly but cannot use it to enable capture.",
+    )
+
+
+class PersistentAuthTokenPostResponse(BaseResponse):
+    message: str = Field(default="Persistent auth token created successfully.")
+    auth_token: str = Field(..., description="Auth token without Redis expiration.")
+
+
+class AcpAuthorizationError(ErrorResponse):
+    message: str = Field(default="ACP authorization is invalid or expired.")
 
 
 # /api/session/deactivate

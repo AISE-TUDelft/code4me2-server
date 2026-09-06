@@ -1,6 +1,9 @@
 from fastapi import APIRouter
 
 # Import sub-routers for different parts of the application
+from .acp import router as acp_router
+from .agent import router as agent_router
+from .agents import router as agent_tasks_router
 from .chat import router as chat_router
 from .completion import router as completion_router
 from .project import router as project_router
@@ -34,8 +37,19 @@ router.include_router(chat_router, prefix="/chat", tags=["Chat"])
 # Include WebSocket-based endpoints (e.g., completions, chat)
 router.include_router(ws_routers, prefix="/ws", tags=["WebSocket"])
 
-# Include analytics and monitoring endpoints  
+# Include analytics and monitoring endpoints
 router.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
+
+# Agent subsystem. Both routers share the /agent prefix but authenticate
+# differently: `agent_router` covers profiles + A/B assignments (admin auth) and
+# self-report ingestion + memory (ACP bearer auth from the locally launched
+# agent process), while `agent_tasks_router` covers task lifecycle and the
+# inference relay (plugin session cookie).
+router.include_router(agent_router, prefix="/agent", tags=["Agent"])
+router.include_router(agent_tasks_router, prefix="/agent", tags=["Agent"])
+
+# ACP grant handoff, so a locally launched agent process can authenticate.
+router.include_router(acp_router, prefix="/acp", tags=["ACP"])
 
 
 @router.api_route("/ping", methods=["HEAD"])

@@ -1238,3 +1238,136 @@ export const validateHuggingFaceModel = async (name) => {
     return { ok: false, error: "Validation failed" };
   }
 };
+
+// ── Agent subsystem ─────────────────────────────────────────────────────────
+//
+// Backs the three admin pages: AgentProfiles (define experiment arms),
+// AgentAssignments (inspect / pin the A/B buckets), and AgentResults
+// (compare arms). All endpoints are admin-only server-side.
+
+const AGENT_BASE = () =>
+  `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/agent`;
+
+// Shared request helper. The hand-rolled fetch blocks above predate it; new
+// agent endpoints funnel through here so error handling stays consistent.
+const agentRequest = async (path, { method = "GET", body, label } = {}) => {
+  try {
+    const response = await fetch(`${AGENT_BASE()}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    // 204 has no body to parse.
+    const payload =
+      response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return {
+        ok: false,
+        error:
+          payload["detail"] ||
+          payload["message"] ||
+          `${response.status}: ${response.statusText}`,
+      };
+    }
+    return { ok: true, data: payload };
+  } catch (e) {
+    console.error(`Error ${label || path}:`, e);
+    return { ok: false, error: `Failed to ${label || "complete request"}` };
+  }
+};
+
+export const getAgentProfiles = async () => {
+  const result = await agentRequest("/profiles", { label: "load agent profiles" });
+  return result.ok ? { ok: true, data: result.data.profiles || [] } : result;
+};
+
+export const createAgentProfile = async (profile) =>
+  agentRequest("/profiles", {
+    method: "POST",
+    body: profile,
+    label: "create agent profile",
+  });
+
+export const updateAgentProfile = async (profileId, profile) =>
+  agentRequest(`/profiles/${profileId}`, {
+    method: "PUT",
+    body: profile,
+    label: "update agent profile",
+  });
+
+export const deleteAgentProfile = async (profileId) =>
+  agentRequest(`/profiles/${profileId}`, {
+    method: "DELETE",
+    label: "delete agent profile",
+  });
+
+// Tool names selectable for a profile. Pass a frameworkVersion to narrow the
+// list to the runtime the profile targets.
+export const getAgentAvailableTools = async (frameworkVersion) => {
+  const query = frameworkVersion
+    ? `?framework_version=${encodeURIComponent(frameworkVersion)}`
+    : "";
+  const result = await agentRequest(`/available-tools${query}`, {
+    label: "load available agent tools",
+  });
+  return result.ok
+    ? {
+        ok: true,
+        data: {
+          tools: result.data.tools || [],
+          frameworks: result.data.frameworks || [],
+        },
+      }
+    : result;
+};
+
+export const getAgentAssignments = async () => {
+  const result = await agentRequest("/assignments", {
+    label: "load agent assignments",
+  });
+  return result.ok
+    ? { ok: true, data: result.data.assignments || [] }
+    : result;
+};
+
+// Pin a user to a specific arm. Recorded as source="manual", which excludes
+// the row from re-rolls and from A/B analysis.
+export const setAgentAssignment = async (userId, profileId) =>
+  agentRequest(`/assignments/${userId}`, {
+    method: "PUT",
+    body: { profile_id: profileId },
+    label: "set agent assignment",
+  });
+
+// Clear an assignment so the user is re-drawn on their next agent task.
+export const deleteAgentAssignment = async (userId) =>
+  agentRequest(`/assignments/${userId}`, {
+    method: "DELETE",
+    label: "clear agent assignment",
+  });
+
+// Per-arm comparison for a study's agent arms.
+export const getStudyAgentEvaluation = async (studyId) => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/agent-evaluation`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: body["detail"] || `${response.status}: ${response.statusText}`,
+      };
+    }
+    return { ok: true, data: body };
+  } catch (e) {
+    console.error("Error loading agent evaluation:", e);
+    return { ok: false, error: "Failed to load agent evaluation" };
+  }
+};

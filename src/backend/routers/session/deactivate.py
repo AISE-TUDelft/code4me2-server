@@ -4,6 +4,7 @@ from typing import Union
 
 from fastapi import APIRouter, Cookie, Depends
 
+from agents import lifecycle
 from App import App
 from backend.Responses import (
     DeactivateSessionError,
@@ -90,6 +91,22 @@ def deactivate_session(
                 status_code=401,
                 content=InvalidOrExpiredSessionToken(),
             )
+        # Close any agent tasks this session left open before tearing it down.
+        # The plugin closes the *previous* task on startup, but it can't detect
+        # logout, so without this a task ends its life stuck in 'running' with
+        # no aggregated totals. Failures here are logged and ignored: telemetry
+        # bookkeeping must not block the user from logging out.
+        for task in crud.get_open_agent_tasks_for_session(
+            db_session, uuid.UUID(session_token)
+        ):
+            try:
+                lifecycle.finalize_agent_task(db_session, task.task_id)
+            except Exception as e:
+                logging.warning(
+                    f"[Session/deactivate] failed to finalize agent task "
+                    f"{task.task_id}: {e}"
+                )
+
         # Step 3: Delete the session from Redis and clear cookies
         redis_manager.delete("user_token", user_id, db_session)
         redis_manager.delete("session_token", session_token, db_session)
