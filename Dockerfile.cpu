@@ -1,0 +1,29 @@
+# CPU/no-GPU build for local development on machines without an NVIDIA GPU
+# (e.g. Apple Silicon / aarch64). The default `Dockerfile` targets a CUDA host
+# and its `nvidia-container-toolkit`/`libnvidia-ml-dev` apt packages have no
+# arm64 build, so it cannot be built here at all. This variant drops every
+# NVIDIA-specific step; `transformers`/`torch` fall back to CPU automatically
+# when no GPU is visible, which is all the agent subsystem needs (it talks to
+# an external OpenAI-compatible upstream, not a locally loaded model).
+#
+# Used by docker-compose.dev-arm.yaml, not by the production docker-compose.yml.
+FROM continuumio/miniconda3:latest
+
+WORKDIR /app
+
+# argon2-cffi (and a few other deps) build C extensions from source on arm64
+# since no prebuilt wheel exists for this platform/Python combo.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libffi-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN conda create -y -n myenv python=3.10 && conda clean -a -y
+RUN /bin/bash -c "source activate myenv && conda install -y -c conda-forge huggingface_hub[cli] && conda clean -a -y"
+
+COPY requirements.txt .
+RUN /bin/bash -c "source activate myenv && pip install --no-cache-dir -r requirements.txt"
+RUN /bin/bash -c "source activate myenv && pip install uvicorn"
+
+COPY . .

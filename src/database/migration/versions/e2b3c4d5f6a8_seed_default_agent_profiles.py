@@ -5,11 +5,14 @@ active agent profiles are configured") and a freshly-migrated database cannot
 mint tasks at all. This seeds one profile per supported runtime so the system
 is usable out of the box.
 
-Only the built-in ``code4me2-agent`` profile is seeded active, because it is the
-one runtime that needs no external binary: it points at a local Ollama endpoint,
-which costs nothing and needs no API key. The Goose and Codex profiles are
-seeded *inactive* — they require a Goose binary / Node toolchain on the
-developer's machine, so an operator flips them on from the admin UI once those
+Only the built-in ``code4me2-agent`` profile is seeded active. For initial
+testing it points at OpenRouter (an OpenAI-compatible endpoint, per
+``agents.provider``) using the free ``cohere/north-mini-code:free`` model, with
+``api_key_ref`` set to ``OPENROUTER_API_KEY`` — set that variable in ``.env``
+once a key is available; until then requests are forwarded unauthenticated and
+will 401 against OpenRouter. The Goose and Codex profiles are seeded
+*inactive* — they require a Goose binary / Node toolchain on the developer's
+machine, so an operator flips them on from the admin UI once those
 prerequisites exist. Inactive profiles are never drawn as A/B arms.
 
 No API keys are stored here (or anywhere in the DB): ``api_key_ref`` names the
@@ -35,11 +38,12 @@ _PROFILES = [
         "profile_id": "7e1f20ce-fc5c-4ba2-b908-eaf77047d4b4",
         "name": "default-code4me2-agent",
         "framework_version": "code4me2-agent",
-        # Ollama speaks the OpenAI-compatible chat-completions format, so the
-        # generic provider path works against it unchanged.
-        "base_url": "http://localhost:11434/v1",
-        "api_key_ref": "OLLAMA_API_KEY",
-        "model": "qwen2.5-coder:7b",
+        # OpenRouter speaks the OpenAI-compatible chat-completions format, so
+        # the generic provider path works against it unchanged. Using the free
+        # tier for initial testing; swap to a paid model once validated.
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_ref": "OPENROUTER_API_KEY",
+        "model": "cohere/north-mini-code:free",
         "tools_json": (
             '["read_file", "write_file", "create_file", "replace_text", '
             '"list_files", "search_files", "run_command"]'

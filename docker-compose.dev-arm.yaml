@@ -1,3 +1,15 @@
+# Local dev stack for machines without an NVIDIA GPU (Apple Silicon / aarch64,
+# or any x86_64 box without CUDA). Mirrors docker-compose.yml but:
+#   - builds backend/celery-worker from Dockerfile.cpu instead of Dockerfile
+#   - drops GPU device reservations, NVIDIA_*/CUDA_* env vars, and the NVML
+#     library bind-mounts
+#   - defaults PRELOAD_MODELS=false, since loading a multi-GB transformer
+#     model on CPU is impractical for local testing and unnecessary for
+#     exercising the agent subsystem (which calls an external OpenAI-compatible
+#     upstream such as OpenRouter, not a locally loaded model)
+#
+# Usage: docker compose -f docker-compose.dev-arm.yaml up -d --build
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -22,28 +34,6 @@ services:
       interval: 60s
       timeout: 5s
       retries: 5
-
-  #  pgadmin:
-  #    image: dpage/pgadmin4:8.11
-  #    container_name: pgadmin
-  #    ports:
-  #      - ${PGADMIN_PORT}:80
-  #    volumes:
-  #      - .:/app
-  #      - pgadmin_data:/var/lib/pgadmin
-  #    environment:
-  #      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
-  #      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
-  #    depends_on:
-  #      db:
-  #        condition: service_healthy
-  #    healthcheck:
-  #      test: ["CMD", "wget", "--spider", "http://localhost:80"]
-  #      start_period: 0s
-  #      start_interval: 0s
-  #      interval: 60s
-  #      timeout: 5s
-  #      retries: 3
 
   redis:
     image: redis:7.0
@@ -85,30 +75,19 @@ services:
   celery-worker:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.cpu
     container_name: celery-worker
     command: [
         "/bin/bash",
         "-c",
-        "source activate myenv  && huggingface-cli login --token $HF_TOKEN &&
-        celery -A celery_app.celery_app worker --loglevel=info -E -Q llm,db --concurrency=1 --prefetch-multiplier=1",
+        "source activate myenv && celery -A celery_app.celery_app worker --loglevel=info -E -Q llm,db --concurrency=1 --prefetch-multiplier=1",
       ]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
     depends_on:
       redis-celery:
         condition: service_healthy
       db:
         condition: service_healthy
     environment:
-      - NVIDIA_VISIBLE_DEVICES=0
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - NVIDIA_REQUIRE_CUDA=cuda>=12.0
       - REDIS_HOST=redis
       - REDIS_PORT=${REDIS_PORT}
       - CELERY_BROKER_HOST=redis-celery
@@ -124,16 +103,11 @@ services:
       - HF_HUB_CACHE=/app/hf_cache
       - TRANSFORMERS_CACHE=/app/hf_cache
       - MODEL_CACHE_DIR=/app/hf_cache
-      # CUDA/NVML specific environment variables
-      - CUDA_VISIBLE_DEVICES=0
-      - TORCH_CUDA_ARCH_LIST="8.6"
       - CELERY_WORKER=true
+      - PRELOAD_MODELS=false
     volumes:
       - .:/app
       - ${DATA_DIR}/hf:/app/hf_cache
-      # Mount NVIDIA libraries for NVML access
-      - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
-      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
     healthcheck:
       test:
         [
@@ -148,22 +122,11 @@ services:
       retries: 3
 
   backend:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
     container_name: backend
-    # network_mode: "host"
-    command:
-      [
-        "/bin/bash",
-        "-c",
-        "source activate myenv && huggingface-cli login --token $HF_TOKEN && python /app/src/main.py",
-      ]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
+    command: ["/bin/bash", "-c", "source activate myenv && python /app/src/main.py"]
     expose:
       - ${SERVER_PORT}
     ports:
@@ -171,13 +134,7 @@ services:
     volumes:
       - .:/app
       - ${DATA_DIR}/hf:/app/hf_cache
-      # Mount NVIDIA libraries for NVML access
-      - /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
-      - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
     environment:
-      - NVIDIA_VISIBLE_DEVICES=0
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - NVIDIA_REQUIRE_CUDA=cuda>=12.0
       - SERVER_PORT=${SERVER_PORT}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
       - REDIS_HOST=redis
@@ -194,10 +151,7 @@ services:
       - HF_HUB_CACHE=/app/hf_cache
       - TRANSFORMERS_CACHE=/app/hf_cache
       - MODEL_CACHE_DIR=/app/hf_cache
-      # CUDA/NVML specific environment variables
-      - CUDA_VISIBLE_DEVICES=0
-      - TORCH_CUDA_ARCH_LIST="8.6"
-      - PRELOAD_MODELS=true
+      - PRELOAD_MODELS=false
       # Agent subsystem (ACP) upstream provider config, see .env.example
       - AGENT_UPSTREAM_BASE_URL=${AGENT_UPSTREAM_BASE_URL}
       - AGENT_UPSTREAM_API_KEY=${AGENT_UPSTREAM_API_KEY}
@@ -207,8 +161,7 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - AGENT_REASONING_EFFORT=${AGENT_REASONING_EFFORT}
     # Lets AGENT_UPSTREAM_BASE_URL=http://host.docker.internal:11434/v1 reach an
-    # Ollama instance running on the host from inside this container (Docker
-    # Desktop maps this automatically; Linux needs this explicit mapping).
+    # Ollama instance running on the host from inside this container.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -219,14 +172,7 @@ services:
       celery-worker:
         condition: service_healthy
     healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--spider",
-          # "http://${SERVER_HOST}:${SERVER_PORT}/api/ping",
-          "http://127.0.0.1:8008/api/ping",
-        ]
+      test: ["CMD", "wget", "--spider", "http://127.0.0.1:8008/api/ping"]
       start_period: 0s
       interval: 60s
       timeout: 5s
@@ -269,59 +215,3 @@ services:
       interval: 60s
       timeout: 5s
       retries: 3
-
-#  test_db:
-#    image: pgvector/pgvector:pg16
-#    container_name: postgres_test
-#    ports:
-#      - "5433:5432"
-#    environment:
-#      - POSTGRES_PASSWORD=postgres
-#      - POSTGRES_USER=postgres
-#      - POSTGRES_DB=test_db
-#    volumes:
-#      - .:/app
-#      - ./src/database/init_test.sql:/docker-entrypoint-initdb.d/init_test.sql
-#    healthcheck:
-#      test: ["CMD-SHELL", "pg_isready -U postgres"]
-#      interval: 5s
-#      timeout: 5s
-#      retries: 5
-
-volumes:
-  postgres_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${DATA_DIR}/postgres
-  pgadmin_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${DATA_DIR}/pgadmin
-  redis_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${DATA_DIR}/redis
-  redis_celery_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${DATA_DIR}/redis_celery
-  website_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${DATA_DIR}/website
-  celery_worker_data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${DATA_DIR}/celery_worker

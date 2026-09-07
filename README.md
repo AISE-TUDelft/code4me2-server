@@ -6,7 +6,7 @@
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://docker.com)
 [![License](https://img.shields.io/badge/License-Apache_2.0-brightgreen.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-An advanced AI-powered code completion platform, featuring ghost text suggestions, multi-model inference, a context-aware chat assistant, real-time WebSocket communication, and collaborative development tools suitable for conducting empirical studies on developer behaviour.
+An advanced AI-powered code completion platform, featuring ghost text suggestions, multi-model inference, a context-aware chat assistant, an autonomous coding agent (ACP), real-time WebSocket communication, and collaborative development tools suitable for conducting empirical studies on developer behaviour.
 
 ## 🎯 Project Overview
 
@@ -14,6 +14,7 @@ Code4me V2 is a research platform that combines transformer models with real-wor
 
 - **Real-time Code Completion**: Multi-model AI inference with WebSocket streaming
 - **Collaborative Development**: Multi-user project management and session tracking
+- **Autonomous Coding Agent**: A locally-launched ACP (Agent Client Protocol) agent, with server-assigned model/provider/tools for A/B study arms — see "Agent Subsystem (ACP)" under System Architecture below
 - **Advanced Analytics**: Comprehensive telemetry and behavioral analysis in a dedicated analysis platform
 - **Research Platform**: Ground truth collection and model evaluation tools
 
@@ -69,7 +70,15 @@ EMAIL_PORT=587
 EMAIL_USERNAME=your_email@gmail.com
 EMAIL_PASSWORD=your_app_password
 EMAIL_FROM=noreply@code4me.com
+
+# Agent Subsystem (ACP) — upstream provider for the coding agent.
+# Defaults to a local Ollama instance (no key, no cost). See .env.example
+# for the full list of agent variables and the "Agent Subsystem" section below.
+AGENT_UPSTREAM_BASE_URL=http://localhost:11434/v1
+AGENT_UPSTREAM_API_KEY=
 ```
+
+See [`.env.example`](.env.example) for the complete, documented set of agent-specific variables (per-provider API keys, Codex reasoning effort override, etc.).
 
 ### 3. Deploy with Docker
 ```bash
@@ -119,6 +128,15 @@ docker-compose ps
 - **Code Completion Streaming**: `/api/ws/completion` - Real-time code completion
 - **Project Chat System**: `/api/ws/chat` - Collaborative chat functionality
 - **Multi-file Context**: `/api/ws/multi-file-context` - Context updates
+
+#### 🤖 Agent Subsystem (ACP)
+The `backend` service is also a relay + telemetry sink for an autonomous coding agent (it does not run agent inference loops itself):
+
+- **Third-party agents** (e.g. Goose, Codex) run inside the IDE plugin process and call back through `POST /api/agent/inference`, which the backend proxies to an OpenAI-compatible upstream (Ollama, OpenAI, Groq, OpenRouter, or any compatible endpoint).
+- **The built-in `code4me2-agent`** runs as a separate local OS process, launched by the IDE plugin, speaking ACP over stdio. It authenticates via a grant → session handoff: the plugin calls `POST /api/acp/grant`, the agent process exchanges it for a bearer token at `POST /api/acp/session/exchange`, then fetches its assigned model/provider/tools from `GET /api/acp/agent-config`.
+- An **agent profile** (`agent_profile` table) defines a runtime + provider + model + tools + approval policy — used as an A/B study arm. An **agent assignment** is a sticky, server-authoritative per-user draw; the client never self-selects.
+- Provider API keys are never stored in the database — a profile stores only the *name* of an environment variable (`api_key_ref`), resolved from the backend's own environment at request time. See [`.env.example`](.env.example).
+- Installing and running the local `code4me2-agent` CLI is a separate, standalone step — see "Running the Agent CLI (`code4me2-agent`)" under Development below.
 
 #### 📊 Analytics & Telemetry
 - **Behavioral Analytics**: Typing patterns, acceptance rates, interaction timings
@@ -174,6 +192,36 @@ GET    /api/chat/get/{page_number}                  # Paginated chat history
 DELETE /api/chat/delete/{chat_id}                   # Delete chat session
 ```
 
+### Agent Subsystem (ACP)
+```http
+# Profiles & assignments (admin auth)
+GET    /api/agent/profiles                    # List agent profiles
+POST   /api/agent/profiles                    # Create agent profile
+GET    /api/agent/available-tools             # List tools an adapter can expose
+GET    /api/agent/registry                    # List available adapter frameworks
+GET    /api/agent/assignments                 # List per-user profile assignments
+
+# Self-report ingestion & memory (ACP bearer auth, from the local agent process)
+POST   /api/agent/events/ingest               # Ingest agent run/edit telemetry
+GET    /api/agent/runs/{run_id}               # Fetch a stored agent run
+GET    /api/agent/memory/{session_id}         # Read persisted agent memory
+PUT    /api/agent/memory/{session_id}         # Update persisted agent memory
+DELETE /api/agent/memory/{session_id}         # Delete persisted agent memory
+
+# Task lifecycle & inference relay (plugin session-cookie auth)
+POST   /api/agent/task                        # Start an agent task
+POST   /api/agent/task/{task_id}/close        # Close an agent task
+POST   /api/agent/task/{task_id}/telemetry    # Report task-level telemetry
+POST   /api/agent/inference                   # Relay a chat-completion call to the assigned upstream
+
+# ACP grant handoff (bootstraps the locally launched agent process)
+POST   /api/acp/grant                              # Issue a single-use grant (plugin -> backend)
+POST   /api/acp/session/exchange                   # Exchange a grant for a bearer session
+POST   /api/acp/session/validate-or-refresh        # Validate/refresh an ACP session
+GET    /api/acp/agent-config                       # Fetch assigned model/provider/tools
+POST   /api/acp/persistent-auth-token              # Issue a long-lived token for unattended runs (admin only)
+```
+
 ### Real-time WebSocket Endpoints
 ```http
 WS     /api/ws/completion                         # Real-time completion streaming
@@ -207,12 +255,29 @@ curl -s \
 - **Completions**: AI-generated suggestions with performance metrics
 - **Telemetry**: Comprehensive usage analytics for research
 - **Context**: Multi-file code context with vector embeddings
+- **Agent tables**: `agent_profile`, `agent_profile_assignment`, `agent_task`, `agent_event`, `agent_edit`, `agent_memory`, `study_agent_profile` — coding agent A/B profiles, per-user assignments, task lifecycle, and self-reported telemetry/edits
 
 ### Key Features
 - **PostgreSQL + pgvector**: Vector similarity search for code context
 - **Polymorphic Inheritance**: Flexible query system for different completion types
 - **Migration System**: Hybrid SQL initialization + Alembic migrations
 - **Comprehensive Indexing**: Optimized for high-volume analytics queries
+
+### Running Migrations
+The agent tables (and any future schema change) are applied via the hybrid migration manager, not automatically on startup:
+```bash
+# First-time setup (initializes from init.sql + stamps Alembic tracking)
+python src/database/migration/migration_manager.py init
+
+# Apply pending migrations (e.g. the agent tables + seeded default profiles)
+python src/database/migration/migration_manager.py migrate
+
+# Check current revision / history
+python src/database/migration/migration_manager.py status
+```
+The seed migration (`e2b3c4d5f6a8_seed_default_agent_profiles`) only writes `api_key_ref` *names* (e.g. `OPENROUTER_API_KEY`) into the database — it never reads or requires those environment variables at migration time. Only `default-code4me2-agent` is seeded active by default; the Goose/Codex profiles are seeded inactive until you provide those external binaries.
+
+**Current default profile (initial testing config)**: `default-code4me2-agent` points at OpenRouter (`https://openrouter.ai/api/v1`) using the free `cohere/north-mini-code:free` model, with `api_key_ref=OPENROUTER_API_KEY`. Set `OPENROUTER_API_KEY` in `.env` once you have a key — until then, requests are forwarded unauthenticated and OpenRouter will 401. Update the profile via `PUT /api/agent/profiles/{profile_id}` (or the admin UI) to switch models/providers later.
 
 ## ⚡ Asynchronous Processing
 
@@ -306,6 +371,24 @@ Notes:
 - The API runs on `SERVER_HOST`/`SERVER_PORT` (default `0.0.0.0:8008`).
 - When running via Docker, `nginx` serves the website on `http://localhost:8000` and proxies `/api/*` to the backend.
 
+### Running the Agent CLI (`code4me2-agent`)
+`code4me2-agent` is a **separate, standalone package** (`pyproject.toml` at the repo root) — it is not installed into the backend's `requirements.txt`/Docker image, since it runs as its own local OS process launched by the JetBrains plugin (or manually, for development), not inside the FastAPI server.
+
+```bash
+# Install the agent CLI package (from the repo root, ideally in its own venv)
+pip install -e .
+
+# Write default config files to ~/.code4me/ and print IDE setup instructions
+code4me2-agent --setup
+
+# Run it directly over stdio (normally the IDE plugin does this for you)
+code4me2-agent
+```
+Notes:
+- The agent has **no hardcoded model/provider/API key** — after it authenticates via the ACP grant handoff (`POST /api/acp/grant` → `POST /api/acp/session/exchange`), it fetches `GET /api/acp/agent-config` and the backend's assigned agent profile overrides its local config. This is deliberate: a stale local config can't silently override a study assignment.
+- The seeded default profile currently points at OpenRouter (`cohere/north-mini-code:free`) — set `OPENROUTER_API_KEY` in `.env` before it will authenticate. If you instead assign a local-Ollama profile, make sure `ollama serve` is running before launching the agent.
+- Local-process environment variables (set by whatever launches the agent, e.g. the plugin): `CODE4ME_ACP_BACKEND_URL`, `CODE4ME_ACP_GRANT`, `CODE4ME_ACP_TOKEN`, `CODE4ME_ACP_LOG_SECRETS`, `CODE4ME_AGENT_LOG_LEVEL`, `CODE4ME_MODEL_REQUEST_LIMIT`, `CODE4ME_MODEL_REQUEST_WINDOW_SECONDS`, `CODE4ME_BACKEND_429_MAX_RETRIES`, `CODE4ME_BACKEND_429_RETRY_SLEEP`, `CODE4ME_RATE_LIMIT_STATE_PATH`. These are distinct from the backend's own `AGENT_*`/`*_API_KEY` variables in `.env`.
+
 ### Frontend Development
 ```bash
 cd src/website
@@ -340,9 +423,18 @@ src/
   main.py                   # FastAPI entrypoint (serves /api, docs at /docs)
   App.py                    # Application singleton (DB, Redis, Celery, Models)
   backend/routers/          # REST and WS route modules (mounted at /api)
+    agent/                  # Agent profiles, consent, ingest, memory (/api/agent)
+    agents.py               # Agent task lifecycle + inference relay (/api/agent)
+    acp/                    # ACP grant handoff (/api/acp)
   celery_app/               # Celery setup and task modules
+  agents/                   # Backend-side agent logic: provider routing, registry,
+                             #  normalization, event/telemetry ingestion (imported
+                             #  by backend/routers/agent* — not a Celery task)
+  code4me2_agent/           # Standalone ACP agent CLI (separate package, see
+                             #  pyproject.toml — not part of the backend image)
   database/                 # SQLAlchemy models, CRUD, migrations, pgvector
   website/                  # React frontend (served via nginx at :8000)
+    src/pages/AgentProfiles.js, AgentAssignments.js   # Admin-only agent management UI
 ```
 
 ## 📊 Monitoring & Health Checks
@@ -397,6 +489,14 @@ docker-compose logs -f celery-worker
 **Common 401/403 Causes**
 - Missing `session_token`/`project_token` cookies when calling protected endpoints.
 - Using POST for `/api/session/acquire` (it is GET).
+- Agent endpoints under `/api/agent/events`, `/api/agent/memory` require an ACP bearer token (from `/api/acp/session/exchange`), not a session cookie.
+- `/api/agent/profiles` and `/api/agent/assignments` require an admin user.
+
+**Agent Subsystem Issues**
+- **401 from OpenRouter**: the seeded default profile (`default-code4me2-agent`) uses OpenRouter with `api_key_ref=OPENROUTER_API_KEY`. Set `OPENROUTER_API_KEY` in `.env` and restart `backend` — until it's set, calls are forwarded unauthenticated and OpenRouter rejects them.
+- **Agent can't reach Ollama from inside Docker** (only relevant if you switch a profile back to a local Ollama `base_url`): `http://localhost:11434/v1` resolves to the *container*, not your host. Either run the backend outside Docker for agent development, or set that profile's `base_url` (or the `AGENT_UPSTREAM_BASE_URL` fallback) to `http://host.docker.internal:11434/v1` (the `backend` service already maps `host.docker.internal` via `extra_hosts` in `docker-compose.yml`).
+- **Agent tables missing / seed profiles absent**: run `python src/database/migration/migration_manager.py migrate` — the agent tables are not created by `init.sql`, only by Alembic migrations.
+- **Agent CLI won't authenticate**: check that the launching process (normally the JetBrains plugin) set `CODE4ME_ACP_BACKEND_URL`, `CODE4ME_ACP_GRANT`, and `CODE4ME_ACP_TOKEN`, or that the workspace handoff file exists — the grant is single-use and short-lived.
 
 ### Debugging Commands
 ```bash
@@ -444,6 +544,15 @@ HF_TOKEN=your_huggingface_token
 MODEL_CACHE_DIR=./data/hf
 MODEL_MAX_NEW_TOKENS=64
 MODEL_USE_CACHE=true
+
+# Agent Subsystem (ACP) — see .env.example for the full documented list
+AGENT_UPSTREAM_BASE_URL=http://localhost:11434/v1
+AGENT_UPSTREAM_API_KEY=
+OLLAMA_API_KEY=
+OPENAI_API_KEY=
+GROQ_API_KEY=
+OPENROUTER_API_KEY=
+AGENT_REASONING_EFFORT=
 
 # Security Configuration
 AUTHENTICATION_TOKEN_EXPIRES_IN_SECONDS=3600
