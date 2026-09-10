@@ -2,6 +2,7 @@
 .env
 node_modules
 .venv
+*.egg-info/
 .idea
 secrets
 **/__pycache__/

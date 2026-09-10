@@ -9,13 +9,9 @@ project_root = current_dir.parent.parent
 src_dir = project_root / "src"
 sys.path.insert(0, str(src_dir))
 
-# Mock the alembic imports at module level
-sys.modules["alembic"] = MagicMock()
-sys.modules["alembic.command"] = MagicMock()
-sys.modules["alembic.config"] = MagicMock()
-sys.modules["sqlalchemy"] = MagicMock()
-
-# Now import after mocking
+# Import the real module, then patch its collaborators within individual tests.
+# Replacing sqlalchemy or alembic in sys.modules here corrupts every database
+# test collected in the same pytest process.
 from database.migration.migration_manager import MigrationManager
 
 

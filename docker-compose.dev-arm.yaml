@@ -94,6 +94,7 @@ services:
       - CELERY_BROKER_PORT=${CELERY_BROKER_PORT}
       - DB_HOST=db
       - DB_PORT=${DB_PORT}
+      - TEST_DATABASE_URL=postgresql://postgres:postgres@test_db:5432/test_db
       - PYTHONPATH=/app/src
       - PYTHONMULTIPROCESSING_START_METHOD=spawn
       - TOKENIZERS_PARALLELISM=false
@@ -215,3 +216,19 @@ services:
       interval: 60s
       timeout: 5s
       retries: 3
+
+  test_db:
+    profiles: ["test"]
+    image: pgvector/pgvector:pg16
+    container_name: postgres_test
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=test_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d test_db"]
+      interval: 2s
+      timeout: 5s
+      retries: 10

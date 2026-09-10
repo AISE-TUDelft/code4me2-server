@@ -41,7 +41,9 @@ python-multipart~=0.0.20
 # Database
 # -----------------------
 SQLAlchemy~=2.0.30
-psycopg_binary~=3.2.1
+# Install psycopg and its binary implementation as one version-locked extra.
+# Separate requirements allow pip to select incompatible minor versions.
+psycopg[binary]~=3.2.1
 psycopg2-binary~=2.9.9
 
 alembic>=1.13.1
