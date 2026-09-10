@@ -785,6 +785,11 @@ def create_acp_agent(
                 new_config.commands.allowlisted_commands
             )
             self._bootstrap_core.file_tools._config = new_config
+            bootstrap_registry = getattr(
+                self._bootstrap_core._adapter, "_tool_registry", None
+            )
+            if bootstrap_registry is not None:
+                bootstrap_registry.set_allowed_tools(new_config.tools)
             for session_id, session in self._sessions.items():
                 session.core._config = new_config
                 session.core._adapter._config = new_config
@@ -793,6 +798,9 @@ def create_acp_agent(
                     new_config.commands.allowlisted_commands
                 )
                 session.core.file_tools._config = new_config
+                tool_registry = getattr(session.core._adapter, "_tool_registry", None)
+                if tool_registry is not None:
+                    tool_registry.set_allowed_tools(new_config.tools)
             logger.info(
                 "Updated %d active session(s) with server agent config.",
                 len(self._sessions),

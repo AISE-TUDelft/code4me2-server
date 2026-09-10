@@ -13,11 +13,23 @@ from acp.agent.router import build_agent_router
 from acp.exceptions import RequestError
 from acp.schema import TextContentBlock
 
+from code4me2_agent.adapters import (
+    OpenAICompatibleReactAdapter,
+    ToolCall,
+    ToolRegistry,
+    ToolRegistryError,
+)
 from code4me2_agent.acp_runtime import create_acp_agent
 from code4me2_agent.acp_updates import AcpUpdateBuilder
-from code4me2_agent.config import AgentConfig
+from code4me2_agent.config import (
+    AdapterConfig,
+    AgentConfig,
+    FakeProviderConfig,
+    ServerAgentConfig,
+)
 from code4me2_agent.echo import EchoPromptResult
 from code4me2_agent.runtime_auth import AcpRuntimeScope
+from code4me2_agent.telemetry import AgentTelemetryRecorder
 
 
 class _FakeAuthorization:
@@ -98,6 +110,82 @@ class AcpRuntimeCompatibilityTest(TestCase):
             self.assertEqual((), AcpUpdateBuilder().helper_gaps)
 
         asyncio.run(scenario())
+
+    def test_server_tool_allowlist_hides_and_rejects_write_tools(self) -> None:
+        config = AgentConfig(
+            workspace_root=self.workspace,
+            trace_path=self.workspace / "agent-events.jsonl",
+            session_id="bootstrap",
+        ).with_server_overrides(ServerAgentConfig(tools=["read_file"]))
+        registry = ToolRegistry(
+            file_tools=object(),
+            command_tools=object(),
+            allowed_tools=config.tools,
+        )
+
+        self.assertEqual(
+            ["read_file"],
+            [tool["function"]["name"] for tool in registry.definitions()],
+        )
+        with self.assertRaises(ToolRegistryError) as raised:
+            registry.execute(
+                ToolCall(
+                    tool_call_id="write-denied",
+                    name="write_file",
+                    arguments={"path": "deneme.txt", "content": "hey"},
+                ),
+                run_id="run-1",
+                request_id="request-1",
+            )
+        self.assertEqual("tool_not_allowed", raised.exception.failure_reason)
+
+    def test_denied_tool_call_continues_with_a_tool_result(self) -> None:
+        config = AgentConfig(
+            workspace_root=self.workspace,
+            trace_path=self.workspace / "agent-events.jsonl",
+            session_id="bootstrap",
+            tools=["read_file"],
+            adapter=AdapterConfig(
+                name="openai_compatible_react",
+                fake_provider=FakeProviderConfig(
+                    enabled=True,
+                    script=[
+                        {
+                            "tool_calls": [
+                                {
+                                    "id": "write-denied",
+                                    "name": "write_file",
+                                    "arguments": {
+                                        "path": "deneme.txt",
+                                        "content": "hi",
+                                    },
+                                }
+                            ]
+                        },
+                        {"final_answer": "I only have read access in this profile."},
+                    ],
+                ),
+            ),
+        )
+        adapter = OpenAICompatibleReactAdapter(
+            config,
+            telemetry=AgentTelemetryRecorder(config),
+            tool_registry=ToolRegistry(
+                file_tools=object(),
+                command_tools=object(),
+                allowed_tools=config.tools,
+            ),
+        )
+
+        result = adapter.handle_prompt(
+            prompt="Write hi in deneme.txt",
+            run_id="run-1",
+            request_id="request-1",
+            message_id=None,
+        )
+
+        self.assertEqual("completed", result.run_status)
+        self.assertEqual("I only have read access in this profile.", result.final_response)
 
     def test_unsupported_routes_are_method_not_found_even_with_sdk_workaround(self) -> None:
         async def scenario() -> None:

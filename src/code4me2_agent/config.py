@@ -183,6 +183,7 @@ class AgentConfig:
     workspace_root: Path
     trace_path: Path
     session_id: str
+    tools: list[str] | None = None
     raw_capture_enabled: bool = False
     upload: UploadConfig = field(default_factory=UploadConfig)
     commands: CommandConfig = field(default_factory=CommandConfig)
@@ -236,7 +237,11 @@ class AgentConfig:
                 commands, allowlisted_commands=list(server.commands_allowlist)
             )
 
-        return _replace(self, adapter=adapter, commands=commands)
+        tools = self.tools
+        if server.tools is not None:
+            tools = list(server.tools)
+
+        return _replace(self, adapter=adapter, commands=commands, tools=tools)
 
     @classmethod
     def from_file(cls, config_path: str | Path) -> "AgentConfig":
