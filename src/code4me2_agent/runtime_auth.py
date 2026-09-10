@@ -97,7 +97,9 @@ class AcpBackendAuthorization:
         self._refresh_prepared_credentials()
         if self._backend_url and self._acp_token:
             try:
-                return self.validate()
+                scope = self.validate()
+                self.fetch_agent_config()
+                return scope
             except AcpAuthorizationFailure:
                 logger.info(
                     "Cached ACP runtime token was not valid; falling back to prepared grant exchange."
@@ -249,13 +251,13 @@ class AcpBackendAuthorization:
     def fetch_agent_config(self) -> None:
         """Fetch the assigned agent profile's runtime configuration.
 
-        Called right after a successful grant exchange. A failure here is
-        logged and tolerated: the agent then runs on whatever the local config
-        file provides, which is a degraded but working state rather than a dead
-        one. Note that with the provider defaults removed, a local config that
-        specifies no model will fail loudly at first use instead — which is the
-        intended outcome, since silently substituting a different model would
-        corrupt the experiment.
+        Called once after a successful grant exchange or cached-token
+        validation. A failure here is logged and tolerated: the agent then runs
+        on whatever the local config file provides, which is a degraded but
+        working state rather than a dead one. Note that with the provider
+        defaults removed, a local config that specifies no model will fail
+        loudly at first use instead — which is the intended outcome, since
+        silently substituting a different model would corrupt the experiment.
         """
         if not self._backend_url or not self._acp_token:
             logger.info("Cannot fetch agent config: not authenticated.")
