@@ -10,6 +10,7 @@ from openai import APIError, APIStatusError, OpenAI
 import logging
 import fcntl
 from pathlib import Path
+from threading import Event
 from time import time
 
 if TYPE_CHECKING:
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from code4me2_agent.config import AgentConfig
     from code4me2_agent.events import AgentEventSink
     from code4me2_agent.file_tools import WorkspaceFileTools
+    from code4me2_agent.mcp_tools import StdioMcpToolBroker
     from code4me2_agent.telemetry import AgentTelemetryRecorder
 
 
@@ -37,6 +39,7 @@ class AgentAdapter(Protocol):
         request_id: str,
         message_id: str | None,
         memory: "MemoryWindow | None" = None,
+        cancellation_event: Event | None = None,
     ) -> AdapterResult: ...
 
 
@@ -70,6 +73,21 @@ class FakeProviderExhaustedError(RuntimeError):
 
 class BackendProviderRequestError(RuntimeError):
     pass
+
+
+def _turn_was_cancelled(cancellation_event: Event | None) -> bool:
+    return cancellation_event is not None and cancellation_event.is_set()
+
+
+def _cancelled_result(
+    thoughts: list[str] | tuple[str, ...] = (),
+) -> AdapterResult:
+    return AdapterResult(
+        final_response="",
+        stop_reason="cancelled",
+        run_status="cancelled",
+        thoughts=tuple(thoughts),
+    )
 
 
 def _rate_limit_provider_request_from_env() -> None:
@@ -195,7 +213,10 @@ class DeterministicEchoAdapter:
         request_id: str,
         message_id: str | None,
         memory: "MemoryWindow | None" = None,
+        cancellation_event: Event | None = None,
     ) -> AdapterResult:
+        if _turn_was_cancelled(cancellation_event):
+            return _cancelled_result()
         return AdapterResult(
             final_response=f"Code4Me ACP echo: {prompt}",
             stop_reason="end_turn",
@@ -210,6 +231,7 @@ class ToolRegistry:
         command_tools: WorkspaceCommandTools,
         *,
         event_sink: AgentEventSink | None = None,
+        mcp_tools: StdioMcpToolBroker | None = None,
     ) -> None:
         from code4me2_agent.events import (
             NoopAgentEventSink,
@@ -219,6 +241,7 @@ class ToolRegistry:
 
         self._file_tools = file_tools
         self._command_tools = command_tools
+        self._mcp_tools = mcp_tools
         self._event_sink = event_sink or NoopAgentEventSink()
         self._event_type = ToolCallEvent
         self._thought_event_type = ThoughtEvent
@@ -289,6 +312,8 @@ class ToolRegistry:
                     run_id=run_id,
                     request_id=request_id,
                 )
+            elif self._mcp_tools is not None and self._mcp_tools.has_tool(name):
+                result = self._mcp_tools.execute(name, arguments)
             else:
                 raise ToolRegistryError(
                     f"Unsupported tool name: {name}",
@@ -304,6 +329,22 @@ class ToolRegistry:
             tool_call, tool_output, run_id=run_id, request_id=request_id
         )
         return tool_output
+
+    def definitions(self) -> list[dict[str, Any]]:
+        definitions = _tool_definitions()
+        if self._mcp_tools is not None:
+            definitions.extend(self._mcp_tools.definitions())
+        return definitions
+
+    def known_tool_names(self) -> set[str]:
+        names: set[str] = set()
+        for tool in self.definitions():
+            function = tool.get("function")
+            if isinstance(function, dict):
+                name = str(function.get("name", "")).strip()
+                if name:
+                    names.add(name)
+        return names
 
     def _emit_tool_start(
         self,
@@ -412,6 +453,7 @@ class OpenAICompatibleProvider:
         api_key_env: str,
         timeout_seconds: float,
         auth_headers: dict[str, str] | None = None,
+        tool_definitions: list[dict[str, Any]] | None = None,
     ) -> None:
         self._kind = kind.strip() or "code4me_backend"
         self._base_url = base_url.rstrip("/")
@@ -419,12 +461,13 @@ class OpenAICompatibleProvider:
         self._api_key_env = api_key_env
         self._timeout_seconds = timeout_seconds
         self._auth_headers = dict(auth_headers or {})
+        self._tool_definitions = list(tool_definitions or _tool_definitions())
 
     def generate(self, messages: list[dict[str, Any]]) -> ProviderTurn:
         request_payload = {
             "model": self._model,
             "messages": [_to_openai_message(message) for message in messages],
-            "tools": _tool_definitions(),
+            "tools": self._tool_definitions,
             "tool_choice": "auto",
         }
 
@@ -589,6 +632,7 @@ class OpenAICompatibleReactAdapter:
         request_id: str,
         message_id: str | None,
         memory: "MemoryWindow | None" = None,
+        cancellation_event: Event | None = None,
     ) -> AdapterResult:
         provider = self._provider()
         if memory is None:
@@ -601,6 +645,8 @@ class OpenAICompatibleReactAdapter:
         memory.append({"role": "user", "content": prompt})
         thoughts: list[str] = []
         for iteration in range(1, self._config.adapter.max_iterations + 1):
+            if _turn_was_cancelled(cancellation_event):
+                return _cancelled_result(thoughts)
             messages = memory.window()
             thought_started_at = perf_counter()
             self._event_sink.thought(
@@ -684,6 +730,13 @@ class OpenAICompatibleReactAdapter:
                     f"The provider request failed: {exc}",
                     stop_reason="error",
                 )
+            if _turn_was_cancelled(cancellation_event):
+                self._complete_thought_phase(
+                    run_id=run_id,
+                    request_id=request_id,
+                    started_at=thought_started_at,
+                )
+                return _cancelled_result(thoughts)
             # 5
             parsed = self._parse_output(output, run_id=run_id, request_id=request_id)
             if parsed is None:
@@ -712,6 +765,8 @@ class OpenAICompatibleReactAdapter:
                     )
                 )
                 for tool_call in parsed.tool_calls:
+                    if _turn_was_cancelled(cancellation_event):
+                        return _cancelled_result(thoughts)
                     self._telemetry.record(
                         event_type="agent.tool.called",
                         run_id=run_id,
@@ -783,6 +838,8 @@ class OpenAICompatibleReactAdapter:
                             error_message=str(exc),
                             thoughts=thoughts,
                         )
+                    if _turn_was_cancelled(cancellation_event):
+                        return _cancelled_result(thoughts)
                     memory.append(
                         {
                             "role": "tool",
@@ -793,6 +850,8 @@ class OpenAICompatibleReactAdapter:
                     )
                 continue
             if parsed.final_answer is not None:
+                if _turn_was_cancelled(cancellation_event):
+                    return _cancelled_result(thoughts)
                 if (
                     iteration < self._config.adapter.max_iterations
                     and _USER_REQUESTED_FILE_CHANGE_RE.search(prompt)
@@ -809,11 +868,15 @@ class OpenAICompatibleReactAdapter:
                             arguments={"path": file_path, "content": file_content},
                         )
                         try:
+                            if _turn_was_cancelled(cancellation_event):
+                                return _cancelled_result(thoughts)
                             tool_output = self._tool_registry.execute(
                                 tool_call,
                                 run_id=run_id,
                                 request_id=request_id,
                             )
+                            if _turn_was_cancelled(cancellation_event):
+                                return _cancelled_result(thoughts)
                         except ToolRegistryError:
                             pass
                         except PermissionError:
@@ -866,6 +929,8 @@ class OpenAICompatibleReactAdapter:
             )
             continue
 
+        if _turn_was_cancelled(cancellation_event):
+            return _cancelled_result(thoughts)
         self._record_loop_failure(
             run_id=run_id,
             request_id=request_id,
@@ -944,6 +1009,7 @@ class OpenAICompatibleReactAdapter:
             api_key_env=self._config.adapter.provider.api_key_env,
             timeout_seconds=self._config.adapter.provider.timeout_seconds,
             auth_headers=self._config.adapter.provider.auth_headers,
+            tool_definitions=self._tool_registry.definitions(),
         )
 
     def _system_context(self) -> str:
@@ -963,6 +1029,8 @@ class OpenAICompatibleReactAdapter:
             "When calling tools, prefer workspace-relative paths and cwd='.' unless the user explicitly asks for an absolute path. "
             "Do not invent container paths such as /workspace. "
             "After file tools complete, answer directly in assistant text; do not run commands just to print a confirmation."
+            " Tools whose names start with mcp__ come from MCP servers configured by the ACP client; "
+            "use them when their descriptions match the user's request."
         )
 
     def _assistant_tool_call_message(
@@ -1016,7 +1084,10 @@ class OpenAICompatibleReactAdapter:
         final_answer = raw_output.get("final_answer")
         if isinstance(tool_calls_data, list) or isinstance(final_answer, str):
             # 6 - TODO here might be the problem in tool calling returns
-            fallback_tool_call = _single_json_tool_call_from_text(final_answer)
+            fallback_tool_call = _single_json_tool_call_from_text(
+                final_answer,
+                known_tool_names=self._tool_registry.known_tool_names(),
+            )
             if fallback_tool_call is not None and not tool_calls_data:
                 return ParsedProviderOutput(
                     tool_calls=[fallback_tool_call],
@@ -1064,7 +1135,10 @@ class OpenAICompatibleReactAdapter:
                 failure_reason="json_text_not_object",
             )
             return None
-        fallback_tool_call = _single_tool_call_from_object(parsed_text)
+        fallback_tool_call = _single_tool_call_from_object(
+            parsed_text,
+            known_tool_names=self._tool_registry.known_tool_names(),
+        )
         if fallback_tool_call is not None:
             return ParsedProviderOutput(
                 tool_calls=[fallback_tool_call],
@@ -1182,13 +1256,17 @@ def create_agent_adapter(
     file_tools: WorkspaceFileTools,
     command_tools: WorkspaceCommandTools,
     event_sink: AgentEventSink | None = None,
+    mcp_tools: StdioMcpToolBroker | None = None,
 ) -> AgentAdapter:
     if config.adapter.name == "openai_compatible_react":
         return OpenAICompatibleReactAdapter(
             config,
             telemetry=telemetry,
             tool_registry=ToolRegistry(
-                file_tools, command_tools, event_sink=event_sink
+                file_tools,
+                command_tools,
+                event_sink=event_sink,
+                mcp_tools=mcp_tools,
             ),
             event_sink=event_sink,
         )
@@ -1231,6 +1309,15 @@ def _tool_event_metadata(
             fallback_title="Replace text",
             content_prefix="Replaced text in",
         )
+    if tool_name.startswith("mcp__"):
+        title = f"Call MCP tool {tool_name.removeprefix('mcp__')}"
+        return {
+            "kind": "other",
+            "title": title,
+            "content_text": title,
+            "raw_input": values,
+            "raw_output": values,
+        }
     return None
 
 
@@ -1273,15 +1360,22 @@ def _normalize_tool_calls(value: Any) -> list[ToolCall]:
 
 
 # TODO check here
-def _single_json_tool_call_from_text(value: Any) -> ToolCall | None:
+def _single_json_tool_call_from_text(
+    value: Any,
+    *,
+    known_tool_names: set[str] | None = None,
+) -> ToolCall | None:
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
-    result = _try_parse_json(text)
+    result = _try_parse_json(text, known_tool_names=known_tool_names)
     if result is not None:
         return result
     for match in _CODE_FENCE_RE.finditer(text):
-        result = _try_parse_json(match.group(1).strip())
+        result = _try_parse_json(
+            match.group(1).strip(),
+            known_tool_names=known_tool_names,
+        )
         if result is not None:
             return result
     idx = text.find('{"name":')
@@ -1293,7 +1387,10 @@ def _single_json_tool_call_from_text(value: Any) -> ToolCall | None:
             elif text[i] == "}":
                 brace_count -= 1
                 if brace_count == 0:
-                    result = _try_parse_json(text[idx : i + 1])
+                    result = _try_parse_json(
+                        text[idx : i + 1],
+                        known_tool_names=known_tool_names,
+                    )
                     if result is not None:
                         return result
     return None
@@ -1343,7 +1440,11 @@ def _extract_content_from_code_block(text: str) -> str | None:
     return match.group(1).strip()
 
 
-def _try_parse_json(text: str) -> ToolCall | None:
+def _try_parse_json(
+    text: str,
+    *,
+    known_tool_names: set[str] | None = None,
+) -> ToolCall | None:
     if not text:
         return None
     try:
@@ -1352,12 +1453,19 @@ def _try_parse_json(text: str) -> ToolCall | None:
         return None
     if not isinstance(parsed, dict):
         return None
-    return _single_tool_call_from_object(parsed)
+    return _single_tool_call_from_object(
+        parsed,
+        known_tool_names=known_tool_names,
+    )
 
 
-def _single_tool_call_from_object(value: dict[str, Any]) -> ToolCall | None:
+def _single_tool_call_from_object(
+    value: dict[str, Any],
+    *,
+    known_tool_names: set[str] | None = None,
+) -> ToolCall | None:
     name = str(value.get("name", "")).strip()
-    if name not in _known_tool_names():
+    if name not in (known_tool_names or _known_tool_names()):
         return None
     arguments = value.get("arguments", {})
     if not isinstance(arguments, dict):

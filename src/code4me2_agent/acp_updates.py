@@ -37,7 +37,13 @@ class AcpUpdateBuilder:
         )
         return tuple(name for name in required_helpers if not hasattr(self._acp, name))
 
-    def agent_message(self, text: str, *, metadata: dict[str, Any] | None = None) -> Any:
+    def agent_message(
+        self,
+        text: str,
+        *,
+        message_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
         text_block = getattr(self._acp, "text_block", None)
         update_agent_message = getattr(self._acp, "update_agent_message", None)
         if text_block is not None and update_agent_message is not None:
@@ -47,9 +53,14 @@ class AcpUpdateBuilder:
                 session_update="agent_message_chunk",
                 content=self._schema.TextContentBlock(type="text", text=text),
             )
-        if metadata is None:
+        model_updates: dict[str, Any] = {}
+        if message_id is not None:
+            model_updates["message_id"] = message_id
+        if metadata is not None:
+            model_updates["field_meta"] = metadata
+        if not model_updates:
             return update
-        return update.model_copy(update={"field_meta": metadata})
+        return update.model_copy(update=model_updates)
 
     def agent_thought(self, text: str, *, metadata: dict[str, Any] | None = None) -> Any:
         text_block = getattr(self._acp, "text_block", None)

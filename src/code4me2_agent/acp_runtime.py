@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from threading import Event
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -13,9 +14,19 @@ from code4me2_agent.async_bridge import EventLoopAsyncRunner
 from code4me2_agent.command_tools import build_acp_command_backend
 from code4me2_agent.echo import EchoAgentCore
 from code4me2_agent.file_tools import build_acp_file_system_backend
+from code4me2_agent.mcp_tools import StdioMcpToolBroker, serialize_mcp_servers
 from code4me2_agent.runtime_auth import AcpAuthorizationFailure, AcpBackendAuthorization
 
 logger = logging.getLogger(__name__)
+
+# The runtime currently implements ACP protocol version 1.
+SUPPORTED_PROTOCOL_VERSIONS: tuple[int, ...] = (1,)
+
+# Python SDK 0.12.1 still guards the now-stable session/resume and session/close
+# routes with this SDK-wide switch. Unsupported guarded routes are safe because
+# the concrete agent below deliberately does not inherit the SDK Protocol stubs.
+_ENABLE_STABLE_SESSION_ROUTE_WORKAROUND = True
+
 
 if TYPE_CHECKING:
     from acp.interfaces import Client
@@ -112,6 +123,10 @@ def _acp_stop_reason(adapter_stop_reason: str) -> str:
 class AgentSession:
     session_id: str
     core: EchoAgentCore
+    mcp_tools: StdioMcpToolBroker | None = None
+    cancel_event: Event = field(default_factory=Event)
+    prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    active_prompt_task: asyncio.Task[Any] | None = None
 
 
 class AcpSessionEventSink:
@@ -279,6 +294,19 @@ def _persisted_memory_messages(payload: dict) -> list[dict[str, Any]]:
     return [message for message in messages if isinstance(message, dict)]
 
 
+def _is_supported_stdio_mcp_server(server: object) -> bool:
+    """Check the 0.12.1 stdio shape (name/command/args/env) without spawning.
+
+    HTTP, SSE and malformed entries are rejected as unsupported before the
+    broker ever runs: only validated stdio reaches process startup, whose own
+    failures (missing binary, timeout, duplicates) stay mcp_server_start_failed.
+    """
+    for key in ("name", "command", "args", "env"):
+        if capability_value(server, key) is None:
+            return False
+    return True
+
+
 def _should_record_runtime_context(
     *,
     client_capabilities: object | None,
@@ -287,26 +315,29 @@ def _should_record_runtime_context(
     return client_capabilities is not None or session_lookup != "existing"
 
 
-def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -> Any:
+def create_acp_agent(
+    config: AgentConfig,
+    *,
+    authorization: Any | None = None,
+) -> Any:
     # TODO new agent -> a lot of changes to here.
     try:
         from acp import (
-            Agent,
             AuthenticateResponse,
             InitializeResponse,
-            LoadSessionResponse,
             NewSessionResponse,
             PromptResponse,
             RequestError,
         )
         from acp.schema import (
             AgentCapabilities,
-            AuthMethod,
+            AuthMethodAgent,
             Implementation,
             McpCapabilities,
             PromptCapabilities,
             ResumeSessionResponse,
             SessionCapabilities,
+            SessionCloseCapabilities,
             SessionResumeCapabilities,
         )
     except ImportError as exc:
@@ -315,13 +346,12 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
             "Install this package from source with agent-client-protocol available."
         ) from exc
 
-    class Code4MeEchoAgent(Agent):
+    class Code4MeEchoAgent:
         _conn: Client
         _client_capabilities: object | None
         _updates: AcpUpdateBuilder
         _bootstrap_core: EchoAgentCore
         _sessions: dict[str, AgentSession]
-        _cancelled_sessions: set[str]
         _authorization: Any
         _authorized_workspace: Path | None
 
@@ -330,7 +360,6 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
             self._client_capabilities = None
             self._updates = AcpUpdateBuilder()
             self._sessions = {}
-            self._cancelled_sessions = set()
             self._authorization = (
                 authorization
                 or AcpBackendAuthorization.from_environment(
@@ -344,7 +373,11 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
             self.command_tools = self._bootstrap_core.command_tools
 
         def _build_session(
-            self, *, session_config: AgentConfig, session_id: str
+            self,
+            *,
+            session_config: AgentConfig,
+            session_id: str,
+            mcp_tools: StdioMcpToolBroker | None,
         ) -> AgentSession:
             async_runner = EventLoopAsyncRunner(asyncio.get_running_loop())
             event_sink = AcpSessionEventSink(
@@ -369,8 +402,13 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
                     client_capabilities=self._client_capabilities,
                     async_runner=async_runner,
                 ),
+                mcp_tools=mcp_tools,
             )
-            return AgentSession(session_id=session_id, core=core)
+            return AgentSession(
+                session_id=session_id,
+                core=core,
+                mcp_tools=mcp_tools,
+            )
 
         def _load_persisted_memory(self, session: AgentSession) -> None:
             request_json = getattr(self._authorization, "authorized_json_request", None)
@@ -446,12 +484,13 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
                 ),
             )
 
-        async def _create_or_load_session(
+        async def _create_or_resume_session(
             self,
             *,
             cwd: str,
             session_id: str,
             event_type: str,
+            mcp_servers: list[Any] | None,
         ) -> AgentSession:
             await self._require_authenticated()
             workspace_root = _resolve_session_cwd(cwd)
@@ -461,10 +500,37 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
                 workspace_root=workspace_root,
                 session_id=session_id,
             )
-            session = self._build_session(
-                session_config=session_config, session_id=session_id
-            )
+            try:
+                mcp_tools = await asyncio.to_thread(
+                    StdioMcpToolBroker.open,
+                    list(mcp_servers or []),
+                    cwd=workspace_root,
+                )
+            except (RuntimeError, TimeoutError, ValueError) as exc:
+                # Best effort: a failing tool sidecar (e.g. the IDE-bundled MCP
+                # server binary refusing a second instance) must not take down
+                # the whole chat. The session keeps its native file/terminal
+                # tools; malformed entries are still rejected up front.
+                logger.warning(
+                    "ACP session continuing without MCP tools after broker failure %s: %s",
+                    serialize_mcp_servers(mcp_servers),
+                    exc,
+                )
+                mcp_tools = None
+            try:
+                session = self._build_session(
+                    session_config=session_config,
+                    session_id=session_id,
+                    mcp_tools=mcp_tools,
+                )
+            except BaseException:
+                if mcp_tools is not None:
+                    await asyncio.to_thread(mcp_tools.close)
+                raise
             await asyncio.to_thread(self._load_persisted_memory, session)
+            previous_session = self._sessions.get(session_id)
+            if previous_session is not None:
+                await self._stop_session(previous_session)
             self._sessions[session_id] = session
             self.file_tools = session.core.file_tools
             self.command_tools = session.core.command_tools
@@ -481,10 +547,33 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
                         "client_capabilities": _normalize_capabilities(
                             self._client_capabilities
                         ),
+                        "mcp_servers_requested": serialize_mcp_servers(mcp_servers),
+                        "mcp_backend": "broker"
+                        if session.mcp_tools is not None
+                        else "none",
                         **_prompt_backend_state(session),
                     },
                 )
             return session
+
+        @staticmethod
+        async def _stop_active_prompt(session: AgentSession) -> None:
+            session.cancel_event.set()
+            active_task = session.active_prompt_task
+            if active_task is None or active_task is asyncio.current_task():
+                return
+            try:
+                await asyncio.shield(active_task)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Active ACP prompt failed while the session was being replaced or closed."
+                )
+
+        @classmethod
+        async def _stop_session(cls, session: AgentSession) -> None:
+            await cls._stop_active_prompt(session)
+            if session.mcp_tools is not None:
+                await asyncio.to_thread(session.mcp_tools.close)
 
         async def initialize(
             self,
@@ -492,6 +581,11 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
             client_capabilities: object | None = None,
             **kwargs: Any,
         ) -> InitializeResponse:
+            negotiated_protocol_version = (
+                protocol_version
+                if protocol_version in SUPPORTED_PROTOCOL_VERSIONS
+                else max(SUPPORTED_PROTOCOL_VERSIONS)
+            )
             self._client_capabilities = client_capabilities or kwargs.get(
                 "clientCapabilities"
             )
@@ -548,9 +642,11 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
                 },
             )
             return InitializeResponse(
-                protocol_version=protocol_version,
+                protocol_version=negotiated_protocol_version,
                 agent_capabilities=AgentCapabilities(
-                    loadSession=True,
+                    # This agent restores model memory, but does not yet persist the
+                    # client-visible update stream required by session/load replay.
+                    loadSession=False,
                     promptCapabilities=PromptCapabilities(
                         image=False,
                         audio=False,
@@ -558,6 +654,7 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
                     ),
                     sessionCapabilities=SessionCapabilities(
                         resume=SessionResumeCapabilities(),
+                        close=SessionCloseCapabilities(),
                     ),
                     mcpCapabilities=McpCapabilities(
                         http=False,
@@ -570,7 +667,7 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
                     version="0.1.0",
                 ),
                 auth_methods=[
-                    AuthMethod(
+                    AuthMethodAgent(
                         id="code4me-plugin-session",
                         name="Code4Me Plugin Session",
                         description="Authenticate using a prepared Code4Me project session.",
@@ -716,43 +813,74 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
         async def new_session(
             self,
             cwd: str,
+            mcp_servers: list[Any] | None = None,
+            additional_directories: list[str] | None = None,
             **kwargs: Any,
         ) -> NewSessionResponse:
+            self._reject_unsupported_session_inputs(
+                mcp_servers=mcp_servers,
+                additional_directories=additional_directories,
+            )
             session_id = str(
                 kwargs.get("session_id") or kwargs.get("sessionId") or uuid4().hex
             )
-            await self._create_or_load_session(
+            await self._create_or_resume_session(
                 cwd=cwd,
                 session_id=session_id,
                 event_type="agent.acp.session_created",
+                mcp_servers=mcp_servers,
             )
             return NewSessionResponse(session_id=session_id)
-
-        async def load_session(
-            self,
-            cwd: str,
-            session_id: str,
-            **kwargs: Any,
-        ) -> LoadSessionResponse:
-            await self._create_or_load_session(
-                cwd=cwd,
-                session_id=session_id,
-                event_type="agent.acp.session_loaded",
-            )
-            return LoadSessionResponse()
 
         async def resume_session(
             self,
             cwd: str,
             session_id: str,
+            mcp_servers: list[Any] | None = None,
+            additional_directories: list[str] | None = None,
             **kwargs: Any,
         ) -> ResumeSessionResponse:
-            await self._create_or_load_session(
+            self._reject_unsupported_session_inputs(
+                mcp_servers=mcp_servers,
+                additional_directories=additional_directories,
+            )
+            await self._create_or_resume_session(
                 cwd=cwd,
                 session_id=session_id,
                 event_type="agent.acp.session_resumed",
+                mcp_servers=mcp_servers,
             )
             return ResumeSessionResponse()
+
+        @staticmethod
+        def _reject_unsupported_session_inputs(
+            *,
+            mcp_servers: list[Any] | None,
+            additional_directories: list[str] | None,
+        ) -> None:
+            if additional_directories:
+                raise RequestError.invalid_params(
+                    {"reason": "additional_directories_not_supported"}
+                )
+            for server in mcp_servers or []:
+                if not _is_supported_stdio_mcp_server(server):
+                    raise RequestError.invalid_params(
+                        {"reason": "mcp_servers_not_supported"}
+                    )
+
+        async def close_session(
+            self,
+            session_id: str,
+            **kwargs: Any,
+        ) -> None:
+            await self._require_authenticated()
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise RequestError.invalid_params({"reason": "unknown_session"})
+            try:
+                await self._stop_session(session)
+            finally:
+                self._sessions.pop(session_id, None)
 
         async def cancel(
             self,
@@ -760,7 +888,9 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
             **kwargs: Any,
         ) -> None:
             await self._require_authenticated()
-            self._cancelled_sessions.add(session_id)
+            session = self._sessions.get(session_id)
+            if session is not None and session.active_prompt_task is not None:
+                session.cancel_event.set()
 
         async def prompt(
             self,
@@ -778,61 +908,63 @@ def create_acp_agent(config: AgentConfig, *, authorization: Any | None = None) -
                     {"reason": "authorization_rejected"}
                 ) from None
             request_id = message_id or uuid4().hex
-            if session_id in self._cancelled_sessions:
-                self._cancelled_sessions.discard(session_id)
-                return PromptResponse(
-                    stop_reason="cancelled",
-                    user_message_id=message_id,
-                )
             session = self._sessions.get(session_id)
             if session is None:
                 raise RequestError.auth_required({"reason": "unknown_session"})
-            if _should_record_runtime_context(
-                client_capabilities=self._client_capabilities,
-                session_lookup="existing",
-            ):
-                _record_acp_runtime_event(
-                    session.core._telemetry,
-                    event_type="agent.acp.prompt_context",
-                    session_id=session_id,
-                    request_id=request_id,
-                    payload={
-                        "session_lookup": "existing",
-                        "known_session_ids": sorted(self._sessions.keys()),
-                        "client_capabilities": _normalize_capabilities(
-                            self._client_capabilities
-                        ),
-                        **_prompt_backend_state(session),
-                    },
-                )
-            prompt_text = await _prompt_text_async(prompt)
-            # 1
-            logger.info("Prompt text: %s", prompt_text)
-            result = await asyncio.to_thread(
-                session.core.handle_prompt,
-                prompt_text,
-                request_id,
-                message_id,
-            )
-            await asyncio.to_thread(self._save_persisted_memory, session)
-            # n
-            await self._conn.session_update(
-                session_id=session_id,
-                update=self._updates.agent_message(
-                    result.final_response,
-                    metadata={
-                        "code4me2": {
-                            "phase": "completed",
-                            "durationMs": result.duration_ms,
-                        }
-                    },
-                ),
-                source="code4me2_agent",
-            )
-            return PromptResponse(
-                stop_reason=_acp_stop_reason(result.stop_reason),
-                user_message_id=message_id,
-            )
+            async with session.prompt_lock:
+                session.cancel_event.clear()
+                session.active_prompt_task = asyncio.current_task()
+                try:
+                    if _should_record_runtime_context(
+                        client_capabilities=self._client_capabilities,
+                        session_lookup="existing",
+                    ):
+                        _record_acp_runtime_event(
+                            session.core._telemetry,
+                            event_type="agent.acp.prompt_context",
+                            session_id=session_id,
+                            request_id=request_id,
+                            payload={
+                                "session_lookup": "existing",
+                                "known_session_ids": sorted(self._sessions.keys()),
+                                "client_capabilities": _normalize_capabilities(
+                                    self._client_capabilities
+                                ),
+                                **_prompt_backend_state(session),
+                            },
+                        )
+                    prompt_text = await _prompt_text_async(prompt)
+                    logger.info("Prompt text: %s", prompt_text)
+                    result = await asyncio.to_thread(
+                        session.core.handle_prompt,
+                        prompt_text,
+                        request_id,
+                        message_id,
+                        None,
+                        session.cancel_event,
+                    )
+                    await asyncio.to_thread(self._save_persisted_memory, session)
+                    if result.final_response:
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=self._updates.agent_message(
+                                result.final_response,
+                                message_id=request_id,
+                                metadata={
+                                    "code4me2": {
+                                        "phase": "completed",
+                                        "durationMs": result.duration_ms,
+                                    }
+                                },
+                            ),
+                            source="code4me2_agent",
+                        )
+                    return PromptResponse(
+                        stop_reason=_acp_stop_reason(result.stop_reason),
+                    )
+                finally:
+                    session.active_prompt_task = None
+                    session.cancel_event.clear()
 
     return Code4MeEchoAgent()
 
@@ -853,4 +985,7 @@ async def run_acp_stdio(config: AgentConfig) -> None:
             "Install this package from source with agent-client-protocol available."
         ) from exc
 
-    await run_agent(create_acp_agent(config), use_unstable_protocol=True)
+    await run_agent(
+        create_acp_agent(config),
+        use_unstable_protocol=_ENABLE_STABLE_SESSION_ROUTE_WORKAROUND,
+    )

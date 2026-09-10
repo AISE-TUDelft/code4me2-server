@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from time import perf_counter
+from threading import Event
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from code4me2_agent.config import AgentConfig
     from code4me2_agent.events import AgentEventSink
+    from code4me2_agent.mcp_tools import StdioMcpToolBroker
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class EchoAgentCore:
         *,
         acp_file_backend: object | None = None,
         acp_command_backend: object | None = None,
+        mcp_tools: StdioMcpToolBroker | None = None,
     ) -> None:
         self.file_tools = WorkspaceFileTools(
             self._config,
@@ -62,15 +65,20 @@ class EchoAgentCore:
             acp_backend=acp_command_backend,
             telemetry=self._telemetry,
         )
-        self.rebuild_adapter()
+        self.rebuild_adapter(mcp_tools=mcp_tools)
 
-    def rebuild_adapter(self) -> None:
+    def rebuild_adapter(
+        self,
+        *,
+        mcp_tools: StdioMcpToolBroker | None = None,
+    ) -> None:
         self._adapter = create_agent_adapter(
             self._config,
             telemetry=self._telemetry,
             file_tools=self.file_tools,
             command_tools=self.command_tools,
             event_sink=self._event_sink,
+            mcp_tools=mcp_tools,
         )
 
     def _build_session_memory(self) -> MemoryWindow | None:
@@ -99,6 +107,7 @@ class EchoAgentCore:
         request_id: str | None = None,
         message_id: str | None = None,
         run_id: str | None = None,
+        cancellation_event: Event | None = None,
     ) -> EchoPromptResult:
         started_at = perf_counter()
         request_id = request_id or uuid4().hex
@@ -129,6 +138,7 @@ class EchoAgentCore:
             request_id=request_id,
             message_id=message_id,
             memory=self._session_memory,
+            cancellation_event=cancellation_event,
         )
         # n-1
         final_response = adapter_result.final_response
