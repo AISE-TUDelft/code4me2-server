@@ -540,7 +540,7 @@ class OpenAICompatibleProvider:
 
     def _openai_base_url(self) -> str:
         if self._kind == "code4me_backend":
-            return f"{self._base_url}/api"
+            return f"{self._base_url}/api/acp"
         base_url = self._base_url
         if not base_url.endswith("/v1"):
             base_url = f"{base_url}/v1"

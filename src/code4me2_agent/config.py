@@ -197,22 +197,15 @@ class AgentConfig:
         runtime. Precedence is deliberate: **server wins**, and the local
         config file is only a fallback for anything the server didn't specify.
 
-        Routing follows from whether the profile named a ``base_url``:
-
-        * it did → talk to that endpoint directly (``kind="openai"``), which is
-          what makes "any OpenAI-compatible provider" work per merge decision 6;
-        * it didn't → relay through the backend (``kind="code4me_backend"``), so
-          the backend chooses the upstream and also observes the call.
+        An authenticated runtime always relays through the backend. Provider
+        credentials stay in the backend environment; the local agent holds
+        only its short-lived ACP bearer token.
         """
         from dataclasses import replace as _replace
 
         provider = self.adapter.provider
 
-        if server.base_url:
-            provider = _replace(
-                provider, kind="openai", base_url=server.base_url
-            )
-        elif backend_url:
+        if backend_url:
             provider = _replace(
                 provider,
                 kind="code4me_backend",
@@ -221,7 +214,7 @@ class AgentConfig:
 
         if server.model:
             provider = _replace(provider, model=server.model)
-        if server.api_key_ref:
+        if server.api_key_ref and provider.kind != "code4me_backend":
             provider = _replace(provider, api_key_env=server.api_key_ref)
 
         memory_window = self.adapter.memory_window

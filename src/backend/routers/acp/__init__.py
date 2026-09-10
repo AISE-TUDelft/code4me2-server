@@ -27,10 +27,12 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, Depends, Header
+import httpx
+from fastapi import APIRouter, Body, Cookie, Depends, Header, HTTPException, Response
 
 import Queries
 from App import App
+from agents import provider as provider_module
 from backend.acp_authorization import (
     AcpAuthorizationDenied,
     AcpAuthorizationService,
@@ -45,6 +47,8 @@ from backend.Responses import (
     ValidateAcpSessionPostResponse,
 )
 from backend.routers.agent.consent import resolve_store_agent_content_for_acp
+from backend.routers.agent.acp_auth import require_acp_scope
+from agents import registry
 from backend.routers.analytics.auth_utils import AuthenticatedUser, require_admin
 from database import crud
 from utils import create_uuid
@@ -62,6 +66,47 @@ FALLBACK_MODEL = "qwen2.5-coder:7b"
 FALLBACK_MAX_ITERATIONS = 6
 
 _BEARER_PREFIX = "Bearer "
+
+
+@router.post("/chat/completions")
+async def acp_chat_completions(
+    body: dict = Body(...),
+    scope=Depends(require_acp_scope),
+    app: App = Depends(App.get_instance),
+) -> Response:
+    """Proxy a built-in agent turn without exposing provider credentials locally."""
+    if body.get("stream"):
+        raise HTTPException(status_code=400, detail="Streaming is not supported for ACP inference.")
+
+    db = app.get_db_session()
+    try:
+        profile = registry.resolve_assignment(db, uuid.UUID(scope.user_id))
+    finally:
+        db.close()
+    if profile is None:
+        raise HTTPException(status_code=503, detail="No active agent profile is configured.")
+
+    payload = dict(body)
+    payload["model"] = profile.model
+    if profile.temperature is not None:
+        payload["temperature"] = profile.temperature
+    upstream = provider_module.resolve_upstream(
+        model=profile.model,
+        base_url=profile.base_url,
+        api_key_ref=profile.api_key_ref,
+        framework_version=profile.framework_version,
+    )
+    async with httpx.AsyncClient(timeout=120) as client:
+        upstream_response = await client.post(
+            upstream.endpoint(responses_api=False),
+            json=payload,
+            headers={"Authorization": f"Bearer {upstream.api_key}"},
+        )
+    return Response(
+        content=upstream_response.content,
+        status_code=upstream_response.status_code,
+        media_type=upstream_response.headers.get("content-type", "application/json"),
+    )
 
 
 def _bearer_token(authorization: str) -> Optional[str]:

@@ -186,6 +186,7 @@ class AcpBackendAuthorization:
             project_id,
             workspace,
         )
+        self.fetch_agent_config()
         return self._scope
 
     # The assigned agent profile, as handed down by the backend after auth.
