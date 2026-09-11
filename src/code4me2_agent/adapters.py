@@ -230,6 +230,7 @@ class ToolRegistry:
         file_tools: WorkspaceFileTools,
         command_tools: WorkspaceCommandTools,
         *,
+        allowed_tools: list[str] | None = None,
         event_sink: AgentEventSink | None = None,
         mcp_tools: StdioMcpToolBroker | None = None,
     ) -> None:
@@ -242,6 +243,7 @@ class ToolRegistry:
         self._file_tools = file_tools
         self._command_tools = command_tools
         self._mcp_tools = mcp_tools
+        self._allowed_tools = set(allowed_tools) if allowed_tools is not None else None
         self._event_sink = event_sink or NoopAgentEventSink()
         self._event_type = ToolCallEvent
         self._thought_event_type = ThoughtEvent
@@ -250,6 +252,11 @@ class ToolRegistry:
         self, tool_call: ToolCall, *, run_id: str, request_id: str
     ) -> dict[str, Any]:
         name = tool_call.name
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            raise ToolRegistryError(
+                f"Tool is not allowed by the assigned profile: {name}",
+                failure_reason="tool_not_allowed",
+            )
         arguments = dict(tool_call.arguments)
         self._emit_tool_start(
             tool_call, arguments, run_id=run_id, request_id=request_id
@@ -334,7 +341,16 @@ class ToolRegistry:
         definitions = _tool_definitions()
         if self._mcp_tools is not None:
             definitions.extend(self._mcp_tools.definitions())
+        if self._allowed_tools is not None:
+            definitions = [
+                tool
+                for tool in definitions
+                if tool.get("function", {}).get("name") in self._allowed_tools
+            ]
         return definitions
+
+    def set_allowed_tools(self, allowed_tools: list[str] | None) -> None:
+        self._allowed_tools = set(allowed_tools) if allowed_tools is not None else None
 
     def known_tool_names(self) -> set[str]:
         names: set[str] = set()
@@ -791,14 +807,19 @@ class OpenAICompatibleReactAdapter:
                             request_id=request_id,
                         )
                     except ToolRegistryError as exc:
-                        return self._tool_failure_result(
+                        self._record_tool_failure(
                             run_id=run_id,
                             request_id=request_id,
                             tool_call=tool_call,
                             failure_reason=exc.failure_reason,
                             error_message=str(exc),
-                            thoughts=thoughts,
                         )
+                        tool_output = {
+                            "status": "denied",
+                            "error": str(exc),
+                            "tool_name": tool_call.name,
+                            "tool_call_id": tool_call.tool_call_id,
+                        }
                     except PermissionError as exc:
                         tool_output = {
                             "status": "denied",
@@ -1265,6 +1286,7 @@ def create_agent_adapter(
             tool_registry=ToolRegistry(
                 file_tools,
                 command_tools,
+                allowed_tools=config.tools,
                 event_sink=event_sink,
                 mcp_tools=mcp_tools,
             ),
