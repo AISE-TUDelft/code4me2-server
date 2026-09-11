@@ -33,6 +33,10 @@ class _McpTool:
     definition: dict[str, Any]
 
 
+def _legacy_mcp_client(parameters: StdioServerParameters) -> Client:
+    return Client(parameters, mode="legacy")
+
+
 class StdioMcpToolBroker:
     """Own stdio MCP clients and expose their tools to the synchronous agent loop.
 
@@ -47,7 +51,7 @@ class StdioMcpToolBroker:
         servers: list[object],
         *,
         cwd: Path,
-        client_factory: Callable[[StdioServerParameters], Client] = Client,
+        client_factory: Callable[[StdioServerParameters], Client] = _legacy_mcp_client,
     ) -> None:
         self._servers = list(servers)
         self._cwd = cwd
@@ -71,7 +75,7 @@ class StdioMcpToolBroker:
         servers: list[object],
         *,
         cwd: Path,
-        client_factory: Callable[[StdioServerParameters], Client] = Client,
+        client_factory: Callable[[StdioServerParameters], Client] = _legacy_mcp_client,
         startup_timeout_seconds: float = _MCP_STARTUP_TIMEOUT_SECONDS,
     ) -> StdioMcpToolBroker | None:
         if not servers:
