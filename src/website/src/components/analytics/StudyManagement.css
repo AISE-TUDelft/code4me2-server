@@ -457,6 +457,69 @@
   font-family: inherit;
 }
 
+.study-option-group {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.study-option-group legend {
+  padding: 0 4px;
+  color: var(--text-color);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.study-options-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.study-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-color);
+  cursor: pointer;
+}
+
+.study-option input {
+  width: auto;
+}
+
+.form-help {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.baseline-select {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--text-color);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.baseline-select select,
+.form-group select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--secondary-color);
+  color: var(--text-color);
+  font-size: 14px;
+}
+
 .form-actions {
   display: flex;
   gap: 12px;

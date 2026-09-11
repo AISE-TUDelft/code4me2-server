@@ -279,10 +279,9 @@ const AgentProfiles = () => {
   const handleDelete = async (profile) => {
     const profileId = getProfileId(profile);
     const confirmed = window.confirm(
-      `Delete agent profile "${profile.name}"? Historical agent tasks reference ` +
-        `profiles by name, so past telemetry stays attributable — but any A/B ` +
-        `assignments pointing at this profile are removed. To retire an arm ` +
-        `mid-study, uncheck "Active" instead.`,
+      `Retire agent profile "${profile.name}"? It will no longer be assigned ` +
+        `to new participants, while its immutable version history and existing ` +
+        `study assignments remain available for analysis.`,
     );
     if (!confirmed) return;
 
@@ -292,7 +291,7 @@ const AgentProfiles = () => {
 
     const response = await deleteAgentProfile(profileId);
     if (response.ok) {
-      setNotice("Agent profile deleted.");
+      setNotice("Agent profile retired.");
       if (editingProfileId === profileId) resetForm();
       await loadProfiles();
     } else {

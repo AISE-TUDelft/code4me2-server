@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getStudies, getStudyEvaluation, getStudyDetails, activateStudy, deactivateStudy, createStudy, getStudyAgentEvaluation } from '../../utils/api';
+import { getStudies, getStudyEvaluation, getStudyDetails, activateStudy, deactivateStudy, createStudy, getStudyAgentEvaluation, getAgentProfiles, listConfigs } from '../../utils/api';
 import AgentResults from './AgentResults';
 import './StudyManagement.css';
 
@@ -411,14 +411,85 @@ const StudyManagement = ({ user }) => {
 
 // Simple Create Study Modal Component
 const CreateStudyModal = ({ onClose, onStudyCreated }) => {
+  const [availableConfigs, setAvailableConfigs] = useState([]);
+  const [availableProfiles, setAvailableProfiles] = useState([]);
+  const [isLoadingOptions, setIsLoadingOptions] = useState(true);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
     starts_at: new Date().toISOString().slice(0, 16),
-    config_ids: [1, 2], // Default configs
-    default_config_id: 1
+    config_ids: [],
+    default_config_id: '',
+    agent_profile_ids: [],
+    baseline_agent_profile_id: null,
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadStudyOptions = async () => {
+      const [configResponse, profileResponse] = await Promise.all([
+        listConfigs(),
+        getAgentProfiles(),
+      ]);
+
+      if (isCancelled) {
+        return;
+      }
+
+      const configs = configResponse.ok ? configResponse.data : [];
+      const profiles = profileResponse.ok
+        ? profileResponse.data.filter((profile) => profile.is_active)
+        : [];
+      const configIds = configs.map((config) => config.config_id);
+      const initialConfigIds = configIds.slice(0, 2);
+
+      setAvailableConfigs(configs);
+      setAvailableProfiles(profiles);
+      setFormData((current) => ({
+        ...current,
+        config_ids: initialConfigIds,
+        default_config_id: initialConfigIds[0] || '',
+      }));
+      setIsLoadingOptions(false);
+    };
+
+    loadStudyOptions().catch((error) => {
+      console.error("Study options error:", error);
+      if (!isCancelled) {
+        setIsLoadingOptions(false);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  const toggleConfig = (configId) => {
+    setFormData((current) => {
+      const configIds = current.config_ids.includes(configId)
+        ? current.config_ids.filter((id) => id !== configId)
+        : [...current.config_ids, configId];
+      const defaultConfigId = configIds.includes(current.default_config_id)
+        ? current.default_config_id
+        : configIds[0] || '';
+      return { ...current, config_ids: configIds, default_config_id: defaultConfigId };
+    });
+  };
+
+  const toggleAgentProfile = (profileId) => {
+    setFormData((current) => {
+      const agentProfileIds = current.agent_profile_ids.includes(profileId)
+        ? current.agent_profile_ids.filter((id) => id !== profileId)
+        : [...current.agent_profile_ids, profileId];
+      const baselineAgentProfileId = agentProfileIds.includes(current.baseline_agent_profile_id)
+        ? current.baseline_agent_profile_id
+        : agentProfileIds[0] || null;
+      return { ...current, agent_profile_ids: agentProfileIds, baseline_agent_profile_id: baselineAgentProfileId };
+    });
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -481,34 +552,92 @@ const CreateStudyModal = ({ onClose, onStudyCreated }) => {
           </div>
           
           <div className="form-group">
-            <label>Configuration IDs (comma-separated) *</label>
-            <input
-              type="text"
-              value={formData.config_ids.join(', ')}
-              onChange={(e) => {
-                const ids = e.target.value.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
-                setFormData({ ...formData, config_ids: ids });
-              }}
-              placeholder="1, 2, 3"
-              required
-            />
+            <fieldset className="study-option-group">
+              <legend>Completion config arms *</legend>
+              {isLoadingOptions ? (
+                <p className="form-help">Loading available configs...</p>
+              ) : availableConfigs.length === 0 ? (
+                <p className="form-help">Create a completion config before starting a study.</p>
+              ) : (
+                <div className="study-options-grid">
+                  {availableConfigs.map((config) => (
+                    <label className="study-option" key={config.config_id}>
+                      <input
+                        type="checkbox"
+                        checked={formData.config_ids.includes(config.config_id)}
+                        onChange={() => toggleConfig(config.config_id)}
+                      />
+                      <span>Config {config.config_id}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </fieldset>
           </div>
           
           <div className="form-group">
             <label>Default Config ID *</label>
-            <input
-              type="number"
+            <select
               value={formData.default_config_id}
               onChange={(e) => setFormData({ ...formData, default_config_id: parseInt(e.target.value) })}
               required
-            />
+              disabled={!formData.config_ids.length}
+            >
+              {formData.config_ids.map((configId) => (
+                <option key={configId} value={configId}>Config {configId}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <fieldset className="study-option-group">
+              <legend>Agent profile arms (optional)</legend>
+              <p className="form-help">Select active profiles to randomize agent users between arms.</p>
+              {isLoadingOptions ? (
+                <p className="form-help">Loading active agent profiles...</p>
+              ) : availableProfiles.length === 0 ? (
+                <p className="form-help">Create and activate an agent profile to add an agent arm.</p>
+              ) : (
+                <div className="study-options-grid">
+                  {availableProfiles.map((profile) => (
+                    <label className="study-option" key={profile.profile_id}>
+                      <input
+                        type="checkbox"
+                        checked={formData.agent_profile_ids.includes(profile.profile_id)}
+                        onChange={() => toggleAgentProfile(profile.profile_id)}
+                      />
+                      <span>{profile.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {formData.agent_profile_ids.length > 0 && (
+                <label className="baseline-select">
+                  Baseline agent arm
+                  <select
+                    value={formData.baseline_agent_profile_id || ''}
+                    onChange={(e) => setFormData({ ...formData, baseline_agent_profile_id: e.target.value || null })}
+                    required
+                  >
+                    {formData.agent_profile_ids.map((profileId) => {
+                      const profile = availableProfiles.find((item) => item.profile_id === profileId);
+                      return <option key={profileId} value={profileId}>{profile?.name || profileId}</option>;
+                    })}
+                  </select>
+                </label>
+              )}
+            </fieldset>
           </div>
           
           <div className="form-actions">
             <button type="button" onClick={onClose} className="cancel-btn">
               Cancel
             </button>
-            <button type="submit" disabled={isSubmitting} className="submit-btn">
+            <button
+              type="submit"
+              disabled={isSubmitting || isLoadingOptions || !formData.config_ids.length}
+              className="submit-btn"
+            >
               {isSubmitting ? 'Creating...' : 'Create Study'}
             </button>
           </div>
