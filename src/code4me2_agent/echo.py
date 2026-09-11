@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from time import perf_counter
-from threading import Event
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -15,6 +14,8 @@ from code4me2_agent.telemetry import AgentTelemetryRecorder
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from threading import Event
+
     from code4me2_agent.config import AgentConfig
     from code4me2_agent.events import AgentEventSink
     from code4me2_agent.mcp_tools import StdioMcpToolBroker
@@ -40,6 +41,9 @@ class EchoAgentCore:
         self.file_tools = WorkspaceFileTools(config, telemetry=self._telemetry)
         self.command_tools = WorkspaceCommandTools(config, telemetry=self._telemetry)
         self._session_memory = self._build_session_memory()
+        self._acp_file_backend = None
+        self._acp_command_backend = None
+        self._mcp_tools = None
         self._adapter = create_agent_adapter(
             config,
             telemetry=self._telemetry,
@@ -55,6 +59,9 @@ class EchoAgentCore:
         acp_command_backend: object | None = None,
         mcp_tools: StdioMcpToolBroker | None = None,
     ) -> None:
+        self._acp_file_backend = acp_file_backend
+        self._acp_command_backend = acp_command_backend
+        self._mcp_tools = mcp_tools
         self.file_tools = WorkspaceFileTools(
             self._config,
             acp_backend=acp_file_backend,
@@ -66,6 +73,23 @@ class EchoAgentCore:
             telemetry=self._telemetry,
         )
         self.rebuild_adapter(mcp_tools=mcp_tools)
+
+    def apply_config(self, config: AgentConfig) -> None:
+        """Apply an immutable server policy and rebuild every enforcement point."""
+        previous_memory = self.session_memory_snapshot()
+        self._config = config
+        self._telemetry.apply_config(config)
+        # Memory limits are part of the assigned A/B policy. Recreate the
+        # window so a policy refresh cannot leave an existing session using
+        # the previous arm's context budget, while retaining its conversation.
+        self._session_memory = self._build_session_memory()
+        if self._session_memory is not None and previous_memory is not None:
+            self._session_memory.replace_messages(previous_memory)
+        self.rebuild_tools(
+            acp_file_backend=self._acp_file_backend,
+            acp_command_backend=self._acp_command_backend,
+            mcp_tools=self._mcp_tools,
+        )
 
     def rebuild_adapter(
         self,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import platform
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event
@@ -11,11 +12,15 @@ from uuid import uuid4
 from code4me2_agent.acp_updates import AcpUpdateBuilder
 from code4me2_agent.acp_utils import capability_value
 from code4me2_agent.async_bridge import EventLoopAsyncRunner
-from code4me2_agent.command_tools import build_acp_command_backend
+from code4me2_agent.command_tools import available_commands, build_acp_command_backend
 from code4me2_agent.echo import EchoAgentCore
 from code4me2_agent.file_tools import build_acp_file_system_backend
 from code4me2_agent.mcp_tools import StdioMcpToolBroker, serialize_mcp_servers
-from code4me2_agent.runtime_auth import AcpAuthorizationFailure, AcpBackendAuthorization
+from code4me2_agent.runtime_auth import (
+    AcpAuthorizationFailure,
+    AcpBackendAuthorization,
+    ManagedBridgeAuthorization,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +132,7 @@ class AgentSession:
     cancel_event: Event = field(default_factory=Event)
     prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_prompt_task: asyncio.Task[Any] | None = None
+    authorization: Any | None = None
 
 
 class AcpSessionEventSink:
@@ -205,6 +211,49 @@ class AcpSessionEventSink:
                         "error_message": str(exc),
                     },
                 )
+
+    def request_approval(self, tool_call: object, arguments: dict[str, Any]) -> bool:
+        """Synchronously bridge a worker-thread tool decision to ACP/JetBrains."""
+        name = str(getattr(tool_call, "name", "tool"))
+        tool_call_id = str(getattr(tool_call, "tool_call_id", ""))
+        metadata = {
+            "run_command": ("Execute command", "execute"),
+            "create_file": ("Create file", "edit"),
+            "write_file": ("Write file", "edit"),
+            "replace_text": ("Replace text", "edit"),
+            "read_file": ("Read file", "read"),
+            "list_files": ("List files", "search"),
+            "search_files": ("Search files", "search"),
+        }.get(name, (f"Call {name}", "other"))
+        permission = self._updates.permission_request(
+            session_id=self._session_id,
+            tool_call_id=tool_call_id,
+            title=metadata[0],
+            kind=metadata[1],
+        )
+        try:
+            response = self._async_runner.run(
+                self._conn.request_permission(
+                    session_id=permission.session_id,
+                    tool_call=permission.tool_call,
+                    options=permission.options,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("ACP permission request failed for tool %s", name)
+            return False
+        outcome = getattr(response, "outcome", None)
+        if isinstance(response, dict):
+            outcome = response.get("outcome")
+        if isinstance(outcome, dict):
+            return (
+                outcome.get("outcome") == "selected"
+                and outcome.get("optionId", outcome.get("option_id")) == "allow_once"
+            )
+        return (
+            getattr(outcome, "outcome", None) == "selected"
+            and getattr(outcome, "option_id", None) == "allow_once"
+        )
 
     def _send_update(self, *, event: ToolCallEvent, update: object) -> None:
         try:
@@ -362,6 +411,7 @@ def create_acp_agent(
             self._sessions = {}
             self._authorization = (
                 authorization
+                or (ManagedBridgeAuthorization() if config.managed_mode else None)
                 or AcpBackendAuthorization.from_environment(
                     workspace_root=config.workspace_root,
                 )
@@ -378,6 +428,7 @@ def create_acp_agent(
             session_config: AgentConfig,
             session_id: str,
             mcp_tools: StdioMcpToolBroker | None,
+            session_authorization: Any | None = None,
         ) -> AgentSession:
             async_runner = EventLoopAsyncRunner(asyncio.get_running_loop())
             event_sink = AcpSessionEventSink(
@@ -408,10 +459,11 @@ def create_acp_agent(
                 session_id=session_id,
                 core=core,
                 mcp_tools=mcp_tools,
+                authorization=session_authorization or self._authorization,
             )
 
         def _load_persisted_memory(self, session: AgentSession) -> None:
-            request_json = getattr(self._authorization, "authorized_json_request", None)
+            request_json = getattr(session.authorization, "authorized_json_request", None)
             if not callable(request_json):
                 return
             try:
@@ -431,7 +483,7 @@ def create_acp_agent(
             snapshot = session.core.session_memory_snapshot()
             if snapshot is None:
                 return
-            request_json = getattr(self._authorization, "authorized_json_request", None)
+            request_json = getattr(session.authorization, "authorized_json_request", None)
             if not callable(request_json):
                 return
             try:
@@ -444,7 +496,7 @@ def create_acp_agent(
                 logger.info("Could not save persisted ACP memory: %s", exc)
 
         def _session_config(
-            self, *, workspace_root: Path, session_id: str
+            self, *, workspace_root: Path, session_id: str, session_authorization: Any
         ) -> AgentConfig:
             # Build from self._current_config, NOT the module-level `config`
             # closure: _apply_server_config writes the assigned agent profile
@@ -454,14 +506,14 @@ def create_acp_agent(
             # assignment would appear to work (it's logged) but never actually
             # take effect on a new session.
             base_config = self._current_config
-            telemetry_headers = self._authorization.telemetry_headers()
+            telemetry_headers = session_authorization.telemetry_headers()
             provider_auth_headers = (
                 telemetry_headers
                 if base_config.adapter.provider.kind == "code4me_backend"
                 else base_config.adapter.provider.auth_headers
             )
             upload_config = base_config.upload
-            backend_url = getattr(self._authorization, "backend_url", None)
+            backend_url = getattr(session_authorization, "backend_url", None)
             if backend_url and upload_config.ingest_url is None:
                 # Self-reported telemetry converges on the same agent_event
                 # table the inference relay writes to (merge decision 2).
@@ -474,13 +526,22 @@ def create_acp_agent(
                 base_config,
                 workspace_root=workspace_root,
                 session_id=session_id,
-                upload=replace(upload_config, auth_headers=telemetry_headers),
+                upload=replace(
+                    upload_config,
+                    auth_headers=telemetry_headers,
+                    auth_headers_provider=session_authorization.telemetry_headers,
+                ),
                 adapter=replace(
                     base_config.adapter,
                     provider=replace(
                         base_config.adapter.provider,
                         auth_headers=provider_auth_headers,
                     ),
+                ),
+                managed_request=(
+                    session_authorization.managed_inference
+                    if base_config.managed_mode
+                    else base_config.managed_request
                 ),
             )
 
@@ -492,18 +553,75 @@ def create_acp_agent(
             event_type: str,
             mcp_servers: list[Any] | None,
         ) -> AgentSession:
-            await self._require_authenticated()
             workspace_root = _resolve_session_cwd(cwd)
-            if workspace_root != self._authorized_workspace:
-                raise RequestError.auth_required({"reason": "workspace_not_authorized"})
+            session_authorization = self._authorization
+            if config.managed_mode:
+                session_authorization = ManagedBridgeAuthorization()
+                try:
+                    await asyncio.to_thread(session_authorization.prepare_workspace, workspace_root)
+                    scope = await asyncio.to_thread(session_authorization.authenticate)
+                except AcpAuthorizationFailure:
+                    raise RequestError.auth_required({"reason": "authorization_rejected"}) from None
+                if _resolve_session_cwd(scope.workspace) != workspace_root:
+                    raise RequestError.auth_required({"reason": "workspace_not_authorized"})
+            else:
+                await self._require_authenticated()
+                if workspace_root != self._authorized_workspace:
+                    raise RequestError.auth_required({"reason": "workspace_not_authorized"})
+            base_config = self._current_config
+            server_config = session_authorization.server_agent_config
+            if config.managed_mode:
+                # Managed runs never fall back to local defaults: a missing
+                # profile, an unsupported runtime, or a malformed policy must
+                # fail before study work starts.
+                if server_config is None or not server_config.has_overrides:
+                    raise RequestError.invalid_params(
+                        {"reason": "managed_config_unavailable"}
+                    )
+                if (
+                    server_config.framework_version
+                    and server_config.framework_version
+                    not in {"code4me2-agent", "code4me-agent"}
+                ):
+                    raise RequestError.invalid_params(
+                        {"reason": "unsupported_managed_runtime", "runtime": server_config.framework_version}
+                    )
+                base_config = replace(base_config, workspace_root=workspace_root).with_server_overrides(
+                    server_config,
+                    backend_url=getattr(session_authorization, "backend_url", None),
+                )
+            elif server_config is not None:
+                base_config = replace(base_config, workspace_root=workspace_root).with_server_overrides(
+                    server_config,
+                    backend_url=getattr(session_authorization, "backend_url", None),
+                )
+            previous_config = self._current_config
+            self._current_config = base_config
             session_config = self._session_config(
                 workspace_root=workspace_root,
                 session_id=session_id,
+                session_authorization=session_authorization,
             )
+            self._current_config = previous_config
+            requested_mcp_servers = list(mcp_servers or [])
+            mcp_allowed_by_policy = (
+                not config.managed_mode
+                or (
+                    base_config.approval_policy != "suggestion_only"
+                    and base_config.allowed_tools is not None
+                    and any(name.startswith("mcp__") for name in base_config.allowed_tools)
+                )
+            )
+            enabled_mcp_servers = requested_mcp_servers if mcp_allowed_by_policy else []
+            if requested_mcp_servers and not mcp_allowed_by_policy:
+                logger.info(
+                    "Assigned policy disabled %d client-supplied MCP server(s) before launch.",
+                    len(requested_mcp_servers),
+                )
             try:
                 mcp_tools = await asyncio.to_thread(
                     StdioMcpToolBroker.open,
-                    list(mcp_servers or []),
+                    enabled_mcp_servers,
                     cwd=workspace_root,
                 )
             except (RuntimeError, TimeoutError, ValueError) as exc:
@@ -522,6 +640,7 @@ def create_acp_agent(
                     session_config=session_config,
                     session_id=session_id,
                     mcp_tools=mcp_tools,
+                    session_authorization=session_authorization,
                 )
             except BaseException:
                 if mcp_tools is not None:
@@ -544,10 +663,16 @@ def create_acp_agent(
                     request_id=uuid4().hex,
                     payload={
                         "cwd": session_config.workspace_root.as_posix(),
+                        "runtime_os": platform.system(),
+                        "runtime_architecture": platform.machine(),
+                        "available_commands": available_commands(
+                            session_config.commands.allowlisted_commands
+                        ),
                         "client_capabilities": _normalize_capabilities(
                             self._client_capabilities
                         ),
-                        "mcp_servers_requested": serialize_mcp_servers(mcp_servers),
+                        "mcp_servers_requested": serialize_mcp_servers(requested_mcp_servers),
+                        "mcp_servers_policy_enabled": bool(enabled_mcp_servers),
                         "mcp_backend": "broker"
                         if session.mcp_tools is not None
                         else "none",
@@ -610,8 +735,9 @@ def create_acp_agent(
             self.command_tools = self._bootstrap_core.command_tools
             initialize_auth_succeeded = False
             try:
-                await self._authenticate_if_needed()
-                initialize_auth_succeeded = True
+                if not getattr(self._authorization, "needs_workspace", False):
+                    await self._authenticate_if_needed()
+                    initialize_auth_succeeded = True
             except RequestError:
                 # Some ACP clients never invoke the custom auth handshake for local agents.
                 # Try once during initialize, but keep later session/prompt calls fail-closed.
@@ -680,6 +806,9 @@ def create_acp_agent(
         ) -> AuthenticateResponse:
             if method_id != "code4me-plugin-session":
                 raise RequestError.auth_required({"reason": "unsupported_auth_method"})
+            if config.managed_mode:
+                # Workspace-scoped authentication completes at session/new.
+                return AuthenticateResponse()
             await self._authenticate_if_needed()
             return AuthenticateResponse()
 
@@ -776,31 +905,15 @@ def create_acp_agent(
                 )
 
         def _apply_config_to_all_cores(self, new_config: Any) -> None:
-            from code4me2_agent.command_tools import WorkspaceCommandTools
-
-            self._bootstrap_core._config = new_config
-            self._bootstrap_core._adapter._config = new_config
-            self._bootstrap_core.command_tools._config = new_config
-            self._bootstrap_core.command_tools._allowlisted_commands = set(
-                new_config.commands.allowlisted_commands
-            )
-            self._bootstrap_core.file_tools._config = new_config
-            bootstrap_registry = getattr(
-                self._bootstrap_core._adapter, "_tool_registry", None
-            )
-            if bootstrap_registry is not None:
-                bootstrap_registry.set_allowed_tools(new_config.tools)
-            for session_id, session in self._sessions.items():
-                session.core._config = new_config
-                session.core._adapter._config = new_config
-                session.core.command_tools._config = new_config
-                session.core.command_tools._allowlisted_commands = set(
-                    new_config.commands.allowlisted_commands
-                )
-                session.core.file_tools._config = new_config
-                tool_registry = getattr(session.core._adapter, "_tool_registry", None)
-                if tool_registry is not None:
-                    tool_registry.set_allowed_tools(new_config.tools)
+            # Rebuild every enforcement point (ToolRegistry allowed_tools /
+            # approval, command allowlist, adapter provider) rather than
+            # mutating _config in place, which would leave already-constructed
+            # adapters enforcing stale policy. This subsumes upstream's
+            # set_allowed_tools live-update: apply_config refreshes allowed
+            # tools plus approval/command/provider state.
+            self._bootstrap_core.apply_config(new_config)
+            for session in self._sessions.values():
+                session.core.apply_config(new_config)
             logger.info(
                 "Updated %d active session(s) with server agent config.",
                 len(self._sessions),
@@ -881,7 +994,6 @@ def create_acp_agent(
             session_id: str,
             **kwargs: Any,
         ) -> None:
-            await self._require_authenticated()
             session = self._sessions.get(session_id)
             if session is None:
                 raise RequestError.invalid_params({"reason": "unknown_session"})
@@ -895,7 +1007,6 @@ def create_acp_agent(
             session_id: str,
             **kwargs: Any,
         ) -> None:
-            await self._require_authenticated()
             session = self._sessions.get(session_id)
             if session is not None and session.active_prompt_task is not None:
                 session.cancel_event.set()
@@ -907,18 +1018,41 @@ def create_acp_agent(
             message_id: str | None = None,
             **kwargs: Any,
         ) -> PromptResponse:
-            await self._require_authenticated()
-            try:
-                await asyncio.to_thread(self._authorization.validate)
-            except AcpAuthorizationFailure:
-                self._authorized_workspace = None
-                raise RequestError.auth_required(
-                    {"reason": "authorization_rejected"}
-                ) from None
             request_id = message_id or uuid4().hex
             session = self._sessions.get(session_id)
             if session is None:
                 raise RequestError.auth_required({"reason": "unknown_session"})
+            session_authorization = session.authorization or self._authorization
+            reauthenticated = False
+            try:
+                await asyncio.to_thread(session_authorization.validate)
+            except AcpAuthorizationFailure:
+                if config.managed_mode:
+                    try:
+                        await asyncio.to_thread(
+                            session_authorization.prepare_workspace,
+                            session.core._config.workspace_root,
+                        )
+                        await asyncio.to_thread(session_authorization.authenticate)
+                        reauthenticated = True
+                    except AcpAuthorizationFailure:
+                        raise RequestError.auth_required(
+                            {"reason": "authorization_rejected"}
+                        ) from None
+                else:
+                    self._authorized_workspace = None
+                    raise RequestError.auth_required(
+                        {"reason": "authorization_rejected"}
+                    ) from None
+            if reauthenticated:
+                refreshed_config = replace(
+                    session.core._config,
+                    upload=replace(
+                        session.core._config.upload,
+                        auth_headers=session_authorization.telemetry_headers(),
+                    ),
+                )
+                session.core.apply_config(refreshed_config)
             async with session.prompt_lock:
                 session.cancel_event.clear()
                 session.active_prompt_task = asyncio.current_task()
@@ -943,12 +1077,33 @@ def create_acp_agent(
                         )
                     prompt_text = await _prompt_text_async(prompt)
                     logger.info("Prompt text: %s", prompt_text)
+                    run_id = uuid4().hex
+                    if config.managed_mode:
+                        run_payload = await asyncio.to_thread(
+                            session_authorization.create_managed_run,
+                            run_id=run_id,
+                            session_id=session_id,
+                        )
+                        from code4me2_agent.config import ServerAgentConfig
+
+                        try:
+                            run_policy = ServerAgentConfig.from_managed_payload(run_payload)
+                        except ValueError:
+                            raise RequestError.invalid_params(
+                                {"reason": "managed_run_policy_invalid"}
+                            ) from None
+                        session.core.apply_config(
+                            session.core._config.with_server_overrides(
+                                run_policy,
+                                backend_url=session_authorization.backend_url,
+                            )
+                        )
                     result = await asyncio.to_thread(
                         session.core.handle_prompt,
                         prompt_text,
                         request_id,
                         message_id,
-                        None,
+                        run_id,
                         session.cancel_event,
                     )
                     await asyncio.to_thread(self._save_persisted_memory, session)

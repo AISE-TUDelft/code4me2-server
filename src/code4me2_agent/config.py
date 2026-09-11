@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 
@@ -13,6 +14,9 @@ class UploadConfig:
     batch_size: int = 50
     timeout_seconds: float = 5.0
     auth_headers: dict[str, str] = field(default_factory=dict)
+    auth_headers_provider: Callable[[], dict[str, str]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 @dataclass(frozen=True)
@@ -69,6 +73,7 @@ class OpenAICompatibleProviderConfig:
     model: str = ""
     api_key_env: str = ""
     timeout_seconds: float = 90.0
+    temperature: float | None = None
     auth_headers: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -115,6 +120,52 @@ class ServerAgentConfig:
     store_agent_content: bool = True
 
     @classmethod
+    def from_managed_payload(cls, payload: dict) -> "ServerAgentConfig":
+        """Parse a complete protocol-v1 policy, failing closed on bad fields."""
+        nested_policy = payload.get("policy_snapshot") or payload.get("policy")
+        merged = {**payload, **nested_policy} if isinstance(nested_policy, dict) else payload
+        protocol = merged.get("managed_protocol_version", merged.get("version"))
+        tools = merged.get("tools")
+        commands = merged.get("commands_allowlist")
+        iterations = merged.get("max_iterations")
+        context_tokens = merged.get("max_context_tokens")
+        temperature = merged.get("temperature")
+        required_text = ("agent_profile", "framework_version", "model", "transport")
+        if protocol != "1" or any(
+            not isinstance(merged.get(key), str) or not merged[key].strip()
+            for key in required_text
+        ):
+            raise ValueError("Managed agent policy metadata is incomplete.")
+        if merged["framework_version"] not in {"code4me2-agent", "code4me-agent"}:
+            raise ValueError("Managed agent policy selects an unsupported runtime.")
+        if merged["transport"] != "managed_backend":
+            raise ValueError("Managed agent policy selects an unsafe transport.")
+        if (
+            not isinstance(tools, list)
+            or not all(isinstance(tool, str) and tool.strip() for tool in tools)
+            or not isinstance(commands, list)
+            or not all(isinstance(command, str) and command.strip() for command in commands)
+            or isinstance(iterations, bool)
+            or not isinstance(iterations, int)
+            or iterations < 1
+            or isinstance(context_tokens, bool)
+            or not isinstance(context_tokens, int)
+            or context_tokens < 1
+            or merged.get("approval_policy") not in {"auto", "per_step", "suggestion_only"}
+            or isinstance(temperature, bool)
+            or (
+                temperature is not None
+                and (
+                    not isinstance(temperature, (int, float))
+                    or not 0.0 <= float(temperature) <= 2.0
+                )
+            )
+            or not isinstance(merged.get("store_agent_content"), bool)
+        ):
+            raise ValueError("Managed agent policy contains invalid executable settings.")
+        return cls.from_payload(merged)
+
+    @classmethod
     def from_payload(cls, payload: dict) -> "ServerAgentConfig":
         """Parse an agent-config response, ignoring anything malformed.
 
@@ -122,6 +173,10 @@ class ServerAgentConfig:
         override, not the whole config, because a partially-usable server
         config still beats falling back to a local guess.
         """
+
+        nested_policy = payload.get("policy_snapshot") or payload.get("policy")
+        if isinstance(nested_policy, dict):
+            payload = {**payload, **nested_policy}
 
         def _clean_str(key: str) -> str | None:
             value = payload.get(key)
@@ -174,6 +229,8 @@ class ServerAgentConfig:
                 self.tools,
                 self.max_iterations,
                 self.max_context_tokens,
+                self.approval_policy,
+                self.temperature,
             )
         )
 
@@ -188,6 +245,13 @@ class AgentConfig:
     upload: UploadConfig = field(default_factory=UploadConfig)
     commands: CommandConfig = field(default_factory=CommandConfig)
     adapter: AdapterConfig = field(default_factory=AdapterConfig)
+    allowed_tools: frozenset[str] | None = None
+    approval_policy: str = "auto"
+    store_agent_content: bool = True
+    managed_mode: bool = False
+    managed_request: Callable[[str, str, dict | None], dict] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def with_server_overrides(
         self, server: ServerAgentConfig, *, backend_url: str | None = None
@@ -206,17 +270,31 @@ class AgentConfig:
 
         provider = self.adapter.provider
 
-        if backend_url:
+        if self.managed_mode and backend_url:
+            provider = _replace(
+                provider,
+                kind="managed_backend",
+                base_url=str(backend_url).rstrip("/"),
+                api_key_env="",
+                auth_headers={},
+            )
+        elif backend_url:
             provider = _replace(
                 provider,
                 kind="code4me_backend",
                 base_url=str(backend_url).rstrip("/"),
             )
+        elif server.base_url:
+            provider = _replace(
+                provider, kind="openai", base_url=server.base_url
+            )
 
         if server.model:
             provider = _replace(provider, model=server.model)
-        if server.api_key_ref and provider.kind != "code4me_backend":
+        if server.api_key_ref and provider.kind not in ("code4me_backend", "managed_backend"):
             provider = _replace(provider, api_key_env=server.api_key_ref)
+        if server.temperature is not None:
+            provider = _replace(provider, temperature=server.temperature)
 
         memory_window = self.adapter.memory_window
         if server.max_context_tokens is not None:
@@ -233,15 +311,28 @@ class AgentConfig:
 
         commands = self.commands
         if server.commands_allowlist is not None:
+            from code4me2_agent.command_tools import available_commands
+
             commands = _replace(
-                commands, allowlisted_commands=list(server.commands_allowlist)
+                commands,
+                allowlisted_commands=available_commands(server.commands_allowlist),
             )
 
         tools = self.tools
+        allowed_tools = self.allowed_tools
         if server.tools is not None:
             tools = list(server.tools)
+            allowed_tools = frozenset(server.tools)
 
-        return _replace(self, adapter=adapter, commands=commands, tools=tools)
+        return _replace(
+            self,
+            adapter=adapter,
+            commands=commands,
+            tools=tools,
+            allowed_tools=allowed_tools,
+            approval_policy=server.approval_policy or self.approval_policy,
+            store_agent_content=server.store_agent_content,
+        )
 
     @classmethod
     def from_file(cls, config_path: str | Path) -> "AgentConfig":
@@ -412,6 +503,12 @@ class AgentConfig:
                 timeout_seconds=_positive_float(
                     provider_data.get("timeout_seconds", 90.0),
                     default=90.0,
+                ),
+                temperature=(
+                    float(provider_data["temperature"])
+                    if isinstance(provider_data.get("temperature"), (int, float))
+                    and not isinstance(provider_data.get("temperature"), bool)
+                    else None
                 ),
                 auth_headers=provider_auth_headers,
             ),

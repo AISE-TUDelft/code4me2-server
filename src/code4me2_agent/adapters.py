@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import platform
 import re
 from dataclasses import asdict, dataclass, is_dataclass
-from time import perf_counter, sleep
-from typing import TYPE_CHECKING, Any, Protocol
-from openai import APIError, APIStatusError, OpenAI
-import logging
-import fcntl
 from pathlib import Path
-from threading import Event
-from time import time
+from time import perf_counter, sleep, time
+from typing import TYPE_CHECKING, Any, Protocol
+
+from openai import APIError, APIStatusError, OpenAI
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
+    from threading import Event
+
     from code4me2_agent.command_tools import WorkspaceCommandTools
     from code4me2_agent.config import AgentConfig
     from code4me2_agent.events import AgentEventSink
@@ -114,7 +120,8 @@ def _rate_limit_provider_request(
     state_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = state_path.with_suffix(state_path.suffix + ".lock")
     with lock_path.open("a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             while True:
                 now = float(now_fn())
@@ -137,7 +144,8 @@ def _rate_limit_provider_request(
                 )
                 sleep_fn(sleep_seconds)
         finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _read_rate_limit_timestamps(state_path: Path) -> list[float]:
@@ -230,9 +238,10 @@ class ToolRegistry:
         file_tools: WorkspaceFileTools,
         command_tools: WorkspaceCommandTools,
         *,
-        allowed_tools: list[str] | None = None,
+        allowed_tools: frozenset[str] | list[str] | None = None,
         event_sink: AgentEventSink | None = None,
         mcp_tools: StdioMcpToolBroker | None = None,
+        approval_policy: str = "auto",
     ) -> None:
         from code4me2_agent.events import (
             NoopAgentEventSink,
@@ -243,7 +252,8 @@ class ToolRegistry:
         self._file_tools = file_tools
         self._command_tools = command_tools
         self._mcp_tools = mcp_tools
-        self._allowed_tools = set(allowed_tools) if allowed_tools is not None else None
+        self._allowed_tools = frozenset(allowed_tools) if allowed_tools is not None else None
+        self._approval_policy = approval_policy
         self._event_sink = event_sink or NoopAgentEventSink()
         self._event_type = ToolCallEvent
         self._thought_event_type = ThoughtEvent
@@ -252,12 +262,46 @@ class ToolRegistry:
         self, tool_call: ToolCall, *, run_id: str, request_id: str
     ) -> dict[str, Any]:
         name = tool_call.name
-        if self._allowed_tools is not None and name not in self._allowed_tools:
+        mcp_wildcard_allowed = (
+            name.startswith("mcp__")
+            and self._allowed_tools is not None
+            and "mcp__*" in self._allowed_tools
+        )
+        if (
+            self._allowed_tools is not None
+            and name not in self._allowed_tools
+            and not mcp_wildcard_allowed
+        ):
             raise ToolRegistryError(
-                f"Tool is not allowed by the assigned profile: {name}",
+                f"Tool is disabled by the assigned study policy: {name}",
                 failure_reason="tool_not_allowed",
             )
+        if self._approval_policy not in {"auto", "per_step", "suggestion_only"}:
+            raise ToolRegistryError(
+                f"Unknown assigned approval policy: {self._approval_policy}",
+                failure_reason="invalid_approval_policy",
+            )
+        if self._approval_policy == "suggestion_only" and (
+            name in {"create_file", "write_file", "replace_text", "run_command"}
+            or name.startswith("mcp__")
+        ):
+            raise ToolRegistryError(
+                f"Tool execution is disabled by suggestion-only policy: {name}",
+                failure_reason="approval_policy_denied",
+            )
         arguments = dict(tool_call.arguments)
+        if self._approval_policy == "per_step":
+            request_approval = getattr(self._event_sink, "request_approval", None)
+            approved = bool(
+                request_approval(tool_call, arguments)
+                if callable(request_approval)
+                else False
+            )
+            if not approved:
+                raise ToolRegistryError(
+                    f"The user denied approval for tool: {name}",
+                    failure_reason="approval_policy_denied",
+                )
         self._emit_tool_start(
             tool_call, arguments, run_id=run_id, request_id=request_id
         )
@@ -343,14 +387,21 @@ class ToolRegistry:
             definitions.extend(self._mcp_tools.definitions())
         if self._allowed_tools is not None:
             definitions = [
-                tool
-                for tool in definitions
-                if tool.get("function", {}).get("name") in self._allowed_tools
+                definition
+                for definition in definitions
+                if (
+                    str(definition.get("function", {}).get("name", ""))
+                    in self._allowed_tools
+                    or (
+                        "mcp__*" in self._allowed_tools
+                        and str(definition.get("function", {}).get("name", "")).startswith("mcp__")
+                    )
+                )
             ]
         return definitions
 
-    def set_allowed_tools(self, allowed_tools: list[str] | None) -> None:
-        self._allowed_tools = set(allowed_tools) if allowed_tools is not None else None
+    def set_allowed_tools(self, allowed_tools: frozenset[str] | list[str] | None) -> None:
+        self._allowed_tools = frozenset(allowed_tools) if allowed_tools is not None else None
 
     def known_tool_names(self) -> set[str]:
         names: set[str] = set()
@@ -470,6 +521,9 @@ class OpenAICompatibleProvider:
         timeout_seconds: float,
         auth_headers: dict[str, str] | None = None,
         tool_definitions: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        session_id: str = "",
+        managed_request: Any | None = None,
     ) -> None:
         self._kind = kind.strip() or "code4me_backend"
         self._base_url = base_url.rstrip("/")
@@ -478,14 +532,42 @@ class OpenAICompatibleProvider:
         self._timeout_seconds = timeout_seconds
         self._auth_headers = dict(auth_headers or {})
         self._tool_definitions = list(tool_definitions or _tool_definitions())
+        self._temperature = temperature
+        self._session_id = session_id
+        self._managed_request = managed_request
 
-    def generate(self, messages: list[dict[str, Any]]) -> ProviderTurn:
+    def generate(self, messages: list[dict[str, Any]], *, run_id: str = "") -> ProviderTurn:
         request_payload = {
             "model": self._model,
             "messages": [_to_openai_message(message) for message in messages],
             "tools": self._tool_definitions,
             "tool_choice": "auto",
         }
+        if self._temperature is not None:
+            request_payload["temperature"] = self._temperature
+
+        if self._kind == "managed_backend":
+            if not callable(self._managed_request):
+                raise BackendProviderRequestError("Managed backend transport is unavailable.")
+            try:
+                response_payload = self._managed_request(
+                    run_id=run_id,
+                    session_id=self._session_id,
+                    model_request=request_payload,
+                )
+            except Exception as exc:
+                raise BackendProviderRequestError(
+                    f"The managed backend model request failed: {exc}"
+                ) from exc
+            normalized_output = _normalize_openai_provider_response(response_payload)
+            return ProviderTurn(
+                output=normalized_output,
+                usage=_normalize_usage(response_payload.get("usage"), messages, normalized_output),
+                finish_reason=_response_finish_reason(response_payload),
+                model=str(response_payload.get("model") or self._model),
+                request_payload=request_payload,
+                raw_response=response_payload,
+            )
 
         client = self._client()
         max_429_retries = _non_negative_int_env("CODE4ME_BACKEND_429_MAX_RETRIES", 3)
@@ -550,7 +632,7 @@ class OpenAICompatibleProvider:
         elif self._kind == "openai":
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
-        else:
+        elif self._kind != "managed_backend":
             raise ValueError(f"Unsupported provider kind: {self._kind}")
         return headers
 
@@ -691,7 +773,7 @@ class OpenAICompatibleReactAdapter:
                 started_at = perf_counter()
                 # 4
                 if isinstance(provider, OpenAICompatibleProvider):
-                    provider_turn = provider.generate(messages)
+                    provider_turn = provider.generate(messages, run_id=run_id)
                     self._record_model_completed(
                         run_id=run_id,
                         request_id=request_id,
@@ -1031,13 +1113,23 @@ class OpenAICompatibleReactAdapter:
             timeout_seconds=self._config.adapter.provider.timeout_seconds,
             auth_headers=self._config.adapter.provider.auth_headers,
             tool_definitions=self._tool_registry.definitions(),
+            temperature=self._config.adapter.provider.temperature,
+            session_id=self._config.session_id,
+            managed_request=self._config.managed_request,
         )
 
     def _system_context(self) -> str:
+        from code4me2_agent.command_tools import available_commands
+
         workspace_root = self._config.workspace_root.as_posix()
+        executable_commands = available_commands(
+            self._config.commands.allowlisted_commands
+        )
+        command_summary = ", ".join(executable_commands) or "none"
         return (
             "You are a helpful programming assistant. "
             f"The current working directory and workspace root is {workspace_root}. "
+            f"The participant host operating system is {platform.system()}; executable commands allowed by policy are: {command_summary}. "
             "Respond conversationally to greetings and general questions without calling tools. "
             "Only use tools when the user explicitly asks you to read, search, create, edit, or list files, "
             "or to run a command in the workspace. "
@@ -1047,6 +1139,7 @@ class OpenAICompatibleReactAdapter:
             "Do not output code as text when the user expects you to apply the change. "
             "When the user asks you to run, execute, compile, or build a file or command, "
             "you MUST call run_command with the appropriate argv rather than just describing the command. "
+            "Never assume Bash or Unix utilities are installed when they are absent from the executable command list. "
             "When calling tools, prefer workspace-relative paths and cwd='.' unless the user explicitly asks for an absolute path. "
             "Do not invent container paths such as /workspace. "
             "After file tools complete, answer directly in assistant text; do not run commands just to print a confirmation."
@@ -1286,7 +1379,14 @@ def create_agent_adapter(
             tool_registry=ToolRegistry(
                 file_tools,
                 command_tools,
-                allowed_tools=config.tools,
+                allowed_tools=config.allowed_tools
+                if config.allowed_tools is not None
+                else (
+                    frozenset(config.tools)
+                    if getattr(config, "tools", None) is not None
+                    else None
+                ),
+                approval_policy=config.approval_policy,
                 event_sink=event_sink,
                 mcp_tools=mcp_tools,
             ),

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 from urllib import request
 from uuid import uuid4
 
@@ -13,6 +13,33 @@ if TYPE_CHECKING:
 
 
 SCHEMA_VERSION = "code4me.agent.event.v1"
+
+_CONTENT_PAYLOAD_KEYS = frozenset(
+    {
+        "arguments",
+        "argv",
+        "content",
+        "error_message",
+        "messages",
+        "new_text",
+        "old_text",
+        "query",
+        "request",
+        "response",
+        "result",
+        "stderr",
+        "stdout",
+        "text",
+    }
+)
+
+
+def _payload_without_content(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in _CONTENT_PAYLOAD_KEYS
+    }
 
 # TODO this file should be working with the database. and may be moved to another folder.
 class TelemetrySink(Protocol):
@@ -50,11 +77,16 @@ class ServerUploadTelemetrySink:
         upload_events: UploadEventsCallable,
         batch_size: int = 50,
         auth_headers: dict[str, str] | None = None,
+        auth_headers_provider: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         self._upload_events = upload_events
         self._batch_size = max(1, int(batch_size))
         self._auth_headers = dict(auth_headers or {})
+        self._auth_headers_provider = auth_headers_provider
         self._pending_run_events: dict[str, list[dict[str, Any]]] = {}
+
+    def set_auth_headers(self, auth_headers: dict[str, str]) -> None:
+        self._auth_headers = dict(auth_headers)
 
     def append(self, event: dict[str, Any]) -> None:
         run_id = event["run_id"]
@@ -70,7 +102,12 @@ class ServerUploadTelemetrySink:
 
             run_payload = _build_run_payload(pending_events)
             try:
-                self._upload_events(run_payload, pending_events, dict(self._auth_headers))
+                headers = (
+                    self._auth_headers_provider()
+                    if callable(self._auth_headers_provider)
+                    else dict(self._auth_headers)
+                )
+                self._upload_events(run_payload, pending_events, dict(headers))
             except Exception:
                 continue
             del self._pending_run_events[run_id]
@@ -149,19 +186,32 @@ def build_upload_sink(config: AgentConfig) -> ServerUploadTelemetrySink | None:
         upload_events=upload_events,
         batch_size=config.upload.batch_size,
         auth_headers=config.upload.auth_headers,
+        auth_headers_provider=config.upload.auth_headers_provider,
     )
 
 
 class AgentTelemetryRecorder:
     def __init__(self, config: AgentConfig, sinks: list[TelemetrySink] | None = None) -> None:
         self._config = config
-        self._jsonl = JsonlTelemetrySink(config.trace_path)
+        # Participant mode must not leave study prompts, tool arguments, or a
+        # surprise .code4me directory in the participant's project. The
+        # authenticated server sink remains the telemetry system of record;
+        # local JSONL is retained only for explicit developer configurations.
+        self._jsonl = None if config.managed_mode else JsonlTelemetrySink(config.trace_path)
         if sinks is None:
             upload_sink = build_upload_sink(config)
             self._sinks = [upload_sink] if upload_sink is not None else []
         else:
             self._sinks = sinks
         self._run_sequences: dict[str, int] = {}
+
+    def apply_config(self, config: AgentConfig) -> None:
+        """Refresh policy metadata and rotating bearer headers without dropping events."""
+        self._config = config
+        for sink in self._sinks:
+            set_auth_headers = getattr(sink, "set_auth_headers", None)
+            if callable(set_auth_headers):
+                set_auth_headers(config.upload.auth_headers)
 
     def record(
         self,
@@ -181,6 +231,11 @@ class AgentTelemetryRecorder:
         self._run_sequences[run_id] = sequence
 
         observed_tool = str(payload.get("tool_name", "none"))
+        stored_payload = (
+            payload
+            if self._config.store_agent_content
+            else _payload_without_content(payload)
+        )
         event = {
             "schema_version": SCHEMA_VERSION,
             "event_id": uuid4().hex,
@@ -192,8 +247,13 @@ class AgentTelemetryRecorder:
             "run_id": run_id,
             "request_id": request_id,
             "parent_event_id": parent_event_id,
-            "payload": payload,
-            "raw_payload": raw_payload if self._config.raw_capture_enabled else None,
+            "payload": stored_payload,
+            "raw_payload": (
+                raw_payload
+                if self._config.raw_capture_enabled
+                and self._config.store_agent_content
+                else None
+            ),
             "metrics": metrics or {},
             "privacy": {
                 "capture_mode": "raw" if self._config.raw_capture_enabled else "redacted",
@@ -213,7 +273,8 @@ class AgentTelemetryRecorder:
         if message_id is not None:
             event["message_id"] = message_id
 
-        self._jsonl.append(event)
+        if self._jsonl is not None:
+            self._jsonl.append(event)
         for sink in self._sinks:
             sink.append(event)
         return event

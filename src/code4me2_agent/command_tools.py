@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -393,6 +395,7 @@ class WorkspaceCommandTools:
                 errors="replace",
                 timeout=self._timeout_seconds,
                 check=False,
+                env=_external_command_environment(),
             )
         except subprocess.TimeoutExpired as exc:
             return (
@@ -408,6 +411,7 @@ class WorkspaceCommandTools:
             completed.returncode,
             False,
         )
+
 
     def _acp_run_command(self) -> Any | None:
         if not bool(getattr(self._acp_backend, "terminal_enabled", False)):
@@ -638,6 +642,25 @@ class WorkspaceCommandTools:
             payload=payload,
             raw_payload=None,
         )
+
+
+def available_commands(commands: list[str]) -> list[str]:
+    """Return policy commands which can actually launch on this machine."""
+    return [command for command in commands if shutil.which(command)]
+
+
+def _external_command_environment() -> dict[str, str]:
+    """Undo PyInstaller loader changes before spawning participant tools."""
+    environment = dict(os.environ)
+    environment.pop("_MEIPASS2", None)
+    original_library_path = environment.pop("LD_LIBRARY_PATH_ORIG", None)
+    if original_library_path is None:
+        environment.pop("LD_LIBRARY_PATH", None)
+    else:
+        environment["LD_LIBRARY_PATH"] = original_library_path
+    return environment
+
+
 def _resolve_method(client: object, names: list[str]) -> Any | None:
     for name in names:
         method = getattr(client, name, None)

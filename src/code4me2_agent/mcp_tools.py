@@ -7,13 +7,15 @@ import logging
 import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Event, Thread
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from mcp import Client, StdioServerParameters
 
 from code4me2_agent.acp_utils import capability_value
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

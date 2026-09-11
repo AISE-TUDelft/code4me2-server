@@ -3,10 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
+import stat
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib import error, request
+from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from code4me2_agent.config import ServerAgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +34,10 @@ class AcpAuthorizationFailure(Exception):
     pass
 
 
+class AcpSessionExpired(AcpAuthorizationFailure):
+    """The backend specifically rejected a bearer token as invalid/expired."""
+
+
 @dataclass(frozen=True)
 class AcpRuntimeScope:
     project_id: str
@@ -34,6 +45,7 @@ class AcpRuntimeScope:
 
 
 class AcpBackendAuthorization:
+    needs_workspace = False
     def __init__(
         self,
         *,
@@ -331,14 +343,15 @@ class AcpBackendAuthorization:
             with request.urlopen(http_request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except error.HTTPError as exc:
-            if exc.code == 404:
+            if exc.code == 404 and method.upper() == "GET":
                 return {}
             logger.warning(
                 "ACP authorized request failed with HTTP status %s url=%s.",
                 exc.code,
                 http_request.full_url,
             )
-            raise AcpAuthorizationFailure(
+            failure_type = AcpSessionExpired if exc.code == 401 else AcpAuthorizationFailure
+            raise failure_type(
                 "Code4Me ACP authorized request was rejected."
             ) from None
         except error.URLError as exc:
@@ -360,6 +373,21 @@ class AcpBackendAuthorization:
             raise AcpAuthorizationFailure(
                 "Code4Me ACP authorized request was rejected."
             ) from None
+
+    def create_managed_run(self, *, run_id: str, session_id: str) -> dict:
+        return self.authorized_json_request(
+            "POST", "/api/acp/runs", {"run_id": run_id, "session_id": session_id}
+        )
+
+    def managed_inference(
+        self, *, run_id: str, session_id: str, model_request: dict
+    ) -> dict:
+        return self.authorized_json_request(
+            "POST",
+            "/api/acp/inference",
+            {"run_id": run_id, "session_id": session_id, "request": model_request},
+            timeout=120.0,
+        )
 
     def _refresh_prepared_credentials(self) -> None:
         if self._workspace_root is None:
@@ -589,3 +617,205 @@ def _read_runtime_handoff_file(
 ) -> tuple[str | None, str | None]:
     values = _read_runtime_auth_values(workspace_root, include_home=include_home)
     return values.get("CODE4ME_ACP_BACKEND_URL"), values.get("CODE4ME_ACP_GRANT")
+
+
+def _path_format() -> str:
+    return "windows" if os.name == "nt" else "posix"
+
+
+def _bridge_directories() -> list[Path]:
+    override = os.environ.get("CODE4ME_BRIDGE_DIR", "").strip()
+    if override:
+        return [Path(override).expanduser()]
+    if os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return [root / "Code4Me" / "bridges"]
+    if platform.system() == "Darwin":
+        return [Path.home() / "Library" / "Caches" / "JetBrains" / "Code4Me" / "bridges"]
+    candidates: list[Path] = []
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if runtime_dir:
+        candidates.append(Path(runtime_dir) / "code4me" / "bridges")
+    candidates.append(Path.home() / ".cache" / "JetBrains" / "Code4Me" / "bridges")
+    return candidates
+
+
+def _record_is_private(path: Path) -> bool:
+    if os.name == "nt":
+        return True
+    try:
+        return not bool(stat.S_IMODE(path.stat().st_mode) & 0o077)
+    except OSError:
+        return False
+
+
+def _canonical_workspace(value: str | Path) -> str:
+    return os.path.normcase(str(Path(value).expanduser().resolve()))
+
+
+@dataclass(frozen=True)
+class PluginBridge:
+    endpoint: str
+    capability: str
+    record_path: Path
+
+
+def _bridge_is_live(bridge: PluginBridge) -> bool:
+    status_request = request.Request(
+        f"{bridge.endpoint}/v1/status",
+        headers={"Authorization": f"Bearer {bridge.capability}"},
+        method="GET",
+    )
+    try:
+        with request.urlopen(status_request, timeout=0.75) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return (
+            response.status == 200
+            and isinstance(payload, dict)
+            and payload.get("protocol_version") == "1"
+        )
+    except (error.HTTPError, error.URLError, TimeoutError, ValueError, OSError):
+        return False
+
+
+def discover_plugin_bridge(workspace: str | Path) -> PluginBridge:
+    """Return the single private, loopback-only IDE bridge for a workspace."""
+    expected = _canonical_workspace(workspace)
+    matches: list[PluginBridge] = []
+    for directory in _bridge_directories():
+        if not directory.is_dir():
+            continue
+        for record_path in directory.glob("*.json"):
+            if not _record_is_private(record_path):
+                logger.warning("Ignoring unsafe bridge record %s", record_path)
+                continue
+            try:
+                payload = json.loads(record_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(payload, dict) or str(payload.get("protocol_version")) != "1":
+                continue
+            raw_workspaces = payload.get("workspaces", [])
+            claimed: list[str] = []
+            if isinstance(raw_workspaces, list):
+                for item in raw_workspaces:
+                    value = item.get("workspace") if isinstance(item, dict) else item
+                    if isinstance(value, str):
+                        claimed.append(_canonical_workspace(value))
+            if expected not in claimed:
+                continue
+            endpoint = str(payload.get("base_url") or "").rstrip("/")
+            capability = str(payload.get("capability") or "")
+            parsed = urlparse(endpoint)
+            if (
+                parsed.scheme != "http"
+                or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}
+                or not capability
+            ):
+                continue
+            bridge = PluginBridge(endpoint, capability, record_path)
+            if _bridge_is_live(bridge):
+                matches.append(bridge)
+    if not matches:
+        raise AcpAuthorizationFailure(
+            "No authenticated Code4Me IDE instance is available for this workspace."
+        )
+    if len(matches) != 1:
+        raise AcpAuthorizationFailure(
+            "Multiple Code4Me IDE instances claim this workspace."
+        )
+    return matches[0]
+
+
+class ManagedBridgeAuthorization(AcpBackendAuthorization):
+    """Acquire short-lived backend credentials from the local plugin bridge."""
+
+    needs_workspace = True
+
+    def __init__(self) -> None:
+        super().__init__(backend_url=None, grant=None, workspace_root=None)
+        self._launch_id = uuid.uuid4().hex
+
+    def prepare_workspace(self, workspace: str | Path) -> None:
+        resolved = Path(workspace).expanduser().resolve()
+        if self._workspace_root == resolved and self.is_authenticated:
+            return
+        bridge = discover_plugin_bridge(resolved)
+        payload = {
+            "workspace": str(resolved),
+            "path_format": _path_format(),
+            "managed_protocol_version": "1",
+            "launch_id": self._launch_id,
+        }
+        http_request = request.Request(
+            f"{bridge.endpoint}/v1/grant",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {bridge.capability}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with request.urlopen(http_request, timeout=5.0) as response:
+                bridge_payload = json.loads(response.read().decode("utf-8"))
+        except (error.HTTPError, error.URLError, TimeoutError, ValueError) as exc:
+            raise AcpAuthorizationFailure(
+                "The Code4Me IDE authentication bridge rejected this workspace."
+            ) from exc
+        backend_url = bridge_payload.get("backend_url") if isinstance(bridge_payload, dict) else None
+        grant = bridge_payload.get("grant") if isinstance(bridge_payload, dict) else None
+        if not backend_url or not grant:
+            raise AcpAuthorizationFailure("The Code4Me IDE returned an invalid runtime grant.")
+        self._workspace_root = resolved
+        self._backend_url = str(backend_url).rstrip("/")
+        self._grant = str(grant)
+        self._acp_token = None
+        self._scope = None
+
+    def _refresh_prepared_credentials(self) -> None:
+        return
+
+    def _write_session_cache(self) -> None:
+        return
+
+    def authorized_json_request(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        timeout: float = 10.0,
+    ) -> dict:
+        try:
+            return super().authorized_json_request(
+                method, path, payload, timeout=timeout
+            )
+        except AcpSessionExpired:
+            if self._workspace_root is None:
+                raise
+            workspace = self._workspace_root
+            self._acp_token = None
+            self._scope = None
+            self.prepare_workspace(workspace)
+            self.authenticate()
+            return super().authorized_json_request(
+                method, path, payload, timeout=timeout
+            )
+
+    def fetch_agent_config(self) -> None:
+        if not self._backend_url or not self._acp_token:
+            raise AcpAuthorizationFailure("Managed agent configuration requires authentication.")
+        self._server_agent_config = None
+        payload = self._get(
+            "/api/acp/agent-config?managed_protocol_version=1",
+            headers={"Authorization": f"Bearer {self._acp_token}"},
+        )
+        from code4me2_agent.config import ServerAgentConfig
+
+        try:
+            self._server_agent_config = ServerAgentConfig.from_managed_payload(payload)
+        except ValueError as exc:
+            raise AcpAuthorizationFailure(
+                "The Code4Me server returned an invalid managed-agent policy."
+            ) from exc

@@ -5,16 +5,24 @@ import asyncio
 import json
 import logging
 import os
+import platform
 import shutil
 import sys
 from pathlib import Path
 
+from code4me2_agent._build_version import RUNTIME_VERSION
 from code4me2_agent.acp_runtime import run_acp_stdio
-from code4me2_agent.config import AgentConfig
-
+from code4me2_agent.config import (
+    AdapterConfig,
+    AgentConfig,
+    CommandConfig,
+    MemoryWindowConfig,
+    OpenAICompatibleProviderConfig,
+)
 
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/.code4me/agent-config.json")
 DEFAULT_ACP_JSON_PATH = os.path.expanduser("~/.code4me/acp.json")
+SUPPORTED_MANAGED_PLATFORMS = {"darwin", "linux", "win32"}
 
 # Scaffold written by `code4me2-agent init`. Deliberately specifies no model,
 # provider or API key: those come from the agent profile the backend assigns
@@ -83,7 +91,7 @@ def _resolve_agent_command() -> str:
         if resolved_command:
             return resolved_command
 
-    for command in ("code4me2-agent"):
+    for command in ("code4me2-agent",):
         resolved_command = shutil.which(command)
         if resolved_command:
             return resolved_command
@@ -108,6 +116,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--setup",
         action="store_true",
         help="Install default config files to ~/.code4me/ and print setup instructions.",
+    )
+    parser.add_argument(
+        "--managed",
+        action="store_true",
+        help="Run using the authenticated Code4Me IDE bridge and hosted backend.",
+    )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Print the packaged runtime version and exit.",
+    )
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="Check runtime dependencies and platform support without changing files.",
     )
     return parser
 
@@ -155,12 +178,82 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging()
     args = build_parser().parse_args(argv)
 
+    if args.version:
+        print(_runtime_version())
+        return
+
+    if args.self_check:
+        raise SystemExit(_self_check())
+
     if args.setup:
         _do_setup()
         sys.exit(0)
 
-    config = AgentConfig.from_file(args.config)
+    config = _managed_config() if args.managed else AgentConfig.from_file(args.config)
     asyncio.run(run_acp_stdio(config))
+
+
+def _runtime_version() -> str:
+    return RUNTIME_VERSION
+
+
+def _managed_config() -> AgentConfig:
+    workspace = Path.cwd().resolve()
+    if os.name == "nt":
+        commands = ["cmd", "powershell", "pwsh", "git", "python", "python3"]
+    else:
+        commands = list(DEFAULT_AGENT_CONFIG["commands"]["allowlist"])
+    return AgentConfig(
+        workspace_root=workspace,
+        trace_path=workspace / ".code4me" / "acp-trace.jsonl",
+        session_id="managed-bootstrap",
+        raw_capture_enabled=False,
+        store_agent_content=False,
+        commands=CommandConfig(allowlisted_commands=commands),
+        adapter=AdapterConfig(
+            name="openai_compatible_react",
+            max_iterations=1,
+            memory_window=MemoryWindowConfig(
+                scope="session", strategy="token_window", max_messages=20, max_tokens=6000
+            ),
+            provider=OpenAICompatibleProviderConfig(kind="managed_backend"),
+        ),
+        allowed_tools=frozenset(),
+        managed_mode=True,
+    )
+
+
+def _self_check() -> int:
+    from code4me2_agent.command_tools import available_commands
+
+    if os.name == "nt":
+        policy_commands = ["cmd", "powershell", "pwsh", "git", "python", "python3"]
+    else:
+        policy_commands = list(DEFAULT_AGENT_CONFIG["commands"]["allowlist"])
+    checks = {
+        "runtime_version": _runtime_version(),
+        "platform": sys.platform,
+        "platform_supported": sys.platform in SUPPORTED_MANAGED_PLATFORMS,
+        "python": platform.python_version(),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "os": platform.system(),
+        "architecture": platform.machine(),
+        "policy_commands": policy_commands,
+        "available_commands": available_commands(policy_commands),
+    }
+    try:
+        import acp  # noqa: F401
+        import openai  # noqa: F401
+        from acp.agent.router import build_agent_router  # noqa: F401
+        from mcp import Client, StdioServerParameters  # noqa: F401
+
+        checks["dependencies"] = "ok"
+    except ImportError as exc:
+        checks["dependencies"] = f"missing: {exc.name}"
+    ok = checks["platform_supported"] and checks["dependencies"] == "ok"
+    checks["status"] = "ok" if ok else "failed"
+    print(json.dumps(checks, sort_keys=True))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
