@@ -11,7 +11,7 @@ Admin-only endpoints for study lifecycle management.
 """
 
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 import random
 
@@ -51,6 +51,13 @@ class UpdateStudyRequest(BaseModel):
     is_active: Optional[bool] = None
 
 
+def _parse_study_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 @router.post("/create")
 def create_study(
     study_request: CreateStudyRequest,
@@ -70,10 +77,10 @@ def create_study(
     try:
         # Validate datetime formats
         try:
-            starts_at = datetime.fromisoformat(study_request.starts_at.replace('Z', '+00:00'))
+            starts_at = _parse_study_datetime(study_request.starts_at)
             ends_at = None
             if study_request.ends_at:
-                ends_at = datetime.fromisoformat(study_request.ends_at.replace('Z', '+00:00'))
+                ends_at = _parse_study_datetime(study_request.ends_at)
                 if ends_at <= starts_at:
                     raise HTTPException(status_code=400, detail="End time must be after start time")
         except ValueError:
@@ -121,7 +128,8 @@ def create_study(
         """
         active_study = db_session.execute(text(active_study_query)).fetchone()
         
-        if active_study and starts_at <= datetime.now():
+        now = datetime.now(timezone.utc)
+        if active_study and starts_at <= now:
             # Deactivate existing active study
             deactivate_query = """
             UPDATE study SET is_active = false WHERE is_active = true
@@ -130,7 +138,7 @@ def create_study(
         
         # Create new study
         study_id = uuid.uuid4()
-        is_active = starts_at <= datetime.now() and (ends_at is None or ends_at > datetime.now())
+        is_active = starts_at <= now and (ends_at is None or ends_at > now)
         
         create_query = """
         INSERT INTO study (study_id, name, description, created_by, starts_at, ends_at, is_active, default_config_id, created_at)
@@ -146,7 +154,7 @@ def create_study(
             "ends_at": ends_at,
             "is_active": is_active,
             "default_config_id": study_request.default_config_id,
-            "created_at": datetime.now()
+            "created_at": now
         })
         
         # If study is active, assign configurations to users
@@ -183,6 +191,9 @@ def create_study(
             }
         )
         
+    except HTTPException:
+        db_session.rollback()
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error creating study: {str(e)}")
@@ -708,14 +719,13 @@ def evaluate_study_agents(
     Evaluate an A/B study's *agent* arms.
 
     The agent-side mirror of ``evaluate_study``: aggregates agent telemetry
-    (``agent_task`` + ``agent_event``) per attached agent profile, within the
-    study's time window, and reports uplift against the baseline arm.
+    (``agent_task`` + ``agent_event``) per snapshotted profile and reports
+    uplift against the baseline arm.
 
-    A task counts toward an arm when its ``agent_profile`` name matches a study
-    profile and it was created inside ``[starts_at, ends_at]``. Matching by name
-    rather than profile_id is deliberate — the name is what gets snapshotted
-    onto the task, so historical tasks stay attributable even if the profile row
-    is later edited or deleted.
+    A task counts only when its immutable ``study_id`` and ``profile_id``
+    snapshots identify this study. Legacy tasks without those snapshots are
+    intentionally excluded rather than inferred from a mutable profile name or
+    a time window.
 
     Because both telemetry paths write into the same ``agent_event`` table, the
     same aggregation works whether an arm ran Goose, Codex, or the built-in
@@ -747,30 +757,26 @@ def evaluate_study_agents(
             "ends_at": study.ends_at,
         }
 
-        # Per-arm task-level aggregates. LEFT JOIN so an arm with zero tasks
-        # still appears as a row with zeros, rather than vanishing from the
-        # comparison (an arm nobody used is itself a finding).
+        # Per-profile task aggregates use the immutable execution snapshot.
+        # Legacy tasks without a study/profile snapshot are excluded.
         task_query = """
         SELECT
-            ap.profile_id,
-            ap.name AS profile_name,
-            ap.model,
-            ap.framework_version,
-            sap.is_baseline,
+            t.profile_id,
+            t.study_arm_name AS profile_name,
+            t.model,
+            t.framework_version,
+            t.study_arm_is_baseline AS is_baseline,
             COUNT(DISTINCT t.task_id) AS total_tasks,
             COUNT(DISTINCT t.task_id) FILTER (WHERE t.status = 'done') AS completed_tasks,
             COUNT(DISTINCT COALESCE(t.owner_user_id, t.session_id)) AS total_participants,
             AVG(t.total_steps) AS avg_steps,
             SUM(t.input_tokens) AS total_input_tokens,
             SUM(t.output_tokens) AS total_output_tokens
-        FROM study_agent_profile sap
-        JOIN agent_profile ap ON ap.profile_id = sap.profile_id
-        LEFT JOIN agent_task t
-            ON t.agent_profile = ap.name
-            AND t.created_at BETWEEN :starts_at AND COALESCE(:ends_at, NOW())
-        WHERE sap.study_id = :study_id
-        GROUP BY ap.profile_id, ap.name, ap.model, ap.framework_version, sap.is_baseline
-        ORDER BY ap.name
+        FROM agent_task t
+        WHERE t.study_id = :study_id AND t.profile_id IS NOT NULL
+        GROUP BY t.profile_id, t.study_arm_name, t.model, t.framework_version,
+             t.study_arm_is_baseline
+        ORDER BY t.study_arm_name, t.profile_id
         """
         task_rows = db_session.execute(text(task_query), window).fetchall()
 
@@ -778,22 +784,18 @@ def evaluate_study_agents(
         # aggregates above aren't inflated by the event-row fan-out.
         event_query = """
         SELECT
-            ap.name AS profile_name,
+            t.profile_id,
             COUNT(e.event_id) FILTER (WHERE e.event_type = 'model_call') AS model_calls,
             COUNT(e.event_id) FILTER (WHERE e.event_type = 'tool_call') AS tool_calls,
             AVG(e.latency_ms) FILTER (WHERE e.event_type = 'model_call') AS avg_model_latency_ms,
             SUM(e.total_tokens) AS total_tokens
-        FROM study_agent_profile sap
-        JOIN agent_profile ap ON ap.profile_id = sap.profile_id
-        LEFT JOIN agent_task t
-            ON t.agent_profile = ap.name
-            AND t.created_at BETWEEN :starts_at AND COALESCE(:ends_at, NOW())
+        FROM agent_task t
         LEFT JOIN agent_event e ON e.task_id = t.task_id
-        WHERE sap.study_id = :study_id
-        GROUP BY ap.name
+        WHERE t.study_id = :study_id AND t.profile_id IS NOT NULL
+        GROUP BY t.profile_id
         """
         event_rows = {
-            row.profile_name: row
+            str(row.profile_id): row
             for row in db_session.execute(text(event_query), window).fetchall()
         }
 
@@ -803,22 +805,18 @@ def evaluate_study_agents(
         # edits but gets fewer accepted is worse, not better.
         edit_query = """
         SELECT
-            ap.name AS profile_name,
+            t.profile_id,
             COUNT(ed.edit_id) AS total_edits,
             COUNT(ed.edit_id) FILTER (WHERE ed.was_accepted IS TRUE) AS accepted_edits,
             COUNT(ed.edit_id) FILTER (WHERE ed.was_accepted IS FALSE) AS rejected_edits,
             COUNT(ed.edit_id) FILTER (WHERE ed.was_modified IS TRUE) AS modified_edits
-        FROM study_agent_profile sap
-        JOIN agent_profile ap ON ap.profile_id = sap.profile_id
-        LEFT JOIN agent_task t
-            ON t.agent_profile = ap.name
-            AND t.created_at BETWEEN :starts_at AND COALESCE(:ends_at, NOW())
+        FROM agent_task t
         LEFT JOIN agent_edit ed ON ed.task_id = t.task_id
-        WHERE sap.study_id = :study_id
-        GROUP BY ap.name
+        WHERE t.study_id = :study_id AND t.profile_id IS NOT NULL
+        GROUP BY t.profile_id
         """
         edit_rows = {
-            row.profile_name: row
+            str(row.profile_id): row
             for row in db_session.execute(text(edit_query), window).fetchall()
         }
 
@@ -832,8 +830,8 @@ def evaluate_study_agents(
         baseline_arm = None
 
         for row in task_rows:
-            events = event_rows.get(row.profile_name)
-            edits = edit_rows.get(row.profile_name)
+            events = event_rows.get(str(row.profile_id))
+            edits = edit_rows.get(str(row.profile_id))
             total_tasks = _i(row.total_tasks)
             total_edits = _i(edits.total_edits) if edits else 0
             accepted_edits = _i(edits.accepted_edits) if edits else 0

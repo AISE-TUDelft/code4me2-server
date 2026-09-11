@@ -78,7 +78,7 @@ FALLBACK_MAX_ITERATIONS = 6
 FALLBACK_MAX_CONTEXT_TOKENS = 16_000
 MANAGED_PROTOCOL_VERSION = "1"
 MANAGED_RUNTIME = "code4me2-agent"
-EXPECTED_SCHEMA_REVISION = "f3c4d5e6a7b9"
+EXPECTED_SCHEMA_REVISION = "f3c4d5e6f7a9"
 SUPPORTED_APPROVAL_POLICIES = frozenset({"auto", "per_step", "suggestion_only"})
 
 _BEARER_PREFIX = "Bearer "
@@ -668,11 +668,12 @@ def create_managed_run(
 
         from agents import registry
 
-        profile = registry.resolve_assignment(db, user_id)
-        if profile is None:
+        assignment = registry.resolve_assignment_context(db, user_id)
+        if assignment is None:
             raise HTTPException(
                 status_code=503, detail="No active study agent profile is assigned to this user"
             )
+        profile = assignment.profile
         policy = _managed_policy(db, user_id, profile)
         task = crud.create_agent_task(
             db,
@@ -691,6 +692,12 @@ def create_managed_run(
             status="running",
             started_at=datetime.now(timezone.utc),
             policy_snapshot=policy,
+            study_id=assignment.study_id,
+            study_assignment_id=assignment.assignment_id,
+            profile_id=profile.profile_id,
+            study_arm_name=assignment.arm_name,
+            study_arm_is_baseline=assignment.is_baseline,
+            consent_content_storage=policy["store_agent_content"],
         )
         return JSONResponse(
             {"task_id": str(task.task_id), "run_id": body.run_id, "policy": policy},

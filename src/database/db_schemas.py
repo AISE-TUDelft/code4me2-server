@@ -30,6 +30,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -816,6 +817,43 @@ class AgentProfileAssignment(Base):
     profile = relationship("AgentProfile")
 
 
+class AgentStudyAssignment(Base):
+    """User-to-arm assignment within one specific study."""
+
+    __tablename__ = "agent_study_assignment"
+    __table_args__ = (
+        Index("idx_agent_study_assignment_study_id", "study_id"),
+        Index("idx_agent_study_assignment_profile_id", "profile_id"),
+        UniqueConstraint("study_id", "user_id", name="uq_agent_study_assignment"),
+        {"schema": "public"},
+    )
+
+    assignment_id = Column(UUID(as_uuid=True), primary_key=True)
+    study_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.study.study_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_profile.profile_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    arm_name = Column(String, nullable=False)
+    is_baseline = Column(Boolean, server_default="false", default=False, nullable=False)
+    source = Column(String, nullable=False, server_default="auto")
+    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+
+    study = relationship("Study")
+    user = relationship("User")
+    profile = relationship("AgentProfile")
+
+
 class AgentTask(Base):
     """One row per agent session a developer starts.
 
@@ -832,6 +870,9 @@ class AgentTask(Base):
         Index("idx_agent_task_status", "status"),
         Index("idx_agent_task_session_id", "session_id"),
         Index("idx_agent_task_owner_user_id", "owner_user_id"),
+        Index("idx_agent_task_study_id", "study_id"),
+        Index("idx_agent_task_study_assignment_id", "study_assignment_id"),
+        Index("idx_agent_task_profile_id", "profile_id"),
         {"schema": "public"},
     )
 
@@ -855,6 +896,19 @@ class AgentTask(Base):
     # matched back to their task without forcing the runtime to adopt our ids.
     external_run_id = Column(String, unique=True, nullable=True)
     agent_session_id = Column(String, nullable=True)
+    study_id = Column(UUID(as_uuid=True), ForeignKey("public.study.study_id"), nullable=True)
+    study_assignment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_study_assignment.assignment_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_profile.profile_id"),
+        nullable=True,
+    )
+    study_arm_name = Column(String, nullable=True)
+    study_arm_is_baseline = Column(Boolean, nullable=True)
     agent_profile = Column(String, nullable=False)
     model = Column(String, nullable=False)
     # Snapshotted from the assigned profile at task-creation time, like `model`, so
@@ -868,6 +922,10 @@ class AgentTask(Base):
     framework_version = Column(String, nullable=True)
     # Complete, versioned managed-runtime policy. Nullable for legacy tasks.
     policy_snapshot = Column(JSONB, nullable=True)
+    observed_framework_version = Column(String, nullable=True)
+    observed_tools_json = Column(Text, nullable=True)
+    consent_content_storage = Column(Boolean, nullable=True)
+    next_event_index = Column(Integer, nullable=False, server_default="0")
     status = Column(String, nullable=False)  # pending | running | done | failed
     created_at = Column(DateTime, default=datetime.now)
     started_at = Column(DateTime(timezone=True), nullable=True)
@@ -895,6 +953,10 @@ class AgentTask(Base):
     # Content — written only when store_agent_content resolves True
     task_description = Column(Text, nullable=True)
 
+    study = relationship("Study")
+    study_assignment = relationship("AgentStudyAssignment")
+    profile = relationship("AgentProfile")
+
 
 class AgentEvent(Base):
     """One row per agent step, from either telemetry path.
@@ -914,6 +976,10 @@ class AgentEvent(Base):
         Index("idx_agent_event_task_id", "task_id"),
         Index("idx_agent_event_event_type", "event_type"),
         Index("idx_agent_event_created_at", "created_at"),
+        UniqueConstraint("task_id", "event_index", name="uq_agent_event_task_event_index"),
+        UniqueConstraint(
+            "task_id", "source", "source_event_id", name="uq_agent_event_source_identity"
+        ),
         {"schema": "public"},
     )
 
@@ -930,6 +996,7 @@ class AgentEvent(Base):
     # Which telemetry path wrote this row: "proxy" (client-side relay observing
     # a third-party agent) or "code4me2_agent" (runtime self-report).
     source = Column(String, nullable=True)
+    source_event_id = Column(String, nullable=True)
     # Envelope schema version reported by a self-reporting runtime, so old
     # batches stay interpretable after the envelope evolves.
     schema_version = Column(String, nullable=True)

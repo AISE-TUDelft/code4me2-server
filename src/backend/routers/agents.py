@@ -125,12 +125,13 @@ def create_agent_task(
                 status_code=401, detail="Session is not associated with a user"
             )
 
-        profile = registry.resolve_assignment(db, session.user_id)
-        if profile is None:
+        assignment = registry.resolve_assignment_context(db, session.user_id)
+        if assignment is None:
             raise HTTPException(
                 status_code=503,
                 detail="No active agent profiles are configured on the server",
             )
+        profile = assignment.profile
 
         # task_description is the user's own words — content, so honour the
         # consent gate even at creation time.
@@ -149,6 +150,12 @@ def create_agent_task(
             owner_user_id=session.user_id,
             task_id=body.task_id,
             source="plugin",
+            study_id=assignment.study_id,
+            study_assignment_id=assignment.assignment_id,
+            profile_id=profile.profile_id,
+            study_arm_name=assignment.arm_name,
+            study_arm_is_baseline=assignment.is_baseline,
+            consent_content_storage=content_included,
         )
         logging.info(
             f"[Agent/task] created task_id={task.task_id} profile={profile.name!r} "
@@ -209,13 +216,9 @@ async def run_agent_inference(
         # Resolved server-side from the stored preference, never from the
         # request body — see backend.routers.agent.consent.
         content_included = resolve_store_agent_content(db, session_id)
-        # The profile is looked up only for the provider triple, which isn't
-        # snapshotted onto the task (rotating a base_url or key should take
-        # effect immediately, unlike the experimental conditions).
-        profile = crud.get_agent_profile(db, task.agent_profile)
+        profile = task.profile or crud.get_agent_profile(db, task.agent_profile)
         base_url = profile.base_url if profile else None
         api_key_ref = profile.api_key_ref if profile else None
-        # Snapshot values needed after the session closes.
         task_snapshot = {
             "agent_profile": task.agent_profile,
             "model": task.model,
@@ -350,7 +353,11 @@ def upload_agent_telemetry(
                 f"steps={len(child_spans)} tokens={total_prompt}/{total_completion}"
             )
 
-        base_index = crud.count_agent_events_for_task(db, task_id)
+        base_index = (
+            crud.reserve_agent_event_indexes(db, task_id, len(child_spans))
+            if child_spans
+            else 0
+        )
         for offset, span in enumerate(child_spans):
             event_type = _SPAN_EVENT_TYPE.get(span.name, "observation")
             attrs = span.attributes or {}
@@ -369,6 +376,8 @@ def upload_agent_telemetry(
                 event_index=base_index + offset,
                 event_type=event_type,
                 source="proxy",
+                source_event_id=span.span_id,
+                ignore_duplicate_source=True,
                 latency_ms=span.duration_ms if span.duration_ms > 0 else None,
                 span_id=span.span_id,
                 parent_span_id=parent_span_uuid,

@@ -305,8 +305,9 @@ def ingest_event_batch(
     to retry after a network failure — the uploader has no way to know whether a
     timed-out POST was applied.
 
-    The whole batch commits once: a partial write would leave gaps in
-    ``event_index``, which downstream step counting relies on being dense.
+    The whole batch commits once. Source identity makes retries idempotent;
+    task-local indexes are allocated atomically, so concurrent batches cannot
+    claim the same event position.
     """
     if not events:
         return 0, []
@@ -315,34 +316,55 @@ def ingest_event_batch(
     # even if the batch arrives out of order.
     ordered = sorted(events, key=lambda e: e.get("sequence") or 0)
 
-    span_ids = [str(e["event_id"]) for e in ordered if e.get("event_id")]
-    already_seen = set(crud.find_existing_agent_event_span_ids(db, span_ids))
+    source_event_ids = [str(e["event_id"]) for e in ordered if e.get("event_id")]
+    already_seen = set(
+        crud.find_existing_agent_event_source_ids(
+            db,
+            task_id=task_id,
+            source=SOURCE_SELF_REPORT,
+            source_event_ids=source_event_ids,
+        )
+    )
 
     by_request_id, by_tool_call_id = build_correlation_index(ordered)
-    next_index = crud.count_agent_events_for_task(db, task_id)
-
-    ingested = 0
     skipped: list[str] = []
+    pending: list[tuple[dict, str]] = []
+    seen_in_batch: set[str] = set()
     for event in ordered:
-        span_id = str(event["event_id"]) if event.get("event_id") else None
-        if span_id is not None and span_id in already_seen:
-            skipped.append(span_id)
+        source_event_id = str(event["event_id"]) if event.get("event_id") else None
+        if source_event_id is None:
             continue
+        if source_event_id in already_seen or source_event_id in seen_in_batch:
+            skipped.append(source_event_id)
+            continue
+        seen_in_batch.add(source_event_id)
+        pending.append((event, source_event_id))
+
+    first_index = (
+        crud.reserve_agent_event_indexes(db, task_id, len(pending)) if pending else 0
+    )
+    ingested = 0
+    for offset, (event, source_event_id) in enumerate(pending):
         columns = map_event_to_columns(
             event,
             content_included=content_included,
             by_request_id=by_request_id,
             by_tool_call_id=by_tool_call_id,
         )
-        crud.append_agent_event(
+        inserted = crud.append_agent_event(
             db,
             task_id=task_id,
-            event_index=next_index + ingested,
+            event_index=first_index + offset,
             agent_profile=agent_profile,
+            source_event_id=source_event_id,
+            ignore_duplicate_source=True,
             commit=False,
             **columns,
         )
-        ingested += 1
+        if inserted is None:
+            skipped.append(source_event_id)
+        else:
+            ingested += 1
 
     db.commit()
     logging.info(

@@ -53,13 +53,16 @@ def write_model_call_event(
     parent_span_id = span.get("parent_span_id")
     db = app.get_db_session()
     try:
-        event_index = crud.count_agent_events_for_task(db, task_uuid)
+        event_index = crud.reserve_agent_event_indexes(db, task_uuid, 1)
+        source_event_id = span.get("span_id") or record.request_id
         crud.append_agent_event(
             db,
             task_id=task_uuid,
             event_index=event_index,
             event_type="model_call",
             source=SOURCE_PROXY,
+            source_event_id=source_event_id,
+            ignore_duplicate_source=source_event_id is not None,
             latency_ms=latency_ms,
             # span identifiers
             span_id=span.get("span_id") or record.request_id,
@@ -147,7 +150,7 @@ def write_tool_call_events(
 
     db = app.get_db_session()
     try:
-        event_index = crud.count_agent_events_for_task(db, task_uuid)
+        event_index = crud.reserve_agent_event_indexes(db, task_uuid, len(tool_executions))
         for offset, tc in enumerate(tool_executions):
             arguments = tc.get("arguments")
             result = tc.get("result")
@@ -165,14 +168,17 @@ def write_tool_call_events(
             if isinstance(result, str):
                 tool_result_length = len(result)
 
+            source_event_id = tc.get("id") or tc.get("tool_call_id")
             crud.append_agent_event(
                 db,
                 task_id=task_uuid,
                 event_index=event_index + offset,
                 event_type="tool_call",
                 source=SOURCE_PROXY,
+                source_event_id=str(source_event_id) if source_event_id else None,
+                ignore_duplicate_source=source_event_id is not None,
                 latency_ms=latency_ms,
-                span_id=str(uuid.uuid4()),
+                span_id=str(source_event_id) if source_event_id else str(uuid.uuid4()),
                 parent_span_id=parent_span,
                 chat_session_index=chat_session_index,
                 tool_name=tc.get("name"),
