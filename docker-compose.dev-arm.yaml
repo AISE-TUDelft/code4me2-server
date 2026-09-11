@@ -78,7 +78,7 @@ services:
       dockerfile: Dockerfile.cpu
     container_name: celery-worker
     env_file:
-      - ./src/backend/completion/.env
+      - ./.env
     command: [
         "/bin/bash",
         "-c",
@@ -133,7 +133,7 @@ services:
       dockerfile: Dockerfile.cpu
     container_name: backend
     env_file:
-      - ./src/backend/completion/.env
+      - ./.env
     command: ["/bin/bash", "-c", "source activate myenv && python /app/src/main.py"]
     expose:
       - ${SERVER_PORT:-8008}
