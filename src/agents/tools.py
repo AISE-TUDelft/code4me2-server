@@ -36,6 +36,9 @@ CODE4ME2_AGENT_TOOLS: frozenset[str] = frozenset(
         "list_files",
         "search_files",
         "run_command",
+        # Explicit opt-in for any tool exposed by client-supplied ACP MCP servers.
+        # Concrete names remain filtered and approval-gated by the managed runtime.
+        "mcp__*",
     }
 )
 

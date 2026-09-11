@@ -243,6 +243,11 @@ class PrepareAcpGrantPostResponse(BaseResponse):
     grant: str = Field(..., description="One-time ACP launch grant.")
     workspace: str = Field(..., description="Authorized canonical workspace.")
     expires_in_seconds: int = Field(default=300, description="Grant lifetime.")
+    launch_id: Optional[str] = Field(default=None, description="Managed launch identity.")
+    path_format: Optional[str] = Field(default=None, description="Client path syntax.")
+    managed_protocol_version: Optional[str] = Field(
+        default=None, description="Negotiated managed-agent protocol."
+    )
 
 
 class ExchangeAcpGrantPostResponse(BaseResponse):
@@ -316,6 +321,12 @@ class AcpAgentConfigGetResponse(BaseResponse):
         "Advisory only — the server enforces this regardless of what the agent "
         "sends, so the agent may use it to avoid transmitting content "
         "needlessly but cannot use it to enable capture.",
+    )
+    transport: Optional[str] = Field(
+        default=None, description="Managed inference transport selected by the server."
+    )
+    managed_protocol_version: Optional[str] = Field(
+        default=None, description="Negotiated managed-agent protocol."
     )
 
 

@@ -1473,6 +1473,7 @@ def create_agent_task(
     agent_session_id: Optional[str] = None,
     status: str = "pending",
     started_at: Optional[datetime] = None,
+    policy_snapshot: Optional[dict] = None,
 ) -> db_schemas.AgentTask:
     task = db_schemas.AgentTask(
         task_id=task_id or uuid.uuid4(),
@@ -1490,6 +1491,7 @@ def create_agent_task(
         external_run_id=external_run_id,
         agent_session_id=agent_session_id,
         started_at=started_at,
+        policy_snapshot=policy_snapshot,
         task_description=task_description,
     )
     db.add(task)

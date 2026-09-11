@@ -31,7 +31,7 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from .db import Base
@@ -866,6 +866,8 @@ class AgentTask(Base):
     # the profile, but left nullable so the proxy can backfill the concrete
     # version string it observes ("goose 1.x") on the first inference call.
     framework_version = Column(String, nullable=True)
+    # Complete, versioned managed-runtime policy. Nullable for legacy tasks.
+    policy_snapshot = Column(JSONB, nullable=True)
     status = Column(String, nullable=False)  # pending | running | done | failed
     created_at = Column(DateTime, default=datetime.now)
     started_at = Column(DateTime(timezone=True), nullable=True)

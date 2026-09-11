@@ -23,13 +23,13 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from agents import ingest as ingest_module
 from agents import lifecycle, registry
 from App import App
-from backend.acp_authorization import AcpSessionAuthorization
+from backend.acp_authorization import AcpSessionAuthorization  # noqa: TC001 - FastAPI route
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.agent.acp_auth import require_acp_scope
 from backend.routers.agent.consent import resolve_store_agent_content_for_acp
@@ -101,9 +101,10 @@ def _resolve_or_create_task(
     """Find the task backing this run, creating it on the first batch.
 
     Returns ``(task, created)``. Raises 403 if a task exists for this run id but
-    belongs to a different user — the run id is runtime-generated, so an
-    ownership check is the only thing preventing one agent process from writing
-    into another user's task.
+    belongs to a different user or project, and 409 if it belongs to a different
+    ACP session — the run id is runtime-generated, so ownership checks are the
+    only thing preventing one agent process from writing into another scope's
+    task.
     """
     task = crud.get_agent_task_by_external_run_id(db, run.run_id)
 
@@ -124,6 +125,33 @@ def _resolve_or_create_task(
             raise HTTPException(
                 status_code=403,
                 detail="Agent run is not authorized for this ACP session.",
+            )
+        # Managed runs are bound to one project and one ACP session at creation
+        # (/api/acp/runs). A second project reusing the same run_id — e.g. two
+        # IDE windows sharing a user — must not append telemetry to another
+        # project's task.
+        if (
+            task.owner_project_id is not None
+            and owner_project_uuid is not None
+            and task.owner_project_id != owner_project_uuid
+        ):
+            logging.warning(
+                f"[Agent/ingest] 403 — run {run.run_id} owned by another project"
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Agent run is not authorized for this ACP session.",
+            )
+        if (
+            task.agent_session_id is not None
+            and run.session_id != task.agent_session_id
+        ):
+            logging.warning(
+                f"[Agent/ingest] 409 — run {run.run_id} belongs to another ACP session"
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="Agent run belongs to another ACP session.",
             )
         return task, False
 
@@ -172,6 +200,18 @@ def ingest_agent_events(
     if any(event.run_id != body.run.run_id for event in body.events):
         raise HTTPException(
             status_code=400, detail="All events must belong to the request run_id."
+        )
+    if body.run.source != "code4me2_agent" or any(
+        event.source != "code4me2_agent" for event in body.events
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Managed telemetry must use the code4me2_agent source.",
+        )
+    if any(event.session_id != body.run.session_id for event in body.events):
+        raise HTTPException(
+            status_code=400,
+            detail="All events must belong to the request ACP session.",
         )
 
     db = app.get_db_session()
@@ -225,6 +265,7 @@ def ingest_agent_events(
 @router.get("/runs/{run_id}", summary="Read back a self-reported agent run")
 def get_agent_run(
     run_id: str,
+    session_id: str = Query(..., min_length=1, max_length=500),
     app: App = Depends(App.get_instance),
     scope: AcpSessionAuthorization = Depends(require_acp_scope),
 ) -> JsonResponseWithStatus:
@@ -242,6 +283,20 @@ def get_agent_run(
             raise HTTPException(
                 status_code=403,
                 detail="Agent run is not authorized for this ACP session.",
+            )
+        try:
+            owner_project_uuid = uuid.UUID(str(scope.project_id))
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=401, detail="ACP scope has no valid project")
+        if task.owner_project_id != owner_project_uuid:
+            raise HTTPException(
+                status_code=403,
+                detail="Agent run is not authorized for this ACP project.",
+            )
+        if task.agent_session_id != session_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Agent run belongs to another ACP session.",
             )
 
         events = crud.get_agent_events_by_task(db, task.task_id)

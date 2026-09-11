@@ -27,7 +27,6 @@ import logging
 import time
 import uuid
 from collections import Counter
-from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 import httpx
@@ -55,6 +54,8 @@ from agents.tools import KNOWN_AGENT_TOOLS
 from database import crud
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from App import App
 
 # Upstream request timeout. Agent turns with large contexts are slow, and a
@@ -76,6 +77,7 @@ async def run_inference(
     framework_version: Optional[str] = None,
     content_included: bool = False,
     profile_tools_json: Optional[str] = None,
+    record_observation_events: bool = True,
     app: App,
 ) -> Response:
     """Forward one agent inference call upstream and record it as an agent_event.
@@ -254,15 +256,16 @@ async def run_inference(
     tool_executions = extract_tool_executions(
         new_messages, is_responses_api=is_responses_api
     )
-    write_tool_call_events(
-        app,
-        task_uuid,
-        chat_session_index,
-        tool_executions,
-        prev_call_at,
-        content_included,
-        parent_span_id=prev_model_call_span_id,
-    )
+    if record_observation_events:
+        write_tool_call_events(
+            app,
+            task_uuid,
+            chat_session_index,
+            tool_executions,
+            prev_call_at,
+            content_included,
+            parent_span_id=prev_model_call_span_id,
+        )
 
     system_content = next(
         (
@@ -305,11 +308,15 @@ async def run_inference(
         effective_allowlist = (
             profile_tools if profile_tools is not None else KNOWN_AGENT_TOOLS
         )
-        kept = [
-            t
-            for t in original_tools
-            if t.get("function", {}).get("name") in effective_allowlist
-        ]
+        kept = []
+        for tool in original_tools:
+            tool_name = tool.get("function", {}).get("name")
+            if tool_name in effective_allowlist or (
+                "mcp__*" in effective_allowlist
+                and isinstance(tool_name, str)
+                and tool_name.startswith("mcp__")
+            ):
+                kept.append(tool)
         tools_stripped = len(original_tools) - len(kept)
         tools_kept = len(kept)
         for tool in kept:
@@ -491,9 +498,10 @@ async def run_inference(
                     captured_status[0] if captured_status else 0,
                 )
                 _log_record(record)
-                write_model_call_event(
-                    app, task_uuid, record, latency_ms, span, extra
-                )
+                if record_observation_events:
+                    write_model_call_event(
+                        app, task_uuid, record, latency_ms, span, extra
+                    )
 
         return StreamingResponse(_stream(), media_type="text/event-stream")
 
@@ -533,7 +541,8 @@ async def run_inference(
         upstream_resp.status_code,
     )
     _log_record(record)
-    write_model_call_event(app, task_uuid, record, latency_ms, span, extra)
+    if record_observation_events:
+        write_model_call_event(app, task_uuid, record, latency_ms, span, extra)
 
     return Response(
         content=upstream_resp.content,

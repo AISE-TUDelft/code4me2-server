@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Optional, Protocol, Union
 
 
@@ -66,6 +66,9 @@ class AcpAuthorizationDenied(Exception):
 class PreparedAcpGrant:
     grant: str
     workspace: str
+    launch_id: Optional[str] = None
+    path_format: Optional[str] = None
+    managed_protocol_version: Optional[str] = None
     expires_in_seconds: int = 300
 
 
@@ -135,6 +138,9 @@ class AcpAuthorizationService:
         auth_token: str,
         project_id: str,
         workspace: str,
+        launch_id: Optional[str] = None,
+        path_format: Optional[str] = None,
+        managed_protocol_version: Optional[str] = None,
     ) -> PreparedAcpGrant:
         """Mint a one-time launch grant for an authenticated plugin.
 
@@ -142,23 +148,68 @@ class AcpAuthorizationService:
         so re-preparing (which the plugin does on every startup and login)
         leaves exactly one usable grant rather than accumulating valid tokens.
         """
+        managed_values = (launch_id, path_format, managed_protocol_version)
+        if any(value is not None for value in managed_values) and not all(
+            value is not None for value in managed_values
+        ):
+            raise AcpAuthorizationDenied(
+                "Managed launch identity, path format, and protocol are required together."
+            )
+        if managed_protocol_version is not None and managed_protocol_version != "1":
+            raise AcpAuthorizationDenied("Unsupported managed protocol version.")
+        canonical_workspace = (
+            self._validate_client_workspace(workspace, path_format)
+            if path_format is not None
+            else self._canonical_workspace(workspace)
+        )
         state = self._active_plugin_scope(
             auth_token=auth_token,
             project_id=project_id,
-            workspace=workspace,
+            workspace=canonical_workspace,
+            already_canonical=True,
         )
-        grant = self._token_factory()
-        pending = self._tokens.get("acp_pending_grant", state["parent_session_token"])
+        if launch_id is not None:
+            state["launch_id"] = launch_id
+        if path_format is not None:
+            state["path_format"] = path_format
+        if managed_protocol_version is not None:
+            state["managed_protocol_version"] = managed_protocol_version
+        pending_key = self._pending_grant_key(state, launch_id)
+        pending = self._tokens.get("acp_pending_grant", pending_key)
         if pending is not None and pending.get("grant"):
-            self._tokens.discard("acp_grant", pending["grant"])
+            pending_grant = pending["grant"]
+            pending_state = self._tokens.get("acp_grant", pending_grant)
+            if launch_id is not None and pending_state == {
+                **state,
+                "pending_grant_key": pending_key,
+            }:
+                # A bridge request can be retried after its HTTP response is
+                # lost. Return the still-live grant for this exact launch so
+                # two concurrent responses cannot invalidate each other.
+                return PreparedAcpGrant(
+                    grant=pending_grant,
+                    workspace=state["workspace"],
+                    launch_id=launch_id,
+                    path_format=path_format,
+                    managed_protocol_version=managed_protocol_version,
+                )
+            self._tokens.discard("acp_grant", pending_grant)
+        grant = self._token_factory()
+        state["pending_grant_key"] = pending_key
         self._tokens.set("acp_grant", grant, state, force_reset_exp=True)
         self._tokens.set(
             "acp_pending_grant",
-            state["parent_session_token"],
+            pending_key,
             {"grant": grant},
             force_reset_exp=True,
         )
-        return PreparedAcpGrant(grant=grant, workspace=state["workspace"])
+        return PreparedAcpGrant(
+            grant=grant,
+            workspace=state["workspace"],
+            launch_id=launch_id,
+            path_format=path_format,
+            managed_protocol_version=managed_protocol_version,
+        )
 
     def exchange_grant(self, grant: str) -> AcpSessionAuthorization:
         """Trade a launch grant for an agent session token.
@@ -178,6 +229,9 @@ class AcpAuthorizationService:
             raise AcpAuthorizationDenied(
                 "ACP grant is invalid or has already been used."
             )
+        pending_key = consumed_state.get("pending_grant_key")
+        if pending_key:
+            self._tokens.discard("acp_pending_grant", pending_key)
         acp_token = self._token_factory()
         self._tokens.set("acp_session", acp_token, consumed_state, force_reset_exp=True)
         return AcpSessionAuthorization(
@@ -237,6 +291,7 @@ class AcpAuthorizationService:
         auth_token: str,
         project_id: str,
         workspace: str,
+        already_canonical: bool = False,
     ) -> dict[str, str]:
         auth_info = self._tokens.get("auth_token", auth_token)
         if auth_info is None or not auth_info.get("user_id"):
@@ -245,12 +300,17 @@ class AcpAuthorizationService:
         user_info = self._tokens.get("user_token", user_id)
         if user_info is None or not user_info.get("session_token"):
             raise AcpAuthorizationDenied("An active plugin session is required.")
+        # Managed grants arrive with a client-canonicalized workspace (validated
+        # against the participant OS without touching the server filesystem).
+        # Re-resolving that value with the server OS would reject Windows drive
+        # paths on a Linux backend, so already-canonical values are preserved.
+        canonical = workspace if already_canonical else self._canonical_workspace(workspace)
         return self._bound_scope(
             auth_token=auth_token,
             user_id=user_id,
             session_token=user_info["session_token"],
             project_id=project_id,
-            workspace=self._canonical_workspace(workspace),
+            workspace=canonical,
         )
 
     def _require_active_scope(self, state: dict[str, str]) -> None:
@@ -318,3 +378,25 @@ class AcpAuthorizationService:
         if not path.is_absolute():
             raise AcpAuthorizationDenied("A canonical absolute workspace is required.")
         return path.resolve().as_posix()
+
+    @staticmethod
+    def _validate_client_workspace(workspace: str, path_format: str) -> str:
+        """Validate an already-canonical client path without using the server OS."""
+        if path_format not in {"windows", "posix"}:
+            raise AcpAuthorizationDenied("Unsupported client path format.")
+        path_cls = PureWindowsPath if path_format == "windows" else PurePosixPath
+        path = path_cls(workspace)
+        if not path.is_absolute() or ".." in path.parts:
+            raise AcpAuthorizationDenied("A canonical absolute workspace is required.")
+        return str(path)
+
+    @staticmethod
+    def _pending_grant_key(state: dict[str, str], launch_id: Optional[str]) -> str:
+        # Legacy callers retain the old one-pending-grant-per-plugin-session
+        # behavior. Managed callers isolate retries and concurrent project launches.
+        if launch_id is None:
+            return state["parent_session_token"]
+        return (
+            f"{state['parent_session_token']}:{state['project_id']}:"
+            f"{state['workspace']}:{launch_id}"
+        )

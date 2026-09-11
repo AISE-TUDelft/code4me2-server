@@ -394,7 +394,25 @@ class PrepareAcpGrant(QueryBase):
     project_id: UUID = Field(
         ..., description="Activated project id for the ACP process"
     )
-    workspace: str = Field(..., description="Canonical project workspace", min_length=1)
+    workspace: str = Field(
+        ..., description="Canonical project workspace", min_length=1, max_length=4096
+    )
+    launch_id: Optional[str] = Field(
+        default=None,
+        description="Stable identity for one managed runtime launch.",
+        min_length=1,
+        max_length=200,
+    )
+    path_format: Optional[str] = Field(
+        default=None,
+        description="Client workspace syntax: posix or windows.",
+        pattern="^(posix|windows)$",
+    )
+    managed_protocol_version: Optional[str] = Field(
+        default=None,
+        description="Managed-agent protocol requested by the plugin.",
+        pattern="^1$",
+    )
 
 
 class ExchangeAcpGrant(QueryBase):

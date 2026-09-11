@@ -20,13 +20,26 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 # Set up paths
 current_dir = Path(__file__).parent  # src/database/migration
 project_root = current_dir.parent.parent.parent  # project root
 src_dir = project_root / "src"
 sys.path.insert(0, str(src_dir))
+# Match src/main.py: operator-supplied environment variables win, while a
+# repository/deployment .env fills values that Docker Compose does not export.
+load_dotenv(project_root / ".env", override=False)
+
+
+def _database_url_for_log(value: str) -> str:
+    try:
+        return make_url(value).render_as_string(hide_password=True)
+    except Exception:
+        return "<invalid database URL>"
 
 
 class MigrationManager:
@@ -190,77 +203,90 @@ class MigrationManager:
 
         return True
 
-    def init_migrations(self) -> None:
+    def init_migrations(self) -> bool:
         """Initialize migrations with hybrid approach."""
         db_type = "test database" if self.use_test_db else "main database"
         print(f"Initializing migration system for {db_type}...")
-        print(f"Database URL: {self.get_database_url()}")
+        print(f"Database URL: {_database_url_for_log(self.get_database_url())}")
 
         if self.ensure_initialized():
             print("Migration system ready!")
             print("Use 'create' to add new migrations, 'migrate' to apply them")
+            return True
         else:
             print("Failed to initialize migration system")
+            return False
 
-    def create_migration(self, message: str) -> None:
+    def create_migration(self, message: str) -> bool:
         """Create a new migration."""
         print(f"Creating migration: {message}")
 
         # Ensure system is initialized first
         if not self.ensure_initialized():
-            return
+            return False
 
         try:
             self.alembic_cfg.set_main_option("sqlalchemy.url", self.get_database_url())
             command.revision(self.alembic_cfg, message=message, autogenerate=True)
             print("Migration created")
+            return True
         except Exception as e:
             print(f"Error: {e}")
+            return False
 
-    def migrate(self) -> None:
+    def migrate(self) -> bool:
         """Apply all migrations."""
         print("Applying migrations...")
 
         # Ensure system is initialized first
         if not self.ensure_initialized():
-            return
+            return False
 
         try:
             self.alembic_cfg.set_main_option("sqlalchemy.url", self.get_database_url())
             command.upgrade(self.alembic_cfg, "head")
+            if not self.is_at_expected_head():
+                print("Migration command completed, but the database is not at the expected Alembic head")
+                return False
             print("Migrations applied")
+            return True
         except Exception as e:
             print(f"Error: {e}")
+            return False
 
-    def current(self) -> None:
+    def current(self) -> bool:
         """Show current revision."""
         if not self.check_database_connection():
-            return
+            return False
 
         try:
             self.alembic_cfg.set_main_option("sqlalchemy.url", self.get_database_url())
             command.current(self.alembic_cfg)
+            return True
         except Exception as e:
             print(f"Error: {e}")
+            return False
 
-    def history(self) -> None:
+    def history(self) -> bool:
         """Show migration history."""
         try:
             command.history(self.alembic_cfg)
+            return True
         except Exception as e:
             print(f"Error: {e}")
+            return False
 
-    def status(self) -> None:
+    def status(self) -> bool:
         """Show detailed status of database and migrations."""
         db_type = "Test Database" if self.use_test_db else "Main Database"
         print(f"Migration System Status - {db_type}")
         print("=" * 50)
-        print(f"Database URL: {self.get_database_url()}")
+        print(f"Database URL: {_database_url_for_log(self.get_database_url())}")
 
         # Check database connection
         if not self.check_database_connection():
             print("Database: Not connected")
-            return
+            return False
 
         print("Database: Connected")
 
@@ -297,18 +323,40 @@ class MigrationManager:
                     )
                     version = result.scalar()
                     print(f"Current version: {version}")
+                if not self.is_at_expected_head():
+                    print("Migration readiness: Not at the expected head")
+                    return False
+                print("Migration readiness: At expected head")
             except Exception:
                 print("Could not get current version")
+                return False
         else:
             print("Migration tracking: Not set up")
+            return False
+        return True
 
-    def reset(self) -> None:
+    def is_at_expected_head(self) -> bool:
+        """Require the deployed database revision set to equal the code's heads."""
+        try:
+            expected = set(ScriptDirectory.from_config(self.alembic_cfg).get_heads())
+            engine = create_engine(self.get_database_url())
+            with engine.connect() as conn:
+                applied = {
+                    str(row[0])
+                    for row in conn.execute(text("SELECT version_num FROM alembic_version"))
+                }
+            return bool(expected) and applied == expected
+        except Exception as error:
+            print(f"Could not verify migration head: {error}")
+            return False
+
+    def reset(self) -> bool:
         """Reset database and reinitialize."""
         db_type = "test database" if self.use_test_db else "main database"
         print(f"Resetting {db_type}...")
 
         if not self.check_database_connection():
-            return
+            return False
 
         try:
             # Drop and recreate public schema
@@ -321,13 +369,14 @@ class MigrationManager:
             print("Database reset")
 
             # Reinitialize
-            self.init_migrations()
+            return self.init_migrations()
 
         except Exception as e:
             print(f"Error during reset: {e}")
+            return False
 
 
-def main():
+def main() -> int:
     """CLI interface."""
     parser = argparse.ArgumentParser(description="Hybrid Migration Manager")
     parser.add_argument(
@@ -354,25 +403,26 @@ def main():
 
     if not args.command:
         parser.print_help()
-        return
+        return 0
 
     manager = MigrationManager(use_test_db=args.test)
 
     if args.command == "init":
-        manager.init_migrations()
+        succeeded = manager.init_migrations()
     elif args.command == "status":
-        manager.status()
+        succeeded = manager.status()
     elif args.command == "create":
-        manager.create_migration(args.message)
+        succeeded = manager.create_migration(args.message)
     elif args.command == "migrate":
-        manager.migrate()
+        succeeded = manager.migrate()
     elif args.command == "current":
-        manager.current()
+        succeeded = manager.current()
     elif args.command == "history":
-        manager.history()
+        succeeded = manager.history()
     elif args.command == "reset":
-        manager.reset()
+        succeeded = manager.reset()
+    return 0 if succeeded else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

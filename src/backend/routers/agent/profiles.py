@@ -20,12 +20,14 @@ assigned to one as an A/B arm.
 from __future__ import annotations
 
 import json
-import uuid
+import re
+import uuid  # noqa: TC003 - FastAPI evaluates route annotations at runtime
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 
 from agents.tools import KNOWN_AGENT_TOOLS, tools_for_framework
@@ -37,7 +39,7 @@ from backend.routers.analytics.auth_utils import (
     require_admin,
 )
 from database import crud
-from database.db_schemas import AgentProfile, AgentProfileAssignment
+from database.db_schemas import AgentProfile, AgentProfileAssignment  # noqa: TC001
 
 router = APIRouter()
 
@@ -45,6 +47,7 @@ router = APIRouter()
 # no way to launch, so it's rejected at the API boundary rather than failing
 # later at agent-startup time.
 SUPPORTED_FRAMEWORKS = ("code4me2-agent", "goose", "codex")
+SUPPORTED_APPROVAL_POLICIES = ("auto", "per_step", "suggestion_only")
 
 
 class AgentProfilePayload(BaseModel):
@@ -63,6 +66,34 @@ class AgentProfilePayload(BaseModel):
     # None = don't inject; let the provider use its own default.
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     max_context_tokens: Optional[int] = Field(default=None, ge=1)
+
+    @field_validator("name", "model")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or not value.strip():
+            return None
+        candidate = value.strip().rstrip("/")
+        parsed = urlparse(candidate)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "base_url must be an HTTP(S) endpoint without credentials, query, or fragment"
+            )
+        return candidate
 
     @field_validator("tools_json")
     @classmethod
@@ -88,6 +119,28 @@ class AgentProfilePayload(BaseModel):
             )
         return normalized
 
+    @field_validator("approval_policy")
+    @classmethod
+    def validate_approval_policy(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in SUPPORTED_APPROVAL_POLICIES:
+            raise ValueError(
+                "approval_policy must be one of "
+                + ", ".join(SUPPORTED_APPROVAL_POLICIES)
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_tools_for_framework(self):
+        selected = set(json.loads(self.tools_json))
+        unknown = selected - set(tools_for_framework(self.framework_version))
+        if unknown:
+            raise ValueError(
+                f"tools_json contains tools unsupported by {self.framework_version}: "
+                + ", ".join(sorted(unknown))
+            )
+        return self
+
     @field_validator("api_key_ref")
     @classmethod
     def validate_api_key_ref(cls, value: Optional[str]) -> Optional[str]:
@@ -103,7 +156,7 @@ class AgentProfilePayload(BaseModel):
         candidate = value.strip()
         if not candidate:
             return None
-        if len(candidate) > 128 or any(ch in candidate for ch in "-. /:"):
+        if not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,127}", candidate):
             raise ValueError(
                 "api_key_ref must be the NAME of an environment variable "
                 "(e.g. OPENAI_API_KEY), not an API key value"
