@@ -288,8 +288,10 @@ def send_verification_email_task(user_id: str, user_email: str, user_name: str):
         force_reset_exp=True,
     )
 
-    # Send the verification email with the generated token
-    send_verification_email(user_email, user_name, verification_token)
+    # Propagate delivery failures so Celery marks the job as failed instead of
+    # reporting a false success to operators.
+    if not send_verification_email(user_email, user_name, verification_token):
+        raise RuntimeError(f"Verification email delivery failed for user {user_id}")
 
 
 @celery.task
