@@ -1,0 +1,190 @@
+name: Build managed runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Runtime version to stamp into the manifest
+        required: true
+        default: 0.1.0
+      publishRelease:
+        description: Publish immutable runtime-v<version> release assets
+        type: boolean
+        required: true
+        default: false
+  push:
+    paths:
+      - src/code4me2_agent/**
+      - packaging/**
+      - pyproject.toml
+      - tests/code4me2_agent/**
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-arm64
+            executable: dist/code4me2-agent/code4me2-agent
+          - os: macos-15-intel
+            platform: macos-x64
+            executable: dist/code4me2-agent/code4me2-agent
+          - os: windows-2022
+            platform: windows-x64
+            executable: dist/code4me2-agent/code4me2-agent.exe
+          - os: ubuntu-24.04
+            platform: linux-x64
+            executable: dist/code4me2-agent/code4me2-agent
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify native runner architecture
+        shell: bash
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+        run: |
+          python - <<'PY'
+          import os
+          import platform
+
+          expected = os.environ["EXPECTED_PLATFORM"].rsplit("-", 1)[-1]
+          actual = platform.machine().lower()
+          normalized = "arm64" if actual in {"arm64", "aarch64"} else "x64" if actual in {"x86_64", "amd64"} else actual
+          if normalized != expected:
+              raise SystemExit(f"runner architecture is {normalized!r}, expected {expected!r}")
+          PY
+      - name: Stamp runtime version
+        shell: bash
+        run: |
+          version="${{ inputs.version }}"
+          if [ -z "$version" ]; then version="0.1.0-dev.${GITHUB_SHA:0:12}"; fi
+          python packaging/stamp_runtime_version.py --version "$version"
+      - name: Install locked runtime and packaging toolchain
+        shell: bash
+        run: |
+          python -m pip install \
+            -r packaging/requirements-runtime.lock \
+            -r packaging/requirements-build.lock
+          python -m pip install --no-deps .
+      - name: Run managed runtime tests
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          python -m pip install -r packaging/requirements-test.lock
+          python -m pytest -q tests/code4me2_agent
+      - name: Build one-folder bundle
+        run: python -m PyInstaller --clean --noconfirm packaging/code4me2-agent.spec
+      - name: Sign macOS runtime
+        if: github.event_name == 'workflow_dispatch' && inputs.publishRelease && startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          CERTIFICATE_P12: ${{ secrets.CODE4ME_MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CODE4ME_MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.CODE4ME_MACOS_SIGNING_IDENTITY }}
+        run: |
+          test -n "$CERTIFICATE_P12" && test -n "$CERTIFICATE_PASSWORD" && test -n "$SIGNING_IDENTITY"
+          keychain="$RUNNER_TEMP/code4me-signing.keychain-db"
+          certificate="$RUNNER_TEMP/code4me-signing.p12"
+          printf '%s' "$CERTIFICATE_P12" | base64 -D > "$certificate"
+          security create-keychain -p temporary "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p temporary "$keychain"
+          security import "$certificate" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k temporary "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          signed=0
+          while IFS= read -r binary; do
+            if file "$binary" | grep -q 'Mach-O'; then
+              codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$binary"
+              codesign --verify --strict --verbose=2 "$binary"
+              signed=$((signed + 1))
+            fi
+          done < <(find dist/code4me2-agent -depth -type f)
+          test "$signed" -gt 0
+      - name: Sign Windows runtime
+        if: github.event_name == 'workflow_dispatch' && inputs.publishRelease && startsWith(matrix.platform, 'windows')
+        shell: pwsh
+        env:
+          CERTIFICATE_PFX: ${{ secrets.CODE4ME_WINDOWS_CERTIFICATE_PFX_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CODE4ME_WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:CERTIFICATE_PFX -or -not $env:CERTIFICATE_PASSWORD) { throw "Windows signing secrets are required" }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "code4me-signing.pfx"
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:CERTIFICATE_PFX))
+          $password = ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object FullName -Match '\\x64\\signtool.exe$' | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signTool) { throw "signtool.exe was not found" }
+          Get-ChildItem dist\code4me2-agent -Recurse -File | Where-Object Extension -In '.exe', '.dll' | ForEach-Object {
+            & $signTool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /sha1 $certificate.Thumbprint $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signing failed for $($_.FullName)" }
+          }
+      - name: Self-check
+        shell: bash
+        run: |
+          expected="${{ inputs.version }}"
+          if [ -z "$expected" ]; then expected="0.1.0-dev.${GITHUB_SHA:0:12}"; fi
+          actual=$("${{ matrix.executable }}" --version)
+          test "$actual" = "$expected"
+          "${{ matrix.executable }}" --self-check
+      # Archive layout contract (must match ManagedRuntimeInstaller):
+      # flat zip, executable at the archive root, macOS framework symlinks
+      # materialized as real files (the installer's ZipInputStream extraction
+      # does not restore symlinks).
+      - name: Archive native bundle
+        run: python packaging/archive_runtime.py --platform "${{ matrix.platform }}"
+      - name: Notarize macOS runtime archive
+        if: github.event_name == 'workflow_dispatch' && inputs.publishRelease && startsWith(matrix.platform, 'macos')
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.CODE4ME_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.CODE4ME_APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.CODE4ME_APPLE_APP_PASSWORD }}
+        run: |
+          test -n "$APPLE_ID" && test -n "$APPLE_TEAM_ID" && test -n "$APPLE_APP_PASSWORD"
+          xcrun notarytool submit "code4me-agent-${{ matrix.platform }}.zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code4me-agent-${{ matrix.platform }}
+          path: code4me-agent-${{ matrix.platform }}.zip
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publishRelease
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: code4me-agent-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create pinned release metadata
+        run: |
+          python packaging/create_release_manifest.py \
+            --directory release-assets \
+            --version "${{ inputs.version }}" \
+            --server-commit "$GITHUB_SHA" \
+            --output release-assets/code4me-managed-runtime-release.json
+      - name: Publish immutable runtime release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "runtime-v${{ inputs.version }}" \
+            --target "$GITHUB_SHA" \
+            --title "Code4Me managed runtime ${{ inputs.version }}" \
+            release-assets/*

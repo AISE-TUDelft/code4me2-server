@@ -1,12 +1,25 @@
 .DS_Store
 .env
-node_modules
-.venv
+.env.*
+!.env.example
+node_modules/
+.venv/
 *.egg-info/
-.idea
-secrets
+.idea/
+secrets/
 **/__pycache__/
-.hypothesis
-.cache
-data
+.hypothesis/
+.cache/
+data/
 .coverage
+
+# Native/PyInstaller and package build output
+build/
+dist/
+*.py[cod]
+
+# Test, lint, type-check and coverage caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
