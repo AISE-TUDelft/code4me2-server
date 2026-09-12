@@ -9,8 +9,8 @@ Endpoints (mounted under ``/api/agent``):
   DELETE /profiles/{id}          delete a profile (admin)
   GET    /registry               profiles in the shape the plugin consumes
   GET    /assignments            list A/B assignments (admin)
-  PUT    /assignments/{user_id}  pin a user to a profile (admin)
-  DELETE /assignments/{user_id}  clear an assignment, re-rolling on next task
+  PUT    /assignments/{user_id}  add a study-specific assignment (admin)
+  DELETE /assignments/{user_id}  clear a user's assignments (admin)
 
 Profiles are the unit of experimental control: a profile fixes the runtime, the
 provider, the model, the tool allowlist and the approval policy, and users are
@@ -39,7 +39,13 @@ from backend.routers.analytics.auth_utils import (
     require_admin,
 )
 from database import crud
-from database.db_schemas import AgentProfile, AgentProfileAssignment  # noqa: TC001
+from database.db_schemas import (
+    AgentProfile,
+    AgentStudyAssignment,
+    Study,
+    StudyAgentProfile,
+    User,
+)
 
 router = APIRouter()
 
@@ -305,11 +311,9 @@ def update_agent_profile(
 ):
     """Update a profile.
 
-    Note this does *not* retroactively change tasks already running: the
-    experimental conditions (model, temperature, policy, tools) were snapshotted
-    onto each ``agent_task`` row at creation. The provider triple is the
-    exception and is read live, so rotating a credential or endpoint takes
-    effect on the next call.
+    A profile used by an active study cannot change. Agent tasks also copy the
+    effective runtime configuration at creation, so later changes never alter
+    completed task records.
     """
     db = app.get_db_session()
     try:
@@ -338,23 +342,23 @@ def update_agent_profile(
         raise HTTPException(
             status_code=409, detail="Agent profile name already exists"
         ) from exc
+    except crud.AgentProfileInActiveStudyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Profiles attached to an active study cannot be changed",
+        ) from exc
     finally:
         db.close()
 
 
-@router.delete("/profiles/{profile_id}", summary="Delete an agent profile")
+@router.delete("/profiles/{profile_id}", summary="Retire an agent profile")
 def delete_agent_profile(
     profile_id: uuid.UUID,
     current_user: AuthenticatedUser = Depends(require_admin),
     app: App = Depends(App.get_instance),
 ):
-    """Delete a profile.
-
-    Deleting cascades to its assignments but leaves historical ``agent_task``
-    rows intact (they reference the profile by name, not id), so past telemetry
-    stays attributable. To retire an arm mid-study prefer setting
-    ``is_active=false``, which stops new draws without disturbing assigned users.
-    """
+    """Retire a profile that is not part of an active study."""
     db = app.get_db_session()
     try:
         deleted = crud.delete_agent_profile(db, profile_id)
@@ -362,8 +366,14 @@ def delete_agent_profile(
             raise HTTPException(status_code=404, detail="Agent profile not found")
         return JsonResponseWithStatus(
             status_code=200,
-            content={"deleted": True, "profile_id": str(profile_id)},
+            content={"retired": True, "profile_id": str(profile_id)},
         )
+    except crud.AgentProfileInActiveStudyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Profiles attached to an active study cannot be retired",
+        ) from exc
     finally:
         db.close()
 
@@ -394,13 +404,19 @@ def list_agent_registry(
 
 class AssignmentPayload(BaseModel):
     profile_id: uuid.UUID
+    study_id: Optional[uuid.UUID] = None
 
 
-def _assignment_to_dict(assignment: AgentProfileAssignment) -> dict[str, Any]:
+def _assignment_to_dict(assignment: AgentStudyAssignment) -> dict[str, Any]:
+    profile = assignment.profile
     return {
+        "assignment_id": str(assignment.assignment_id),
+        "study_id": str(assignment.study_id),
         "user_id": str(assignment.user_id),
         "profile_id": str(assignment.profile_id),
-        "profile_name": assignment.profile.name if assignment.profile else None,
+        "profile_name": profile.name if profile is not None else None,
+        "arm_name": assignment.arm_name,
+        "is_baseline": assignment.is_baseline,
         "source": assignment.source,
         "assigned_at": (
             assignment.assigned_at.isoformat()
@@ -417,7 +433,7 @@ def list_agent_assignments(
 ):
     db = app.get_db_session()
     try:
-        assignments = crud.list_agent_profile_assignments(db)
+        assignments = crud.list_agent_study_assignments(db)
         return JsonResponseWithStatus(
             status_code=200,
             content={"assignments": [_assignment_to_dict(a) for a in assignments]},
@@ -426,8 +442,44 @@ def list_agent_assignments(
         db.close()
 
 
+@router.get("/assignment-options", summary="List users and studies for agent assignments")
+def list_agent_assignment_options(
+    current_user: AuthenticatedUser = Depends(require_admin),
+    app: App = Depends(App.get_instance),
+):
+    db = app.get_db_session()
+    try:
+        users = db.query(User).order_by(User.name, User.email).all()
+        studies = db.query(Study).order_by(Study.is_active.desc(), Study.name).all()
+        profile_ids_by_study: dict[uuid.UUID, list[str]] = {}
+        for link in db.query(StudyAgentProfile).all():
+            profile_ids_by_study.setdefault(link.study_id, []).append(
+                str(link.profile_id)
+            )
+        return JsonResponseWithStatus(
+            status_code=200,
+            content={
+                "users": [
+                    {"user_id": str(user.user_id), "name": user.name, "email": user.email}
+                    for user in users
+                ],
+                "studies": [
+                    {
+                        "study_id": str(study.study_id),
+                        "name": study.name,
+                        "is_active": study.is_active,
+                        "profile_ids": profile_ids_by_study.get(study.study_id, []),
+                    }
+                    for study in studies
+                ],
+            },
+        )
+    finally:
+        db.close()
+
+
 @router.put(
-    "/assignments/{user_id}", summary="Manually pin a user to an agent profile"
+    "/assignments/{user_id}", summary="Add an agent study assignment"
 )
 def set_agent_assignment(
     user_id: uuid.UUID,
@@ -437,30 +489,60 @@ def set_agent_assignment(
 ):
     db = app.get_db_session()
     try:
-        if crud.get_agent_profile_by_id(db, payload.profile_id) is None:
+        study_id = payload.study_id
+        if study_id is None:
+            active_study = crud.get_active_agent_study(db)
+            if active_study is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="No active study with agent arms; specify an active study first",
+                )
+            study_id = active_study.study_id
+        arm = crud.get_study_agent_profile(db, study_id, payload.profile_id)
+        if arm is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Profile is not an arm of the specified study",
+            )
+        profile = crud.get_agent_profile_by_id(db, payload.profile_id)
+        if profile is None:
             raise HTTPException(status_code=404, detail="Agent profile not found")
-        assignment = crud.set_agent_profile_assignment(
-            db, user_id=user_id, profile_id=payload.profile_id, source="manual"
+        if crud.get_agent_study_assignment(db, study_id, user_id) is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Study assignment already exists and cannot be changed",
+            )
+        assignment = crud.create_agent_study_assignment(
+            db,
+            study_id=study_id,
+            user_id=user_id,
+            profile_id=profile.profile_id,
+            arm_name=profile.name,
+            is_baseline=arm.is_baseline,
+            source="manual",
         )
+        if assignment is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Study assignment was created concurrently; reload assignments",
+            )
         return JsonResponseWithStatus(
-            status_code=200, content={"assignment": _assignment_to_dict(assignment)}
+            status_code=201, content={"assignment": _assignment_to_dict(assignment)}
         )
     finally:
         db.close()
 
 
-@router.delete(
-    "/assignments/{user_id}",
-    summary="Clear a user's assignment (re-rolls on next task)",
-)
+@router.delete("/assignments/{user_id}", summary="Clear a user's agent assignments")
 def delete_agent_assignment(
     user_id: uuid.UUID,
+    study_id: Optional[uuid.UUID] = Query(default=None),
     current_user: AuthenticatedUser = Depends(require_admin),
     app: App = Depends(App.get_instance),
 ):
     db = app.get_db_session()
     try:
-        deleted = crud.delete_agent_profile_assignment(db, user_id)
+        deleted = crud.delete_agent_study_assignments(db, user_id, study_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Assignment not found")
         return JsonResponseWithStatus(

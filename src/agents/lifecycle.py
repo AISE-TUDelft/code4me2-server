@@ -48,7 +48,7 @@ def finalize_agent_task(
             tool_names = list(event.tool_names_requested)
 
     last_event = max(events, key=lambda e: e.event_index) if events else None
-    total_steps = (last_event.event_index + 1) if last_event is not None else 0
+    total_steps = len(events)
     crud.update_agent_task_status(
         db,
         task_id=task_id,

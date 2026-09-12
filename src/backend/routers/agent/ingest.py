@@ -155,12 +155,14 @@ def _resolve_or_create_task(
             )
         return task, False
 
-    profile = registry.resolve_assignment(db, owner_user_uuid)
-    if profile is None:
+    assignment = registry.resolve_assignment_context(db, owner_user_uuid)
+    if assignment is None:
         raise HTTPException(
             status_code=503,
             detail="No active agent profiles are configured on the server",
         )
+    profile = assignment.profile
+    content_included = resolve_store_agent_content_for_acp(db, scope.user_id)
 
     task = crud.create_agent_task(
         db,
@@ -177,6 +179,12 @@ def _resolve_or_create_task(
         agent_session_id=run.session_id,
         status="running",
         started_at=run.started_at,
+        study_id=assignment.study_id,
+        study_assignment_id=assignment.assignment_id,
+        profile_id=profile.profile_id,
+        study_arm_name=assignment.arm_name,
+        study_arm_is_baseline=assignment.is_baseline,
+        consent_content_storage=content_included,
     )
     logging.info(
         f"[Agent/ingest] created task {task.task_id} for run {run.run_id} "

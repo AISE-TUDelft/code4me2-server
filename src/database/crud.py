@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple, Type, Union
 
 from sqlalchemy import func, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 import Queries as Queries
@@ -11,6 +12,10 @@ from database import db_schemas
 from database.db_schemas import DEFAULT_USER_PREFERENCE
 from database.embedding_service import encode_text
 from utils import hash_password, verify_password
+
+
+class AgentProfileInActiveStudyError(Exception):
+    pass
 
 
 # User
@@ -1293,39 +1298,48 @@ def update_agent_profile(
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
 ) -> Optional[db_schemas.AgentProfile]:
-    result = (
+    profile = (
         db.query(db_schemas.AgentProfile)
         .filter(db_schemas.AgentProfile.profile_id == profile_id)
-        .update(
-            {
-                "name": name,
-                "model": model,
-                "framework_version": framework_version,
-                "base_url": base_url,
-                "api_key_ref": api_key_ref,
-                "tools_json": tools_json,
-                "approval_policy": approval_policy,
-                "max_steps": max_steps,
-                "is_active": is_active,
-                "max_context_tokens": max_context_tokens,
-                "temperature": temperature,
-            }
-        )
+        .with_for_update()
+        .first()
     )
+    if profile is None:
+        return None
+    if is_agent_profile_in_active_study(db, profile_id):
+        raise AgentProfileInActiveStudyError
+    profile.name = name
+    profile.model = model
+    profile.framework_version = framework_version
+    profile.base_url = base_url
+    profile.api_key_ref = api_key_ref
+    profile.tools_json = tools_json
+    profile.approval_policy = approval_policy
+    profile.max_steps = max_steps
+    profile.is_active = is_active
+    profile.max_context_tokens = max_context_tokens
+    profile.temperature = temperature
     db.commit()
-    if result:
-        return get_agent_profile_by_id(db, profile_id)
-    return None
+    db.refresh(profile)
+    return profile
 
 
 def delete_agent_profile(db: Session, profile_id: uuid.UUID) -> bool:
-    result = (
+    profile = (
         db.query(db_schemas.AgentProfile)
         .filter(db_schemas.AgentProfile.profile_id == profile_id)
-        .delete()
+        .with_for_update()
+        .first()
     )
+    if profile is None:
+        return False
+    if is_agent_profile_in_active_study(db, profile_id):
+        raise AgentProfileInActiveStudyError
+    if not profile.is_active:
+        return True
+    profile.is_active = False
     db.commit()
-    return result > 0
+    return True
 
 
 # ── Agent profile assignments (A/B testing) ─────────────────────────────────
@@ -1339,6 +1353,73 @@ def get_agent_profile_assignment(
         .filter(db_schemas.AgentProfileAssignment.user_id == user_id)
         .first()
     )
+
+
+def get_agent_study_assignment(
+    db: Session, study_id: uuid.UUID, user_id: uuid.UUID
+) -> Optional[db_schemas.AgentStudyAssignment]:
+    return (
+        db.query(db_schemas.AgentStudyAssignment)
+        .filter(
+            db_schemas.AgentStudyAssignment.study_id == study_id,
+            db_schemas.AgentStudyAssignment.user_id == user_id,
+        )
+        .first()
+    )
+
+
+def create_agent_study_assignment(
+    db: Session,
+    *,
+    study_id: uuid.UUID,
+    user_id: uuid.UUID,
+    profile_id: uuid.UUID,
+    arm_name: str,
+    is_baseline: bool,
+    source: str,
+) -> Optional[db_schemas.AgentStudyAssignment]:
+    assignment_id = uuid.uuid4()
+    inserted_assignment_id = db.execute(
+        pg_insert(db_schemas.AgentStudyAssignment)
+        .values(
+            assignment_id=assignment_id,
+            study_id=study_id,
+            user_id=user_id,
+            profile_id=profile_id,
+            arm_name=arm_name,
+            is_baseline=is_baseline,
+            source=source,
+        )
+        .on_conflict_do_nothing(index_elements=["study_id", "user_id"])
+        .returning(db_schemas.AgentStudyAssignment.assignment_id)
+    ).scalar_one_or_none()
+    if inserted_assignment_id is None:
+        return None
+    db.commit()
+    return db.get(db_schemas.AgentStudyAssignment, inserted_assignment_id)
+
+
+def list_agent_study_assignments(
+    db: Session,
+) -> List[db_schemas.AgentStudyAssignment]:
+    return (
+        db.query(db_schemas.AgentStudyAssignment)
+        .order_by(db_schemas.AgentStudyAssignment.assigned_at.desc())
+        .all()
+    )
+
+
+def delete_agent_study_assignments(
+    db: Session, user_id: uuid.UUID, study_id: Optional[uuid.UUID] = None
+) -> int:
+    query = db.query(db_schemas.AgentStudyAssignment).filter(
+        db_schemas.AgentStudyAssignment.user_id == user_id
+    )
+    if study_id is not None:
+        query = query.filter(db_schemas.AgentStudyAssignment.study_id == study_id)
+    deleted = query.delete()
+    db.commit()
+    return deleted
 
 
 def set_agent_profile_assignment(
@@ -1425,6 +1506,52 @@ def list_study_agent_profiles(
     )
 
 
+def get_study_agent_profile(
+    db: Session, study_id: uuid.UUID, profile_id: uuid.UUID
+) -> Optional[db_schemas.StudyAgentProfile]:
+    return (
+        db.query(db_schemas.StudyAgentProfile)
+        .filter(
+            db_schemas.StudyAgentProfile.study_id == study_id,
+            db_schemas.StudyAgentProfile.profile_id == profile_id,
+        )
+        .first()
+    )
+
+
+def get_active_agent_study(db: Session) -> Optional[db_schemas.Study]:
+    """Return the active study when it has at least one active agent arm."""
+    return (
+        db.query(db_schemas.Study)
+        .join(
+            db_schemas.StudyAgentProfile,
+            db_schemas.Study.study_id == db_schemas.StudyAgentProfile.study_id,
+        )
+        .join(
+            db_schemas.AgentProfile,
+            db_schemas.AgentProfile.profile_id
+            == db_schemas.StudyAgentProfile.profile_id,
+        )
+        .filter(db_schemas.Study.is_active.is_(True))
+        .filter(db_schemas.AgentProfile.is_active.is_(True))
+        .first()
+    )
+
+
+def is_agent_profile_in_active_study(db: Session, profile_id: uuid.UUID) -> bool:
+    return (
+        db.query(db_schemas.StudyAgentProfile)
+        .join(
+            db_schemas.Study,
+            db_schemas.Study.study_id == db_schemas.StudyAgentProfile.study_id,
+        )
+        .filter(db_schemas.StudyAgentProfile.profile_id == profile_id)
+        .filter(db_schemas.Study.is_active.is_(True))
+        .first()
+        is not None
+    )
+
+
 def list_active_study_agent_profiles(db: Session) -> List[db_schemas.AgentProfile]:
     """Candidate arms drawn from the currently-active study's selected profiles.
 
@@ -1444,6 +1571,28 @@ def list_active_study_agent_profiles(db: Session) -> List[db_schemas.AgentProfil
         .join(
             db_schemas.Study,
             db_schemas.Study.study_id == db_schemas.StudyAgentProfile.study_id,
+        )
+        .filter(db_schemas.Study.is_active.is_(True))
+        .filter(db_schemas.AgentProfile.is_active.is_(True))
+        .order_by(db_schemas.AgentProfile.name)
+        .all()
+    )
+
+
+def list_active_study_agent_profile_links(
+    db: Session,
+) -> List[db_schemas.StudyAgentProfile]:
+    """Return the arm links of the active agent study, if one exists."""
+    return (
+        db.query(db_schemas.StudyAgentProfile)
+        .join(
+            db_schemas.Study,
+            db_schemas.Study.study_id == db_schemas.StudyAgentProfile.study_id,
+        )
+        .join(
+            db_schemas.AgentProfile,
+            db_schemas.AgentProfile.profile_id
+            == db_schemas.StudyAgentProfile.profile_id,
         )
         .filter(db_schemas.Study.is_active.is_(True))
         .filter(db_schemas.AgentProfile.is_active.is_(True))
@@ -1474,6 +1623,12 @@ def create_agent_task(
     status: str = "pending",
     started_at: Optional[datetime] = None,
     policy_snapshot: Optional[dict] = None,
+    study_id: Optional[uuid.UUID] = None,
+    study_assignment_id: Optional[uuid.UUID] = None,
+    profile_id: Optional[uuid.UUID] = None,
+    study_arm_name: Optional[str] = None,
+    study_arm_is_baseline: Optional[bool] = None,
+    consent_content_storage: Optional[bool] = None,
 ) -> db_schemas.AgentTask:
     task = db_schemas.AgentTask(
         task_id=task_id or uuid.uuid4(),
@@ -1490,6 +1645,12 @@ def create_agent_task(
         owner_project_id=owner_project_id,
         external_run_id=external_run_id,
         agent_session_id=agent_session_id,
+        study_id=study_id,
+        study_assignment_id=study_assignment_id,
+        profile_id=profile_id,
+        study_arm_name=study_arm_name,
+        study_arm_is_baseline=study_arm_is_baseline,
+        consent_content_storage=consent_content_storage,
         started_at=started_at,
         policy_snapshot=policy_snapshot,
         task_description=task_description,
@@ -1575,7 +1736,7 @@ def update_agent_task_tools(
 ) -> None:
     db.query(db_schemas.AgentTask).filter(
         db_schemas.AgentTask.task_id == task_id
-    ).update({"tools_json": json.dumps(tools)})
+    ).update({"observed_tools_json": json.dumps(tools)})
     db.commit()
 
 
@@ -1593,7 +1754,7 @@ def set_agent_task_framework_version(
 ) -> None:
     db.query(db_schemas.AgentTask).filter(
         db_schemas.AgentTask.task_id == task_id
-    ).update({"framework_version": framework_version})
+    ).update({"observed_framework_version": framework_version})
     db.commit()
 
 
@@ -1632,7 +1793,7 @@ def get_last_agent_event_for_session(
 
 
 def count_agent_events_for_task(db: Session, task_id: uuid.UUID) -> int:
-    """Next free ``event_index`` for a task (events are 0-indexed and append-only)."""
+    """Return the number of persisted events for a task."""
     return (
         db.query(func.count(db_schemas.AgentEvent.event_id))
         .filter(db_schemas.AgentEvent.task_id == task_id)
@@ -1641,20 +1802,50 @@ def count_agent_events_for_task(db: Session, task_id: uuid.UUID) -> int:
     )
 
 
-def find_existing_agent_event_span_ids(
-    db: Session, span_ids: List[str]
-) -> List[str]:
-    """Which of ``span_ids`` have already been ingested for this task set.
+def reserve_agent_event_indexes(
+    db: Session, task_id: uuid.UUID, event_count: int
+) -> int:
+    """Atomically reserve ``event_count`` task-local event indexes."""
+    if event_count < 1:
+        raise ValueError("event_count must be positive")
+    first_index = db.execute(
+        text(
+            """
+            UPDATE public.agent_task
+            SET next_event_index = next_event_index + :event_count
+            WHERE task_id = :task_id
+            RETURNING next_event_index - :event_count
+            """
+        ),
+        {"event_count": event_count, "task_id": task_id},
+    ).scalar_one_or_none()
+    if first_index is None:
+        raise ValueError(f"Agent task {task_id} does not exist")
+    return int(first_index)
 
-    Used to make self-report ingestion idempotent: a retried batch is detected
-    rather than duplicated.
+
+def find_existing_agent_event_source_ids(
+    db: Session,
+    *,
+    task_id: uuid.UUID,
+    source: str,
+    source_event_ids: List[str],
+) -> List[str]:
+    """Return source event ids already persisted for this task and source.
+
+    This lookup is advisory only. The matching unique constraint is the
+    authoritative protection against concurrent retries.
     """
-    if not span_ids:
+    if not source_event_ids:
         return []
     return [
-        row.span_id
-        for row in db.query(db_schemas.AgentEvent.span_id)
-        .filter(db_schemas.AgentEvent.span_id.in_(span_ids))
+        row.source_event_id
+        for row in db.query(db_schemas.AgentEvent.source_event_id)
+        .filter(
+            db_schemas.AgentEvent.task_id == task_id,
+            db_schemas.AgentEvent.source == source,
+            db_schemas.AgentEvent.source_event_id.in_(source_event_ids),
+        )
         .all()
     ]
 
@@ -1666,6 +1857,7 @@ def append_agent_event(
     event_type: str,
     latency_ms: Optional[int] = None,
     source: Optional[str] = None,
+    source_event_id: Optional[str] = None,
     schema_version: Optional[str] = None,
     occurred_at: Optional[datetime] = None,
     # Shared span identifiers (model_call and tool_call)
@@ -1713,8 +1905,9 @@ def append_agent_event(
     extra_json: Optional[str] = None,
     # content (only when store_agent_content resolves True)
     payload_json: Optional[str] = None,
+    ignore_duplicate_source: bool = False,
     commit: bool = True,
-) -> db_schemas.AgentEvent:
+) -> Optional[db_schemas.AgentEvent]:
     """Append one event row.
 
     ``commit=False`` lets a caller stage a whole batch and commit once (used by
@@ -1727,6 +1920,7 @@ def append_agent_event(
         event_index=event_index,
         event_type=event_type,
         source=source,
+        source_event_id=source_event_id,
         schema_version=schema_version,
         latency_ms=latency_ms,
         occurred_at=occurred_at,
@@ -1769,6 +1963,22 @@ def append_agent_event(
         extra_json=extra_json,
         payload_json=payload_json,
     )
+    if ignore_duplicate_source and source is not None and source_event_id is not None:
+        values = {
+            column.name: getattr(event, column.name)
+            for column in db_schemas.AgentEvent.__table__.columns
+        }
+        inserted_event_id = db.execute(
+            pg_insert(db_schemas.AgentEvent)
+            .values(**values)
+            .on_conflict_do_nothing(constraint="uq_agent_event_source_identity")
+            .returning(db_schemas.AgentEvent.event_id)
+        ).scalar_one_or_none()
+        if inserted_event_id is None:
+            return None
+        if commit:
+            db.commit()
+        return db.get(db_schemas.AgentEvent, inserted_event_id)
     db.add(event)
     if commit:
         db.commit()

@@ -347,7 +347,7 @@ export const resendVerificationEmail = async () => {
     } else {
       return {
         ok: true,
-        message: responseBody["message"] || "Verification email sent successfully",
+        message: responseBody["message"] || "Verification email request queued",
       };
     }
   } catch (error) {
@@ -1331,21 +1331,33 @@ export const getAgentAssignments = async () => {
     : result;
 };
 
-// Pin a user to a specific arm. Recorded as source="manual", which excludes
-// the row from re-rolls and from A/B analysis.
-export const setAgentAssignment = async (userId, profileId) =>
+export const getAgentAssignmentOptions = async () => {
+  const result = await agentRequest("/assignment-options", {
+    label: "load assignment options",
+  });
+  return result.ok ? { ok: true, data: result.data } : result;
+};
+
+// Add a manual assignment to a study arm.
+export const setAgentAssignment = async (userId, profileId, studyId) =>
   agentRequest(`/assignments/${userId}`, {
     method: "PUT",
-    body: { profile_id: profileId },
+    body: {
+      profile_id: profileId,
+      ...(studyId ? { study_id: studyId } : {}),
+    },
     label: "set agent assignment",
   });
 
 // Clear an assignment so the user is re-drawn on their next agent task.
-export const deleteAgentAssignment = async (userId) =>
-  agentRequest(`/assignments/${userId}`, {
-    method: "DELETE",
-    label: "clear agent assignment",
-  });
+export const deleteAgentAssignment = async (userId, studyId) =>
+  agentRequest(
+    `/assignments/${userId}${studyId ? `?study_id=${encodeURIComponent(studyId)}` : ""}`,
+    {
+      method: "DELETE",
+      label: "clear agent assignment",
+    },
+  );
 
 // Per-arm comparison for a study's agent arms.
 export const getStudyAgentEvaluation = async (studyId) => {
