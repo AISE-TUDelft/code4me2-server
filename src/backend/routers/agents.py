@@ -116,7 +116,13 @@ def create_agent_task(
                     f"by this session"
                 )
                 return JSONResponse(
-                    {"task_id": str(existing.task_id)}, status_code=200
+                    {
+                        "task_id": str(existing.task_id),
+                        "framework_version": existing.framework_version,
+                        "agent_profile": existing.agent_profile,
+                        "model": existing.model,
+                    },
+                    status_code=200,
                 )
 
         session = crud.get_session_by_id(db, session_id)
@@ -168,6 +174,9 @@ def create_agent_task(
                 # The plugin needs the runtime name to know which agent to launch.
                 "framework_version": profile.framework_version,
                 "agent_profile": profile.name,
+                # This is only the runtime's displayed/requested model. The inference relay
+                # still enforces the immutable task snapshot on every model call.
+                "model": task.model,
             },
             status_code=201,
         )
