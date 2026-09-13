@@ -4,6 +4,7 @@ import asyncio
 import sys
 from importlib.metadata import version
 from pathlib import Path
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from threading import Event
 from typing import Any
@@ -14,12 +15,13 @@ from acp.exceptions import RequestError
 from acp.schema import TextContentBlock
 
 from code4me2_agent.adapters import (
+    FakeOpenAICompatibleProvider,
     OpenAICompatibleReactAdapter,
     ToolCall,
     ToolRegistry,
     ToolRegistryError,
 )
-from code4me2_agent.acp_runtime import create_acp_agent
+from code4me2_agent.acp_runtime import AcpSessionEventSink, create_acp_agent
 from code4me2_agent.acp_updates import AcpUpdateBuilder
 from code4me2_agent.config import (
     AdapterConfig,
@@ -28,6 +30,7 @@ from code4me2_agent.config import (
     ServerAgentConfig,
 )
 from code4me2_agent.echo import EchoPromptResult
+from code4me2_agent.events import ApprovalDecision, ToolCallEvent
 from code4me2_agent.runtime_auth import AcpRuntimeScope
 from code4me2_agent.telemetry import AgentTelemetryRecorder
 
@@ -111,6 +114,108 @@ class AcpRuntimeCompatibilityTest(TestCase):
 
         asyncio.run(scenario())
 
+    def test_permission_request_offers_supported_scopes_and_a_summary(self) -> None:
+        permission = AcpUpdateBuilder().permission_request(
+            session_id="session-1",
+            tool_call_id="tool-1",
+            title="Write file",
+            kind="edit",
+            summary="Write file: README.md",
+            raw_input={"path": "README.md"},
+            session_option_name="Allow edits for session",
+        )
+
+        self.assertEqual(
+            ["allow_once", "allow_session", "reject_once"],
+            [option.option_id for option in permission.options],
+        )
+        self.assertEqual({"path": "README.md"}, permission.tool_call.raw_input)
+        self.assertEqual("Allow edits for session", permission.options[1].name)
+
+    def test_permission_response_keeps_selected_scope(self) -> None:
+        class Connection:
+            async def request_permission(self, **_kwargs):
+                return None
+
+        class Runner:
+            calls = 0
+
+            def run(self, awaitable):
+                self.calls += 1
+                awaitable.close()
+                return {"outcome": {"outcome": "selected", "optionId": "allow_session"}}
+
+        runner = Runner()
+        sink = AcpSessionEventSink(
+            conn=Connection(),
+            session_id="session-1",
+            updates=AcpUpdateBuilder(),
+            telemetry=object(),
+            async_runner=runner,
+        )
+
+        decision = sink.request_approval(
+            SimpleNamespace(name="write_file", tool_call_id="tool-1"),
+            {"path": "README.md", "content": "private"},
+        )
+
+        self.assertTrue(decision.accepted)
+        self.assertEqual("session", decision.scope)
+
+        self.assertTrue(
+            sink.request_approval(
+                SimpleNamespace(name="write_file", tool_call_id="tool-2"),
+                {"path": "other.md", "content": "private"},
+            ).accepted
+        )
+        self.assertEqual(1, runner.calls)
+
+    def test_permission_reuses_the_native_edit_diff(self) -> None:
+        class Connection(_FakeClient):
+            async def request_permission(self, **kwargs):
+                self.permission = kwargs
+                return {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+
+        class Runner:
+            def run(self, awaitable):
+                return asyncio.run(awaitable)
+
+        connection = Connection()
+        sink = AcpSessionEventSink(
+            conn=connection,
+            session_id="session-1",
+            updates=AcpUpdateBuilder(),
+            telemetry=object(),
+            async_runner=Runner(),
+        )
+        sink.tool_call(
+            ToolCallEvent(
+                phase="started",
+                tool_call_id="tool-1",
+                tool_name="write_file",
+                run_id="run-1",
+                request_id="request-1",
+                title="Update README.md",
+                kind="edit",
+                status="pending",
+                path="README.md",
+                diff_old_text="before",
+                diff_new_text="after",
+            )
+        )
+
+        self.assertTrue(
+            sink.request_approval(
+                SimpleNamespace(name="write_file", tool_call_id="tool-1"),
+                {"path": "README.md", "content": "after"},
+            ).accepted
+        )
+        diff = connection.permission["tool_call"].content[0]
+        self.assertEqual("diff", diff.type)
+        self.assertEqual("README.md", diff.path)
+        self.assertEqual("before", diff.old_text)
+        self.assertEqual("after", diff.new_text)
+
     def test_server_tool_allowlist_hides_and_rejects_write_tools(self) -> None:
         config = AgentConfig(
             workspace_root=self.workspace,
@@ -186,6 +291,70 @@ class AcpRuntimeCompatibilityTest(TestCase):
 
         self.assertEqual("completed", result.run_status)
         self.assertEqual("I only have read access in this profile.", result.final_response)
+
+    def test_rejected_approval_is_explicit_in_the_model_tool_result(self) -> None:
+        class RejectingSink:
+            def request_approval(self, *_args):
+                return ApprovalDecision("rejected")
+
+            def tool_call(self, _event):
+                return None
+
+        class RecordingProvider(FakeOpenAICompatibleProvider):
+            def __init__(self):
+                super().__init__(
+                    [
+                        {
+                            "tool_calls": [
+                                {
+                                    "id": "create-rejected",
+                                    "name": "create_file",
+                                    "arguments": {"path": "deneme.txt", "content": "hi"},
+                                }
+                            ]
+                        },
+                        {"final_answer": "No change was made."},
+                    ]
+                )
+                self.messages: list[list[dict[str, Any]]] = []
+
+            def generate(self, messages):
+                self.messages.append(messages)
+                return super().generate(messages)
+
+        config = AgentConfig(
+            workspace_root=self.workspace,
+            trace_path=self.workspace / "agent-events.jsonl",
+            session_id="bootstrap",
+            tools=["create_file"],
+            approval_policy="per_step",
+        )
+        provider = RecordingProvider()
+        adapter = OpenAICompatibleReactAdapter(
+            config,
+            telemetry=AgentTelemetryRecorder(config),
+            tool_registry=ToolRegistry(
+                file_tools=object(),
+                command_tools=object(),
+                event_sink=RejectingSink(),
+                allowed_tools=config.tools,
+                approval_policy="per_step",
+            ),
+        )
+        adapter._provider = lambda: provider
+
+        result = adapter.handle_prompt(
+            prompt="Create deneme.txt",
+            run_id="run-1",
+            request_id="request-1",
+            message_id=None,
+        )
+
+        tool_result = provider.messages[1][-1]
+        self.assertEqual("tool", tool_result["role"])
+        self.assertIn('"reason": "user_rejected"', tool_result["content"])
+        self.assertIn("Do not retry", tool_result["content"])
+        self.assertEqual("No change was made.", result.final_response)
 
     def test_unsupported_routes_are_method_not_found_even_with_sdk_workaround(self) -> None:
         async def scenario() -> None:

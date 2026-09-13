@@ -1,4 +1,5 @@
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,6 +12,7 @@ from code4me2_agent.adapters import (
 )
 from code4me2_agent.config import AgentConfig, MemoryWindowConfig, ServerAgentConfig
 from code4me2_agent.echo import EchoAgentCore
+from code4me2_agent.events import ApprovalDecision
 from code4me2_agent.runtime_auth import (
     AcpBackendAuthorization,
     AcpRuntimeScope,
@@ -21,21 +23,23 @@ from code4me2_agent.telemetry import AgentTelemetryRecorder, ServerUploadTelemet
 
 
 class ApprovalSink:
-    def __init__(self, approved: bool):
-        self.approved = approved
+    def __init__(self, decision: ApprovalDecision):
+        self.decision = decision
         self.requests = []
+        self.events = []
 
     def request_approval(self, tool_call, arguments):
         self.requests.append((tool_call, arguments))
-        return self.approved
+        return self.decision
 
     def tool_call(self, event):
-        return None
+        self.events.append(event)
 
 
-def test_per_step_policy_denies_before_tool_execution():
+def test_per_step_policy_keeps_read_tools_automatic():
     file_tools = MagicMock()
-    sink = ApprovalSink(False)
+    file_tools.read_file.return_value = {"content": "ok"}
+    sink = ApprovalSink(ApprovalDecision("rejected"))
     registry = ToolRegistry(
         file_tools,
         MagicMock(),
@@ -44,37 +48,66 @@ def test_per_step_policy_denies_before_tool_execution():
         approval_policy="per_step",
     )
 
-    with pytest.raises(ToolRegistryError) as error:
-        registry.execute(
-            ToolCall("call-1", "read_file", {"path": "README.md"}),
-            run_id="run-1",
-            request_id="request-1",
-        )
-
-    assert error.value.failure_reason == "approval_policy_denied"
-    file_tools.read_file.assert_not_called()
-    assert len(sink.requests) == 1
+    assert registry.execute(
+        ToolCall("call-1", "read_file", {"path": "README.md"}),
+        run_id="run-1",
+        request_id="request-1",
+    ) == {"content": "ok"}
+    file_tools.read_file.assert_called_once()
+    assert sink.requests == []
 
 
-def test_per_step_policy_executes_after_allow_once():
+def test_per_step_policy_executes_mutation_after_allow_once():
     file_tools = MagicMock()
-    file_tools.read_file.return_value = {"content": "ok"}
+    file_tools.read_file.return_value = SimpleNamespace(content="before")
+    file_tools.write_file.return_value = {"status": "ok"}
+    sink = ApprovalSink(ApprovalDecision("accepted", "once"))
     registry = ToolRegistry(
         file_tools,
         MagicMock(),
-        event_sink=ApprovalSink(True),
-        allowed_tools=frozenset({"read_file"}),
+        event_sink=sink,
+        allowed_tools=frozenset({"write_file"}),
         approval_policy="per_step",
     )
 
     result = registry.execute(
-        ToolCall("call-1", "read_file", {"path": "README.md"}),
+        ToolCall("call-1", "write_file", {"path": "README.md", "content": "ok"}),
         run_id="run-1",
         request_id="request-1",
     )
 
-    assert result == {"content": "ok"}
-    file_tools.read_file.assert_called_once()
+    assert result == {"status": "ok"}
+    file_tools.write_file.assert_called_once()
+    assert [(event.diff_old_text, event.diff_new_text) for event in sink.events] == [
+        ("before", "ok"),
+        ("before", "ok"),
+    ]
+
+
+def test_per_step_policy_keeps_rejection_distinct_from_policy_denial():
+    file_tools = MagicMock()
+    sink = ApprovalSink(ApprovalDecision("rejected"))
+    registry = ToolRegistry(
+        file_tools,
+        MagicMock(),
+        event_sink=sink,
+        allowed_tools=frozenset({"write_file"}),
+        approval_policy="per_step",
+    )
+
+    with pytest.raises(ToolRegistryError) as error:
+        registry.execute(
+            ToolCall("call-1", "write_file", {"path": "README.md", "content": "no"}),
+            run_id="run-1",
+            request_id="request-1",
+        )
+
+    assert error.value.failure_reason == "approval_rejected"
+    file_tools.write_file.assert_not_called()
+    assert [(event.phase, event.status) for event in sink.events] == [
+        ("started", "pending"),
+        ("failed", "failed"),
+    ]
 
 
 def test_suggestion_only_denies_unknown_mcp_side_effects():

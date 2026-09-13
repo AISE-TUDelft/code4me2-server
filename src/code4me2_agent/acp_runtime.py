@@ -14,6 +14,7 @@ from code4me2_agent.acp_utils import capability_value
 from code4me2_agent.async_bridge import EventLoopAsyncRunner
 from code4me2_agent.command_tools import available_commands, build_acp_command_backend
 from code4me2_agent.echo import EchoAgentCore
+from code4me2_agent.events import ApprovalDecision
 from code4me2_agent.file_tools import build_acp_file_system_backend
 from code4me2_agent.mcp_tools import StdioMcpToolBroker, serialize_mcp_servers
 from code4me2_agent.runtime_auth import (
@@ -150,23 +151,23 @@ class AcpSessionEventSink:
         self._updates = updates
         self._telemetry = telemetry
         self._async_runner = async_runner
+        self._session_approved_kinds: set[str] = set()
+        self._tool_content: dict[str, list[Any] | None] = {}
 
     def tool_call(self, event: ToolCallEvent) -> None:
+        content = self._tool_call_content(event)
         if event.phase == "started":
+            self._tool_content[event.tool_call_id] = content
             update = self._updates.start_tool_call(
                 tool_call_id=event.tool_call_id,
                 title=event.title,
                 kind=event.kind,
                 status=event.status,
                 path=event.path,
+                content=content,
                 raw_input=event.raw_input,
             )
         else:
-            content = (
-                [self._updates.text_tool_content(event.content_text)]
-                if event.content_text
-                else None
-            )
             update = self._updates.update_tool_call(
                 tool_call_id=event.tool_call_id,
                 title=event.title,
@@ -176,6 +177,21 @@ class AcpSessionEventSink:
                 raw_output=event.raw_output,
             )
         self._send_update(event=event, update=update)
+        if event.phase != "started":
+            self._tool_content.pop(event.tool_call_id, None)
+
+    def _tool_call_content(self, event: ToolCallEvent) -> list[Any] | None:
+        if event.path and event.diff_new_text is not None:
+            return [
+                self._updates.diff_tool_content(
+                    event.path,
+                    old_text=event.diff_old_text,
+                    new_text=event.diff_new_text,
+                )
+            ]
+        if event.content_text:
+            return [self._updates.text_tool_content(event.content_text)]
+        return None
 
     def thought(self, event: object) -> None:
         phase = getattr(event, "phase", None)
@@ -212,24 +228,30 @@ class AcpSessionEventSink:
                     },
                 )
 
-    def request_approval(self, tool_call: object, arguments: dict[str, Any]) -> bool:
+    def request_approval(
+        self, tool_call: object, arguments: dict[str, Any]
+    ) -> ApprovalDecision:
         """Synchronously bridge a worker-thread tool decision to ACP/JetBrains."""
         name = str(getattr(tool_call, "name", "tool"))
         tool_call_id = str(getattr(tool_call, "tool_call_id", ""))
         metadata = {
-            "run_command": ("Execute command", "execute"),
-            "create_file": ("Create file", "edit"),
-            "write_file": ("Write file", "edit"),
-            "replace_text": ("Replace text", "edit"),
-            "read_file": ("Read file", "read"),
-            "list_files": ("List files", "search"),
-            "search_files": ("Search files", "search"),
-        }.get(name, (f"Call {name}", "other"))
+            "run_command": "execute",
+            "create_file": "edit",
+            "write_file": "edit",
+            "replace_text": "edit",
+        }.get(name, "other")
+        if metadata in self._session_approved_kinds:
+            return ApprovalDecision("accepted", "session")
+        summary = _approval_summary(name, arguments)
         permission = self._updates.permission_request(
             session_id=self._session_id,
             tool_call_id=tool_call_id,
-            title=metadata[0],
-            kind=metadata[1],
+            title=summary,
+            kind=metadata,
+            summary=summary,
+            raw_input=_approval_raw_input(name, arguments),
+            session_option_name=_session_option_name(metadata),
+            content=self._tool_content.get(tool_call_id),
         )
         try:
             response = self._async_runner.run(
@@ -241,19 +263,25 @@ class AcpSessionEventSink:
             )
         except Exception:  # noqa: BLE001
             logger.exception("ACP permission request failed for tool %s", name)
-            return False
+            return ApprovalDecision("unavailable")
         outcome = getattr(response, "outcome", None)
         if isinstance(response, dict):
             outcome = response.get("outcome")
         if isinstance(outcome, dict):
-            return (
-                outcome.get("outcome") == "selected"
-                and outcome.get("optionId", outcome.get("option_id")) == "allow_once"
-            )
-        return (
-            getattr(outcome, "outcome", None) == "selected"
-            and getattr(outcome, "option_id", None) == "allow_once"
-        )
+            selected = outcome.get("outcome") == "selected"
+            option_id = outcome.get("optionId", outcome.get("option_id"))
+        else:
+            selected = getattr(outcome, "outcome", None) == "selected"
+            option_id = getattr(outcome, "option_id", None)
+        if not selected:
+            return ApprovalDecision("cancelled")
+        scope = {
+            "allow_once": "once",
+            "allow_session": "session",
+        }.get(option_id)
+        if scope == "session":
+            self._session_approved_kinds.add(metadata)
+        return ApprovalDecision("accepted", scope) if scope else ApprovalDecision("rejected")
 
     def _send_update(self, *, event: ToolCallEvent, update: object) -> None:
         try:
@@ -296,6 +324,40 @@ def _record_acp_runtime_event(
         parent_event_id=None,
         payload={"session_id": session_id, **payload},
     )
+
+
+def _approval_raw_input(name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+    if name == "run_command":
+        argv = arguments.get("argv")
+        return {
+            "argv": [str(arg) for arg in argv] if isinstance(argv, (list, tuple)) else [],
+            "cwd": str(arguments.get("cwd", ".")),
+        }
+    if name in {"create_file", "write_file", "replace_text"}:
+        return {"path": str(arguments.get("path", ""))}
+    return None
+
+
+def _approval_summary(name: str, arguments: dict[str, Any]) -> str:
+    if name == "run_command":
+        argv = arguments.get("argv")
+        command = " ".join(str(arg) for arg in argv) if isinstance(argv, (list, tuple)) else "command"
+        return f"Run command: {command}"
+    path = str(arguments.get("path", "")).strip()
+    labels = {
+        "create_file": "Create file",
+        "write_file": "Write file",
+        "replace_text": "Edit file",
+    }
+    return f"{labels.get(name, f'Run tool: {name}')}{f': {path}' if path else ''}"
+
+
+def _session_option_name(kind: str) -> str:
+    return {
+        "edit": "Allow edits for session",
+        "execute": "Allow commands for session",
+        "other": "Allow MCP tools for session",
+    }[kind]
 
 
 def _normalize_capabilities(value: object | None) -> object | None:

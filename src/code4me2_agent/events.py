@@ -5,6 +5,16 @@ from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
+class ApprovalDecision:
+    decision: str
+    scope: str = "none"
+
+    @property
+    def accepted(self) -> bool:
+        return self.decision == "accepted"
+
+
+@dataclass(frozen=True)
 class ToolCallEvent:
     phase: str
     tool_call_id: str
@@ -16,6 +26,8 @@ class ToolCallEvent:
     status: str
     path: str | None = None
     content_text: str | None = None
+    diff_old_text: str | None = None
+    diff_new_text: str | None = None
     raw_input: dict[str, Any] | None = None
     raw_output: dict[str, Any] | None = None
 

@@ -282,29 +282,44 @@ class ToolRegistry:
                 failure_reason="invalid_approval_policy",
             )
         if self._approval_policy == "suggestion_only" and (
-            name in {"create_file", "write_file", "replace_text", "run_command"}
-            or name.startswith("mcp__")
+            _requires_manual_approval(name)
         ):
             raise ToolRegistryError(
                 f"Tool execution is disabled by suggestion-only policy: {name}",
                 failure_reason="approval_policy_denied",
             )
         arguments = dict(tool_call.arguments)
-        if self._approval_policy == "per_step":
-            request_approval = getattr(self._event_sink, "request_approval", None)
-            approved = bool(
-                request_approval(tool_call, arguments)
-                if callable(request_approval)
-                else False
-            )
-            if not approved:
-                raise ToolRegistryError(
-                    f"The user denied approval for tool: {name}",
-                    failure_reason="approval_policy_denied",
-                )
-        self._emit_tool_start(
+        edit_preview = self._edit_preview(
             tool_call, arguments, run_id=run_id, request_id=request_id
         )
+        self._emit_tool_start(
+            tool_call,
+            arguments,
+            edit_preview=edit_preview,
+            run_id=run_id,
+            request_id=request_id,
+        )
+        if self._approval_policy == "per_step" and _requires_manual_approval(name):
+            request_approval = getattr(self._event_sink, "request_approval", None)
+            decision = (
+                request_approval(tool_call, arguments)
+                if callable(request_approval)
+                else None
+            )
+            if not getattr(decision, "accepted", bool(decision)):
+                outcome = getattr(decision, "decision", "unavailable")
+                self._emit_tool_failed(
+                    tool_call,
+                    arguments,
+                    edit_preview=edit_preview,
+                    run_id=run_id,
+                    request_id=request_id,
+                    message=f"Not run: approval {outcome}.",
+                )
+                raise ToolRegistryError(
+                    f"Tool approval {outcome} for: {name}",
+                    failure_reason=f"approval_{outcome}",
+                )
         try:
             if name == "read_file":
                 result = self._file_tools.read_file(
@@ -372,15 +387,23 @@ class ToolRegistry:
                 )
         except Exception:
             self._emit_tool_failed(
-                tool_call, arguments, run_id=run_id, request_id=request_id
+                tool_call,
+                arguments,
+                edit_preview=edit_preview,
+                run_id=run_id,
+                request_id=request_id,
             )
             raise
         tool_output = asdict(result) if is_dataclass(result) else dict(result)
         self._emit_tool_completed(
-            tool_call, tool_output, run_id=run_id, request_id=request_id
+            tool_call,
+            arguments,
+            tool_output,
+            edit_preview=edit_preview,
+            run_id=run_id,
+            request_id=request_id,
         )
         return tool_output
-
     def definitions(self) -> list[dict[str, Any]]:
         definitions = _tool_definitions()
         if self._mcp_tools is not None:
@@ -418,6 +441,7 @@ class ToolRegistry:
         tool_call: ToolCall,
         arguments: dict[str, Any],
         *,
+        edit_preview: dict[str, str | None] | None = None,
         run_id: str,
         request_id: str,
     ) -> None:
@@ -435,6 +459,8 @@ class ToolRegistry:
                 kind=metadata["kind"],
                 status="pending",
                 path=metadata.get("path"),
+                diff_old_text=edit_preview.get("old_text") if edit_preview else None,
+                diff_new_text=edit_preview.get("new_text") if edit_preview else None,
                 raw_input=metadata.get("raw_input"),
             )
         )
@@ -442,12 +468,14 @@ class ToolRegistry:
     def _emit_tool_completed(
         self,
         tool_call: ToolCall,
+        arguments: dict[str, Any],
         tool_output: dict[str, Any],
         *,
+        edit_preview: dict[str, str | None] | None = None,
         run_id: str,
         request_id: str,
     ) -> None:
-        metadata = _tool_event_metadata(tool_call.name, tool_output)
+        metadata = _tool_event_metadata(tool_call.name, arguments)
         if metadata is None:
             return
         self._event_sink.tool_call(
@@ -461,8 +489,10 @@ class ToolRegistry:
                 kind=metadata["kind"],
                 status="completed",
                 path=metadata.get("path"),
-                content_text=metadata.get("content_text"),
-                raw_output=metadata.get("raw_output"),
+                diff_old_text=edit_preview.get("old_text") if edit_preview else None,
+                diff_new_text=edit_preview.get("new_text") if edit_preview else None,
+                content_text=None if edit_preview else metadata.get("content_text"),
+                raw_output=tool_output,
             )
         )
 
@@ -473,6 +503,8 @@ class ToolRegistry:
         *,
         run_id: str,
         request_id: str,
+        message: str | None = None,
+        edit_preview: dict[str, str | None] | None = None,
     ) -> None:
         metadata = _tool_event_metadata(tool_call.name, arguments)
         if metadata is None:
@@ -488,9 +520,52 @@ class ToolRegistry:
                 kind=metadata["kind"],
                 status="failed",
                 path=metadata.get("path"),
-                content_text=f"{metadata.get('content_text', metadata['title'])} failed",
+                diff_old_text=edit_preview.get("old_text") if edit_preview else None,
+                diff_new_text=edit_preview.get("new_text") if edit_preview else None,
+                content_text=message or f"{metadata.get('content_text', metadata['title'])} failed",
             )
         )
+
+    def _edit_preview(
+        self,
+        tool_call: ToolCall,
+        arguments: dict[str, Any],
+        *,
+        run_id: str,
+        request_id: str,
+    ) -> dict[str, str | None] | None:
+        name = tool_call.name
+        if name not in {"create_file", "write_file", "replace_text"}:
+            return None
+        path = str(arguments["path"])
+        if name == "create_file":
+            return {"old_text": None, "new_text": str(arguments.get("content", ""))}
+        try:
+            old_text = self._file_tools.read_file(
+                path=path,
+                tool_call_id=tool_call.tool_call_id,
+                run_id=run_id,
+                request_id=request_id,
+            ).content
+        except FileNotFoundError:
+            old_text = ""
+        if name == "replace_text":
+            old_fragment = str(arguments.get("old_text", ""))
+            if old_fragment not in old_text:
+                raise ValueError("old_text was not found in the file.")
+            new_text = old_text.replace(old_fragment, str(arguments.get("new_text", "")), 1)
+        else:
+            new_text = str(arguments.get("content", ""))
+        return {"old_text": old_text, "new_text": new_text}
+
+
+def _requires_manual_approval(tool_name: str) -> bool:
+    return tool_name in {
+        "create_file",
+        "write_file",
+        "replace_text",
+        "run_command",
+    } or tool_name.startswith("mcp__")
 
 
 class FakeOpenAICompatibleProvider:
@@ -896,12 +971,26 @@ class OpenAICompatibleReactAdapter:
                             failure_reason=exc.failure_reason,
                             error_message=str(exc),
                         )
-                        tool_output = {
-                            "status": "denied",
-                            "error": str(exc),
-                            "tool_name": tool_call.name,
-                            "tool_call_id": tool_call.tool_call_id,
-                        }
+                        if exc.failure_reason == "approval_rejected":
+                            tool_output = {
+                                "status": "rejected",
+                                "reason": "user_rejected",
+                                "message": (
+                                    "The user rejected this action. Do not retry this "
+                                    "requested change with another mutating tool; explain "
+                                    "that no change was made or ask what they prefer instead."
+                                ),
+                                "tool_name": tool_call.name,
+                                "tool_call_id": tool_call.tool_call_id,
+                            }
+                        else:
+                            tool_output = {
+                                "status": "denied",
+                                "reason": exc.failure_reason,
+                                "error": str(exc),
+                                "tool_name": tool_call.name,
+                                "tool_call_id": tool_call.tool_call_id,
+                            }
                     except PermissionError as exc:
                         tool_output = {
                             "status": "denied",
@@ -1431,6 +1520,16 @@ def _tool_event_metadata(
             fallback_title="Replace text",
             content_prefix="Replaced text in",
         )
+    if tool_name == "run_command":
+        argv = values.get("argv")
+        command = " ".join(str(arg) for arg in argv) if isinstance(argv, (list, tuple)) else "command"
+        return {
+            "kind": "execute",
+            "title": f"Run {command}",
+            "content_text": f"Run command: {command}",
+            "raw_input": {"argv": argv, "cwd": values.get("cwd", ".")},
+            "raw_output": None,
+        }
     if tool_name.startswith("mcp__"):
         title = f"Call MCP tool {tool_name.removeprefix('mcp__')}"
         return {

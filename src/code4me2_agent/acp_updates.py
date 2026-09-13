@@ -186,6 +186,10 @@ class AcpUpdateBuilder:
         tool_call_id: str,
         title: str,
         kind: str,
+        summary: str,
+        raw_input: Any | None = None,
+        session_option_name: str = "Allow for session",
+        content: Sequence[Any] | None = None,
     ) -> Any:
         return self._schema.RequestPermissionRequest(
             session_id=session_id,
@@ -194,6 +198,8 @@ class AcpUpdateBuilder:
                 title=title,
                 kind=kind,
                 status="pending",
+                content=content or [self.text_tool_content(summary)],
+                raw_input=raw_input,
             ),
             options=[
                 self._schema.PermissionOption(
@@ -202,8 +208,13 @@ class AcpUpdateBuilder:
                     kind="allow_once",
                 ),
                 self._schema.PermissionOption(
+                    option_id="allow_session",
+                    name=session_option_name,
+                    kind="allow_always",
+                ),
+                self._schema.PermissionOption(
                     option_id="reject_once",
-                    name="Reject once",
+                    name="Reject",
                     kind="reject_once",
                 ),
             ],
