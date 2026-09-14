@@ -64,13 +64,9 @@ const Dashboard = ({ user, onLogout }) => {
       if (timeWindow) {
         url.searchParams.set('timeWindow', timeWindow);
       }
-      // Preserve hash only if not being used for the view shortcut
-      if (window.location.hash && window.location.hash.slice(1) !== activeView) {
-        // keep existing hash
-      } else {
-        // set hash to current view for quick copy
-        url.hash = '#' + activeView;
-      }
+      // Keep the hash aligned with the active view so copied dashboard links
+      // reopen the same panel instead of a stale previous view.
+      url.hash = '#' + activeView;
       window.history.replaceState({}, '', url.toString());
     } catch (_) {
       // ignore URL update errors
