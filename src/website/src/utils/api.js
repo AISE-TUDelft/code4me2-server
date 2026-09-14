@@ -618,6 +618,33 @@ export const getModelComparison = async (params = {}) => {
   }
 };
 
+const getAgentAnalytics = async (path, fallbackError) => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/agents/${path}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: body };
+  } catch (error) {
+    console.error("Error fetching agent analytics:", error);
+    return { ok: false, error: fallbackError };
+  }
+};
+
+export const getAgentOverview = (params = {}) =>
+  getAgentAnalytics(`overview?${new URLSearchParams(params)}`, "An unexpected error occurred. Please try again.");
+
+export const getAgentRunDetail = (taskId) =>
+  getAgentAnalytics(`runs/${encodeURIComponent(taskId)}`, "Failed to load agent run detail");
+
 /**
  * Get user engagement data
  *

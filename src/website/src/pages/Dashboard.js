@@ -5,6 +5,7 @@ import AnalyticsNavigation from "../components/analytics/AnalyticsNavigation";
 import OverviewDashboard from "../components/analytics/OverviewDashboard";
 import UsageAnalytics from "../components/analytics/UsageAnalytics";
 import ModelAnalytics from "../components/analytics/ModelAnalytics";
+import AgentAnalytics from "../components/analytics/AgentAnalytics";
 import CalibrationAnalytics from "../components/analytics/CalibrationAnalytics";
 import StudyManagement from "../components/analytics/StudyManagement";
 import ConfigManagement from "../components/analytics/ConfigManagement";
@@ -12,20 +13,21 @@ import AgentProfiles from "./AgentProfiles";
 import AgentAssignments from "./AgentAssignments";
 import "./Dashboard.css";
 
+const BASE_VIEWS = new Set(["overview", "usage", "models", "agents", "calibration"]);
+
+const isValidView = (view, user) => {
+  if (BASE_VIEWS.has(view)) return true;
+  if (view === "studies") return !!user?.is_admin;
+  if (view === "configs") return !!user?.is_admin;
+  if (view === "agent-profiles") return !!user?.is_admin;
+  if (view === "agent-assignments") return !!user?.is_admin;
+  return false;
+};
+
 const Dashboard = ({ user, onLogout }) => {
   const [activeView, setActiveView] = useState('overview');
   const [timeWindow, setTimeWindow] = useState("7d");
   const [isUrlInitialized, setIsUrlInitialized] = useState(false);
-
-  const isValidView = (view, user) => {
-    const baseViews = new Set(['overview','usage','models','calibration']);
-    if (baseViews.has(view)) return true;
-    if (view === 'studies') return !!user?.is_admin;
-    if (view === 'configs') return !!user?.is_admin;
-    if (view === 'agent-profiles') return !!user?.is_admin;
-    if (view === 'agent-assignments') return !!user?.is_admin;
-    return false;
-  };
 
   // Initialize activeView/timeWindow from URL (query ?view=... or hash #studies)
   useEffect(() => {
@@ -86,6 +88,8 @@ const Dashboard = ({ user, onLogout }) => {
         return <UsageAnalytics />;
       case 'models':
         return <ModelAnalytics timeWindow={timeWindow} />;
+      case 'agents':
+        return <AgentAnalytics timeWindow={timeWindow} />;
       case 'calibration':
         return <CalibrationAnalytics />;
       case 'studies':

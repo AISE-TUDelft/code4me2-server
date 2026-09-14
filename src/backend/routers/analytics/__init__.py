@@ -13,12 +13,13 @@ All endpoints enforce proper access controls:
 """
 
 from fastapi import APIRouter
-from . import usage, models, calibration, studies, overview
+from . import agents, usage, models, calibration, studies, overview
 
 router = APIRouter()
 
 # Include all analytics sub-routers
 router.include_router(usage.router, prefix="/usage", tags=["Usage Analytics"])
+router.include_router(agents.router, prefix="/agents", tags=["Agent Analytics"])
 router.include_router(models.router, prefix="/models", tags=["Model Analytics"]) 
 router.include_router(calibration.router, prefix="/calibration", tags=["Model Calibration"])
 router.include_router(studies.router, prefix="/studies", tags=["A/B Testing"])

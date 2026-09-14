@@ -22,6 +22,12 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
       description: 'AI model comparison and quality metrics'
     },
     {
+      id: 'agents',
+      label: 'Agent Telemetry',
+      icon: '⚙️',
+      description: 'Runs, tools, latency, failures and outcomes'
+    },
+    {
       id: 'calibration',
       label: 'Model Calibration',
       icon: '🎯',
