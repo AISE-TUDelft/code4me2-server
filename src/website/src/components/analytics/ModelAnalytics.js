@@ -3,13 +3,11 @@ import Chart from '../visualization/Chart';
 import { getModelComparison } from '../../utils/api';
 import './ModelAnalytics.css';
 
-const ModelAnalytics = () => {
+const ModelAnalytics = ({ timeWindow = '30d' }) => {
   const [modelData, setModelData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedModels, setSelectedModels] = useState([]);
-  const [timeRange, setTimeRange] = useState('30d');
-
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
@@ -20,6 +18,11 @@ const ModelAnalytics = () => {
         if (selectedModels.length > 0) {
           params.model_ids = selectedModels.join(',');
         }
+        const endTime = new Date();
+        const startTime = new Date(endTime);
+        startTime.setDate(startTime.getDate() - Number.parseInt(timeWindow, 10));
+        params.start_time = startTime.toISOString();
+        params.end_time = endTime.toISOString();
 
         const response = await getModelComparison(params);
         if (response.ok) {
@@ -36,7 +39,7 @@ const ModelAnalytics = () => {
     };
 
     fetchData();
-  }, [selectedModels, timeRange]);
+  }, [selectedModels, timeWindow]);
 
   const formatModelPerformanceChart = (models) => {
     if (!models) return [];
@@ -85,6 +88,21 @@ const ModelAnalytics = () => {
   }
 
   const models = modelData?.data || [];
+
+  if (models.length === 0) {
+    return (
+      <div className="model-analytics">
+        <div className="analytics-header">
+          <h2>Model Performance Analytics</h2>
+          <p>Compare AI model performance, quality metrics, and usage patterns</p>
+        </div>
+        <div className="empty-message">
+          <h3>No model performance data</h3>
+          <p>No model generations were recorded in the selected time range.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="model-analytics">

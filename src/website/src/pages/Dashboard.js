@@ -15,6 +15,7 @@ import "./Dashboard.css";
 const Dashboard = ({ user, onLogout }) => {
   const [activeView, setActiveView] = useState('overview');
   const [timeWindow, setTimeWindow] = useState("7d");
+  const [isUrlInitialized, setIsUrlInitialized] = useState(false);
 
   const isValidView = (view, user) => {
     const baseViews = new Set(['overview','usage','models','calibration']);
@@ -41,13 +42,16 @@ const Dashboard = ({ user, onLogout }) => {
       if (tw && ['7d','30d','90d'].includes(tw)) {
         setTimeWindow(tw);
       }
+      setIsUrlInitialized(true);
     } catch (_) {
       // ignore URL parse errors
+      setIsUrlInitialized(true);
     }
   }, [user]);
 
   // Keep URL in sync with current view and time window so users can deeplink
   useEffect(() => {
+    if (!isUrlInitialized) return;
     try {
       const url = new URL(window.location.href);
       if (isValidView(activeView, user)) {
@@ -69,7 +73,7 @@ const Dashboard = ({ user, onLogout }) => {
     } catch (_) {
       // ignore URL update errors
     }
-  }, [activeView, timeWindow, user]);
+  }, [activeView, timeWindow, user, isUrlInitialized]);
 
   const renderActiveView = () => {
     switch (activeView) {
@@ -81,7 +85,7 @@ const Dashboard = ({ user, onLogout }) => {
       case 'usage':
         return <UsageAnalytics />;
       case 'models':
-        return <ModelAnalytics />;
+        return <ModelAnalytics timeWindow={timeWindow} />;
       case 'calibration':
         return <CalibrationAnalytics />;
       case 'studies':
