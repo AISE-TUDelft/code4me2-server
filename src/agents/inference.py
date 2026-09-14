@@ -24,6 +24,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
+import re
 import time
 import uuid
 from collections import Counter
@@ -61,6 +63,22 @@ if TYPE_CHECKING:
 # Upstream request timeout. Agent turns with large contexts are slow, and a
 # premature timeout looks to the developer like the agent hung.
 _UPSTREAM_TIMEOUT_SECONDS = 120
+
+
+def _retry_after_seconds(headers: httpx.Headers, body: bytes) -> Optional[int]:
+    """Extract a provider rate-limit delay so agents can back off correctly."""
+    header_value = headers.get("retry-after")
+    try:
+        if header_value:
+            return max(1, min(120, math.ceil(float(header_value))))
+    except ValueError:
+        pass
+
+    body_text = body.decode("utf-8", errors="replace")
+    match = re.search(r"try again in\s+([0-9]+(?:\.[0-9]+)?)s", body_text, re.IGNORECASE)
+    if match:
+        return max(1, min(120, math.ceil(float(match.group(1)))))
+    return None
 
 
 async def run_inference(
@@ -347,6 +365,11 @@ async def run_inference(
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 msg.pop("reasoning_content", None)
 
+    # Schema size is structural telemetry. Token count is estimated in the
+    # analytics layer because providers use different tokenizers.
+    tool_schema_bytes = len(
+        json.dumps(openai_body.get("tools", []), default=str).encode("utf-8")
+    )
     body_bytes = json.dumps(openai_body).encode()
     role_counts = Counter(
         m.get("role", "unknown") for m in messages if isinstance(m, dict)
@@ -386,6 +409,7 @@ async def run_inference(
         "openai_passthrough": use_openai_passthrough,
         "meta_request": meta_request,
         "requested_model": requested_model,
+        "tool_schema_bytes": tool_schema_bytes,
     }
 
     upstream_url = upstream.endpoint(responses_api=is_responses_api)
@@ -438,41 +462,55 @@ async def run_inference(
 
     if streaming:
         sse_buffer: list[bytes] = []
-        captured_status: list[int] = []
         stream_aborted: list[bool] = [False]
+
+        stream_client = httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT_SECONDS)
+        stream_request = stream_client.build_request(
+            "POST",
+            upstream_url,
+            content=body_bytes,
+            headers=upstream_headers,
+        )
+        upstream_stream = await stream_client.send(stream_request, stream=True)
+
+        # Do not turn an upstream 429 into a successful-looking SSE response.
+        # Goose retries when it sees the status and Retry-After; yielding the
+        # error body through StreamingResponse would otherwise default to 200.
+        if upstream_stream.status_code >= 400:
+            error_body = await upstream_stream.aread()
+            retry_after = _retry_after_seconds(upstream_stream.headers, error_body)
+            await upstream_stream.aclose()
+            await stream_client.aclose()
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            record = _build_record(None, None, None, None, None, latency_ms, upstream_stream.status_code)
+            _log_record(record)
+            if record_observation_events:
+                write_model_call_event(app, task_uuid, record, latency_ms, span, extra)
+            response_headers = {}
+            if retry_after is not None:
+                response_headers["Retry-After"] = str(retry_after)
+            return Response(
+                content=error_body,
+                status_code=upstream_stream.status_code,
+                headers=response_headers,
+                media_type=upstream_stream.headers.get("content-type", "application/json"),
+            )
 
         async def _stream():
             try:
-                async with httpx.AsyncClient(
-                    timeout=_UPSTREAM_TIMEOUT_SECONDS
-                ) as client:
-                    async with client.stream(
-                        "POST",
-                        upstream_url,
-                        content=body_bytes,
-                        headers=upstream_headers,
-                    ) as upstream_resp:
-                        captured_status.append(upstream_resp.status_code)
-                        logging.info(
-                            f"[Agent/inference] ← upstream "
-                            f"status={upstream_resp.status_code} (stream)"
-                        )
-                        if upstream_resp.status_code >= 400:
-                            body = await upstream_resp.aread()
-                            logging.error(
-                                f"[Agent/inference] upstream error body: "
-                                f"{body.decode('utf-8', errors='replace')}"
-                            )
-                            sse_buffer.append(body)
-                            yield body
-                            return
-                        async for chunk in upstream_resp.aiter_bytes():
-                            sse_buffer.append(chunk)
-                            yield chunk
+                logging.info(
+                    f"[Agent/inference] ← upstream "
+                    f"status={upstream_stream.status_code} (stream)"
+                )
+                async for chunk in upstream_stream.aiter_bytes():
+                    sse_buffer.append(chunk)
+                    yield chunk
             except Exception as e:
                 stream_aborted[0] = True
                 logging.warning(f"[Agent/inference] stream aborted mid-flight — {e}")
             finally:
+                await upstream_stream.aclose()
+                await stream_client.aclose()
                 # Telemetry is written in `finally` so an aborted stream still
                 # produces a row — a dropped connection is itself a finding.
                 latency_ms = int((time.monotonic() - t0) * 1000)
@@ -495,7 +533,7 @@ async def run_inference(
                     finish_reason,
                     response_text,
                     latency_ms,
-                    captured_status[0] if captured_status else 0,
+                    upstream_stream.status_code,
                 )
                 _log_record(record)
                 if record_observation_events:
@@ -544,9 +582,16 @@ async def run_inference(
     if record_observation_events:
         write_model_call_event(app, task_uuid, record, latency_ms, span, extra)
 
+    response_headers = {}
+    if upstream_resp.status_code == 429:
+        retry_after = _retry_after_seconds(upstream_resp.headers, upstream_resp.content)
+        if retry_after is not None:
+            response_headers["Retry-After"] = str(retry_after)
+
     return Response(
         content=upstream_resp.content,
         status_code=upstream_resp.status_code,
+        headers=response_headers,
         media_type="application/json",
     )
 
