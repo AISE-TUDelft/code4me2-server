@@ -768,6 +768,7 @@ def evaluate_study_agents(
             t.study_arm_is_baseline AS is_baseline,
             COUNT(DISTINCT t.task_id) AS total_tasks,
             COUNT(DISTINCT t.task_id) FILTER (WHERE t.status = 'done') AS completed_tasks,
+            COUNT(DISTINCT t.task_id) FILTER (WHERE t.status = 'failed') AS failed_tasks,
             COUNT(DISTINCT COALESCE(t.owner_user_id, t.session_id)) AS total_participants,
             AVG(t.total_steps) AS avg_steps,
             SUM(t.input_tokens) AS total_input_tokens,
@@ -785,8 +786,11 @@ def evaluate_study_agents(
         event_query = """
         SELECT
             t.profile_id,
+            COUNT(e.event_id) FILTER (WHERE e.event_type = 'model_request') AS model_requests,
             COUNT(e.event_id) FILTER (WHERE e.event_type = 'model_call') AS model_calls,
+            COUNT(e.event_id) FILTER (WHERE e.event_type = 'tool_request') AS tool_requests,
             COUNT(e.event_id) FILTER (WHERE e.event_type = 'tool_call') AS tool_calls,
+            COUNT(e.event_id) FILTER (WHERE e.event_type IN ('tool_failed', 'error')) AS failures,
             AVG(e.latency_ms) FILTER (WHERE e.event_type = 'model_call') AS avg_model_latency_ms,
             SUM(e.total_tokens) AS total_tokens
         FROM agent_task t
@@ -846,12 +850,16 @@ def evaluate_study_agents(
                     "total_tasks": total_tasks,
                     "completed_tasks": _i(row.completed_tasks),
                     "completion_rate": _i(row.completed_tasks) / max(total_tasks, 1),
+                    "failed_tasks": _i(row.failed_tasks),
                     "total_participants": _i(row.total_participants),
                     "avg_steps": _f(row.avg_steps),
                     "total_input_tokens": _i(row.total_input_tokens),
                     "total_output_tokens": _i(row.total_output_tokens),
+                    "model_requests": _i(events.model_requests) if events else 0,
                     "model_calls": _i(events.model_calls) if events else 0,
+                    "tool_requests": _i(events.tool_requests) if events else 0,
                     "tool_calls": _i(events.tool_calls) if events else 0,
+                    "failures": _i(events.failures) if events else 0,
                     "avg_model_latency_ms": (
                         _f(events.avg_model_latency_ms) if events else 0.0
                     ),

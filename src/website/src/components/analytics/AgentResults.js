@@ -165,6 +165,10 @@ const ArmCard = ({ arm }) => {
           </span>
         </div>
         <div className="metric-row">
+          <span className="metric-label">Failed tasks:</span>
+          <span className="metric-value">{m.failed_tasks || 0}</span>
+        </div>
+        <div className="metric-row">
           <span className="metric-label">Completion:</span>
           <span className="metric-value">
             {`${((m.completion_rate || 0) * 100).toFixed(1)}%`}
@@ -175,12 +179,20 @@ const ArmCard = ({ arm }) => {
           <span className="metric-value">{m.total_participants || 0}</span>
         </div>
         <div className="metric-row">
-          <span className="metric-label">Model calls:</span>
-          <span className="metric-value">{m.model_calls || 0}</span>
+          <span className="metric-label">Model events:</span>
+          <span className="metric-value">
+            {m.model_requests || 0} requested / {m.model_calls || 0} completed
+          </span>
         </div>
         <div className="metric-row">
-          <span className="metric-label">Tool calls:</span>
-          <span className="metric-value">{m.tool_calls || 0}</span>
+          <span className="metric-label">Tool events:</span>
+          <span className="metric-value">
+            {m.tool_requests || 0} requested / {m.tool_calls || 0} completed
+          </span>
+        </div>
+        <div className="metric-row">
+          <span className="metric-label">Telemetry failures:</span>
+          <span className="metric-value">{m.failures || 0}</span>
         </div>
         <div className="metric-row">
           <span className="metric-label">Avg steps:</span>
