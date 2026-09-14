@@ -121,6 +121,9 @@ def create_agent_task(
                         "framework_version": existing.framework_version,
                         "agent_profile": existing.agent_profile,
                         "model": existing.model,
+                        "agent_launch": {
+                            "approval_policy": existing.approval_policy,
+                        },
                     },
                     status_code=200,
                 )
@@ -177,6 +180,9 @@ def create_agent_task(
                 # This is only the runtime's displayed/requested model. The inference relay
                 # still enforces the immutable task snapshot on every model call.
                 "model": task.model,
+                "agent_launch": {
+                    "approval_policy": task.approval_policy,
+                },
             },
             status_code=201,
         )

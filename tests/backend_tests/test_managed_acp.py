@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,6 +22,7 @@ from backend.routers.acp import (
     run_managed_inference,
 )
 from backend.routers.agent.ingest import get_agent_run
+from backend.routers.agents import TaskCreateRequest, create_agent_task
 from backend.routers.agent.profiles import AgentProfilePayload
 from backend.routers.analytics.auth_utils import AuthenticatedUser
 
@@ -187,6 +189,45 @@ def test_managed_policy_applies_the_assigned_command_allowlist():
         policy = _managed_policy(MagicMock(), user_id, profile)
 
     assert policy["commands_allowlist"] == ["git", "rg"]
+
+
+def test_plugin_task_response_includes_the_assigned_approval_policy():
+    session_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    profile = SimpleNamespace(
+        name="goose-per-step",
+        model="study-model",
+        approval_policy="per_step",
+        tools_json="[]",
+        temperature=None,
+        framework_version="goose",
+        profile_id=uuid.uuid4(),
+    )
+    assignment = SimpleNamespace(
+        profile=profile,
+        study_id=uuid.uuid4(),
+        assignment_id=uuid.uuid4(),
+        arm_name="treatment",
+        is_baseline=False,
+    )
+    task = SimpleNamespace(
+        task_id=uuid.uuid4(),
+        model="study-model",
+        approval_policy="per_step",
+    )
+    db = MagicMock()
+    app = MagicMock()
+    app.get_db_session.return_value = db
+
+    with patch("backend.routers.agents.crud.get_agent_task", return_value=None), patch(
+        "backend.routers.agents.crud.get_session_by_id",
+        return_value=SimpleNamespace(user_id=user_id),
+    ), patch("agents.registry.resolve_assignment_context", return_value=assignment), patch(
+        "backend.routers.agents.resolve_store_agent_content", return_value=False
+    ), patch("backend.routers.agents.crud.create_agent_task", return_value=task):
+        response = create_agent_task(TaskCreateRequest(task_id=task.task_id), app, session_id)
+
+    assert json.loads(response.body)["agent_launch"] == {"approval_policy": "per_step"}
 
 
 def test_profile_validation_rejects_tools_from_another_runtime():
