@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Body, Cookie, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Cookie, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -729,10 +729,16 @@ async def run_managed_inference(
     body: ManagedInferenceRequest,
     app: App = Depends(App.get_instance),
     scope: AcpServerAuthorization = Depends(require_acp_server_scope),
+    # Plain `Request` annotation (not Optional) so FastAPI injects the
+    # request object; the default only keeps direct calls working.
+    request: Request = None,  # type: ignore[assignment]
 ):
-    """Relay a managed runtime model call without proxy-generated telemetry."""
-    if body.request.get("stream"):
-        raise HTTPException(status_code=400, detail="Managed protocol v1 requires non-streaming inference")
+    """Relay a managed runtime model call without proxy-generated telemetry.
+
+    ``stream: true`` is forwarded to the shared inference relay, which forces
+    ``stream_options.include_usage`` and streams upstream bytes verbatim;
+    ``stream`` absent/false stays a byte-identical single-shot relay.
+    """
     if "input" in body.request or not isinstance(body.request.get("messages"), list):
         raise HTTPException(status_code=400, detail="Managed protocol v1 requires a Chat Completions request")
 
@@ -788,6 +794,8 @@ async def run_managed_inference(
         content_included=snapshot["content_included"],
         record_observation_events=False,
         app=app,
+        api_kind="chat_completions",
+        request=request,
     )
 
 

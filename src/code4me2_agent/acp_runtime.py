@@ -20,6 +20,7 @@ from code4me2_agent.mcp_tools import StdioMcpToolBroker, serialize_mcp_servers
 from code4me2_agent.runtime_auth import (
     AcpAuthorizationFailure,
     AcpBackendAuthorization,
+    AcpSessionExpired,
     ManagedBridgeAuthorization,
 )
 
@@ -145,14 +146,19 @@ class AcpSessionEventSink:
         updates: AcpUpdateBuilder,
         telemetry: object,
         async_runner: EventLoopAsyncRunner,
+        cancel_event: Event | None = None,
     ) -> None:
         self._conn = conn
         self._session_id = session_id
         self._updates = updates
         self._telemetry = telemetry
         self._async_runner = async_runner
+        self._cancel_event = cancel_event
         self._session_approved_kinds: set[str] = set()
         self._tool_content: dict[str, list[Any] | None] = {}
+
+    def set_cancel_event(self, cancel_event: Event | None) -> None:
+        self._cancel_event = cancel_event
 
     def tool_call(self, event: ToolCallEvent) -> None:
         content = self._tool_call_content(event)
@@ -192,6 +198,50 @@ class AcpSessionEventSink:
         if event.content_text:
             return [self._updates.text_tool_content(event.content_text)]
         return None
+
+    def agent_message_delta(
+        self, text: str, *, message_id: str | None, run_id: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        """Send one streaming agent-message chunk; never fails the turn."""
+        if not text:
+            return
+        try:
+            update = self._updates.agent_message_chunk(
+                text, message_id=message_id, phase="delta"
+            )
+            # Bounded delivery: a hung client costs telemetry, never the turn.
+            # Old single-arg runners stay compatible via TypeError fallback.
+            try:
+                self._async_runner.run(
+                    self._conn.session_update(
+                        session_id=self._session_id,
+                        update=update,
+                        source="code4me2_agent",
+                    ),
+                    timeout_seconds=5.0,
+                )
+            except TypeError:
+                self._async_runner.run(
+                    self._conn.session_update(
+                        session_id=self._session_id,
+                        update=update,
+                        source="code4me2_agent",
+                    )
+                )
+        except Exception as exc:
+            record = getattr(self._telemetry, "record", None)
+            if callable(record):
+                record(
+                    event_type="agent.acp.update_failed",
+                    run_id=run_id,
+                    request_id=request_id,
+                    parent_event_id=None,
+                    payload={
+                        "update_type": "agent_message_chunk",
+                        "error_message": str(exc),
+                    },
+                )
 
     def thought(self, event: object) -> None:
         phase = getattr(event, "phase", None)
@@ -242,6 +292,9 @@ class AcpSessionEventSink:
         }.get(name, "other")
         if metadata in self._session_approved_kinds:
             return ApprovalDecision("accepted", "session")
+        # Prompt cancellation aborts a pending approval wait promptly.
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            return ApprovalDecision("cancelled")
         summary = _approval_summary(name, arguments)
         permission = self._updates.permission_request(
             session_id=self._session_id,
@@ -254,13 +307,20 @@ class AcpSessionEventSink:
             content=self._tool_content.get(tool_call_id),
         )
         try:
-            response = self._async_runner.run(
+            from code4me2_agent.async_bridge import run_with_cancellation
+
+            response = run_with_cancellation(
                 self._conn.request_permission(
                     session_id=permission.session_id,
                     tool_call=permission.tool_call,
                     options=permission.options,
-                )
+                ),
+                self._async_runner,
+                self._cancel_event,
+                timeout_seconds=120.0,
             )
+        except asyncio.CancelledError:
+            return ApprovalDecision("cancelled")
         except Exception:  # noqa: BLE001
             logger.exception("ACP permission request failed for tool %s", name)
             return ApprovalDecision("unavailable")
@@ -604,6 +664,11 @@ def create_acp_agent(
                     session_authorization.managed_inference
                     if base_config.managed_mode
                     else base_config.managed_request
+                ),
+                managed_request_stream=(
+                    getattr(session_authorization, "managed_inference_stream", None)
+                    if base_config.managed_mode
+                    else base_config.managed_request_stream
                 ),
             )
 
@@ -1138,7 +1203,9 @@ def create_acp_agent(
                             },
                         )
                     prompt_text = await _prompt_text_async(prompt)
-                    logger.info("Prompt text: %s", prompt_text)
+                    # Content-gated: never log raw prompt text at info — the
+                    # body is user content subject to the storage-consent gate.
+                    logger.debug("Prompt received: %d chars", len(prompt_text))
                     run_id = uuid4().hex
                     if config.managed_mode:
                         run_payload = await asyncio.to_thread(
@@ -1160,6 +1227,34 @@ def create_acp_agent(
                                 backend_url=session_authorization.backend_url,
                             )
                         )
+                    event_sink = getattr(session.core, "_event_sink", None)
+                    set_cancel = getattr(event_sink, "set_cancel_event", None)
+                    if callable(set_cancel):
+                        try:
+                            set_cancel(session.cancel_event)
+                        except Exception:
+                            pass
+                    emit_delta = getattr(event_sink, "agent_message_delta", None)
+
+                    def _on_delta(text: str) -> None:
+                        if not callable(emit_delta):
+                            return
+                        try:
+                            emit_delta(
+                                text,
+                                message_id=request_id,
+                                run_id=run_id,
+                                request_id=request_id,
+                            )
+                        except Exception:
+                            pass
+
+                    if not callable(emit_delta):
+                        # Sink cannot stream (e.g. no-op): let the adapter fall
+                        # back to its single-shot path instead of accumulating
+                        # deltas nobody will display.
+                        _on_delta = None  # type: ignore[assignment]
+
                     result = await asyncio.to_thread(
                         session.core.handle_prompt,
                         prompt_text,
@@ -1167,6 +1262,7 @@ def create_acp_agent(
                         message_id,
                         run_id,
                         session.cancel_event,
+                        _on_delta,
                     )
                     await asyncio.to_thread(self._save_persisted_memory, session)
                     if result.final_response:
@@ -1187,6 +1283,17 @@ def create_acp_agent(
                     return PromptResponse(
                         stop_reason=_acp_stop_reason(result.stop_reason),
                     )
+                except AcpSessionExpired:
+                    # The pre-turn validate (plus one reauth) already ran: a
+                    # 401 here means the token died mid-turn (double-401), e.g.
+                    # on create_managed_run or streaming inference. Surface it
+                    # as auth_required so the client can re-authenticate and
+                    # retry, instead of leaking a backend exception (or, via
+                    # the adapter, masking it as a model turn failure the way
+                    # single-shot requests do).
+                    raise RequestError.auth_required(
+                        {"reason": "authorization_rejected"}
+                    ) from None
                 finally:
                     session.active_prompt_task = None
                     session.cancel_event.clear()

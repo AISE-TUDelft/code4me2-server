@@ -18,7 +18,7 @@ import logging
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -202,11 +202,13 @@ class InferenceRequest(BaseModel):
     task_id: uuid.UUID
     request: dict[str, Any]
     enrichment: Optional[dict[str, Any]] = None
+    api_kind: Optional[str] = None
 
 
 @router.post("/inference")
 async def run_agent_inference(
     body: InferenceRequest,
+    http_request: Request,
     app: App = Depends(App.get_instance),
     session_id: uuid.UUID = Depends(require_session),
 ) -> Response:
@@ -264,6 +266,8 @@ async def run_agent_inference(
         profile_tools_json=task_snapshot["tools_json"],
         content_included=content_included,
         app=app,
+        api_kind=body.api_kind or "auto",
+        request=http_request,
     )
 
 

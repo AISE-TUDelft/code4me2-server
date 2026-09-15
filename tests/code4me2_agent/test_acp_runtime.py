@@ -21,7 +21,7 @@ from code4me2_agent.adapters import (
     ToolRegistry,
     ToolRegistryError,
 )
-from code4me2_agent.acp_runtime import AcpSessionEventSink, create_acp_agent
+from code4me2_agent.acp_runtime import AcpSessionEventSink, AgentSession, create_acp_agent
 from code4me2_agent.acp_updates import AcpUpdateBuilder
 from code4me2_agent.config import (
     AdapterConfig,
@@ -31,7 +31,7 @@ from code4me2_agent.config import (
 )
 from code4me2_agent.echo import EchoPromptResult
 from code4me2_agent.events import ApprovalDecision, ToolCallEvent
-from code4me2_agent.runtime_auth import AcpRuntimeScope
+from code4me2_agent.runtime_auth import AcpRuntimeScope, AcpSessionExpired
 from code4me2_agent.telemetry import AgentTelemetryRecorder
 
 
@@ -465,6 +465,7 @@ class AcpRuntimeCompatibilityTest(TestCase):
                 message_id: str | None = None,
                 run_id: str | None = None,
                 cancellation_event: Event | None = None,
+                on_delta: Any | None = None,
             ) -> EchoPromptResult:
                 prompt_started.set()
                 if cancellation_event is None or not cancellation_event.wait(timeout=2):
@@ -513,5 +514,83 @@ class AcpRuntimeCompatibilityTest(TestCase):
 
             await self.agent.close_session(session_id=new_session.session_id)
             self.assertNotIn(new_session.session_id, self.agent._sessions)
+
+        asyncio.run(scenario())
+
+    def test_prompt_double_401_maps_to_auth_required(self) -> None:
+        """A 401 after the pre-turn reauth (double-401) must surface as an ACP
+        auth error, never leak a backend exception out of prompt()."""
+
+        class _Double401Authorization:
+            def __init__(self, workspace: Path) -> None:
+                self._workspace = workspace.resolve()
+                self.validations = 0
+                self.runs = 0
+
+            def validate(self) -> AcpRuntimeScope:
+                self.validations += 1
+                if self.validations == 1:
+                    raise AcpSessionExpired("token expired")
+                return AcpRuntimeScope(
+                    project_id="project-1", workspace=str(self._workspace)
+                )
+
+            def prepare_workspace(self, workspace: object) -> None:
+                return None
+
+            def authenticate(self) -> AcpRuntimeScope:
+                return AcpRuntimeScope(
+                    project_id="project-1", workspace=str(self._workspace)
+                )
+
+            def telemetry_headers(self) -> dict[str, str]:
+                return {"Authorization": "Bearer refreshed"}
+
+            def create_managed_run(self, *, run_id: str, session_id: str) -> dict:
+                self.runs += 1
+                raise AcpSessionExpired("token expired again")
+
+        async def scenario() -> None:
+            managed_config = AgentConfig(
+                workspace_root=self.workspace,
+                trace_path=self.workspace / "agent-events.jsonl",
+                session_id="bootstrap",
+                managed_mode=True,
+            )
+            agent = create_acp_agent(managed_config, authorization=self.authorization)
+            agent.on_connect(self.client)
+            authorization = _Double401Authorization(self.workspace)
+            core_config = AgentConfig(
+                workspace_root=self.workspace,
+                trace_path=self.workspace / "agent-events.jsonl",
+                session_id="managed-session",
+            )
+
+            def _must_not_run(*args: Any, **kwargs: Any) -> Any:
+                raise AssertionError("the turn must fail before the model call")
+
+            core = SimpleNamespace(
+                _config=core_config,
+                _telemetry=SimpleNamespace(),
+                apply_config=lambda config: None,
+                handle_prompt=_must_not_run,
+            )
+            agent._sessions["managed-session"] = AgentSession(
+                session_id="managed-session",
+                core=core,
+                authorization=authorization,
+            )
+
+            with self.assertRaises(RequestError) as raised:
+                await agent.prompt(
+                    prompt=[TextContentBlock(type="text", text="hello")],
+                    session_id="managed-session",
+                )
+            self.assertEqual("authorization_rejected", raised.exception.data["reason"])
+            self.assertEqual(1, authorization.validations)
+            self.assertEqual(1, authorization.runs)
+            session = agent._sessions["managed-session"]
+            self.assertIsNone(session.active_prompt_task)
+            self.assertFalse(session.cancel_event.is_set())
 
         asyncio.run(scenario())

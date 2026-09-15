@@ -364,6 +364,68 @@ def test_managed_inference_disables_proxy_observation_events():
     assert "temperature" not in run_inference.await_args.kwargs["openai_body"]
 
 
+def test_managed_inference_accepts_stream_and_forwards_request_context():
+    scope = _scope()
+    task = SimpleNamespace(
+        task_id=uuid.uuid4(),
+        owner_user_id=uuid.UUID(scope.user_id),
+        owner_project_id=uuid.UUID(scope.project_id),
+        agent_session_id="acp-session-1",
+        source="code4me2_agent",
+        policy_snapshot={
+            "version": "1",
+            "model": "managed-model",
+            "tools": ["read_file"],
+            "approval_policy": "auto",
+            "max_iterations": 3,
+            "max_context_tokens": 1000,
+            "temperature": 0.2,
+            "store_agent_content": False,
+        },
+        agent_profile="managed-profile",
+        framework_version="code4me2-agent",
+    )
+    profile = SimpleNamespace(base_url="https://provider.example/v1", api_key_ref="KEY")
+    db = MagicMock()
+    app = MagicMock()
+    app.get_db_session.return_value = db
+    forwarded = MagicMock()
+    request_context = object()
+
+    with patch(
+        "backend.routers.acp.crud.get_agent_task_by_external_run_id", return_value=task
+    ), patch("backend.routers.acp.crud.get_agent_profile", return_value=profile), patch(
+        "agents.inference.run_inference", new=AsyncMock(return_value=forwarded)
+    ) as run_inference:
+        result = asyncio.run(
+            run_managed_inference(
+                ManagedInferenceRequest(
+                    run_id="run-1",
+                    session_id="acp-session-1",
+                    request={
+                        "model": "participant-override",
+                        "temperature": 9.9,
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": True,
+                    },
+                ),
+                app,
+                scope,
+                request_context,
+            )
+        )
+
+    assert result is forwarded
+    # stream:true is accepted (old servers answered 400) and forwarded as-is;
+    # the shared relay forces stream_options.include_usage downstream.
+    assert run_inference.await_args.kwargs["openai_body"]["stream"] is True
+    assert run_inference.await_args.kwargs["openai_body"]["model"] == "managed-model"
+    assert run_inference.await_args.kwargs["openai_body"]["temperature"] == 0.2
+    assert run_inference.await_args.kwargs["api_kind"] == "chat_completions"
+    assert run_inference.await_args.kwargs["record_observation_events"] is False
+    assert run_inference.await_args.kwargs["request"] is request_context
+
+
 def test_managed_inference_rejects_tools_outside_snapshot():
     scope = _scope()
     task = SimpleNamespace(

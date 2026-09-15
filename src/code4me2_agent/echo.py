@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from time import perf_counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from code4me2_agent.adapters import MemoryWindow, create_agent_adapter
@@ -132,6 +132,7 @@ class EchoAgentCore:
         message_id: str | None = None,
         run_id: str | None = None,
         cancellation_event: Event | None = None,
+        on_delta: Any | None = None,
     ) -> EchoPromptResult:
         started_at = perf_counter()
         request_id = request_id or uuid4().hex
@@ -163,6 +164,7 @@ class EchoAgentCore:
             message_id=message_id,
             memory=self._session_memory,
             cancellation_event=cancellation_event,
+            on_delta=on_delta,
         )
         # n-1
         final_response = adapter_result.final_response

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -98,24 +99,45 @@ class StdioMcpToolBroker:
     def has_tool(self, name: str) -> bool:
         return name in self._tools
 
-    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        cancellation_event: Event | None = None,
+    ) -> dict[str, Any]:
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"Unknown MCP tool: {name}")
         loop = self._loop
         if loop is None or loop.is_closed() or self._closed.is_set():
             raise RuntimeError(f"MCP server {tool.server_name!r} is no longer available.")
+        if cancellation_event is not None and cancellation_event.is_set():
+            import asyncio as _asyncio
+
+            raise _asyncio.CancelledError("MCP tool call was cancelled.")
         future = asyncio.run_coroutine_threadsafe(
             self._call_tool(tool, arguments),
             loop,
         )
-        try:
-            return future.result(timeout=_MCP_CALL_TIMEOUT_SECONDS)
-        except TimeoutError:
-            future.cancel()
-            raise TimeoutError(
-                f"MCP tool {tool.remote_name!r} on server {tool.server_name!r} timed out."
-            ) from None
+        # Slice the 120s wait so cancellation aborts promptly (no blind 120s block).
+        import time as _time
+
+        deadline = _time.monotonic() + _MCP_CALL_TIMEOUT_SECONDS
+        while True:
+            if cancellation_event is not None and cancellation_event.is_set():
+                future.cancel()
+                raise asyncio.CancelledError("MCP tool call was cancelled.")
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                future.cancel()
+                raise TimeoutError(
+                    f"MCP tool {tool.remote_name!r} on server {tool.server_name!r} timed out."
+                ) from None
+            try:
+                return future.result(timeout=min(0.2, remaining))
+            except concurrent.futures.TimeoutError:
+                # Slice expiry — re-poll cancel/deadline.
+                continue
 
     def close(self) -> None:
         if not self._thread.is_alive():

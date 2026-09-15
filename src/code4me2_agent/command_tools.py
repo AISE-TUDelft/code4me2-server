@@ -58,6 +58,7 @@ class AcpCommandBackend:
         cwd: str,
         max_output_bytes: int,
         timeout_seconds: float,
+        cancellation_event: object | None = None,
     ) -> AcpCommandExecution:
         terminal_id = self._create_terminal(
             command=command,
@@ -70,7 +71,25 @@ class AcpCommandBackend:
         wait_response: object | None = None
         try:
             try:
-                wait_response = self._wait_for_exit(terminal_id=terminal_id, timeout_seconds=timeout_seconds)
+                from code4me2_agent.async_bridge import run_with_cancellation as _run_cancel
+
+                # Cancellable wait: poll in slices so cancel aborts promptly.
+                _cancel = cancellation_event
+                if _cancel is not None:
+                    wait_response = _run_cancel(
+                        self._wait_awaitable(terminal_id=terminal_id),
+                        self._async_runner,
+                        _cancel,
+                        timeout_seconds=timeout_seconds,
+                    )
+                else:
+                    wait_response = self._wait_for_exit(terminal_id=terminal_id, timeout_seconds=timeout_seconds)
+            except asyncio.CancelledError:
+                try:
+                    self._kill_terminal(terminal_id=terminal_id)
+                except Exception:
+                    pass
+                raise
             except TimeoutError:
                 timed_out = True
                 self._kill_terminal(terminal_id=terminal_id)
@@ -144,6 +163,23 @@ class AcpCommandBackend:
                 },
             ),
             timeout_seconds=timeout_seconds,
+        )
+
+    def _wait_awaitable(self, *, terminal_id: str) -> object:
+        method = _resolve_method(
+            self._client,
+            ["wait_for_terminal_exit", "terminal_wait_for_exit"],
+        )
+        return _invoke_with_name_fallback(
+            method,
+            snake_kwargs={
+                "session_id": self._session_id,
+                "terminal_id": terminal_id,
+            },
+            camel_kwargs={
+                "sessionId": self._session_id,
+                "terminalId": terminal_id,
+            },
         )
 
     def _terminal_output(self, *, terminal_id: str) -> object:
@@ -278,6 +314,7 @@ class WorkspaceCommandTools:
         tool_call_id: str | None = None,
         run_id: str | None = None,
         request_id: str | None = None,
+        cancellation_event: object | None = None,
     ) -> CommandResult:
         started_at = perf_counter()
         tool_call_id = tool_call_id or uuid4().hex
@@ -321,13 +358,28 @@ class WorkspaceCommandTools:
         acp_run_command = self._acp_run_command()
         if acp_run_command is not None:
             backend_type = "acp"
-            acp_result = acp_run_command(
-                command=command_name,
-                args=normalized_argv[1:],
-                cwd=str(resolved_cwd),
-                max_output_bytes=self._max_output_bytes,
-                timeout_seconds=self._timeout_seconds,
-            )
+            try:
+                import inspect as _inspect
+
+                if "cancellation_event" in _inspect.signature(acp_run_command).parameters:
+                    acp_result = acp_run_command(
+                        command=command_name,
+                        args=normalized_argv[1:],
+                        cwd=str(resolved_cwd),
+                        max_output_bytes=self._max_output_bytes,
+                        timeout_seconds=self._timeout_seconds,
+                        cancellation_event=cancellation_event,
+                    )
+                else:
+                    acp_result = acp_run_command(
+                        command=command_name,
+                        args=normalized_argv[1:],
+                        cwd=str(resolved_cwd),
+                        max_output_bytes=self._max_output_bytes,
+                        timeout_seconds=self._timeout_seconds,
+                    )
+            except asyncio.CancelledError:
+                raise
             stdout_raw = acp_result.stdout
             stderr_raw = acp_result.stderr
             exit_code = acp_result.exit_code
@@ -338,6 +390,7 @@ class WorkspaceCommandTools:
             stdout_raw, stderr_raw, exit_code, timed_out = self._run_local(
                 argv=normalized_argv,
                 cwd=resolved_cwd,
+                cancellation_event=cancellation_event,
             )
             output_truncated = False
 
@@ -384,19 +437,73 @@ class WorkspaceCommandTools:
         *,
         argv: list[str],
         cwd: Path,
+        cancellation_event: object | None = None,
     ) -> tuple[str, str, int | None, bool]:
+        def _cancel_requested() -> bool:
+            try:
+                return bool(
+                    cancellation_event is not None and cancellation_event.is_set()  # type: ignore[union-attr]
+                )
+            except Exception:
+                return False
+
+        if _cancel_requested():
+            raise asyncio.CancelledError("Command execution was cancelled.")
+        # Popen+poll so cancellation kills promptly (no blocking subprocess.run).
         try:
-            completed = subprocess.run(
+            proc = subprocess.Popen(
                 argv,
                 cwd=str(cwd),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=self._timeout_seconds,
-                check=False,
                 env=_external_command_environment(),
             )
+        except OSError as exc:
+            raise RuntimeError(f"Failed to start command: {exc}") from exc
+        try:
+            import time as _time
+
+            deadline = _time.monotonic() + float(self._timeout_seconds)
+            while True:
+                if _cancel_requested():
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        proc.wait(timeout=2.0)
+                    except Exception:
+                        pass
+                    raise asyncio.CancelledError("Command execution was cancelled.")
+                remaining = deadline - _time.monotonic()
+                if remaining <= 0:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        stdout, stderr = proc.communicate(timeout=2.0)
+                    except Exception:
+                        stdout, stderr = "", ""
+                    return (
+                        _coerce_output_text(stdout),
+                        _coerce_output_text(stderr),
+                        None,
+                        True,
+                    )
+                try:
+                    stdout, stderr = proc.communicate(timeout=min(0.2, remaining))
+                    return (
+                        _coerce_output_text(stdout),
+                        _coerce_output_text(stderr),
+                        proc.returncode,
+                        False,
+                    )
+                except subprocess.TimeoutExpired:
+                    continue
         except subprocess.TimeoutExpired as exc:
             return (
                 _coerce_output_text(exc.stdout),
@@ -404,13 +511,6 @@ class WorkspaceCommandTools:
                 None,
                 True,
             )
-
-        return (
-            completed.stdout or "",
-            completed.stderr or "",
-            completed.returncode,
-            False,
-        )
 
 
     def _acp_run_command(self) -> Any | None:

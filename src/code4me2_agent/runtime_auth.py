@@ -5,10 +5,11 @@ import logging
 import os
 import platform
 import stat
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterator
 from urllib import error, request
 from urllib.parse import urlparse
 
@@ -16,6 +17,45 @@ if TYPE_CHECKING:
     from code4me2_agent.config import ServerAgentConfig
 
 logger = logging.getLogger(__name__)
+
+# Managed SSE reads share the single-shot inference relay's upstream budget:
+# an idle connection longer than this is a hung turn, not a slow one.
+_MANAGED_STREAM_TIMEOUT_SECONDS = 120.0
+
+# Exact old-server contract for stream rejection: pre-streaming servers answer
+# POST /api/acp/inference with HTTP 400 and this JSON detail when the request
+# sets ``stream: true``. The classifier must match this string exactly — never
+# a ``stream`` substring — so unrelated 400s (e.g. a Chat Completions shape
+# rejection) stay hard authorization failures instead of silently downgrading
+# to a single-shot retry.
+_MANAGED_STREAM_UNSUPPORTED_DETAIL = (
+    "Managed protocol v1 requires non-streaming inference"
+)
+
+# How often the SSE cancel watcher polls while a managed stream is open. A
+# cancelled turn closes the connection within ~one interval, so readline
+# unblocks promptly and the server sees the disconnect (TCP FIN).
+_MANAGED_SSE_CANCEL_POLL_SECONDS = 0.05
+
+
+def _is_stream_unsupported_body(raw_body: bytes) -> bool:
+    """Match only the old-server stream-rejection contract, never a substring."""
+    text = bytes(raw_body or b"").decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return text.strip() == _MANAGED_STREAM_UNSUPPORTED_DETAIL
+    if isinstance(payload, dict):
+        return payload.get("detail") == _MANAGED_STREAM_UNSUPPORTED_DETAIL
+    return False
+
+
+def _cancelled_stream_error() -> Exception:
+    # Imported lazily: adapters imports this module at call time too, so a
+    # top-level import would be circular.
+    from code4me2_agent.adapters import ProviderStreamCancelledError
+
+    return ProviderStreamCancelledError("Managed SSE stream was cancelled.")
 
 
 def _log_secrets_enabled() -> bool:
@@ -36,6 +76,14 @@ class AcpAuthorizationFailure(Exception):
 
 class AcpSessionExpired(AcpAuthorizationFailure):
     """The backend specifically rejected a bearer token as invalid/expired."""
+
+
+class ManagedStreamUnsupportedError(RuntimeError):
+    """The backend rejected a streaming managed request (old server).
+
+    The caller falls back once to single-shot ``managed_inference`` and never
+    retries streaming, so old servers keep working against new runtimes.
+    """
 
 
 @dataclass(frozen=True)
@@ -389,6 +437,105 @@ class AcpBackendAuthorization:
             timeout=120.0,
         )
 
+    def managed_inference_stream(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        model_request: dict,
+        cancellation_event: Any | None = None,
+    ) -> "_ManagedSseStream":
+        """Open a streaming managed inference call over SSE.
+
+        Sends the same authenticated POST as :meth:`managed_inference` with
+        ``stream: true`` and returns an incremental SSE reader yielding parsed
+        ``data:`` payloads. The caller iterates the stream and must close it
+        promptly (per-chunk cancellation polling closes it from the consumer
+        side); iteration also closes it at ``[DONE]``/EOF. Only the status and
+        byte/event counts are logged, never bodies or credentials.
+        """
+        if not self._backend_url or not self._acp_token:
+            logger.warning(
+                "ACP managed streaming request failed because authentication state is missing."
+            )
+            raise AcpAuthorizationFailure("ACP authentication is required.")
+        if cancellation_event is not None and cancellation_event.is_set():
+            # Never open a connection the turn no longer wants: the caller
+            # would close it on the first chunk anyway.
+            raise _cancelled_stream_error()
+        stream_request = dict(model_request or {})
+        stream_request["stream"] = True
+        http_request = request.Request(
+            f"{self._backend_url}/api/acp/inference",
+            data=json.dumps(
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "request": stream_request,
+                }
+            ).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self._acp_token}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+        logger.info(
+            "Sending ACP managed streaming inference request url=%s authorization_header=%s.",
+            http_request.full_url,
+            _secret_for_log(f"Bearer {self._acp_token}"),
+        )
+        try:
+            response = request.urlopen(
+                http_request, timeout=_MANAGED_STREAM_TIMEOUT_SECONDS
+            )
+        except error.HTTPError as exc:
+            # The body is inspected (never logged) only to distinguish an old
+            # server's stream rejection — the one case that falls back. Any
+            # other 400 stays a hard authorization failure.
+            raw_body = b""
+            if hasattr(exc, "read"):
+                try:
+                    raw_body = exc.read() or b""
+                except Exception:
+                    raw_body = b""
+            if exc.code == 401:
+                raise AcpSessionExpired(
+                    "Code4Me ACP managed streaming request was rejected."
+                ) from None
+            if exc.code == 400 and _is_stream_unsupported_body(raw_body):
+                raise ManagedStreamUnsupportedError(
+                    "Managed streaming is not supported by this server."
+                ) from None
+            logger.warning(
+                "ACP managed streaming inference failed with HTTP status %s url=%s.",
+                exc.code,
+                http_request.full_url,
+            )
+            raise AcpAuthorizationFailure(
+                "Code4Me ACP managed streaming inference was rejected."
+            ) from None
+        except (error.URLError, TimeoutError, OSError) as exc:
+            logger.warning(
+                "ACP managed streaming inference failed with %s url=%s.",
+                type(exc).__name__,
+                http_request.full_url,
+            )
+            raise AcpAuthorizationFailure(
+                "Code4Me ACP managed streaming inference was rejected."
+            ) from None
+        logger.info(
+            "ACP managed streaming inference opened url=%s status=%s.",
+            http_request.full_url,
+            getattr(response, "status", "unknown"),
+        )
+        return _ManagedSseStream(
+            response,
+            url=http_request.full_url,
+            cancellation_event=cancellation_event,
+        )
+
     def _refresh_prepared_credentials(self) -> None:
         if self._workspace_root is None:
             return
@@ -544,6 +691,133 @@ class AcpBackendAuthorization:
         except ValueError:
             logger.warning("ACP agent-config request returned invalid JSON.")
             raise AcpAuthorizationFailure("Code4Me ACP agent-config request was rejected.") from None
+
+
+class _ManagedSseStream:
+    """Incremental SSE reader over an open urllib response.
+
+    Iterating yields parsed ``data:`` JSON payloads as dicts, skipping
+    keep-alive comments and stopping at ``data: [DONE]``. Unparsable frames
+    are skipped (lengths only in the warning). Call :meth:`close` to release
+    the connection promptly — the consumer does this per-chunk on cancel;
+    iteration also closes at ``[DONE]``/EOF/failure. ``done_received`` records
+    whether the stream ended with the ``[DONE]`` terminator, so the consumer
+    can tell a cleanly terminated stream from a truncated one.
+
+    A prompt-cancellation event may be attached at construction or via
+    :meth:`set_cancel_event`. A daemon watcher then closes the connection as
+    soon as the event is set, so a ``readline`` blocked waiting for the next
+    chunk unblocks promptly and the server sees the disconnect; iteration
+    raises a cancellation error instead of yielding further events.
+    """
+
+    def __init__(
+        self,
+        response: Any,
+        *,
+        url: str,
+        cancellation_event: Any | None = None,
+    ) -> None:
+        self._response = response
+        self._url = url
+        self._closed = False
+        self._bytes_received = 0
+        self._events_yielded = 0
+        self.done_received = False
+        self._cancel_event: Any | None = None
+        if cancellation_event is not None:
+            self.set_cancel_event(cancellation_event)
+
+    def set_cancel_event(self, event: Any | None) -> None:
+        """Attach a prompt-cancellation event; at most one watcher runs."""
+        if event is None or event is self._cancel_event:
+            return
+        self._cancel_event = event
+        if event.is_set() or self._closed:
+            self.close()
+            return
+        watcher = threading.Thread(
+            target=self._watch_cancellation,
+            args=(event,),
+            daemon=True,
+            name="code4me2-managed-sse-cancel",
+        )
+        watcher.start()
+
+    def _watch_cancellation(self, event: Any) -> None:
+        while not self._closed:
+            if event.wait(timeout=_MANAGED_SSE_CANCEL_POLL_SECONDS):
+                self.close()
+                return
+
+    def _cancelled(self) -> bool:
+        return self._cancel_event is not None and self._cancel_event.is_set()
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        data_lines: list[str] = []
+        try:
+            while True:
+                if self._cancelled():
+                    self.close()
+                    raise _cancelled_stream_error()
+                try:
+                    raw_line = self._response.readline()
+                except Exception:
+                    # A read aborted by the cancel watcher surfaces here once
+                    # the socket is closed; report cancellation, not failure.
+                    if self._cancelled():
+                        self.close()
+                        raise _cancelled_stream_error()
+                    raise
+                if not raw_line:
+                    break
+                self._bytes_received += len(raw_line)
+                text = raw_line.decode("utf-8", errors="replace")
+                if not text.strip():
+                    if data_lines:
+                        payload = "\n".join(data_lines)
+                        data_lines = []
+                        if payload.strip() == "[DONE]":
+                            self.done_received = True
+                            break
+                        try:
+                            event = json.loads(payload)
+                        except ValueError:
+                            logger.warning(
+                                "Skipping unparsable managed SSE frame length=%s url=%s.",
+                                len(payload),
+                                self._url,
+                            )
+                            continue
+                        if isinstance(event, dict):
+                            self._events_yielded += 1
+                            yield event
+                    continue
+                if text.startswith(":"):
+                    continue  # keep-alive comment
+                if text.startswith("data:"):
+                    value = text[len("data:") :]
+                    if value.startswith(" "):
+                        value = value[1:]
+                    data_lines.append(value.rstrip("\r\n"))
+                # Other SSE fields (event:, id:, retry:) carry no payload here.
+        finally:
+            self.close()
+            logger.info(
+                "Managed SSE stream closed url=%s bytes=%s events=%s.",
+                self._url,
+                self._bytes_received,
+                self._events_yielded,
+            )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._response.close()
+        except Exception:
+            pass
 
 
 def _read_env_file(file_path: Path) -> dict[str, str]:
@@ -801,6 +1075,36 @@ class ManagedBridgeAuthorization(AcpBackendAuthorization):
             self.authenticate()
             return super().authorized_json_request(
                 method, path, payload, timeout=timeout
+            )
+
+    def managed_inference_stream(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        model_request: dict,
+        cancellation_event: Any | None = None,
+    ) -> "_ManagedSseStream":
+        try:
+            return super().managed_inference_stream(
+                run_id=run_id,
+                session_id=session_id,
+                model_request=model_request,
+                cancellation_event=cancellation_event,
+            )
+        except AcpSessionExpired:
+            if self._workspace_root is None:
+                raise
+            workspace = self._workspace_root
+            self._acp_token = None
+            self._scope = None
+            self.prepare_workspace(workspace)
+            self.authenticate()
+            return super().managed_inference_stream(
+                run_id=run_id,
+                session_id=session_id,
+                model_request=model_request,
+                cancellation_event=cancellation_event,
             )
 
     def fetch_agent_config(self) -> None:

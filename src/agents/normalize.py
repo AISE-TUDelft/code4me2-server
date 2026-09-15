@@ -489,6 +489,371 @@ _ParsedResponse = tuple[
     Optional[int], Optional[int], Optional[int], Optional[str], Optional[str]
 ]
 
+#: Cap for the retained streaming text tail. Telemetry keeps a bounded tail
+#: rather than the full body so a large stream cannot grow memory unbounded.
+_STREAM_TEXT_TAIL_CAP = 4096
+
+#: Same 4KB tail semantics for the SSE line fragment and per-tool argument
+#: buffers, which would otherwise grow without bound on a hostile stream.
+_LINE_LEFTOVER_CAP = 4096
+_TOOL_ARGUMENTS_CAP = 4096
+
+
+def _parse_usage_details(usage: dict) -> tuple[Optional[int], Optional[int]]:
+    """Extract (cached_tokens, reasoning_tokens) subsets from a usage dict."""
+    cached = None
+    reasoning = None
+    if not isinstance(usage, dict):
+        return cached, reasoning
+    for details_key in ("prompt_tokens_details", "input_tokens_details"):
+        details = usage.get(details_key)
+        if isinstance(details, dict) and details.get("cached_tokens") is not None:
+            try:
+                cached = int(details["cached_tokens"])
+            except (TypeError, ValueError):
+                pass
+    for details_key in ("completion_tokens_details", "output_tokens_details"):
+        details = usage.get(details_key)
+        if isinstance(details, dict) and details.get("reasoning_tokens") is not None:
+            try:
+                reasoning = int(details["reasoning_tokens"])
+            except (TypeError, ValueError):
+                pass
+    # Some providers nest under a generic "details" key.
+    details = usage.get("details")
+    if isinstance(details, dict):
+        if cached is None and details.get("cached_tokens") is not None:
+            try:
+                cached = int(details["cached_tokens"])
+            except (TypeError, ValueError):
+                pass
+        if reasoning is None and details.get("reasoning_tokens") is not None:
+            try:
+                reasoning = int(details["reasoning_tokens"])
+            except (TypeError, ValueError):
+                pass
+    return cached, reasoning
+
+
+def _parse_chat_usage(usage: object) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    if not isinstance(usage, dict):
+        return None, None, None
+    return usage.get("prompt_tokens"), usage.get("completion_tokens"), usage.get("total_tokens")
+
+
+def _parse_responses_usage(
+    usage: object,
+) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    if not isinstance(usage, dict):
+        return None, None, None
+    prompt = usage.get("input_tokens", usage.get("prompt_tokens"))
+    completion = usage.get("output_tokens", usage.get("completion_tokens"))
+    total = usage.get("total_tokens")
+    return prompt, completion, total
+
+
+class StreamingAccumulator:
+    """Incremental SSE parser with bounded memory.
+
+    ``feed`` accepts arbitrary byte chunks (TCP fragmentation safe via a
+    leftover line buffer); ``finalize`` returns the authoritative telemetry
+    tuple. No full-body buffer is retained — only a leftover line fragment, a
+    capped text tail, and per-tool argument fragments.
+    """
+
+    def __init__(self, api_kind: str = "chat_completions") -> None:
+        self._api_kind = api_kind if api_kind in ("responses", "chat_completions") else "chat_completions"
+        self._line_leftover = ""
+        self._text_len = 0
+        self._text_tail = ""
+        self._finish_reason: Optional[str] = None
+        self._prompt_tokens: Optional[int] = None
+        self._completion_tokens: Optional[int] = None
+        self._total_tokens: Optional[int] = None
+        self._usage_seen = False
+        self._tool_fragments: dict[object, dict] = {}
+        self._cached_tokens: Optional[int] = None
+        self._reasoning_tokens: Optional[int] = None
+        self._last_event_name = ""
+        self._done = False
+        # Set when any bounded buffer discards head bytes (keeps 4KB tail).
+        self._truncated = False
+
+    # -- properties used by callers/tests -----------------------------------
+    @property
+    def has_visible_text(self) -> bool:
+        return self._text_len > 0
+
+    @property
+    def bytes_tail(self) -> str:
+        return self._text_tail
+
+    @property
+    def cached_tokens(self) -> Optional[int]:
+        return self._cached_tokens
+
+    @property
+    def reasoning_tokens(self) -> Optional[int]:
+        return self._reasoning_tokens
+
+    @property
+    def tool_calls_seen(self) -> int:
+        return len(self._tool_fragments)
+
+    def feed(self, data: bytes | str) -> list[dict]:
+        """Consume one upstream chunk; return lightweight delta events."""
+        if isinstance(data, (bytes, bytearray)):
+            text = bytes(data).decode("utf-8", errors="replace")
+        else:
+            text = data
+        combined = self._line_leftover + text
+        # Normalize newlines; SSE frames end with \n (or \r\n).
+        combined = combined.replace("\r\n", "\n").replace("\r", "\n")
+        lines = combined.split("\n")
+        # Last element may be an incomplete line — keep it buffered (capped).
+        self._line_leftover = lines.pop() if lines else ""
+        if len(self._line_leftover) > _LINE_LEFTOVER_CAP:
+            self._line_leftover = self._line_leftover[-_LINE_LEFTOVER_CAP:]
+            self._truncated = True
+        events: list[dict] = []
+        for line in lines:
+            events.extend(self._process_line(line))
+        return events
+
+    def finalize(self) -> tuple[
+        Optional[int], Optional[int], Optional[int], Optional[str], Optional[str], int, str
+    ]:
+        """Return (prompt, completion, total, finish, text, tool_calls_seen, usage_source)."""
+        # Flush any trailing buffered line (a stream without a final newline).
+        if self._line_leftover:
+            # Process without requiring a newline terminator.
+            self._process_line(self._line_leftover)
+            self._line_leftover = ""
+        finish = self._finish_reason
+        if finish is None and self._tool_fragments:
+            # Tool-only stream that never sent an explicit finish reason.
+            finish = "tool_calls"
+        text = self._text_tail or None
+        # Do not invent text for tool-only streams.
+        if text is not None and not text:
+            text = None
+        usage_source = "stream_usage" if self._usage_seen else "missing"
+        return (
+            self._prompt_tokens,
+            self._completion_tokens,
+            self._total_tokens,
+            finish,
+            text,
+            len(self._tool_fragments),
+            usage_source,
+        )
+
+    def extra_details(self) -> dict:
+        details: dict = {}
+        if self._cached_tokens is not None:
+            details["cached_tokens"] = self._cached_tokens
+        if self._reasoning_tokens is not None:
+            details["reasoning_tokens"] = self._reasoning_tokens
+        if self._truncated:
+            details["truncated"] = True
+        return details
+
+    def _append_tool_arguments(self, slot: dict, fragment: str) -> None:
+        """Append tool-argument bytes, keeping a bounded 4KB tail."""
+        if not fragment:
+            return
+        merged = slot.get("arguments", "") + fragment
+        if len(merged) > _TOOL_ARGUMENTS_CAP:
+            merged = merged[-_TOOL_ARGUMENTS_CAP:]
+            self._truncated = True
+        slot["arguments"] = merged
+
+    # -- internals ------------------------------------------------------------
+    def _append_text(self, fragment: str) -> None:
+        if not fragment:
+            return
+        self._text_len += len(fragment)
+        self._text_tail = (self._text_tail + fragment)[-_STREAM_TEXT_TAIL_CAP:]
+
+    def _record_usage(self, usage: object, *, responses_style: bool) -> None:
+        if not isinstance(usage, dict):
+            return
+        if responses_style:
+            prompt, completion, total = _parse_responses_usage(usage)
+        else:
+            prompt, completion, total = _parse_chat_usage(usage)
+            # Some chat providers use input/output naming.
+            if prompt is None and "input_tokens" in usage:
+                prompt = usage.get("input_tokens")
+            if completion is None and "output_tokens" in usage:
+                completion = usage.get("output_tokens")
+        # Preserve zero (meaningful) while leaving missing as None. An empty
+        # usage dict carries no token fields and must not mark stream_usage.
+        if prompt is not None:
+            self._prompt_tokens = prompt
+        if completion is not None:
+            self._completion_tokens = completion
+        if total is not None:
+            self._total_tokens = total
+        if prompt is None and completion is None and total is None:
+            return
+        self._usage_seen = True
+        cached, reasoning = _parse_usage_details(usage)
+        if cached is not None:
+            self._cached_tokens = cached
+        if reasoning is not None:
+            self._reasoning_tokens = reasoning
+
+    def _process_line(self, line: str) -> list[dict]:
+        events: list[dict] = []
+        stripped = line.strip()
+        if not stripped:
+            return events
+        if stripped.startswith(":"):
+            return events  # SSE comment / keep-alive
+        if stripped.startswith("event:"):
+            self._last_event_name = stripped[6:].strip()
+            return events
+        data: Optional[str] = None
+        if stripped.startswith("data:"):
+            data = stripped[5:].strip()
+        elif stripped.startswith("{") or stripped.startswith("["):
+            # Data-only line without the SSE prefix (tolerated).
+            data = stripped
+        else:
+            return events
+        if not data or data == "[DONE]":
+            if data == "[DONE]":
+                self._done = True
+            return events
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            return events
+        if self._api_kind == "responses":
+            events.extend(self._process_responses_chunk(chunk))
+        else:
+            events.extend(self._process_chat_chunk(chunk))
+        return events
+
+    def _process_chat_chunk(self, chunk: object) -> list[dict]:
+        events: list[dict] = []
+        if not isinstance(chunk, dict):
+            return events
+        # Usage may be colocated with choices — always parse it.
+        if "usage" in chunk and isinstance(chunk.get("usage"), dict):
+            self._record_usage(chunk["usage"], responses_style=False)
+            events.append({"type": "usage"})
+        for choice in chunk.get("choices", []) or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                # Some providers send message instead of delta in streams.
+                message = choice.get("message")
+                if isinstance(message, dict):
+                    delta = message
+                else:
+                    delta = {}
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                self._append_text(content)
+                events.append({"type": "text_delta", "text": content})
+            # Reasoning deltas are telemetry, not visible text.
+            reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+            if isinstance(reasoning_delta, str) and reasoning_delta:
+                try:
+                    # Track length only; do not surface as visible text.
+                    pass
+                except Exception:
+                    pass
+            raw_tool_calls = delta.get("tool_calls")
+            if isinstance(raw_tool_calls, list):
+                for tc in raw_tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    index = tc.get("index", 0)
+                    slot = self._tool_fragments.setdefault(
+                        index, {"id": None, "name": None, "arguments": ""}
+                    )
+                    if tc.get("id"):
+                        slot["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if isinstance(fn, dict):
+                        if fn.get("name"):
+                            slot["name"] = fn["name"]
+                        args = fn.get("arguments")
+                        if isinstance(args, str):
+                            self._append_tool_arguments(slot, args)
+                    events.append({"type": "tool_delta", "index": index})
+            if choice.get("finish_reason"):
+                self._finish_reason = choice["finish_reason"]
+                events.append({"type": "finish", "finish_reason": self._finish_reason})
+        return events
+
+    def _process_responses_chunk(self, chunk: object) -> list[dict]:
+        events: list[dict] = []
+        if not isinstance(chunk, dict):
+            return events
+        event_type = str(chunk.get("type") or self._last_event_name or "")
+        if event_type.endswith("output_text.delta"):
+            delta = chunk.get("delta")
+            if isinstance(delta, str) and delta:
+                self._append_text(delta)
+                events.append({"type": "text_delta", "text": delta})
+        elif event_type.endswith("function_call_arguments.delta"):
+            delta = chunk.get("delta")
+            key = chunk.get("item_id", chunk.get("output_index", 0))
+            slot = self._tool_fragments.setdefault(
+                key, {"id": chunk.get("item_id"), "name": None, "arguments": ""}
+            )
+            if isinstance(delta, str):
+                self._append_tool_arguments(slot, delta)
+            events.append({"type": "tool_delta", "index": key})
+        elif event_type in ("response.output_item.added", "response.output_item.done"):
+            item = chunk.get("item") or {}
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                key = item.get("id", chunk.get("output_index", len(self._tool_fragments)))
+                slot = self._tool_fragments.setdefault(
+                    key, {"id": None, "name": None, "arguments": ""}
+                )
+                if item.get("call_id"):
+                    slot["id"] = item.get("call_id")
+                elif item.get("id"):
+                    slot["id"] = item.get("id")
+                if item.get("name"):
+                    slot["name"] = item.get("name")
+                if isinstance(item.get("arguments"), str):
+                    slot["arguments"] = item["arguments"][-_TOOL_ARGUMENTS_CAP:]
+                    if len(item["arguments"]) > _TOOL_ARGUMENTS_CAP:
+                        self._truncated = True
+                events.append({"type": "tool_delta", "index": key})
+        elif event_type in ("response.completed", "response.incomplete"):
+            response = chunk.get("response") or {}
+            usage = response.get("usage") or {}
+            self._record_usage(usage, responses_style=True)
+            status = response.get("status")
+            self._finish_reason = status or (
+                "completed" if event_type == "response.completed" else "incomplete"
+            )
+            events.append({"type": "finish", "finish_reason": self._finish_reason})
+        elif event_type == "response.failed":
+            response = chunk.get("response") or {}
+            self._record_usage(response.get("usage") or {}, responses_style=True)
+            self._finish_reason = response.get("status") or "failed"
+            events.append({"type": "finish", "finish_reason": self._finish_reason})
+        else:
+            # Tolerate usage colocated on unknown event envelopes.
+            usage = chunk.get("usage")
+            if isinstance(usage, dict):
+                self._record_usage(usage, responses_style=True)
+                events.append({"type": "usage"})
+            response = chunk.get("response")
+            if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+                self._record_usage(response["usage"], responses_style=True)
+                events.append({"type": "usage"})
+        return events
+
 
 def parse_stream(raw_sse: str) -> _ParsedResponse:
     """Extract (prompt_tokens, completion_tokens, total_tokens, finish_reason,
@@ -496,45 +861,12 @@ def parse_stream(raw_sse: str) -> _ParsedResponse:
 
     Token counts only appear when the request set
     ``stream_options.include_usage``; otherwise they come back None.
+    Thin wrapper over :class:`StreamingAccumulator` for backwards compat.
     """
-    content_parts: list[str] = []
-    finish_reason = None
-    prompt_tokens = completion_tokens = total_tokens = None
-
-    for line in raw_sse.splitlines():
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if data == "[DONE]":
-            continue
-        try:
-            chunk = json.loads(data)
-        except json.JSONDecodeError:
-            continue
-
-        # Usage chunk (sent when stream_options.include_usage=true): carries
-        # usage with an empty choices array.
-        if "usage" in chunk and chunk.get("choices") == []:
-            u = chunk["usage"] or {}
-            prompt_tokens = u.get("prompt_tokens")
-            completion_tokens = u.get("completion_tokens")
-            total_tokens = u.get("total_tokens")
-            continue
-
-        for choice in chunk.get("choices", []):
-            delta_content = choice.get("delta", {}).get("content")
-            if delta_content:
-                content_parts.append(delta_content)
-            if choice.get("finish_reason"):
-                finish_reason = choice["finish_reason"]
-
-    return (
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-        finish_reason,
-        "".join(content_parts) or None,
-    )
+    acc = StreamingAccumulator(api_kind="chat_completions")
+    acc.feed(raw_sse.encode("utf-8", errors="replace"))
+    prompt_tok, completion_tok, total_tok, finish_reason, text, _, _ = acc.finalize()
+    return (prompt_tok, completion_tok, total_tok, finish_reason, text)
 
 
 def parse_responses_api_stream(raw_sse: str) -> _ParsedResponse:
@@ -544,50 +876,12 @@ def parse_responses_api_stream(raw_sse: str) -> _ParsedResponse:
     ``response.completed``) rather than Chat Completions' ``choices[].delta``
     shape, so it needs its own parser — without this, every streaming Codex
     call records null tokens and no response text.
+    Thin wrapper over :class:`StreamingAccumulator` for backwards compat.
     """
-    content_parts: list[str] = []
-    finish_reason = None
-    prompt_tokens = completion_tokens = total_tokens = None
-
-    for line in raw_sse.splitlines():
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if not data or data == "[DONE]":
-            continue
-        try:
-            chunk = json.loads(data)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(chunk, dict):
-            continue
-
-        event_type = chunk.get("type") or ""
-        if event_type.endswith("output_text.delta"):
-            delta = chunk.get("delta")
-            if isinstance(delta, str):
-                content_parts.append(delta)
-        elif event_type in ("response.completed", "response.incomplete"):
-            response = chunk.get("response") or {}
-            usage = response.get("usage") or {}
-            # The Responses API names these input/output rather than
-            # prompt/completion.
-            prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
-            completion_tokens = usage.get(
-                "output_tokens", usage.get("completion_tokens")
-            )
-            total_tokens = usage.get("total_tokens")
-            finish_reason = response.get("status") or (
-                "completed" if event_type == "response.completed" else "incomplete"
-            )
-
-    return (
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-        finish_reason,
-        "".join(content_parts) or None,
-    )
+    acc = StreamingAccumulator(api_kind="responses")
+    acc.feed(raw_sse.encode("utf-8", errors="replace"))
+    prompt_tok, completion_tok, total_tok, finish_reason, text, _, _ = acc.finalize()
+    return (prompt_tok, completion_tok, total_tok, finish_reason, text)
 
 
 def extract_from_response(resp_json: dict) -> _ParsedResponse:

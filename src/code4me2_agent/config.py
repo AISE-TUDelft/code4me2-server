@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 
 
@@ -250,6 +250,9 @@ class AgentConfig:
     store_agent_content: bool = True
     managed_mode: bool = False
     managed_request: Callable[[str, str, dict | None], dict] | None = field(
+        default=None, repr=False, compare=False
+    )
+    managed_request_stream: Callable[..., Any] | None = field(
         default=None, repr=False, compare=False
     )
 

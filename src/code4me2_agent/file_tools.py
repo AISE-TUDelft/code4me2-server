@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import threading
 from dataclasses import dataclass
 from difflib import unified_diff
 from pathlib import Path
@@ -17,6 +19,23 @@ if TYPE_CHECKING:
     from code4me2_agent.config import AgentConfig
 
 
+_EDIT_SEQ_LOCK = threading.Lock()
+# Process-local monotonic edit counter (not persisted): resets on restart.
+# Telemetry uses it only to order edits within one runtime lifetime.
+_EDIT_SEQ_COUNTER = 0
+
+
+def _next_edit_seq() -> int:
+    global _EDIT_SEQ_COUNTER
+    with _EDIT_SEQ_LOCK:
+        _EDIT_SEQ_COUNTER += 1
+        return _EDIT_SEQ_COUNTER
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class FileReadResult:
     path: str
@@ -29,6 +48,9 @@ class FileWriteResult:
     path: str
     bytes_written: int
     backend_type: str
+    edit_seq: int | None = None
+    mtime_ns: int | None = None
+    content_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,34 +93,54 @@ class AcpFileSystemBackend:
     def session_id(self) -> str:
         return self._session_id
 
-    def read_text_file(self, absolute_path: str) -> str:
+    def read_text_file(
+        self, absolute_path: str, *, cancellation_event: object | None = None
+    ) -> str:
         response = self._run_client_call(
             self._client.read_text_file(
                 path=absolute_path,
                 session_id=self._session_id,
                 limit=None,
                 line=None,
-            )
+            ),
+            cancellation_event=cancellation_event,
         )
         if isinstance(response, dict):
             return str(response.get("content", ""))
         return str(getattr(response, "content", ""))
 
-    def write_text_file(self, absolute_path: str, content: str) -> None:
+    def write_text_file(
+        self, absolute_path: str, content: str, *, cancellation_event: object | None = None
+    ) -> None:
         self._run_client_call(
             self._client.write_text_file(
                 content=content,
                 path=absolute_path,
                 session_id=self._session_id,
-            )
+            ),
+            cancellation_event=cancellation_event,
         )
 
-    def _run_client_call(self, result: object) -> object:
+    def _run_client_call(
+        self,
+        result: object,
+        *,
+        timeout_seconds: float | None = None,
+        cancellation_event: object | None = None,
+    ) -> object:
         if not inspect.isawaitable(result):
             return result
-        if self._async_runner is not None:
-            return self._async_runner.run(result)
-        return run_awaitable_blocking(result)
+        # Cancellable bridge (single-attempt, no coroutine reuse). The runner
+        # may be a single-arg legacy bridge — run_with_cancellation keeps that
+        # compatible with pre/post cancel checks.
+        from code4me2_agent.async_bridge import run_with_cancellation
+
+        return run_with_cancellation(
+            result,
+            self._async_runner,
+            cancellation_event,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def build_acp_file_system_backend(
@@ -148,6 +190,7 @@ class WorkspaceFileTools:
         tool_call_id: str | None = None,
         run_id: str | None = None,
         request_id: str | None = None,
+        cancellation_event: object | None = None,
     ) -> FileReadResult:
         started_at = perf_counter()
         tool_call_id = tool_call_id or uuid4().hex
@@ -166,7 +209,14 @@ class WorkspaceFileTools:
         read_text_file = self._acp_read_text_file()
         if read_text_file is not None:
             try:
-                content = read_text_file(str(resolved_path))
+                import inspect as _inspect
+
+                if "cancellation_event" in _inspect.signature(read_text_file).parameters:
+                    content = read_text_file(
+                        str(resolved_path), cancellation_event=cancellation_event
+                    )
+                else:
+                    content = read_text_file(str(resolved_path))
                 backend_type = "acp"
             except Exception as exc:  # noqa: BLE001
                 if not _is_missing_acp_session_error(exc):
@@ -205,6 +255,7 @@ class WorkspaceFileTools:
         tool_call_id: str | None = None,
         run_id: str | None = None,
         request_id: str | None = None,
+        cancellation_event: object | None = None,
     ) -> FileWriteResult:
         started_at = perf_counter()
         tool_call_id = tool_call_id or uuid4().hex
@@ -221,11 +272,38 @@ class WorkspaceFileTools:
         relative_path = self._relative_path(resolved_path)
         backend_type = "local"
         write_text_file = self._acp_write_text_file()
-        if write_text_file is None and resolved_path.exists():
-            raise FileExistsError(f"File already exists: {path}")
         if write_text_file is not None:
+            # create must not overwrite: probe both the local workspace copy
+            # and the ACP backend (client-owned FS) before writing. The ACP
+            # probe calls the backend directly so a mere existence check does
+            # not emit an extra read_file telemetry event.
+            if resolved_path.exists():
+                raise FileExistsError(f"File already exists: {path}")
+            read_probe = self._acp_read_text_file()
+            if read_probe is not None:
+                try:
+                    import inspect as _inspect_probe
+
+                    if "cancellation_event" in _inspect_probe.signature(read_probe).parameters:
+                        read_probe(str(resolved_path), cancellation_event=cancellation_event)
+                    else:
+                        read_probe(str(resolved_path))
+                    raise FileExistsError(f"File already exists: {path}")
+                except FileExistsError:
+                    raise
+                except Exception:
+                    # Missing-file (or any inconclusive) probe means "not
+                    # proven to exist" — the backend write stays authoritative.
+                    pass
             try:
-                write_text_file(str(resolved_path), content)
+                import inspect as _inspect
+
+                if "cancellation_event" in _inspect.signature(write_text_file).parameters:
+                    write_text_file(
+                        str(resolved_path), content, cancellation_event=cancellation_event
+                    )
+                else:
+                    write_text_file(str(resolved_path), content)
                 backend_type = "acp"
             except Exception as exc:  # noqa: BLE001
                 if not _is_missing_acp_session_error(exc):
@@ -247,6 +325,16 @@ class WorkspaceFileTools:
         else:
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
             resolved_path.write_text(content, encoding="utf-8")
+        edit_seq = _next_edit_seq()
+        if backend_type == "acp":
+            # The file lives on the ACP client; no local mtime is meaningful.
+            mtime_ns = None
+        else:
+            try:
+                mtime_ns = resolved_path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = None
+        content_hash = _content_hash(content)
         self._record_tool_event(
             tool_name="create_file",
             tool_call_id=tool_call_id,
@@ -259,6 +347,9 @@ class WorkspaceFileTools:
             extra_payload={
                 "bytes_written": len(content.encode("utf-8")),
                 "content_capture_mode": self._content_capture_mode,
+                "edit_seq": edit_seq,
+                "mtime_ns": mtime_ns,
+                "content_hash": content_hash,
             },
             raw_payload=self._raw_write_payload(relative_path, "", content),
         )
@@ -266,6 +357,9 @@ class WorkspaceFileTools:
             path=relative_path,
             bytes_written=len(content.encode("utf-8")),
             backend_type=backend_type,
+            edit_seq=edit_seq,
+            mtime_ns=mtime_ns,
+            content_hash=content_hash,
         )
 
     def write_file(
@@ -276,6 +370,7 @@ class WorkspaceFileTools:
         tool_call_id: str | None = None,
         run_id: str | None = None,
         request_id: str | None = None,
+        cancellation_event: object | None = None,
     ) -> FileWriteResult:
         started_at = perf_counter()
         tool_call_id = tool_call_id or uuid4().hex
@@ -295,7 +390,14 @@ class WorkspaceFileTools:
         write_text_file = self._acp_write_text_file()
         if write_text_file is not None:
             try:
-                write_text_file(str(resolved_path), content)
+                import inspect as _inspect_write
+
+                if "cancellation_event" in _inspect_write.signature(write_text_file).parameters:
+                    write_text_file(
+                        str(resolved_path), content, cancellation_event=cancellation_event
+                    )
+                else:
+                    write_text_file(str(resolved_path), content)
                 backend_type = "acp"
             except Exception as exc:  # noqa: BLE001
                 if not _is_missing_acp_session_error(exc):
@@ -316,6 +418,16 @@ class WorkspaceFileTools:
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
             resolved_path.write_text(content, encoding="utf-8")
         bytes_written = len(content.encode("utf-8"))
+        edit_seq = _next_edit_seq()
+        if backend_type == "acp":
+            # The file lives on the ACP client; no local mtime is meaningful.
+            mtime_ns = None
+        else:
+            try:
+                mtime_ns = resolved_path.stat().st_mtime_ns
+            except OSError:
+                mtime_ns = None
+        content_hash = _content_hash(content)
         self._record_tool_event(
             tool_name="write_file",
             tool_call_id=tool_call_id,
@@ -328,10 +440,20 @@ class WorkspaceFileTools:
             extra_payload={
                 "bytes_written": bytes_written,
                 "content_capture_mode": self._content_capture_mode,
+                "edit_seq": edit_seq,
+                "mtime_ns": mtime_ns,
+                "content_hash": content_hash,
             },
             raw_payload=self._raw_write_payload(relative_path, before, content),
         )
-        return FileWriteResult(path=relative_path, bytes_written=bytes_written, backend_type=backend_type)
+        return FileWriteResult(
+            path=relative_path,
+            bytes_written=bytes_written,
+            backend_type=backend_type,
+            edit_seq=edit_seq,
+            mtime_ns=mtime_ns,
+            content_hash=content_hash,
+        )
 
     def replace_text(
         self,
@@ -342,6 +464,7 @@ class WorkspaceFileTools:
         tool_call_id: str | None = None,
         run_id: str | None = None,
         request_id: str | None = None,
+        cancellation_event: object | None = None,
     ) -> FileWriteResult:
         tool_call_id = tool_call_id or uuid4().hex
         run_id = run_id or uuid4().hex
@@ -351,6 +474,7 @@ class WorkspaceFileTools:
             tool_call_id=tool_call_id,
             run_id=run_id,
             request_id=request_id,
+            cancellation_event=cancellation_event,
         ).content
         if old_text not in current:
             raise ValueError("old_text was not found in the file.")
@@ -361,6 +485,7 @@ class WorkspaceFileTools:
             tool_call_id=tool_call_id,
             run_id=run_id,
             request_id=request_id,
+            cancellation_event=cancellation_event,
         )
 
     def list_files(

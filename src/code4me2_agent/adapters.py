@@ -8,6 +8,7 @@ import re
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from time import perf_counter, sleep, time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from openai import APIError, APIStatusError, OpenAI
@@ -46,6 +47,7 @@ class AgentAdapter(Protocol):
         message_id: str | None,
         memory: "MemoryWindow | None" = None,
         cancellation_event: Event | None = None,
+        on_delta: Any | None = None,
     ) -> AdapterResult: ...
 
 
@@ -81,13 +83,31 @@ class BackendProviderRequestError(RuntimeError):
     pass
 
 
+class ProviderStreamCancelledError(RuntimeError):
+    """Raised when a cancellable provider wait observes cancellation."""
+
+    pass
+
+
+def _stream_enabled() -> bool:
+    """Feature flag for provider streaming; default on, opt-out via env."""
+    raw = os.getenv("CODE4ME_STREAM_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def _turn_was_cancelled(cancellation_event: Event | None) -> bool:
     return cancellation_event is not None and cancellation_event.is_set()
 
 
 def _cancelled_result(
     thoughts: list[str] | tuple[str, ...] = (),
+    memory: MemoryWindow | None = None,
 ) -> AdapterResult:
+    if memory is not None:
+        try:
+            memory.discard_trailing_orphan_tool_calls()
+        except Exception:
+            pass
     return AdapterResult(
         final_response="",
         stop_reason="cancelled",
@@ -222,9 +242,10 @@ class DeterministicEchoAdapter:
         message_id: str | None,
         memory: "MemoryWindow | None" = None,
         cancellation_event: Event | None = None,
+        on_delta: Any | None = None,
     ) -> AdapterResult:
         if _turn_was_cancelled(cancellation_event):
-            return _cancelled_result()
+            return _cancelled_result(memory=memory)
         return AdapterResult(
             final_response=f"Code4Me ACP echo: {prompt}",
             stop_reason="end_turn",
@@ -259,7 +280,8 @@ class ToolRegistry:
         self._thought_event_type = ThoughtEvent
 
     def execute(
-        self, tool_call: ToolCall, *, run_id: str, request_id: str
+        self, tool_call: ToolCall, *, run_id: str, request_id: str,
+        cancellation_event: Event | None = None,
     ) -> dict[str, Any]:
         name = tool_call.name
         mcp_wildcard_allowed = (
@@ -290,7 +312,11 @@ class ToolRegistry:
             )
         arguments = dict(tool_call.arguments)
         edit_preview = self._edit_preview(
-            tool_call, arguments, run_id=run_id, request_id=request_id
+            tool_call,
+            arguments,
+            run_id=run_id,
+            request_id=request_id,
+            cancellation_event=cancellation_event,
         )
         self._emit_tool_start(
             tool_call,
@@ -300,6 +326,11 @@ class ToolRegistry:
             request_id=request_id,
         )
         if self._approval_policy == "per_step" and _requires_manual_approval(name):
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise ToolRegistryError(
+                    "Tool approval cancelled.",
+                    failure_reason="approval_cancelled",
+                )
             request_approval = getattr(self._event_sink, "request_approval", None)
             decision = (
                 request_approval(tool_call, arguments)
@@ -322,38 +353,46 @@ class ToolRegistry:
                 )
         try:
             if name == "read_file":
-                result = self._file_tools.read_file(
+                result = _call_file_tool(
+                    self._file_tools.read_file,
                     path=str(arguments["path"]),
                     line_start=_optional_int(arguments.get("line_start")),
                     line_end=_optional_int(arguments.get("line_end")),
                     tool_call_id=tool_call.tool_call_id,
                     run_id=run_id,
                     request_id=request_id,
+                    cancellation_event=cancellation_event,
                 )
             elif name == "create_file":
-                result = self._file_tools.create_file(
+                result = _call_file_tool(
+                    self._file_tools.create_file,
                     path=str(arguments["path"]),
                     content=str(arguments.get("content", "")),
                     tool_call_id=tool_call.tool_call_id,
                     run_id=run_id,
                     request_id=request_id,
+                    cancellation_event=cancellation_event,
                 )
             elif name == "write_file":
-                result = self._file_tools.write_file(
+                result = _call_file_tool(
+                    self._file_tools.write_file,
                     path=str(arguments["path"]),
                     content=str(arguments.get("content", "")),
                     tool_call_id=tool_call.tool_call_id,
                     run_id=run_id,
                     request_id=request_id,
+                    cancellation_event=cancellation_event,
                 )
             elif name == "replace_text":
-                result = self._file_tools.replace_text(
+                result = _call_file_tool(
+                    self._file_tools.replace_text,
                     path=str(arguments["path"]),
                     old_text=str(arguments.get("old_text", "")),
                     new_text=str(arguments.get("new_text", "")),
                     tool_call_id=tool_call.tool_call_id,
                     run_id=run_id,
                     request_id=request_id,
+                    cancellation_event=cancellation_event,
                 )
             elif name == "list_files":
                 result = self._file_tools.list_files(
@@ -377,9 +416,12 @@ class ToolRegistry:
                     tool_call_id=tool_call.tool_call_id,
                     run_id=run_id,
                     request_id=request_id,
+                    cancellation_event=cancellation_event,
                 )
             elif self._mcp_tools is not None and self._mcp_tools.has_tool(name):
-                result = self._mcp_tools.execute(name, arguments)
+                result = self._mcp_tools.execute(
+                    name, arguments, cancellation_event=cancellation_event
+                )
             else:
                 raise ToolRegistryError(
                     f"Unsupported tool name: {name}",
@@ -533,6 +575,7 @@ class ToolRegistry:
         *,
         run_id: str,
         request_id: str,
+        cancellation_event: Any | None = None,
     ) -> dict[str, str | None] | None:
         name = tool_call.name
         if name not in {"create_file", "write_file", "replace_text"}:
@@ -541,11 +584,13 @@ class ToolRegistry:
         if name == "create_file":
             return {"old_text": None, "new_text": str(arguments.get("content", ""))}
         try:
-            old_text = self._file_tools.read_file(
+            old_text = _call_file_tool(
+                self._file_tools.read_file,
                 path=path,
                 tool_call_id=tool_call.tool_call_id,
                 run_id=run_id,
                 request_id=request_id,
+                cancellation_event=cancellation_event,
             ).content
         except FileNotFoundError:
             old_text = ""
@@ -568,6 +613,17 @@ def _requires_manual_approval(tool_name: str) -> bool:
     } or tool_name.startswith("mcp__")
 
 
+def _call_file_tool(operation: Any, *args: Any, **kwargs: Any) -> Any:
+    """Invoke a file-tool operation, tolerating older fakes without cancel support."""
+    try:
+        return operation(*args, **kwargs)
+    except TypeError as exc:
+        if "cancellation_event" not in str(exc):
+            raise
+        kwargs.pop("cancellation_event", None)
+        return operation(*args, **kwargs)
+
+
 class FakeOpenAICompatibleProvider:
     def __init__(self, script: list[dict[str, object]]) -> None:
         self._script = [dict(item) for item in script]
@@ -585,6 +641,110 @@ class FakeOpenAICompatibleProvider:
         return current
 
 
+def _managed_event_to_chunk(event: Any) -> Any:
+    """Adapt one parsed managed SSE payload to an SDK-shaped chunk.
+
+    Lets the managed streaming branch reuse the exact accumulate/coalesce/
+    ``on_delta`` machinery below: ``choices[].delta.content`` /
+    ``tool_calls``, ``finish_reason``, ``usage`` and ``model``.
+    """
+    choices: list[Any] = []
+    usage: Any = None
+    model: Any = None
+    if isinstance(event, dict):
+        for choice in event.get("choices", []) or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta", {}) or {}
+            if not isinstance(delta, dict):
+                delta = {}
+            tool_calls: list[Any] = []
+            for tool_call in delta.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function", {}) or {}
+                if not isinstance(function, dict):
+                    function = {}
+                tool_calls.append(
+                    SimpleNamespace(
+                        index=tool_call.get("index", 0) or 0,
+                        id=tool_call.get("id"),
+                        function=SimpleNamespace(
+                            name=function.get("name"),
+                            arguments=function.get("arguments"),
+                        ),
+                    )
+                )
+            choices.append(
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=delta.get("content"),
+                        tool_calls=tool_calls or None,
+                    ),
+                    finish_reason=choice.get("finish_reason"),
+                )
+            )
+        usage = event.get("usage")
+        model = event.get("model")
+    return SimpleNamespace(choices=choices, usage=usage, model=model)
+
+
+def _iter_managed_sse_chunks(sse_events: Any) -> Any:
+    """Yield SDK-shaped chunks from parsed managed SSE payloads.
+
+    Mid-stream transport failures become :class:`BackendProviderRequestError`
+    (a turn failure, never a client-side retry — the server owns the
+    pre-stream 429 budget); the underlying SSE connection is always closed.
+    Cancellation is polled per chunk by the consumer, which closes this
+    iterator promptly.
+    """
+    try:
+        iterator = iter(sse_events)
+    except TypeError as exc:
+        raise BackendProviderRequestError(
+            f"The managed backend stream was unusable: {exc}"
+        ) from exc
+    try:
+        for event in iterator:
+            yield _managed_event_to_chunk(event)
+    except GeneratorExit:
+        raise
+    except (BackendProviderRequestError, ProviderStreamCancelledError):
+        raise
+    except Exception as exc:
+        raise BackendProviderRequestError(
+            f"The managed backend stream failed mid-response: {exc}"
+        ) from exc
+    finally:
+        close = getattr(sse_events, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+
+def _managed_stream_terminated(
+    sse_events: Any,
+    *,
+    finish_reason: str | None,
+    usage_payload: Any,
+) -> bool:
+    """Whether a managed SSE stream ended with a terminal signal.
+
+    Exactly one of ``[DONE]`` (recorded on the stream reader), a
+    finish_reason, or a usage payload must be present; a clean EOF with none
+    of them means the response was cut off and must fail, not truncate
+    silently. Streams without the ``done_received`` marker (older fakes) rely
+    on finish_reason/usage alone.
+    """
+    if getattr(sse_events, "done_received", False):
+        return True
+    if isinstance(finish_reason, str) and finish_reason.strip():
+        return True
+    return isinstance(usage_payload, dict) and bool(usage_payload)
+
+
 class OpenAICompatibleProvider:
     def __init__(
         self,
@@ -599,6 +759,7 @@ class OpenAICompatibleProvider:
         temperature: float | None = None,
         session_id: str = "",
         managed_request: Any | None = None,
+        managed_request_stream: Any | None = None,
     ) -> None:
         self._kind = kind.strip() or "code4me_backend"
         self._base_url = base_url.rstrip("/")
@@ -610,8 +771,15 @@ class OpenAICompatibleProvider:
         self._temperature = temperature
         self._session_id = session_id
         self._managed_request = managed_request
+        self._managed_request_stream = managed_request_stream
 
-    def generate(self, messages: list[dict[str, Any]], *, run_id: str = "") -> ProviderTurn:
+    def generate(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        run_id: str = "",
+        cancellation_event: Event | None = None,
+    ) -> ProviderTurn:
         request_payload = {
             "model": self._model,
             "messages": [_to_openai_message(message) for message in messages],
@@ -673,9 +841,17 @@ class OpenAICompatibleProvider:
                             attempt,
                             max_429_retries,
                         )
-                        sleep(retry_sleep_seconds)
+                        if cancellation_event is not None and cancellation_event.wait(
+                            timeout=retry_sleep_seconds
+                        ):
+                            raise ProviderStreamCancelledError(
+                                "Provider retry wait was cancelled."
+                            ) from None
+                        sleep(retry_sleep_seconds) if cancellation_event is None else None
                         continue
                     raise BackendProviderRequestError(f"The backend model request failed with HTTP {exc.status_code}: {exc.response.text}") from None
+        except ProviderStreamCancelledError:
+            raise
         except APIError as exc:
             raise BackendProviderRequestError(f"The backend model request failed: {exc}") from None
 
@@ -689,6 +865,266 @@ class OpenAICompatibleProvider:
             model=str(response_payload.get("model") or self._model),
             request_payload=request_payload,
             raw_response=response_payload,
+        )
+
+    def generate_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        run_id: str = "",
+        on_delta: Any | None = None,
+        cancellation_event: Event | None = None,
+    ) -> ProviderTurn:
+        """Streaming variant: accumulate content+tool deltas, coalesce on_delta.
+
+        Calls ``on_delta(text)`` with coalesced fragments (>=40 chars or
+        100ms). Checks cancellation per chunk and closes the stream promptly.
+        Managed transports stream through the backend SSE relay when the
+        session provides a stream callable, and fall back to single-shot
+        ``generate()`` otherwise (or once against an old server).
+        """
+        import time as _time
+
+        request_payload = {
+            "model": self._model,
+            "messages": [_to_openai_message(message) for message in messages],
+            "tools": self._tool_definitions,
+            "tool_choice": "auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if self._temperature is not None:
+            request_payload["temperature"] = self._temperature
+
+        sse_events: Any = None
+        if self._kind == "managed_backend":
+            stream_fn = self._managed_request_stream
+            if not callable(stream_fn):
+                # Wired without streaming: managed protocol v1 single-shot.
+                return self.generate(messages, run_id=run_id, cancellation_event=cancellation_event)
+            from code4me2_agent.runtime_auth import (
+                AcpSessionExpired,
+                ManagedStreamUnsupportedError,
+            )
+
+            if cancellation_event is not None and cancellation_event.is_set():
+                # Check before opening: the transport would close the
+                # connection on the first chunk anyway.
+                raise ProviderStreamCancelledError("Provider stream was cancelled.")
+            try:
+                try:
+                    sse_events = stream_fn(
+                        run_id=run_id,
+                        session_id=self._session_id,
+                        model_request=dict(request_payload),
+                        cancellation_event=cancellation_event,
+                    )
+                except TypeError as exc:
+                    # Older stream callables take exactly
+                    # (run_id, session_id, model_request); retry without the
+                    # cancel hook and attach it afterwards when supported.
+                    if "cancellation_event" not in str(exc):
+                        raise
+                    sse_events = stream_fn(
+                        run_id=run_id,
+                        session_id=self._session_id,
+                        model_request=dict(request_payload),
+                    )
+            except ManagedStreamUnsupportedError:
+                # Old server answered 400 stream-unsupported: fall back once
+                # to single-shot. generate() never streams, so this cannot loop.
+                logging.info(
+                    "[Agent/provider] managed streaming unsupported — single-shot fallback"
+                )
+                return self.generate(messages, run_id=run_id, cancellation_event=cancellation_event)
+            except (AcpSessionExpired, ProviderStreamCancelledError):
+                # Re-authentication is owned by the authorization layer (the
+                # bridge retries once); never mask it as a turn failure.
+                raise
+            except Exception as exc:
+                raise BackendProviderRequestError(
+                    f"The managed backend streaming request failed: {exc}"
+                ) from exc
+            # No managed 429 retry client-side: the server owns the pre-stream
+            # budget, so any 429 surfacing here is already terminal.
+            #
+            # Late-attach the cancel hook for streams constructed without one
+            # (older callables): attaching before the first chunk means the
+            # cancel watcher is in place before any read can block.
+            set_cancel = getattr(sse_events, "set_cancel_event", None)
+            if callable(set_cancel) and cancellation_event is not None:
+                try:
+                    set_cancel(cancellation_event)
+                except Exception as exc:
+                    logging.warning(
+                        "[Agent/provider] could not attach stream cancel hook: %s",
+                        exc,
+                    )
+            stream = _iter_managed_sse_chunks(sse_events)
+        else:
+            client = self._client()
+            try:
+                _rate_limit_provider_request_from_env()
+                stream = client.chat.completions.create(**request_payload)
+            except APIError as exc:
+                raise BackendProviderRequestError(f"The backend model request failed: {exc}") from None
+
+        content_parts: list[str] = []
+        tool_slots: dict[int, dict[str, Any]] = {}
+        finish_reason: str | None = None
+        usage_payload: Any = None
+        model_name = self._model
+        pending_delta = ""
+        last_emit = _time.monotonic()
+
+        def _flush(force: bool = False) -> None:
+            nonlocal pending_delta, last_emit
+            # No receiver: drop without accumulating (avoids unbounded growth
+            # when streaming is disabled) and never fail the turn.
+            if on_delta is None:
+                pending_delta = ""
+                return
+            if not pending_delta:
+                return
+            now = _time.monotonic()
+            if force or len(pending_delta) >= 40 or (now - last_emit) >= 0.1:
+                # Bounded by the sink (agent_message_delta times out after 5s
+                # and records telemetry-only failures), so a hung client
+                # cannot block the turn indefinitely.
+                try:
+                    on_delta(pending_delta)
+                except Exception:
+                    logging.warning(
+                        "[Agent/provider] on_delta callback failed — continuing",
+                        exc_info=True,
+                    )
+                pending_delta = ""
+                last_emit = now
+
+        try:
+            for chunk in stream:
+                if cancellation_event is not None and cancellation_event.is_set():
+                    try:
+                        close = getattr(stream, "close", None)
+                        if callable(close):
+                            close()
+                    except Exception:
+                        pass
+                    raise ProviderStreamCancelledError("Provider stream was cancelled.")
+                try:
+                    choices = getattr(chunk, "choices", []) or []
+                except Exception:
+                    choices = []
+                for choice in choices:
+                    delta = getattr(choice, "delta", None)
+                    if delta is not None:
+                        content = getattr(delta, "content", None)
+                        if isinstance(content, str) and content:
+                            content_parts.append(content)
+                            # Skip delta accumulation when nobody receives it.
+                            if on_delta is not None:
+                                pending_delta += content
+                                _flush()
+                        raw_tool_calls = getattr(delta, "tool_calls", None)
+                        if raw_tool_calls:
+                            for tc in raw_tool_calls:
+                                index = getattr(tc, "index", 0) or 0
+                                slot = tool_slots.setdefault(
+                                    int(index), {"id": None, "name": None, "arguments": ""}
+                                )
+                                tc_id = getattr(tc, "id", None)
+                                if tc_id:
+                                    slot["id"] = str(tc_id)
+                                fn = getattr(tc, "function", None)
+                                if fn is not None:
+                                    fname = getattr(fn, "name", None)
+                                    if fname:
+                                        slot["name"] = str(fname)
+                                    fargs = getattr(fn, "arguments", None)
+                                    if isinstance(fargs, str):
+                                        slot["arguments"] += fargs
+                    fr = getattr(choice, "finish_reason", None)
+                    if fr:
+                        finish_reason = str(fr)
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    try:
+                        usage_payload = chunk_usage.model_dump() if hasattr(chunk_usage, "model_dump") else dict(chunk_usage)
+                    except Exception:
+                        usage_payload = None
+                chunk_model = getattr(chunk, "model", None)
+                if chunk_model:
+                    model_name = str(chunk_model)
+            _flush(force=True)
+        finally:
+            try:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+
+        # A managed stream that ends (clean EOF) without any terminal signal —
+        # ``[DONE]``, a finish_reason, or a usage payload — was cut off
+        # mid-response. Surfacing partial text as a final answer would silently
+        # truncate the turn, so fail it instead.
+        if self._kind == "managed_backend" and not _managed_stream_terminated(
+            sse_events,
+            finish_reason=finish_reason,
+            usage_payload=usage_payload,
+        ):
+            raise BackendProviderRequestError(
+                "The managed backend stream ended without a terminal signal "
+                "([DONE], finish_reason, or usage); the response may be truncated."
+            )
+
+        # Reassemble a non-streaming-shaped payload for the existing normalizer.
+        tool_calls_payload = []
+        for index in sorted(tool_slots):
+            slot = tool_slots[index]
+            name = str(slot.get("name") or "").strip()
+            if not name:
+                continue
+            raw_args = slot.get("arguments") or "{}"
+            tool_call_id = slot.get("id")
+            if not tool_call_id:
+                # The provider never sent an id, so there is no provenance
+                # for one: log the synthesis (name/index) rather than minting
+                # it silently, since memory and tool results key on this id.
+                logging.warning(
+                    "[Agent/provider] streamed tool call without id (name=%s index=%s) — using synthesized id",
+                    name,
+                    index,
+                )
+                tool_call_id = f"tool-call-{index + 1}"
+            tool_calls_payload.append(
+                {
+                    "id": str(tool_call_id),
+                    "type": "function",
+                    "function": {"name": name, "arguments": raw_args},
+                }
+            )
+        response_payload = {
+            "model": model_name,
+            "choices": [
+                {
+                    "finish_reason": finish_reason,
+                    "message": {
+                        "content": "".join(content_parts),
+                        "tool_calls": tool_calls_payload,
+                    },
+                }
+            ],
+            "usage": usage_payload,
+        }
+        normalized_output = _normalize_openai_provider_response(response_payload)
+        return ProviderTurn(
+            output=normalized_output,
+            usage=_normalize_usage(usage_payload, messages, normalized_output),
+            finish_reason=finish_reason,
+            model=model_name,
+            request_payload=request_payload,
+            raw_response=None,
         )
 
     def _client(self) -> OpenAI:
@@ -772,6 +1208,61 @@ class MemoryWindow:
             selected.insert(0, pinned_system)
         return selected
 
+    def discard_trailing_orphan_tool_calls(self) -> int:
+        """Strip trailing assistant tool_calls with no matching tool results.
+
+        Called on every cancelled turn so a cancel between the assistant
+        tool-call append and its result does not leave an orphan that would
+        confuse the next model call. Only trailing orphans are removed;
+        completed call/result pairs are untouched. Returns removals.
+        """
+        removed = 0
+        while self._messages:
+            last = self._messages[-1]
+            if not isinstance(last, dict) or last.get("role") != "assistant":
+                break
+            pending_ids: set[str] = set()
+            raw_calls = last.get("tool_calls")
+            if isinstance(raw_calls, list) and raw_calls:
+                for tc in raw_calls:
+                    if isinstance(tc, dict) and tc.get("id"):
+                        pending_ids.add(str(tc["id"]))
+            if not pending_ids:
+                # Legacy fake shape stores tool calls as JSON text.
+                content = last.get("content")
+                if isinstance(content, str):
+                    try:
+                        parsed = json.loads(content)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = None
+                    if isinstance(parsed, dict) and isinstance(
+                        parsed.get("tool_calls"), list
+                    ):
+                        for tc in parsed["tool_calls"]:
+                            if isinstance(tc, dict) and tc.get("id"):
+                                pending_ids.add(str(tc["id"]))
+            if not pending_ids:
+                break
+            # Check whether any later tool message already answered them —
+            # by construction there is none (we only inspect the tail), but
+            # scan forward defensively for result coverage.
+            answered: set[str] = set()
+            for msg in self._messages:
+                if isinstance(msg, dict) and msg.get("role") == "tool":
+                    tid = msg.get("tool_call_id")
+                    if tid:
+                        answered.add(str(tid))
+            orphan_ids = pending_ids - answered
+            if not orphan_ids:
+                break
+            # Only strip when ALL pending ids in the trailing message are
+            # orphans (avoids half-removing a partially answered batch).
+            if orphan_ids != pending_ids:
+                break
+            self._messages.pop()
+            removed += 1
+        return removed
+
     def _split_pinned_system(
         self,
     ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -806,6 +1297,7 @@ class OpenAICompatibleReactAdapter:
         message_id: str | None,
         memory: "MemoryWindow | None" = None,
         cancellation_event: Event | None = None,
+        on_delta: Any | None = None,
     ) -> AdapterResult:
         provider = self._provider()
         if memory is None:
@@ -819,7 +1311,7 @@ class OpenAICompatibleReactAdapter:
         thoughts: list[str] = []
         for iteration in range(1, self._config.adapter.max_iterations + 1):
             if _turn_was_cancelled(cancellation_event):
-                return _cancelled_result(thoughts)
+                return _cancelled_result(thoughts, memory)
             messages = memory.window()
             thought_started_at = perf_counter()
             self._event_sink.thought(
@@ -848,7 +1340,28 @@ class OpenAICompatibleReactAdapter:
                 started_at = perf_counter()
                 # 4
                 if isinstance(provider, OpenAICompatibleProvider):
-                    provider_turn = provider.generate(messages, run_id=run_id)
+                    use_stream = _stream_enabled() and on_delta is not None
+                    if use_stream:
+                        try:
+                            provider_turn = provider.generate_stream(
+                                messages,
+                                run_id=run_id,
+                                on_delta=on_delta,
+                                cancellation_event=cancellation_event,
+                            )
+                        except ProviderStreamCancelledError:
+                            self._complete_thought_phase(
+                                run_id=run_id,
+                                request_id=request_id,
+                                started_at=thought_started_at,
+                            )
+                            return _cancelled_result(thoughts, memory)
+                    else:
+                        provider_turn = provider.generate(
+                            messages,
+                            run_id=run_id,
+                            cancellation_event=cancellation_event,
+                        )
                     self._record_model_completed(
                         run_id=run_id,
                         request_id=request_id,
@@ -857,7 +1370,21 @@ class OpenAICompatibleReactAdapter:
                     )
                     output = provider_turn.output
                 else:
+                    if _turn_was_cancelled(cancellation_event):
+                        self._complete_thought_phase(
+                            run_id=run_id,
+                            request_id=request_id,
+                            started_at=thought_started_at,
+                        )
+                        return _cancelled_result(thoughts, memory)
                     output = provider.generate(messages)
+            except ProviderStreamCancelledError:
+                self._complete_thought_phase(
+                    run_id=run_id,
+                    request_id=request_id,
+                    started_at=thought_started_at,
+                )
+                return _cancelled_result(thoughts, memory)
             except FakeProviderExhaustedError:
                 self._complete_thought_phase(
                     run_id=run_id,
@@ -909,7 +1436,7 @@ class OpenAICompatibleReactAdapter:
                     request_id=request_id,
                     started_at=thought_started_at,
                 )
-                return _cancelled_result(thoughts)
+                return _cancelled_result(thoughts, memory)
             # 5
             parsed = self._parse_output(output, run_id=run_id, request_id=request_id)
             if parsed is None:
@@ -939,7 +1466,7 @@ class OpenAICompatibleReactAdapter:
                 )
                 for tool_call in parsed.tool_calls:
                     if _turn_was_cancelled(cancellation_event):
-                        return _cancelled_result(thoughts)
+                        return _cancelled_result(thoughts, memory)
                     self._telemetry.record(
                         event_type="agent.tool.called",
                         run_id=run_id,
@@ -962,6 +1489,7 @@ class OpenAICompatibleReactAdapter:
                             tool_call,
                             run_id=run_id,
                             request_id=request_id,
+                            cancellation_event=cancellation_event,
                         )
                     except ToolRegistryError as exc:
                         self._record_tool_failure(
@@ -1031,7 +1559,7 @@ class OpenAICompatibleReactAdapter:
                             thoughts=thoughts,
                         )
                     if _turn_was_cancelled(cancellation_event):
-                        return _cancelled_result(thoughts)
+                        return _cancelled_result(thoughts, memory)
                     memory.append(
                         {
                             "role": "tool",
@@ -1043,7 +1571,7 @@ class OpenAICompatibleReactAdapter:
                 continue
             if parsed.final_answer is not None:
                 if _turn_was_cancelled(cancellation_event):
-                    return _cancelled_result(thoughts)
+                    return _cancelled_result(thoughts, memory)
                 if (
                     iteration < self._config.adapter.max_iterations
                     and _USER_REQUESTED_FILE_CHANGE_RE.search(prompt)
@@ -1061,14 +1589,15 @@ class OpenAICompatibleReactAdapter:
                         )
                         try:
                             if _turn_was_cancelled(cancellation_event):
-                                return _cancelled_result(thoughts)
+                                return _cancelled_result(thoughts, memory)
                             tool_output = self._tool_registry.execute(
                                 tool_call,
                                 run_id=run_id,
                                 request_id=request_id,
+                                cancellation_event=cancellation_event,
                             )
                             if _turn_was_cancelled(cancellation_event):
-                                return _cancelled_result(thoughts)
+                                return _cancelled_result(thoughts, memory)
                         except ToolRegistryError:
                             pass
                         except PermissionError:
@@ -1122,7 +1651,7 @@ class OpenAICompatibleReactAdapter:
             continue
 
         if _turn_was_cancelled(cancellation_event):
-            return _cancelled_result(thoughts)
+            return _cancelled_result(thoughts, memory)
         self._record_loop_failure(
             run_id=run_id,
             request_id=request_id,
@@ -1205,6 +1734,7 @@ class OpenAICompatibleReactAdapter:
             temperature=self._config.adapter.provider.temperature,
             session_id=self._config.session_id,
             managed_request=self._config.managed_request,
+            managed_request_stream=self._config.managed_request_stream,
         )
 
     def _system_context(self) -> str:

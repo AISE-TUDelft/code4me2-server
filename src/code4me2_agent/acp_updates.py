@@ -62,6 +62,30 @@ class AcpUpdateBuilder:
             return update
         return update.model_copy(update=model_updates)
 
+    def agent_message_chunk(
+        self,
+        text: str,
+        *,
+        message_id: str | None = None,
+        phase: str = "delta",
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        """Emit an incremental agent-message delta reusing update_agent_message.
+
+        ``phase`` is recorded in ``field_meta.code4me2`` so the final
+        ``agent_message()`` with phase completed remains the single
+        completion signal. Byte-compatible with non-stream paths.
+        """
+        update = self.agent_message(text, message_id=message_id)
+        meta = dict(metadata or {})
+        code4me2 = dict(meta.get("code4me2") or {})
+        code4me2.setdefault("phase", phase)
+        meta["code4me2"] = code4me2
+        try:
+            return update.model_copy(update={"field_meta": meta})
+        except Exception:
+            return update
+
     def agent_thought(self, text: str, *, metadata: dict[str, Any] | None = None) -> Any:
         text_block = getattr(self._acp, "text_block", None)
         update_agent_thought = getattr(self._acp, "update_agent_thought", None)
