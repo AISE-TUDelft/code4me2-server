@@ -39,8 +39,8 @@ jobs:
             executable: dist/code4me2-agent/code4me2-agent
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Verify native runner architecture
@@ -154,7 +154,7 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --wait
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: code4me-agent-${{ matrix.platform }}
           path: code4me-agent-${{ matrix.platform }}.zip
@@ -167,8 +167,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v6
         with:
           pattern: code4me-agent-*
           path: release-assets
