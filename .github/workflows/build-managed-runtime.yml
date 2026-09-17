@@ -64,6 +64,15 @@ jobs:
           version="${{ inputs.version }}"
           if [ -z "$version" ]; then version="0.1.0-dev.${GITHUB_SHA:0:12}"; fi
           python packaging/stamp_runtime_version.py --version "$version"
+      - name: Prepare static OpenSSL for Intel macOS
+        if: matrix.platform == 'macos-x64'
+        shell: bash
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
+          echo "PIP_NO_BINARY=cryptography" >> "$GITHUB_ENV"
+          echo "PIP_NO_CACHE_DIR=true" >> "$GITHUB_ENV"
       - name: Install locked runtime and packaging toolchain
         shell: bash
         run: |
