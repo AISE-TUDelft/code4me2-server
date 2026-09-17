@@ -14,6 +14,7 @@ on:
         default: false
   push:
     paths:
+      - .github/workflows/build-managed-runtime.yml
       - src/code4me2_agent/**
       - packaging/**
       - pyproject.toml
