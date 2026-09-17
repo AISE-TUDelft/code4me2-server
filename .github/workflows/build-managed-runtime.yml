@@ -12,6 +12,13 @@ on:
         type: boolean
         required: true
         default: false
+  pull_request:
+    paths:
+      - .github/workflows/build-managed-runtime.yml
+      - src/code4me2_agent/**
+      - packaging/**
+      - pyproject.toml
+      - tests/code4me2_agent/**
   push:
     paths:
       - .github/workflows/build-managed-runtime.yml
