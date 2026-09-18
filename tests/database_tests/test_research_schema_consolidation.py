@@ -125,6 +125,9 @@ def test_research_study_lifecycle_contract_is_present():
         "idx_study_research_status",
         "uq_study_research_join_code",
     } <= index_names
+    # The owner live-study slot was retired: is_active is a lifecycle
+    # projection, so no owner-level unique authority may come back.
+    assert "uq_study_owner_live_research" not in index_names
 
 
 def test_study_agent_profile_contract_is_present():

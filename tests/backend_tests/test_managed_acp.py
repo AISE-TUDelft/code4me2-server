@@ -224,6 +224,88 @@ def test_readiness_rejects_missing_server_side_provider_credential(monkeypatch):
     db.close.assert_called_once()
 
 
+def test_readiness_accepts_admin_managed_connection_without_a_per_user_grant(monkeypatch):
+    """An authorized researcher may use an active admin-managed connection.
+
+    The schema has no ``provider_connection_grant`` table (guarded by
+    ``test_research_schema_consolidation``); profile/researcher authorization is
+    role-based and readiness is connection state, so the positive path resolves
+    the connection without any per-user grant row.
+    """
+    user_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    researcher_id = uuid.uuid4()
+    profile = SimpleNamespace(
+        framework_version="code4me2-agent",
+        name="managed-arm",
+        model="managed-model",
+        tools_json="[]",
+        approval_policy="auto",
+        max_steps=3,
+        max_context_tokens=1000,
+        temperature=0.2,
+        connection_id=connection_id,
+        funding_owner_user_id=researcher_id,
+    )
+    connection = SimpleNamespace(
+        connection_id=connection_id,
+        label="study-provider",
+        base_url="https://provider.example/v1",
+        secret_ref="STUDY_PROVIDER_KEY",
+        models_json='["managed-model"]',
+        is_active=True,
+    )
+    db = MagicMock()
+    app = MagicMock()
+    app.get_db_session.return_value = db
+    user = AuthenticatedUser(user_id=user_id, is_admin=False, email="p@example.com", name="P")
+    monkeypatch.setenv("STUDY_PROVIDER_KEY", "test-provider-secret")
+
+    with patch("agents.registry.resolve_assignment", return_value=profile), patch(
+        "backend.routers.acp.crud.get_provider_connection", return_value=connection
+    ), patch(
+        "backend.routers.acp.crud.provider_connection_is_available", return_value=True
+    ) as available, patch(
+        "backend.routers.acp.crud.get_user_by_id", return_value=None
+    ), patch("backend.routers.acp.resolve_store_agent_content_for_acp", return_value=False):
+        result = get_participant_readiness(user, app)
+
+    assert result["ready"] is True
+    assert result["runtime"] == "code4me2-agent"
+    # The researcher's authorization is checked against connection state, not a
+    # per-user grant row.
+    available.assert_called_once_with(db, connection_id, researcher_id)
+    db.close.assert_called_once()
+
+
+def test_resolve_task_connection_returns_the_active_connection_without_a_grant():
+    from agents import provider as provider_module
+
+    connection = SimpleNamespace(
+        connection_id=uuid.uuid4(),
+        label="study-provider",
+        base_url="https://provider.example/v1",
+        secret_ref="STUDY_PROVIDER_KEY",
+        models_json='["managed-model"]',
+        is_active=True,
+    )
+    profile = SimpleNamespace(connection_id=connection.connection_id)
+    owner_user_id = uuid.uuid4()
+    db = MagicMock()
+
+    with patch(
+        "database.crud.get_provider_connection", return_value=connection
+    ), patch(
+        "database.crud.provider_connection_is_available", return_value=True
+    ) as available:
+        resolved = provider_module.resolve_task_connection(db, profile, owner_user_id)
+
+    assert resolved.connection_id == connection.connection_id
+    assert resolved.is_active is True
+    available.assert_called_once_with(db, connection.connection_id, owner_user_id)
+
+
+
 def test_managed_policy_applies_the_assigned_command_allowlist():
     user_id = uuid.uuid4()
     profile = SimpleNamespace(

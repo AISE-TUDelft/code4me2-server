@@ -267,11 +267,12 @@ def list_studies(
 def set_study_active(
     session: Session, study_id: uuid.UUID, active: bool
 ) -> Optional[StudyRow]:
-    """Reserve/release a research study's live slot.
+    """Apply an ordinary activation/deactivation lifecycle transition.
 
-    The partial unique index ``uq_study_owner_live_research`` makes activation
-    DB-safe; a concurrent activation raises ``IntegrityError``, which the caller
-    turns into a clear conflict.
+    Activation is a plain projection update: it sets ``is_active`` alongside
+    ``research_status`` and imposes no owner-level study limit, so several
+    studies may be ACTIVE for the same owner at once. A stopped study is
+    terminal and cannot be reactivated (``ValueError``).
     """
     row = session.get(StudyRow, study_id)
     if row is None:
@@ -287,46 +288,6 @@ def set_study_active(
     session.commit()
     session.refresh(row)
     return row
-
-
-def get_live_research_study(
-    session: Session, owner_user_id: uuid.UUID
-) -> Optional[StudyRow]:
-    """Return the owner's currently live research study, or ``None``."""
-    statement = select(StudyRow).where(
-        StudyRow.created_by == owner_user_id,
-        StudyRow.is_research.is_(True),
-        StudyRow.is_active.is_(True),
-    )
-    return session.execute(statement).scalars().first()
-
-
-def deactivate_expired_research_studies(
-    session: Session, owner_user_id: uuid.UUID, *, now: Optional[datetime] = None
-) -> int:
-    """Flip the owner's past-end-date research studies to inactive.
-
-    A partial unique index on ``is_active`` cannot react to time passing, so an
-    expired study must be actively released before a new publication reserves the
-    owner's slot. Only studies with a non-null, past ``ends_at`` are released.
-    Returns the number deactivated.
-    """
-    timestamp = now or _now()
-    statement = select(StudyRow).where(
-        StudyRow.created_by == owner_user_id,
-        StudyRow.is_research.is_(True),
-        StudyRow.is_active.is_(True),
-        StudyRow.ends_at.is_not(None),
-        StudyRow.ends_at < timestamp,
-    )
-    rows = list(session.execute(statement).scalars().all())
-    for row in rows:
-        setattr(row, "is_active", False)
-        if getattr(row, "is_research", False) and getattr(row, "research_status", None) != "STUDY_STOPPED":
-            setattr(row, "research_status", "DRAFT")
-    if rows:
-        session.commit()
-    return len(rows)
 
 
 def research_study_is_open(study: Any, now: Optional[datetime] = None) -> bool:

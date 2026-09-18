@@ -427,7 +427,6 @@ def upgrade() -> None:
                existing_type=sa.BIGINT(),
                nullable=True,
                schema='public')
-    op.create_index('uq_study_owner_live_research', 'study', ['created_by'], unique=True, schema='public', postgresql_where=sa.text('is_research AND is_active'))
     op.create_index('idx_study_research_status', 'study', ['research_status'], unique=False, schema='public')
     op.create_index('uq_study_research_join_code', 'study', ['join_code'], unique=True, schema='public', postgresql_where=sa.text('is_research AND join_code IS NOT NULL'))
     op.add_column('user', sa.Column('can_research', sa.Boolean(), server_default='false', nullable=False), schema='public')
@@ -474,7 +473,6 @@ def downgrade() -> None:
     op.drop_index('idx_study_research_status', table_name='study', schema='public')
     op.drop_index('idx_study_agent_profile_profile_id', table_name='study_agent_profile', schema='public')
     op.drop_table('study_agent_profile', schema='public')
-    op.drop_index('uq_study_owner_live_research', table_name='study', schema='public', postgresql_where=sa.text('is_research AND is_active'))
     op.drop_column('study', 'stopped_by', schema='public')
     op.drop_column('study', 'stopped_at', schema='public')
     op.drop_column('study', 'consent_locked_at', schema='public')

@@ -23,6 +23,10 @@ from research.runtime.bootstrap.capability import issue_capability
 from research.runtime.bootstrap.service import BootstrapSigningContext
 from research.study.agents.enums import DistributionMode, QualificationStatus
 from research.study.agents.models import AgentReleaseV1
+from research.telemetry.ingestion.models import IngestionContext
+from research.telemetry.ingestion.service import _record_from_event, compute_event_digest
+from research.telemetry.ingestion.store import SqlAlchemyIngestionStore
+from research.telemetry.models import CanonicalEventV1, Coverage, Provenance
 
 load_dotenv()
 TEST_DB_URL = os.getenv(
@@ -135,9 +139,15 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
         text(
             "INSERT INTO public.agent_profile "
             "(profile_id, owner_user_id, name, model, release_id, tools_json, approval_policy, max_steps) "
-            "VALUES (:profile_id, :owner_id, 'http-profile', 'model', :release_id, '[]', 'auto', 1)"
+            "VALUES (:profile_id, :owner_id, :name, 'model', :release_id, '[]', 'auto', 1)"
         ),
-        {"profile_id": profile_id, "owner_id": owner_id, "release_id": release_id},
+        {
+            "profile_id": profile_id,
+            "owner_id": owner_id,
+            "release_id": release_id,
+            # Profiles are unique per (owner, name); each fixture gets its own.
+            "name": f"http-profile-{profile_id.hex[:8]}",
+        },
     )
     session.commit()
     return profile_id
@@ -842,4 +852,368 @@ def test_http_bootstrap_qualified_codex_manifest_is_revision_free(http_runtime):
     repeated_manifest = repeated.json()["manifest"]
     assert repeated_manifest["assignment"] == manifest["assignment"]
     assert repeated_manifest["research_session"] == manifest["research_session"]
+
+
+def test_http_create_study_orders_multiple_profile_selections(http_runtime):
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "multi-owner@example.com", can_research=True)
+        first_profile = _profile(session, owner_id)
+        second_profile = _profile(session, owner_id)
+    finally:
+        session.close()
+
+    current_user["value"] = _owner(owner_id)
+    created = client.post(
+        "/api/research/studies",
+        json={
+            "name": "Multi-profile study",
+            "profile_ids": [str(second_profile), str(first_profile)],
+        },
+    )
+    assert created.status_code == 201, created.text
+    study = created.json()["study"]
+    assert [item["profile_id"] for item in study["profile_selections"]] == [
+        str(second_profile),
+        str(first_profile),
+    ]
+
+    session = session_factory()
+    try:
+        rows = session.execute(
+            text(
+                "SELECT profile_id, selection_order FROM public.study_agent_profile "
+                "WHERE study_id = :study_id ORDER BY selection_order"
+            ),
+            {"study_id": study["study_id"]},
+        ).all()
+    finally:
+        session.close()
+    assert [(str(row[0]), row[1]) for row in rows] == [
+        (str(second_profile), 0),
+        (str(first_profile), 1),
+    ]
+
+
+def test_http_create_study_rejects_empty_profile_selection(http_runtime):
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "empty-owner@example.com", can_research=True)
+    finally:
+        session.close()
+
+    current_user["value"] = _owner(owner_id)
+    for payload in (
+        {"name": "No profiles", "profile_ids": []},
+        {"name": "Missing profiles"},
+    ):
+        response = client.post("/api/research/studies", json=payload)
+        assert response.status_code == 422, response.text
+
+    session = session_factory()
+    try:
+        assert session.execute(
+            text("SELECT count(*) FROM public.study WHERE created_by = :owner"),
+            {"owner": owner_id},
+        ).scalar_one() == 0
+        assert session.execute(
+            text("SELECT count(*) FROM public.study_agent_profile")
+        ).scalar_one() == 0
+    finally:
+        session.close()
+
+
+def test_http_configuration_is_frozen_after_create_and_only_metadata_is_writable(
+    http_runtime,
+):
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "frozen-owner@example.com", can_research=True)
+        selected_profile = _profile(session, owner_id)
+        other_profile = _profile(session, owner_id)
+    finally:
+        session.close()
+
+    telemetry_policy = {"metadata_only": True}
+    session_policy = {"heartbeat_seconds": 10, "idle_timeout_seconds": 60}
+    current_user["value"] = _owner(owner_id)
+    created = client.post(
+        "/api/research/studies",
+        json={
+            "name": "Frozen study",
+            "telemetry_policy": telemetry_policy,
+            "session_policy": session_policy,
+            "profile_ids": [str(selected_profile)],
+        },
+    )
+    assert created.status_code == 201, created.text
+    study_id = created.json()["study"]["study_id"]
+
+    # The configuration write surface is create-once: the only study write route
+    # that accepts a body is /metadata, and no bare-path write route exists.
+    from backend.routers.research import studies as studies_router
+
+    writes = {
+        (route.path, method)
+        for route in studies_router.router.routes
+        for method in getattr(route, "methods", set())
+        if method in {"PATCH", "PUT", "POST"} and route.path in {"", "/{study_id}"}
+    }
+    assert writes == {("", "POST")}, writes
+    assert "/{study_id}/metadata" in {route.path for route in studies_router.router.routes}
+    assert client.patch(
+        f"/api/research/studies/{study_id}", json={"name": "forced"}
+    ).status_code == 405
+
+    # A forced configuration update after create cannot change profile ids,
+    # telemetry policy or the session schedule.
+    forced = client.patch(
+        f"/api/research/studies/{study_id}/metadata",
+        json={
+            "name": "Renamed",
+            "profile_ids": [str(other_profile)],
+            "telemetry_policy": {},
+            "session_policy": {"heartbeat_seconds": 999},
+        },
+    )
+    assert forced.status_code == 200, forced.text
+    assert forced.json()["study"]["name"] == "Renamed"
+
+    session = session_factory()
+    try:
+        stored_config = session.execute(
+            text("SELECT research_config_json FROM public.study WHERE study_id = :id"),
+            {"id": study_id},
+        ).scalar_one()
+        selections = session.execute(
+            text(
+                "SELECT profile_id FROM public.study_agent_profile "
+                "WHERE study_id = :id ORDER BY selection_order"
+            ),
+            {"id": study_id},
+        ).scalars().all()
+    finally:
+        session.close()
+    assert stored_config["telemetry_policy"] == telemetry_policy
+    assert stored_config["session_policy"] == session_policy
+    assert stored_config["profile_ids"] == [str(selected_profile)]
+    assert [str(row) for row in selections] == [str(selected_profile)]
+
+
+def test_http_stopped_study_cannot_be_reactivated_or_reconfigured(http_runtime):
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "reactivate-owner@example.com", can_research=True)
+        profile_id = _profile(session, owner_id)
+    finally:
+        session.close()
+
+    current_user["value"] = _owner(owner_id)
+    created = client.post(
+        "/api/research/studies",
+        json={"name": "Terminal study", "profile_ids": [str(profile_id)]},
+    )
+    assert created.status_code == 201, created.text
+    study_id = created.json()["study"]["study_id"]
+
+    stopped = client.post(
+        f"/api/research/studies/{study_id}/stop", json={"actor": "owner"}
+    )
+    assert stopped.status_code == 200, stopped.text
+    assert stopped.json()["study"]["research_status"] == "STUDY_STOPPED"
+
+    # There is no resume/reactivate/publish surface.
+    from backend.routers.research import studies as studies_router
+
+    paths = {route.path for route in studies_router.router.routes}
+    assert not [
+        path
+        for path in paths
+        if any(token in path for token in ("resume", "reactivate", "publish"))
+    ]
+    assert client.post(f"/api/research/studies/{study_id}/resume").status_code == 404
+
+    # The closest available write route is metadata, and it refuses terminally.
+    resumed = client.patch(
+        f"/api/research/studies/{study_id}/metadata", json={"name": "reopened"}
+    )
+    assert resumed.status_code == 409, resumed.text
+    assert resumed.json()["detail"]["code"] == "STUDY_METADATA_LOCKED"
+
+    fetched = client.get(f"/api/research/studies/{study_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["study"]["research_status"] == "STUDY_STOPPED"
+
+
+def test_http_participant_cannot_revoke_and_no_leave_route_exists(http_runtime):
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "noleave-owner@example.com", can_research=True)
+        participant_id = _seed_user(session, "noleave-participant@example.com")
+        profile_id = _profile(session, owner_id)
+    finally:
+        session.close()
+
+    current_user["value"] = _owner(owner_id)
+    created = client.post(
+        "/api/research/studies",
+        json={"name": "No-leave study", "profile_ids": [str(profile_id)]},
+    )
+    assert created.status_code == 201, created.text
+    study = created.json()["study"]
+
+    current_user["value"] = _participant(participant_id)
+    joined = client.post(
+        "/api/research/join",
+        json={"join_code": study["join_code"], "accept_consent": True},
+    )
+    assert joined.status_code == 201, joined.text
+    enrollment_id = joined.json()["enrollment_id"]
+
+    revoked = client.post(
+        f"/api/research/studies/{study['study_id']}/enrollments/{enrollment_id}/revoke",
+        json={"actor": "participant"},
+    )
+    assert revoked.status_code == 403, revoked.text
+    assert revoked.json()["detail"]["code"] == "RESEARCHER_REQUIRED"
+
+    # The participant control plane exposes no leave/withdraw surface.
+    from backend.routers.research import router as research_router
+
+    paths = {route.path for route in research_router.routes}
+    assert not [
+        path
+        for path in paths
+        if "leave" in path.lower() or "withdraw" in path.lower()
+    ]
+
+    session = session_factory()
+    try:
+        assert session.execute(
+            text("SELECT status FROM public.research_enrollment WHERE enrollment_id = :id"),
+            {"id": enrollment_id},
+        ).scalar_one() == "ACTIVE"
+    finally:
+        session.close()
+
+
+def _seed_retained_event(session_factory, *, study_id: str, enrollment_id: str) -> None:
+    """Persist one canonical event so the retained read model has content."""
+    session = session_factory()
+    try:
+        research_session_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.research_session "
+                "(session_id, enrollment_id, study_id, context_id, state, manifest_digest, "
+                "environment_json, transitions_json, created_at) "
+                "VALUES (:session_id, :enrollment_id, :study_id, 'retained-ctx', 'running', "
+                "'manifest', '{}', '[]', now())"
+            ),
+            {
+                "session_id": research_session_id,
+                "enrollment_id": enrollment_id,
+                "study_id": study_id,
+            },
+        )
+        session.commit()
+        now = datetime.now(timezone.utc)
+        event = CanonicalEventV1(
+            event_id=uuid.uuid4(),
+            schema_version="1",
+            event_type="tool.completed",
+            source="ide",
+            study_id=uuid.UUID(study_id),
+            enrollment_id=uuid.UUID(enrollment_id),
+            research_session_id=research_session_id,
+            occurred_at=now,
+            emitter_id="retained-emitter",
+            emitter_sequence=1,
+            payload={"tool_name": "read"},
+            provenance=Provenance(source="ide", normalizer_version="1"),
+            coverage=Coverage(state="AVAILABLE", capability="tool_lifecycle"),
+        )
+        context = IngestionContext(
+            study_id=uuid.UUID(study_id),
+            enrollment_id=uuid.UUID(enrollment_id),
+            research_session_id=research_session_id,
+            revocation_epoch=0,
+        )
+        record = _record_from_event(
+            event, context, compute_event_digest(event), accepted_at=now
+        )
+        store = SqlAlchemyIngestionStore(session)
+        store.insert_events([record])
+        store.commit()
+    finally:
+        session.close()
+
+
+def test_http_researcher_read_models_keep_retained_rows_after_stop(http_runtime):
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "retained-owner@example.com", can_research=True)
+        participant_id = _seed_user(session, "retained-participant@example.com")
+        profile_id = _profile(session, owner_id)
+    finally:
+        session.close()
+
+    current_user["value"] = _owner(owner_id)
+    created = client.post(
+        "/api/research/studies",
+        json={"name": "Retained study", "profile_ids": [str(profile_id)]},
+    )
+    assert created.status_code == 201, created.text
+    study = created.json()["study"]
+
+    current_user["value"] = _participant(participant_id)
+    joined = client.post(
+        "/api/research/join",
+        json={"join_code": study["join_code"], "accept_consent": True},
+    )
+    assert joined.status_code == 201, joined.text
+    enrollment_id = joined.json()["enrollment_id"]
+
+    _seed_retained_event(
+        session_factory,
+        study_id=study["study_id"],
+        enrollment_id=enrollment_id,
+    )
+
+    current_user["value"] = _owner(owner_id)
+    stopped = client.post(
+        f"/api/research/studies/{study['study_id']}/stop", json={"actor": "owner"}
+    )
+    assert stopped.status_code == 200, stopped.text
+
+    coverage = client.get(
+        "/api/research/operations/enrollments/coverage",
+        params={"study_id": study["study_id"]},
+    )
+    assert coverage.status_code == 200, coverage.text
+    coverage_body = coverage.json()
+    assert coverage_body["total_enrollments"] == 1
+    assert coverage_body["status_counts"] == {"STUDY_STOPPED": 1}
+    assert coverage_body["coverage"] == "AVAILABLE"
+
+    telemetry = client.get(
+        "/api/research/operations/telemetry-coverage",
+        params={"study_id": study["study_id"]},
+    )
+    assert telemetry.status_code == 200, telemetry.text
+    telemetry_body = telemetry.json()
+    assert telemetry_body["denominators"]["events"] == 1
+    assert [family["family"] for family in telemetry_body["families"]] == ["tool"]
+
+    # The study read still reports the retained enrollment.
+    fetched = client.get(f"/api/research/studies/{study['study_id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["study"]["enrollment_count"] == 1
+
 

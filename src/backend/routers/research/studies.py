@@ -40,7 +40,9 @@ class StudyCreateRequest(BaseModel):
     ends_at: Optional[datetime] = None
     telemetry_policy: dict[str, Any] = Field(default_factory=dict)
     session_policy: dict[str, Any] = Field(default_factory=dict)
-    profile_ids: list[uuid.UUID] = Field(default_factory=list, min_length=1)
+    # Required and non-empty: a research study is created with its fixed profile
+    # selection (the clone flow creates its own profile-less draft separately).
+    profile_ids: list[uuid.UUID] = Field(..., min_length=1)
 
     @field_validator("name")
     @classmethod

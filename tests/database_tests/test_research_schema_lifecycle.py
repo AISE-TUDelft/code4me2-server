@@ -611,6 +611,8 @@ def test_stopping_study_preserves_research_rows_and_revokes_collection():
         run_id = uuid.uuid4()
         event_id = uuid.uuid4()
         receipt_id = uuid.uuid4()
+        assignment_id = uuid.uuid4()
+        profile_id = uuid.uuid4()
         session.execute(
             text(
                 "INSERT INTO public.research_participant "
@@ -632,6 +634,52 @@ def test_stopping_study_preserves_research_rows_and_revokes_collection():
                 "participant_id": participant_id,
                 "study_id": study_id,
             },
+        )
+        # The assignment is the sticky terminal subject alongside the enrollment.
+        session.execute(
+            text(
+                "INSERT INTO public.agent_profile "
+                "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'stop-profile', 'model', '[]', 'auto', 1)"
+            ),
+            {"profile_id": profile_id, "owner_id": owner_id},
+        )
+        session.execute(
+            text(
+                "INSERT INTO public.study_assignment "
+                "(assignment_id, enrollment_id, study_id, agent_profile_id, strategy, "
+                "randomization_epoch, profile_digest, profile_snapshot_json, status, assigned_at) "
+                "VALUES (:assignment_id, :enrollment_id, :study_id, :profile_id, 'RANDOM_EQUAL', "
+                "0, 'stop-digest', '{\"model\":\"model\"}', 'ACTIVE', now())"
+            ),
+            {
+                "assignment_id": assignment_id,
+                "enrollment_id": enrollment_id,
+                "study_id": study_id,
+                "profile_id": profile_id,
+            },
+        )
+        task = crud.create_agent_task(
+            session,
+            agent_profile="stop-profile",
+            model="model",
+            approval_policy="auto",
+            tools_json="[]",
+            source="test",
+            study_id=study_id,
+            enrollment_id=enrollment_id,
+            research_session_id=session_id,
+            owner_user_id=owner_id,
+        )
+        audit_record_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.research_record "
+                "(record_id, kind, scope_type, scope_id, study_id, actor, occurred_at, payload_json) "
+                "VALUES (:record_id, 'RELEASE_EVIDENCE', 'study', :study_id, :study_id, "
+                "'researcher', now(), '{}')"
+            ),
+            {"record_id": audit_record_id, "study_id": study_id},
         )
         session.execute(
             text(
@@ -687,9 +735,11 @@ def test_stopping_study_preserves_research_rows_and_revokes_collection():
 
         summary = stop_research_study(session, study_id, actor="researcher")
         assert summary.enrollment_count == 1
+        assert summary.assignment_count == 1
         assert summary.session_count == 1
         repeated = stop_research_study(session, study_id, actor="researcher")
         assert repeated.enrollment_count == 0
+        assert repeated.assignment_count == 0
         assert repeated.session_count == 0
 
         assert session.execute(
@@ -699,7 +749,7 @@ def test_stopping_study_preserves_research_rows_and_revokes_collection():
         assert session.execute(
             text(
                 "SELECT kind, payload_json->>'event' FROM public.research_record "
-                "WHERE study_id = :study_id"
+                "WHERE study_id = :study_id AND kind = 'STUDY_LIFECYCLE'"
             ),
             {"study_id": study_id},
         ).one() == ("STUDY_LIFECYCLE", "STUDY_STOPPED")
@@ -707,6 +757,11 @@ def test_stopping_study_preserves_research_rows_and_revokes_collection():
             text("SELECT status, revocation_epoch FROM public.research_enrollment WHERE enrollment_id = :id"),
             {"id": enrollment_id},
         ).one() == ("STUDY_STOPPED", 1)
+        # The sticky assignment is terminal alongside its enrollment.
+        assert session.execute(
+            text("SELECT status FROM public.study_assignment WHERE assignment_id = :id"),
+            {"id": assignment_id},
+        ).scalar_one() == "STUDY_STOPPED"
         assert session.execute(
             text("SELECT state, close_reason FROM public.research_session WHERE session_id = :id"),
             {"id": session_id},
@@ -715,11 +770,20 @@ def test_stopping_study_preserves_research_rows_and_revokes_collection():
             ("research_agent_run", "agent_run_id", run_id),
             ("research_event", "event_id", event_id),
             ("telemetry_batch_receipt", "receipt_id", receipt_id),
+            ("agent_task", "task_id", task.task_id),
+            ("research_record", "record_id", audit_record_id),
         ):
             assert session.execute(
                 text(f"SELECT count(*) FROM public.{table} WHERE {key} = :value"),
                 {"value": value},
             ).scalar_one() == 1
+        # The stop audit is appended, never replacing the retained audit row.
+        assert session.execute(
+            text(
+                "SELECT count(*) FROM public.research_record WHERE study_id = :study_id"
+            ),
+            {"study_id": study_id},
+        ).scalar_one() == 2
         # An ordinary stop is not a deletion or a retention trigger: the
         # admin/compliance retention ledger stays untouched.
         assert session.execute(
@@ -897,6 +961,76 @@ def test_revoked_enrollment_cannot_rejoin_same_study():
         revoke_research_enrollment(session, study_id, first.enrollment_id)
         with pytest.raises(PermissionError, match="cannot rejoin"):
             open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}".upper())
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_second_study_first_consent_keeps_both_studies_active():
+    """Regression: no owner-level live-study slot blocks a second consent.
+
+    Under the retired ``uq_study_owner_live_research`` index, activating the
+    second study raised ``psycopg2.errors.UniqueViolation`` and surfaced as an
+    unhandled HTTP 500 on the first web consent.
+    """
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        first_study_id = _create_study(session, owner_id)
+        second_study_id = _create_study(session, owner_id)
+        for index, study_id in enumerate((first_study_id, second_study_id)):
+            profile_id = uuid.uuid4()
+            session.execute(
+                text(
+                    "INSERT INTO public.agent_profile "
+                    "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
+                    "VALUES (:profile_id, :owner_id, :name, 'model', '[]', 'auto', 1)"
+                ),
+                {
+                    "profile_id": profile_id,
+                    "owner_id": owner_id,
+                    "name": f"consent-{index}",
+                },
+            )
+            session.execute(
+                text(
+                    "INSERT INTO public.study_agent_profile "
+                    "(study_id, profile_id, profile_digest, profile_snapshot_json, selection_order, created_at) "
+                    "VALUES (:study_id, :profile_id, 'digest', '{}', 0, now())"
+                ),
+                {"study_id": study_id, "profile_id": profile_id},
+            )
+        session.commit()
+
+        # The owner already has one published, live research study.
+        study_store.set_study_active(session, first_study_id, True)
+
+        # The second study's first consent must succeed and project it ACTIVE.
+        summary = open_study_enrollment(
+            session, owner_id, f"SCHEMA-{second_study_id}".upper()
+        )
+        assert summary.created is True
+        assert summary.reused is False
+
+        statuses = {
+            row[0]: row[1]
+            for row in session.execute(
+                text(
+                    "SELECT study_id, research_status FROM public.study "
+                    "WHERE study_id IN (:first, :second)"
+                ),
+                {"first": first_study_id, "second": second_study_id},
+            ).all()
+        }
+        assert statuses[first_study_id] == "ACTIVE"
+        assert statuses[second_study_id] == "ACTIVE"
+        assert session.execute(
+            text(
+                "SELECT count(*) FROM public.study WHERE created_by = :owner "
+                "AND is_research AND is_active"
+            ),
+            {"owner": owner_id},
+        ).scalar_one() == 2
     finally:
         session.close()
         engine.dispose()

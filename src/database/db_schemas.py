@@ -687,9 +687,10 @@ class Study(Base):
     required ``default_config_id`` — validated in code, not by a NOT NULL column,
     because a research study must not fabricate a completion config. Research
     studies set ``is_research`` True and are owner-scoped; their lifecycle and
-    fixed configuration live in the research-only columns below. At most one
-    live (active) research study per owner is enforced by the partial unique index
-    ``uq_study_owner_live_research``. Legacy completion rows leave those research
+    fixed configuration live in the research-only columns below. ``is_active``
+    mirrors the ``research_status`` lifecycle projection (``ACTIVE`` ↔ True) and
+    is not an owner-level publication slot, so an owner may hold several active
+    research studies at once. Legacy completion rows leave those research
     columns nullable and continue using the existing completion fields.
     """
 
@@ -700,13 +701,6 @@ class Study(Base):
         Index("idx_study_starts_at", "starts_at"),
         Index("idx_study_ends_at", "ends_at"),
         Index("idx_study_research_status", "research_status"),
-        # One live research study per owner. Drafts never reserve the slot.
-        Index(
-            "uq_study_owner_live_research",
-            "created_by",
-            unique=True,
-            postgresql_where=text("is_research AND is_active"),
-        ),
         Index(
             "uq_study_research_join_code",
             "join_code",

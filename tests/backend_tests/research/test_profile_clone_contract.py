@@ -207,3 +207,57 @@ def test_stopped_clone_has_no_study_scoped_rows_and_preserves_source(http_runtim
         ).scalar_one() == 0
     finally:
         session.close()
+
+
+def test_draft_only_linked_study_does_not_lock_profile_edits(http_runtime):
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "draft-owner@example.com", can_research=True)
+        profile_id = _profile(session, owner_id)
+        connection_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.provider_connection "
+                "(connection_id, label, base_url, secret_ref, models_json, is_active, created_at) "
+                "VALUES (:id, :label, 'https://provider.test', 'TEST_KEY', '[\"model\"]', true, now())"
+            ),
+            {"id": connection_id, "label": f"draft-{connection_id}"},
+        )
+        session.execute(
+            text(
+                "UPDATE public.agent_profile SET connection_id = :connection_id "
+                "WHERE profile_id = :profile_id"
+            ),
+            {"connection_id": connection_id, "profile_id": profile_id},
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    current_user["value"] = _owner(owner_id)
+    study_id = _make_study(client, current_user, profile_id, "draft only")
+
+    updated = client.put(
+        f"/api/agent/profiles/{profile_id}",
+        json=_profile_payload("draft-edited", connection_id),
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["profile"]["name"] == "draft-edited"
+
+    # The edit never rewrites the DRAFT study's frozen selection.
+    session = session_factory()
+    try:
+        assert session.execute(
+            text("SELECT research_status FROM public.study WHERE study_id = :id"),
+            {"id": study_id},
+        ).scalar_one() == "DRAFT"
+        assert session.execute(
+            text(
+                "SELECT count(*) FROM public.study_agent_profile "
+                "WHERE study_id = :id AND profile_id = :profile_id"
+            ),
+            {"id": study_id, "profile_id": profile_id},
+        ).scalar_one() == 1
+    finally:
+        session.close()
