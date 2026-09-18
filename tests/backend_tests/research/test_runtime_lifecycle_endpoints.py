@@ -204,3 +204,53 @@ def test_funded_task_gate_passes_the_tasks_enrollment_scope():
         acp_router._require_funded_task(MagicMock(), task)
 
     assert kill_switch.call_args.kwargs["enrollment_id"] == enrollment_id
+
+
+def test_session_creation_refuses_a_study_outside_its_window():
+    """An ended (past ends_at) study must not open new sessions."""
+    from datetime import datetime, timedelta, timezone
+
+    from backend.routers.research import sessions as sessions_router
+    from research.study.protocol import store as protocol_store
+
+    now = datetime.now(timezone.utc)
+    study = MagicMock(
+        study_id=uuid.uuid4(),
+        is_research=True,
+        is_active=True,
+        research_status="ACTIVE",
+        starts_at=now - timedelta(days=2),
+        ends_at=now - timedelta(days=1),
+    )
+    enrollment = MagicMock(
+        enrollment_id=uuid.uuid4(),
+        study_id=study.study_id,
+        status="ACTIVE",
+    )
+    app = MagicMock()
+    app.get_db_session.return_value.get.return_value = study
+    payload = MagicMock(
+        enrollment_id=enrollment.enrollment_id,
+        study_id=study.study_id,
+        capability=MagicMock(),
+        context_id="ctx-window",
+        manifest_digest="digest",
+        environment_ref=None,
+    )
+
+    with patch.object(
+        sessions_router, "_load_enrollment", return_value=enrollment
+    ), patch.object(sessions_router, "_authorize"), patch.object(
+        sessions_router, "session_policy_from_study",
+        return_value=MagicMock(heartbeat_seconds=30),
+    ), patch.object(
+        sessions_router, "open_session"
+    ) as open_session:
+        with pytest.raises(HTTPException) as error:
+            sessions_router.create_research_session(payload, app=app)
+
+    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "STUDY_NOT_OPEN"
+    open_session.assert_not_called()
+    # The window check itself is the protocol store's authority.
+    assert protocol_store.research_study_is_open(study, now) is False

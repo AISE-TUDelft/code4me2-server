@@ -122,6 +122,9 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
             with threading.Lock():
                 count_before = len(self.request_counts)
                 self.request_counts.clear()
+                # Prune the per-key lock map with the counters: it must not grow
+                # one lock per ip:path for the lifetime of the process.
+                self.locks.clear()
                 logging.info(f"Reset {count_before} rate limit counters")
 
     def _get_rate_limit(self, endpoint: str) -> int:
@@ -173,9 +176,12 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         with self.locks[client_key]:
             current_count = self.request_counts.get(client_key, 0)
             rate_limit = self._get_rate_limit(endpoint)
+            # Never log request cookies or bodies: they carry auth cookies,
+            # session capabilities and canonical telemetry content.
             logging.info(
-                f"Request sent to {endpoint} from {request.client.host if request.client else 'unknown'}."
-                f"\nRate limit: {current_count}/{rate_limit}\tCookies: {request.cookies}\tBody: {await request.body()}"
+                f"Request sent to {endpoint} from "
+                f"{request.client.host if request.client else 'unknown'}. "
+                f"Rate limit: {current_count}/{rate_limit}"
             )
             if current_count >= rate_limit:
                 logging.warning(

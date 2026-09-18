@@ -284,15 +284,28 @@ def _reject_all(
     retry_hint: Optional[int] = None,
     enrollment_id: Optional[uuid.UUID] = None,
     research_session_id: Optional[uuid.UUID] = None,
+    max_acks: Optional[int] = None,
+    persist_receipt: bool = True,
 ) -> TelemetryBatchAckV1:
+    """Reject every event in the batch with one typed reason.
+
+    ``persist_receipt=False`` is used for pre-authorization rejections (an
+    unknown/out-of-scope subject, an oversized batch): those must not write a
+    durable receipt, otherwise an unauthenticated caller could grow the receipt
+    table one row per invented batch id. ``max_acks`` bounds the per-event ack
+    list so an oversized batch cannot build an unbounded response.
+    """
+    bounded = list(events[:max_acks]) if max_acks is not None else list(events)
     group = [
         EventAck(event_id=event.event_id, disposition=disposition, reason=reason)
-        for event in events
+        for event in bounded
     ]
     if disposition == EventDisposition.RETRYABLE:
         ack = _ack(batch_id, server_time, retryable=group, retry_hint=retry_hint)
     else:
         ack = _ack(batch_id, server_time, rejected=group)
+    if not persist_receipt:
+        return ack
     return _finalize(
         store,
         batch_id,
@@ -373,6 +386,8 @@ def ingest_batch(
             IngestionReasonCode.BATCH_TOO_LARGE,
             disposition=EventDisposition.REJECTED,
             retry_hint=retry_hint,
+            max_acks=max_events,
+            persist_receipt=False,
         )
 
     # Operator kill switch (Issue 13): accepted batches are not stored while
@@ -406,6 +421,7 @@ def ingest_batch(
             IngestionReasonCode.SESSION_OUT_OF_SCOPE,
             disposition=EventDisposition.REJECTED,
             retry_hint=retry_hint,
+            persist_receipt=False,
         )
     context, enrollment, session = anchored
 

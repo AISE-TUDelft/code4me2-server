@@ -126,7 +126,7 @@ def create_study(
         if active_study and starts_at <= now:
             # Deactivate existing active study
             deactivate_query = """
-            UPDATE study SET is_active = false WHERE is_active = true
+            UPDATE study SET is_active = false WHERE is_active = true AND is_research = false
             """
             db_session.execute(text(deactivate_query))
         
@@ -439,13 +439,13 @@ def activate_study(
         
         # Deactivate any currently active study
         deactivate_query = """
-        UPDATE study SET is_active = false WHERE is_active = true
+        UPDATE study SET is_active = false WHERE is_active = true AND is_research = false
         """
         db_session.execute(text(deactivate_query))
         
         # Activate this study
         activate_query = """
-        UPDATE study SET is_active = true WHERE study_id = :study_id
+        UPDATE study SET is_active = true WHERE study_id = :study_id AND is_research = false
         """
         db_session.execute(text(activate_query), {"study_id": study_uuid})
         
@@ -499,7 +499,7 @@ def deactivate_study(
         # Get study details
         study_query = """
         SELECT study_id, name, default_config_id FROM study 
-        WHERE study_id = :study_id AND is_active = true
+        WHERE study_id = :study_id AND is_active = true AND is_research = false
         """
         study = db_session.execute(text(study_query), {"study_id": study_uuid}).fetchone()
         if not study:

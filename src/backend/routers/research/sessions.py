@@ -31,6 +31,7 @@ from research.runtime.bootstrap.capability import verify_capability
 from research.runtime.bootstrap.models import (
     SessionCapability,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
 )
+from research.study.protocol import store as protocol_store
 from research.runtime.sessions import store as session_store
 from research.runtime.sessions.enums import CloseReason, SessionReasonCode, SessionState
 from research.runtime.sessions.service import (
@@ -244,6 +245,16 @@ def create_research_session(
                 detail=_detail(
                     SessionReasonCode.POLICY_MISSING.value,
                     "study does not declare idle/resume session policy",
+                ),
+            )
+        # The study window is authoritative, not only the terminal status: an
+        # ended (past ends_at) or not-yet-started study must not open sessions.
+        if study is not None and not protocol_store.research_study_is_open(study, now):
+            raise HTTPException(
+                status_code=409,
+                detail=_detail(
+                    SessionReasonCode.STUDY_NOT_OPEN.value,
+                    "the study is not currently open for execution",
                 ),
             )
 
