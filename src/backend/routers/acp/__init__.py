@@ -72,6 +72,66 @@ from utils import create_uuid
 router = APIRouter()
 
 
+def _active_enrollment_id(db, *, account_id, study_id):
+    """Resolve the account's live enrollment id for kill-switch scoping.
+
+    Best-effort: ``None`` (no participant, no active enrollment, or a store
+    error) simply means the enrollment-scoped kill switch cannot be matched,
+    and the study-scoped check plus ``require_live_enrollment`` stay decisive.
+    """
+    if account_id is None:
+        return None
+    try:
+        from research.participants import identity as identity_store
+        from research.participants.enums import EnrollmentStatus
+
+        participant = identity_store.get_participant_by_account(db, account_id)
+        if participant is None:
+            return None
+        for row in identity_store.list_enrollments(db, participant.participant_id):
+            if row.status != EnrollmentStatus.ACTIVE.value:
+                continue
+            if study_id is not None and row.study_id != study_id:
+                continue
+            return row.enrollment_id
+    except Exception:  # noqa: BLE001 - the funded gate below is decisive
+        return None
+    return None
+
+
+def _require_funded_access(
+    db, *, account_id, study_id, enrollment_id=None
+) -> None:
+    """Re-check live enrollment/window/kill switch for a study-funded operation.
+
+    The single funded gate for ACP paths: the account must have an ACTIVE
+    enrollment, the study must not be ``STUDY_STOPPED`` and must still be open,
+    and no operator kill switch may be engaged — at study scope or for the
+    account's own enrollment. A previously issued run/capability never bypasses
+    current server state.
+    """
+    scoped_enrollment_id = enrollment_id
+    if scoped_enrollment_id is None:
+        scoped_enrollment_id = _active_enrollment_id(
+            db, account_id=account_id, study_id=study_id
+        )
+    kill_switch_check = operations_store.db_kill_switch_check(
+        db, study_id=study_id, enrollment_id=scoped_enrollment_id
+    )
+    try:
+        access.require_live_enrollment(
+            db,
+            account_id=account_id,
+            study_id=study_id,
+            kill_switch_check=kill_switch_check,
+        )
+    except access.FundedAccessRefused as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+
+
 def _require_funded_task(db, task) -> None:
     """Re-check live enrollment/window/kill switch for a study-funded task.
 
@@ -80,21 +140,12 @@ def _require_funded_task(db, task) -> None:
     """
     if getattr(task, "study_id", None) is None:
         return
-    kill_switch_check = operations_store.db_kill_switch_check(
-        db, study_id=task.study_id, enrollment_id=None
+    _require_funded_access(
+        db,
+        account_id=getattr(task, "owner_user_id", None),
+        study_id=task.study_id,
+        enrollment_id=getattr(task, "enrollment_id", None),
     )
-    try:
-        access.require_live_enrollment(
-            db,
-            account_id=getattr(task, "owner_user_id", None),
-            study_id=task.study_id,
-            kill_switch_check=kill_switch_check,
-        )
-    except access.FundedAccessRefused as exc:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": exc.code, "message": exc.message},
-        ) from exc
 
 # Fallback runtime config, used only when no agent profile can be resolved for
 # the user (e.g. every profile has been deactivated). Deliberately minimal and
@@ -137,9 +188,15 @@ async def acp_chat_completions(
     db = app.get_db_session()
     try:
         user_uuid = uuid.UUID(scope.user_id)
-        profile = registry.resolve_assignment(db, user_uuid)
-        if profile is None:
+        assignment = registry.resolve_assignment_context(db, user_uuid)
+        if assignment is None:
             raise HTTPException(status_code=503, detail="No active agent profile is configured.")
+        # Live enrollment/window/kill-switch gate BEFORE provider resolution: a
+        # stopped or closed study never reaches a provider connection.
+        _require_funded_access(
+            db, account_id=user_uuid, study_id=assignment.study_id
+        )
+        profile = assignment.profile
         funding_owner_user_id, owner_is_admin = provider_module.funding_owner_for_profile(
             db, profile
         )

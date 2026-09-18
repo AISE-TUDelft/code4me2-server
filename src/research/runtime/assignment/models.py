@@ -1,11 +1,8 @@
-"""Pydantic v2 contracts for enrollment-scoped profile assignment and exposure.
+"""Pydantic v2 contracts for enrollment-scoped profile assignment.
 
-Assignment and exposure are **separate immutable facts**:
-
-* :class:`AssignmentV1` is the server-authoritative, sticky agent profile
-    allocated for one enrollment. It is never re-randomized.
-* :class:`ExposureV1` records what the runtime actually started, with its own
-  id and timestamp; it never rewrites the assignment.
+:class:`AssignmentV1` is the server-authoritative, sticky agent profile
+allocated for one enrollment. It is never re-randomized; launch outcomes are
+recorded against ``agent_run_id`` in the canonical run/event model.
 """
 
 from __future__ import annotations
@@ -19,8 +16,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from .enums import (
     AllocationOutcome,
     AssignmentReasonCode,
-    ExposureOutcome,
-    ExposureReasonCode,
 )
 
 _FROZEN = ConfigDict(extra="forbid", frozen=True)
@@ -56,45 +51,8 @@ class StudyProfileSelection(BaseModel):
     selection_order: int = 0
 
 
-class ExposureEnvironment(BaseModel):
-    """Host environment an exposure was attempted in."""
-
-    model_config = _BASE
-
-    os: str
-    arch: str
-    ide_build: Optional[str] = None
-    plugin_version: Optional[str] = None
-    host_kind: Optional[str] = None
-
-
-class ExposureV1(BaseModel):
-    """The durable record of one attempted runtime exposure."""
-
-    model_config = _FROZEN
-
-    exposure_id: UUID
-    assignment_id: UUID
-    study_id: UUID
-    environment: ExposureEnvironment
-    agent_release_id: str
-    artifact_digest: Optional[str] = None
-    adapter_version: Optional[str] = None
-    observed_configuration: dict[str, Any] = Field(default_factory=dict)
-    started_at: datetime
-    outcome: ExposureOutcome
-    evidence_digest: Optional[str] = None
-    idempotency_key: str
-    created_at: datetime
-
-    @property
-    def is_exposure(self) -> bool:
-        """Whether this receipt counts as an actual condition exposure."""
-        return self.outcome.is_exposure
-
-
 class AssignmentIssue(BaseModel):
-    """One typed assignment/exposure rejection reason."""
+    """One typed assignment rejection reason."""
 
     model_config = _BASE
 
@@ -114,26 +72,3 @@ class AssignmentResult(BaseModel):
     reason: AssignmentReasonCode = AssignmentReasonCode.OK
     issue: Optional[AssignmentIssue] = None
 
-
-class ExposureIssue(BaseModel):
-    """Typed exposure rejection reason."""
-
-    model_config = _BASE
-
-    code: ExposureReasonCode
-    message: str
-    field: str = ""
-
-
-class ExposureResult(BaseModel):
-    """Typed outcome of recording an exposure receipt."""
-
-    model_config = _BASE
-
-    accepted: bool
-    exposure: Optional[ExposureV1] = None
-    reused: bool = False
-    is_exposure: bool = False
-    reason: ExposureReasonCode = ExposureReasonCode.OK
-    audit: list[str] = Field(default_factory=list)
-    issue: Optional[ExposureIssue] = None

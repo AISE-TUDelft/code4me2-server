@@ -44,28 +44,6 @@ def enrollment_coverage(
         db.close()
 
 
-@operations_router.get("/exposures", summary="Assignment versus exposure per profile")
-def profile_exposures(
-    study_id: uuid.UUID,
-    current_user: AuthenticatedUser = Depends(get_current_user),
-    app: App = Depends(App.get_instance),
-):
-    db = app.get_db_session()
-    try:
-        _authorize(db, current_user, study_id)
-        models = read_service.build_profile_exposures(
-            read_store.list_assignments(db, study_id),
-            read_store.list_exposures(db, study_id),
-            study_id=study_id,
-        )
-        return JsonResponseWithStatus(
-            status_code=200,
-            content={"profiles": [model.model_dump(mode="json") for model in models]},
-        )
-    finally:
-        db.close()
-
-
 @operations_router.get("/telemetry-coverage", summary="Telemetry coverage for a study")
 def telemetry_coverage(
     study_id: uuid.UUID,

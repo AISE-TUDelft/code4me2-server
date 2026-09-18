@@ -11,7 +11,6 @@ from research.telemetry.projections.service import coverage_by_family, derive_ev
 from .models import (
     DerivedMetricV1,
     EnrollmentCoverageV1,
-    ProfileExposureV1,
     StudySummaryV1,
     TelemetryCoverageV1,
 )
@@ -22,7 +21,6 @@ if TYPE_CHECKING:
 __all__ = [
     "build_derived_metrics",
     "build_enrollment_coverage",
-    "build_profile_exposures",
     "build_study_summary",
     "build_telemetry_coverage",
     "population_definition",
@@ -32,7 +30,6 @@ _POPULATIONS = {
     "study": "all records bound to this study",
     "all_events": "all stored canonical events for the study",
     "enrolled": "all enrolled participants for the study",
-    "exposed": "participants with an actual assigned-profile exposure",
 }
 
 
@@ -76,48 +73,6 @@ def build_enrollment_coverage(
         coverage=CoverageState.AVAILABLE if total else CoverageState.UNAVAILABLE,
         coverage_reason=None if total else "no enrollments in population",
     )
-
-
-def build_profile_exposures(
-    assignments: Iterable[Any],
-    exposures: Iterable[Any],
-    *,
-    study_id: UUID,
-    population: str = "study",
-) -> list[ProfileExposureV1]:
-    assignment_list = list(assignments)
-    exposures_by_assignment: dict[UUID, list[Any]] = {}
-    for exposure in exposures:
-        exposures_by_assignment.setdefault(exposure.assignment_id, []).append(exposure)
-    profile_ids = sorted({assignment.agent_profile_id for assignment in assignment_list}, key=str)
-    results: list[ProfileExposureV1] = []
-    for profile_id in profile_ids:
-        selected = [assignment for assignment in assignment_list if assignment.agent_profile_id == profile_id]
-        exposed = 0
-        non_exposed = 0
-        digest = selected[0].profile_digest
-        for assignment in selected:
-            receipts = exposures_by_assignment.get(assignment.assignment_id, [])
-            if any(receipt.is_exposure for receipt in receipts):
-                exposed += 1
-            elif receipts:
-                non_exposed += 1
-        assigned = len(selected)
-        results.append(
-            ProfileExposureV1(
-                study_id=study_id,
-                agent_profile_id=profile_id,
-                profile_digest=digest,
-                population=population,
-                assigned_count=assigned,
-                exposed_count=exposed,
-                non_exposure_count=non_exposed,
-                exposure_rate=exposed / assigned if assigned else None,
-                coverage=CoverageState.AVAILABLE if assigned else CoverageState.UNAVAILABLE,
-                coverage_reason=None if assigned else "no assignments for profile",
-            )
-        )
-    return results
 
 
 def build_telemetry_coverage(

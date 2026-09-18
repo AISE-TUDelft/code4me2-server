@@ -1504,11 +1504,10 @@ export const researchRequest = async (
 /**
  * List study identities.
  *
- * NOTE: the study protocol router currently exposes only
- * `/studies/drafts` and `/studies/revisions`, both of which require an
- * explicit `study_id`. A study index is therefore not guaranteed to exist; the
- * call is made optimistically and a 404/405 is reported as `missing` so the UI
- * can fall back to manual study-id entry instead of failing hard.
+ * NOTE: the research API exposes a study index plus per-study lookups; no
+ * draft/revision endpoints exist. The call is made optimistically and a
+ * 404/405 is reported as `missing` so the UI can fall back to a study-id
+ * entry instead of failing hard.
  */
 /**
  * Create a study identity.
@@ -1712,7 +1711,7 @@ export const redeemResearchJoinCode = async (joinCode, acceptConsent) => {
 
 // The signed-in account's own enrollment projections (study-local, no account
 // data). Used by the join page to avoid re-asking for the policy when an active
-// enrollment already exists for the code's revision.
+// enrollment already exists for the code's study.
 export const getMyResearchEnrollments = async () => {
   const result = await researchRequest("/participants/me", {
     label: "load my research enrollments",

@@ -1,4 +1,4 @@
-"""CRUD-style persistence helpers for assignment and exposure.
+"""CRUD-style persistence helpers for assignment.
 
 These functions take a caller-managed SQLAlchemy ``Session`` so the core package
 never imports ``App`` or touches the application singleton. Assignments are
@@ -9,8 +9,7 @@ the loser re-reads it.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -20,11 +19,9 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
-    from .models import AssignmentV1, ExposureV1
+    from .models import AssignmentV1
 
 from database.research_schemas import StudyAssignment
-
-from .enums import ExposureOutcome
 
 
 def create_assignment(
@@ -94,25 +91,6 @@ def list_assignments(
     return list(session.execute(statement).scalars().all())
 
 
-def insert_exposure(session: Session, exposure: ExposureV1) -> Any:
-    """Reject the removed condition-exposure persistence contract."""
-    raise NotImplementedError("condition exposure persistence was removed")
-
-
-def get_exposure_by_idempotency_key(
-    session: Session, idempotency_key: str
-) -> Any:
-    """Reject the removed condition-exposure lookup contract."""
-    raise NotImplementedError("condition exposure persistence was removed")
-
-
-def list_exposures(
-    session: Session, assignment_id: Optional[uuid.UUID] = None
-) -> Sequence[Any]:
-    """Reject the removed condition-exposure listing contract."""
-    raise NotImplementedError("condition exposure persistence was removed")
-
-
 def row_to_assignment(row: StudyAssignment) -> AssignmentV1:
     """Rehydrate an assignment row into the domain model."""
     from .models import AssignmentV1 as AssignmentV1Model
@@ -129,43 +107,3 @@ def row_to_assignment(row: StudyAssignment) -> AssignmentV1:
         profile_snapshot_json=row.profile_snapshot_json,
         status=row.status,
     )
-
-
-def row_to_exposure(row: Any) -> ExposureV1:
-    """Rehydrate an exposure row into the domain model."""
-    from .models import ExposureEnvironment
-    from .models import ExposureV1 as ExposureV1Model
-
-    return ExposureV1Model(
-        exposure_id=row.exposure_id,
-        assignment_id=row.assignment_id,
-        study_id=row.study_id,
-        environment=ExposureEnvironment.model_validate(row.environment_json or {}),
-        agent_release_id=row.agent_release_id,
-        artifact_digest=row.artifact_digest,
-        adapter_version=row.adapter_version,
-        observed_configuration=row.observed_configuration or {},
-        started_at=row.started_at,
-        outcome=ExposureOutcome(row.outcome),
-        evidence_digest=row.evidence_digest,
-        idempotency_key=row.idempotency_key,
-        created_at=row.created_at,
-    )
-
-
-def exposure_summary(row: Any) -> dict[str, Any]:
-    """Return a compact exposure summary safe for responses."""
-    started_at = row.started_at
-    return {
-        "exposure_id": str(row.exposure_id),
-        "assignment_id": str(row.assignment_id),
-        "study_id": str(row.study_id),
-        "agent_release_id": row.agent_release_id,
-        "artifact_digest": row.artifact_digest,
-        "outcome": row.outcome,
-        "started_at": (
-            started_at.isoformat() if isinstance(started_at, datetime) else None
-        ),
-        "evidence_digest": row.evidence_digest,
-        "idempotency_key": row.idempotency_key,
-    }

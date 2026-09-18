@@ -720,6 +720,15 @@ def test_stopping_study_preserves_research_rows_and_revokes_collection():
                 text(f"SELECT count(*) FROM public.{table} WHERE {key} = :value"),
                 {"value": value},
             ).scalar_one() == 1
+        # An ordinary stop is not a deletion or a retention trigger: the
+        # admin/compliance retention ledger stays untouched.
+        assert session.execute(
+            text(
+                "SELECT count(*) FROM public.research_retention_job "
+                "WHERE enrollment_id = :enrollment_id"
+            ),
+            {"enrollment_id": enrollment_id},
+        ).scalar_one() == 0
     finally:
         session.close()
         engine.dispose()

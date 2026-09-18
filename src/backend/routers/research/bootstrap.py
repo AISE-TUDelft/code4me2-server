@@ -1,7 +1,7 @@
-"""Participant bootstrap API: manifest and exposure receipts.
+"""Participant bootstrap API: signed manifest.
 
 Mounted under ``/api/research/bootstrap``. Handlers are intentionally thin: the
-assignment, exposure, and bootstrap composition logic lives in
+assignment and bootstrap composition logic lives in
 :mod:`research.runtime.assignment` and :mod:`research.runtime.bootstrap`. Participants
 authenticate with the normal ``get_current_user`` flow and only ever obtain a
 signed, secret-free manifest for their own active enrollment.
@@ -37,17 +37,11 @@ from research.compatibility.models import (
 )
 from research.participants import identity as identity_store
 from research.runtime.assignment import store as assignment_store
-from research.runtime.assignment.enums import AllocationOutcome, ExposureOutcome
-from research.runtime.assignment.exposure import record_exposure
-from research.runtime.assignment.models import (
-    ExposureEnvironment,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
-)
+from research.runtime.assignment.enums import AllocationOutcome
 from research.runtime.assignment.service import allocate
-from research.runtime.bootstrap.capability import verify_capability
 from research.runtime.bootstrap.models import (
     BootstrapAgentProfile,
     ResearchSessionRef,
-    SessionCapability,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
 )
 from research.runtime.bootstrap.service import (
     BootstrapSigningContext,
@@ -72,9 +66,6 @@ _SIGNER: Optional[BootstrapSigningContext] = (
     else None
 )
 
-AUDIENCE = "research-runtime"
-
-
 def _require_signer() -> BootstrapSigningContext:
     """Return the configured signer or raise a typed refusal."""
     if _SIGNER is None:
@@ -97,52 +88,12 @@ def _kill_switch_for_scope(
     study_id: Optional[uuid.UUID],
     enrollment_id: Optional[uuid.UUID],
 ) -> Callable[[], bool]:
-    """DB-backed kill-switch predicate for one bootstrap/exposure scope."""
+    """DB-backed kill-switch predicate for one bootstrap scope."""
     return operations_store.db_kill_switch_check(
         db,
         study_id=study_id,
         enrollment_id=enrollment_id,
     )
-
-
-def _verify_exposure_capability(
-    capability: SessionCapability,
-    *,
-    enrollment: Any,
-    assignment: Any,
-    now: datetime,
-) -> None:
-    """Verify the exposure capability is bound to this enrollment/assignment."""
-    if not BOOTSTRAP_SIGNING_SECRET:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "SIGNING_SECRET_MISSING",
-                "message": (
-                    "BOOTSTRAP_SIGNING_SECRET is not configured; refusing to "
-                    "verify a session capability"
-                ),
-            },
-        )
-    verification = verify_capability(
-        capability,
-        BOOTSTRAP_SIGNING_SECRET,
-        expected_audience=AUDIENCE,
-        expected_scope=[],
-        now=now,
-        current_revocation_epoch=enrollment.revocation_epoch,
-        expected_enrollment_id=enrollment.enrollment_id,
-        expected_study_id=assignment.study_id,
-    )
-    if not verification.ok:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "CAPABILITY_INVALID",
-                "message": verification.message or "session capability is invalid",
-                "capability_reason": verification.reason.value,
-            },
-        )
 
 
 class EnvironmentReport(BaseModel):
@@ -166,24 +117,6 @@ class ResearchSessionRequest(BaseModel):
     environment: EnvironmentReport
     capability_receipt: Optional[AcpCapabilityReceiptV1] = None
     compatibility_receipt_id: Optional[uuid.UUID] = None
-
-
-class ExposureRequest(BaseModel):
-    """Report an exposure (or a launch failure) for an assignment."""
-
-    # The exposure is authorized by the same session capability issued at
-    # bootstrap; the capability's enrollment must match the assignment's.
-    capability: SessionCapability
-    enrollment_id: uuid.UUID
-    assignment_id: uuid.UUID
-    environment: ExposureEnvironment
-    outcome: ExposureOutcome
-    idempotency_key: str = Field(min_length=1)
-    agent_release_id: Optional[str] = None
-    artifact_digest: Optional[str] = None
-    adapter_version: Optional[str] = None
-    observed_configuration: dict[str, Any] = Field(default_factory=dict)
-    evidence_digest: Optional[str] = None
 
 
 def _now() -> datetime:
@@ -468,81 +401,6 @@ def create_research_session(
                 "manifest": manifest.model_dump(mode="json"),
                 "manifest_digest": manifest.manifest_digest,
                 "signature": manifest.signature,
-            },
-        )
-    finally:
-        db.close()
-
-
-@router.post("/exposures", summary="Record an idempotent exposure receipt")
-def create_exposure(
-    payload: ExposureRequest,
-    current_user: AuthenticatedUser = Depends(get_current_user),
-    app: App = Depends(App.get_instance),
-):
-    """Record (or idempotently replay) an exposure or launch-failure receipt."""
-    now = _now()
-    db = app.get_db_session()
-    try:
-        enrollment = _owned_enrollment(db, current_user, payload.enrollment_id)
-
-        assignment_row = assignment_store.get_assignment(db, payload.assignment_id)
-        if assignment_row is None:
-            raise HTTPException(status_code=404, detail="Assignment not found")
-        assignment = assignment_store.row_to_assignment(assignment_row)
-        if assignment.enrollment_id != enrollment.enrollment_id:
-            raise HTTPException(status_code=404, detail="Assignment not found")
-
-        # The exposure must be authorized by a capability bound to this exact
-        # enrollment and study: a capability for another participant can
-        # never be replayed to record an exposure here.
-        _verify_exposure_capability(
-            payload.capability, enrollment=enrollment, assignment=assignment, now=now
-        )
-
-        existing_row = assignment_store.get_exposure_by_idempotency_key(
-            db, payload.idempotency_key
-        )
-        existing = (
-            assignment_store.row_to_exposure(existing_row)
-            if existing_row is not None
-            else None
-        )
-
-        result = record_exposure(
-            assignment,
-            payload.environment,
-            payload.outcome,
-            payload.idempotency_key,
-            existing=existing,
-            agent_release_id=payload.agent_release_id,
-            artifact_digest=payload.artifact_digest,
-            adapter_version=payload.adapter_version,
-            observed_configuration=payload.observed_configuration,
-            evidence_digest=payload.evidence_digest,
-            now=now,
-            kill_switch_check=_kill_switch_for_scope(
-                db,
-                study_id=enrollment.study_id,
-                enrollment_id=enrollment.enrollment_id,
-            ),
-        )
-        if not result.accepted:
-            raise HTTPException(status_code=409, detail=_issue_payload(result.issue))
-
-        receipt = None
-        if result.exposure is not None and not result.reused:
-            row = assignment_store.insert_exposure(db, result.exposure)
-            receipt = assignment_store.exposure_summary(row)
-
-        return JsonResponseWithStatus(
-            status_code=200 if result.reused else 201,
-            content={
-                "accepted": True,
-                "is_exposure": result.is_exposure,
-                "reused": result.reused,
-                "audit": result.audit,
-                "exposure": receipt,
             },
         )
     finally:

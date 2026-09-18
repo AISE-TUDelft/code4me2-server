@@ -1324,7 +1324,7 @@ def delete_agent_profile(db: Session, profile_id: uuid.UUID) -> bool:
     return True
 
 
-# ── Provider connections and grants ─────────────────────────────────────────
+# ── Admin-managed provider connections (role + readiness) ──────────────────
 
 
 def create_provider_connection(

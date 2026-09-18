@@ -221,7 +221,7 @@ class ResearchEnrollment(Base):
 
 
 # ---------------------------------------------------------------------------
-# Issue 05: enrollment assignment, exposure and bootstrap capabilities
+# Issue 05: enrollment assignment and bootstrap capabilities
 # ---------------------------------------------------------------------------
 
 

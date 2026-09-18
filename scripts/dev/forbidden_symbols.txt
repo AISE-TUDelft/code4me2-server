@@ -1,0 +1,13 @@
+# Forbidden-symbol allowlist for scripts/dev/scan_forbidden_symbols.py.
+#
+# Format: <repo-relative path prefix> | <symbol[,symbol...]> # <reason>
+# A per-symbol entry only covers the named symbol, so a *different* forbidden
+# concept reappearing in an allowlisted file still fails the scan.
+#
+# Task 06 §13 records the remaining condition/protocol validation model as
+# tracked separately under profile-assignment cleanup, so the authoring-only
+# condition_id vocabulary below is the only permitted exception.
+
+code4me2-server/src/research/study/protocol/models.py | condition_id # deferred: StudyCondition authoring model (Task 06 §13 follow-up)
+code4me2-server/src/research/study/protocol/validation.py | condition_id # deferred: condition validation/weights (Task 06 §13 follow-up)
+code4me2-server/src/research/study/protocol/canonical.py | condition_id # deferred: canonical hashing of the condition list (Task 06 §13 follow-up)

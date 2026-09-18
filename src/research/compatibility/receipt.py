@@ -36,8 +36,8 @@ from .models import (
 )
 from .redaction import redact
 
-# Event contract for a failed fixture parse. Kept as a plain dict because it is
-# emitted on the existing ``agent_event`` wire shape (no raw content).
+# Event contract for a failed fixture parse. Kept as a plain dict so the
+# canonical research event envelope stays the single event authority (no raw content).
 ACP_PARSE_FAILED_EVENT_TYPE = "system.acp_parse_failed"
 
 _REQUIRED_ENVIRONMENT_FIELDS = (

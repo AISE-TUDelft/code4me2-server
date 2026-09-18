@@ -68,3 +68,139 @@ def test_telemetry_enrollment_resolver_marks_stopped_enrollment_terminal():
         resolved = telemetry._enrollment_resolver(db)(row.enrollment_id)
     assert row.status == "STUDY_STOPPED"
     assert resolved is row
+
+
+def test_acp_chat_completions_gates_lifecycle_before_provider_resolution():
+    """A stopped study is refused before any provider/connection resolution."""
+    import asyncio
+
+    from backend.routers import acp as acp_router
+    from backend.routers.research import access
+
+    study_id = uuid.uuid4()
+    assignment = MagicMock(study_id=study_id)
+    app = MagicMock()
+    scope = MagicMock(user_id=str(uuid.uuid4()))
+    with patch.object(
+        acp_router.registry, "resolve_assignment_context", return_value=assignment
+    ), patch.object(
+        acp_router.operations_store, "db_kill_switch_check", return_value=None
+    ), patch.object(
+        acp_router.access,
+        "require_live_enrollment",
+        side_effect=access.FundedAccessRefused("STUDY_STOPPED", "the study has stopped"),
+    ), patch.object(
+        acp_router.provider_module, "funding_owner_for_profile"
+    ) as funding:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(
+                acp_router.acp_chat_completions({"messages": []}, scope=scope, app=app)
+            )
+
+    assert error.value.status_code == 403
+    assert error.value.detail["code"] == "STUDY_STOPPED"
+    funding.assert_not_called()
+
+
+def test_kill_switch_release_refuses_to_touch_a_stopped_study():
+    from backend.routers.research import operations
+
+    stopped = MagicMock(research_status="STUDY_STOPPED")
+    switch = MagicMock()
+    switch.scope = MagicMock(
+        kind=operations.KillSwitchScopeKind.STUDY, scope_id=uuid.uuid4()
+    )
+    app = MagicMock()
+    with patch.object(
+        operations.operations_store, "get_kill_switch", return_value=switch
+    ), patch(
+        "research.study.protocol.store.get_study", return_value=stopped
+    ), patch.object(
+        operations.operations_store, "release_kill_switch"
+    ) as release:
+        with pytest.raises(HTTPException) as error:
+            operations.release_kill_switch_endpoint(
+                switch_id=uuid.uuid4(), current_user=MagicMock(), app=app
+            )
+
+    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "STUDY_STOPPED"
+    release.assert_not_called()
+
+
+def test_kill_switch_release_still_works_for_a_live_study():
+    from backend.routers.research import operations
+
+    live = MagicMock(research_status="ACTIVE")
+    switch = MagicMock()
+    switch.scope = MagicMock(
+        kind=operations.KillSwitchScopeKind.STUDY, scope_id=uuid.uuid4()
+    )
+    released = MagicMock(switch_id=switch.switch_id, released_at=None)
+    app = MagicMock()
+    with patch.object(
+        operations.operations_store, "get_kill_switch", return_value=switch
+    ), patch(
+        "research.study.protocol.store.get_study", return_value=live
+    ), patch.object(
+        operations.operations_store, "release_kill_switch", return_value=released
+    ) as release:
+        response = operations.release_kill_switch_endpoint(
+            switch_id=switch.switch_id, current_user=MagicMock(), app=app
+        )
+
+    assert response.status_code == 200
+    release.assert_called_once()
+
+
+def test_acp_funded_gate_scopes_the_kill_switch_to_the_accounts_enrollment():
+    """An enrollment-scoped kill switch must block ACP chat completions too."""
+    from backend.routers import acp as acp_router
+    from backend.routers.research import access
+    from research.participants import identity as identity_store
+
+    account_id = uuid.uuid4()
+    study_id = uuid.uuid4()
+    enrollment_id = uuid.uuid4()
+    participant = MagicMock(participant_id=uuid.uuid4())
+    active = MagicMock(
+        enrollment_id=enrollment_id, study_id=study_id, status="ACTIVE"
+    )
+    with patch.object(
+        identity_store, "get_participant_by_account", return_value=participant
+    ), patch.object(
+        identity_store, "list_enrollments", return_value=[active]
+    ), patch.object(
+        acp_router.operations_store, "db_kill_switch_check", return_value=lambda: True
+    ) as kill_switch, patch.object(
+        acp_router.access,
+        "require_live_enrollment",
+        side_effect=access.FundedAccessRefused("KILL_SWITCH_ENGAGED", "engaged"),
+    ):
+        with pytest.raises(HTTPException) as error:
+            acp_router._require_funded_access(
+                MagicMock(), account_id=account_id, study_id=study_id
+            )
+
+    assert error.value.detail["code"] == "KILL_SWITCH_ENGAGED"
+    assert kill_switch.call_args.kwargs["study_id"] == study_id
+    assert kill_switch.call_args.kwargs["enrollment_id"] == enrollment_id
+
+
+def test_funded_task_gate_passes_the_tasks_enrollment_scope():
+    from backend.routers import acp as acp_router
+    from backend.routers.research import access
+
+    study_id = uuid.uuid4()
+    enrollment_id = uuid.uuid4()
+    task = MagicMock(
+        study_id=study_id, enrollment_id=enrollment_id, owner_user_id=uuid.uuid4()
+    )
+    with patch.object(
+        acp_router.operations_store, "db_kill_switch_check", return_value=lambda: False
+    ) as kill_switch, patch.object(
+        acp_router.access, "require_live_enrollment", return_value=MagicMock()
+    ):
+        acp_router._require_funded_task(MagicMock(), task)
+
+    assert kill_switch.call_args.kwargs["enrollment_id"] == enrollment_id

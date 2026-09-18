@@ -72,7 +72,7 @@ router.include_router(
     tags=["Research Telemetry"],
 )
 # One operations/read API surface: the RBAC-scoped researcher read models
-# (revision summaries, enrollment/exposure coverage, telemetry coverage and
+# (enrollment coverage, telemetry coverage and
 # metrics) and the admin-only pilot/release/kill-switch operations are merged
 # into a single router mounted exactly once under /operations. Their handler
 # paths are unchanged; authorization remains per-route.

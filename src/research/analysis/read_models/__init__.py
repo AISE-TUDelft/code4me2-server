@@ -8,7 +8,7 @@ Public surface:
 
 * :mod:`research.analysis.read_models.enums` - researcher roles and typed reason codes.
 * :mod:`research.analysis.read_models.models` - ``StudySummaryV1``,
-    ``EnrollmentCoverageV1``, ``ProfileExposureV1``, ``TelemetryCoverageV1``,
+    ``EnrollmentCoverageV1``, ``TelemetryCoverageV1``,
   ``DerivedMetricV1``.
 * :mod:`research.analysis.read_models.rbac` - per-study authorization (privacy operator
   access is separate from telemetry read).
@@ -25,7 +25,6 @@ from .models import (
     DerivedMetricV1,
     EnrollmentCoverageV1,
     FamilyCoverage,
-    ProfileExposureV1,
     ReadModelIssue,
     StudySummaryV1,
     TelemetryCoverageV1,
@@ -43,7 +42,6 @@ from .rbac import (
 from .service import (
     build_derived_metrics,
     build_enrollment_coverage,
-    build_profile_exposures,
     build_study_summary,
     build_telemetry_coverage,
     population_definition,
@@ -54,7 +52,6 @@ __all__ = [
     "DERIVATION_VERSION",
     "DerivedMetricV1",
     "EnrollmentCoverageV1",
-    "ProfileExposureV1",
     "FamilyCoverage",
     "ReadModelAuthorizationError",
     "ReadModelIssue",

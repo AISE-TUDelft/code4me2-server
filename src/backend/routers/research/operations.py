@@ -133,6 +133,26 @@ def release_kill_switch_endpoint(
 ):
     db = app.get_db_session()
     try:
+        existing = operations_store.get_kill_switch(db, switch_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Kill switch not found")
+        # Releasing is an operational remedy, not a reopening: a stopped study
+        # stays stopped, so its switch is never released (mirrors engage).
+        if existing.scope.kind == KillSwitchScopeKind.STUDY:
+            from research.study.protocol import store as study_store
+
+            study = study_store.get_study(db, existing.scope.scope_id)
+            if study is not None and getattr(study, "research_status", None) == "STUDY_STOPPED":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "STUDY_STOPPED",
+                        "message": (
+                            "The study has stopped; releasing its kill switch "
+                            "cannot reopen it"
+                        ),
+                    },
+                )
         row = operations_store.release_kill_switch(db, switch_id, released_at=_now())
         if row is None:
             raise HTTPException(status_code=404, detail="Kill switch not found")

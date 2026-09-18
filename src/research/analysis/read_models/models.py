@@ -38,22 +38,6 @@ class EnrollmentCoverageV1(BaseModel):
     coverage_reason: Optional[str] = None
 
 
-class ProfileExposureV1(BaseModel):
-    model_config = _BASE
-
-    study_id: UUID
-    agent_profile_id: UUID
-    profile_digest: str
-    coverage_version: str = COVERAGE_VERSION
-    population: str
-    assigned_count: int = 0
-    exposed_count: int = 0
-    non_exposure_count: int = 0
-    exposure_rate: Optional[float] = None
-    coverage: CoverageState = CoverageState.UNKNOWN
-    coverage_reason: Optional[str] = None
-
-
 class TelemetryCoverageV1(BaseModel):
     model_config = _BASE
 

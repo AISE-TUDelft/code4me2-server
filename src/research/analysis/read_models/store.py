@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
     from research.participants.models import Enrollment
-    from research.runtime.assignment.models import AssignmentV1, ExposureV1
+    from research.runtime.assignment.models import AssignmentV1
     from research.runtime.sessions.models import AgentRunV1, ResearchSessionV1
     from research.telemetry.ingestion.models import ResearchEventRecord
 
@@ -38,7 +38,6 @@ __all__ = [
     "list_assignments",
     "list_enrollments",
     "list_events",
-    "list_exposures",
     "list_sessions",
 ]
 
@@ -66,13 +65,6 @@ def list_assignments(session: Session, study_id: uuid.UUID) -> Sequence[Assignme
         assignment_store.row_to_assignment(row)
         for row in session.execute(statement).scalars().all()
     ]
-
-
-def list_exposures(
-    session: Session, study_id: uuid.UUID
-) -> Sequence[ExposureV1]:
-    """Return no rows until durable profile exposure receipts are enabled."""
-    return []
 
 
 def list_sessions(

@@ -5,7 +5,7 @@ import "./AgentResults.css";
 // the direction researchers care about (it drives the legend, not the layout).
 //
 // Shapes match the /api/analytics/studies/{id}/agent-evaluation response, which
-// aggregates the unified agent_event table — so an arm running Goose, one
+// aggregates the canonical research_event authority — so an arm running Goose, one
 // running Codex, and one running the built-in runtime are all directly
 // comparable here.
 const BAR_METRICS = [
