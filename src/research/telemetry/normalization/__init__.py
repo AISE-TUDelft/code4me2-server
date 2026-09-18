@@ -4,6 +4,10 @@
   normalizer (plus a sanitized ``unknown_source_event`` fallback and the optional
   :class:`~research.telemetry.normalization.generic_acp.AgentAdapter` enrichment
   interface).
+* :mod:`research.telemetry.normalization.adapters` - the static, server-side
+  allowlist that resolves an optional adapter by its ``AdapterRef.adapter_id``
+  and the :func:`normalize_acp_observation` seam (generic result unchanged when
+  no adapter resolves).
 
 Normalizers are pure: :func:`materialize_candidate` attaches the event id and
 per-emitter sequence through the :class:`~research.telemetry.builder.EventBuilder`.
@@ -13,6 +17,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
+from .adapters import (
+    AdapterSpec,
+    clear_adapters_for_tests,
+    normalize_acp_observation,
+    register_adapter,
+    registered_adapter_ids,
+    registered_adapters,
+    resolve_adapter,
+    unregister_adapter,
+)
 from .generic_acp import (
     GENERIC_ACP_NORMALIZER_VERSION,
     AgentAdapter,
@@ -30,12 +44,20 @@ if TYPE_CHECKING:
 
 __all__ = [
     "GENERIC_ACP_NORMALIZER_VERSION",
+    "AdapterSpec",
     "AgentAdapter",
     "CanonicalCandidateV1",
     "GenericAcpNormalizer",
     "NormalizationResultV1",
+    "clear_adapters_for_tests",
     "enrich_with_adapter",
     "materialize_candidate",
+    "normalize_acp_observation",
+    "register_adapter",
+    "registered_adapter_ids",
+    "registered_adapters",
+    "resolve_adapter",
+    "unregister_adapter",
 ]
 
 

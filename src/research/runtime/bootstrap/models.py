@@ -135,6 +135,11 @@ class BootstrapAgentRelease(BaseModel):
     ``PACKAGED`` (default) pins ``artifact_digest``; ``BYOA_EXTERNAL`` pins a
     participant-installed command/package identity and leaves
     ``artifact_digest`` empty.
+
+    ``adapter_id``/``adapter_version`` are the non-secret identity of the
+    adapter the release was qualified with. They are an opaque reference, not a
+    launch path: the server-side adapter allowlist resolves them, and no secret,
+    revision or condition field is projected.
     """
 
     model_config = _FROZEN
@@ -142,6 +147,7 @@ class BootstrapAgentRelease(BaseModel):
     agent_id: str
     release_id: str
     artifact_digest: str = ""
+    adapter_id: Optional[str] = None
     adapter_version: Optional[str] = None
     distribution_mode: str = "PACKAGED"
     agent_command: Optional[str] = None

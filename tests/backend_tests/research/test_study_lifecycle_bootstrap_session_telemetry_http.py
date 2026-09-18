@@ -34,6 +34,15 @@ from research.study.agents.models import (
     AgentReleaseV1,
     DistributionArtifact,
 )
+from research.telemetry.builder import EventBuilder, SequenceAllocator
+from research.telemetry.normalization import (
+    AdapterSpec,
+    materialize_candidate,
+    normalize_acp_observation,
+    register_adapter,
+    unregister_adapter,
+)
+from research.telemetry.normalization.generic_acp import GENERIC_ACP_NORMALIZER_VERSION
 
 load_dotenv()
 TEST_DB_URL = os.getenv(
@@ -161,6 +170,83 @@ def _qualified_packaged_release(session) -> str:
     )
     session.commit()
     return release.release_id
+
+
+def _qualified_codex_byoa_release(session) -> str:
+    """Insert a QUALIFIED BYOA codex release carrying an adapter identity.
+
+    The PASS conformance receipt binds to the release's own
+    ``source_manifest_digest`` (a BYOA release has no artifact digest) and to
+    the adapter digest, which is exactly what ``derive_qualification_status``
+    requires for the fixture to be bootstrap-selectable.
+    """
+    adapter_digest = "sha256:" + "d" * 64
+    release = AgentReleaseV1(
+        agent_id="codex",
+        release_id=f"codex-byoa-{uuid.uuid4()}",
+        version="1.2.3",
+        source_manifest_digest="sha256:" + "2" * 64,
+        distribution_mode=DistributionMode.BYOA_EXTERNAL,
+        agent_package="codex",
+        adapter=AdapterRef(
+            adapter_id="acp-adapter",
+            version="0.4.0",
+            digest=adapter_digest,
+            supported_release_ranges=[">=1.2.0,<1.3.0"],
+        ),
+        qualification_status=QualificationStatus.QUALIFIED,
+    )
+    release_json = release.model_dump(mode="json")
+    release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
+    release_json["conformance"] = [
+        {
+            "status": "PASS",
+            "artifact_digest": release.source_manifest_digest,
+            "adapter_digest": adapter_digest,
+            "host": {"os": "macos", "arch": "arm64"},
+            "case_results": [
+                {"case_id": "acp.initialize.session", "status": "PASS"}
+            ],
+        }
+    ]
+    session.execute(
+        text(
+            "INSERT INTO public.agent_release "
+            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+            "VALUES (:release_id, :agent_id, :manifest, :status, CAST(:release_json AS jsonb), now())"
+        ),
+        {
+            "release_id": release.release_id,
+            "agent_id": release.agent_id,
+            "manifest": release.source_manifest_digest,
+            "status": release.qualification_status.value,
+            "release_json": json.dumps(release_json),
+        },
+    )
+    session.commit()
+    return release.release_id
+
+
+class _CodexRecordingAdapter:
+    """Allowlisted test adapter: additive label, never rewrites generic fields."""
+
+    adapter_version = "0.4.0"
+    mapping_rule_version = "codex-recording-v1"
+    supported_release_ranges = [">=1.2.0,<1.3.0"]
+
+    def enrich(self, candidate):
+        payload = dict(candidate.payload)
+        payload["adapter_label"] = "codex"
+        payload["session_id"] = "hijacked"
+        return candidate.model_copy(update={"payload": payload})
+
+
+_CODEX_ACP_OBSERVATION = {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "method": "session/prompt",
+    "params": {"sessionId": "acp-session-1"},
+}
 
 
 def _release_profile(session, owner_id: uuid.UUID, release_id: str) -> tuple[uuid.UUID, uuid.UUID]:
@@ -456,6 +542,237 @@ def test_http_packaged_bootstrap_session_telemetry_lifecycle(http_runtime):
             "batch_id": str(uuid.uuid4()),
             "session_capability": capability,
             "client_instance_id": "lifecycle-client",
+            "events": [
+                _telemetry_event(
+                    study_id=study_id,
+                    enrollment_id=enrollment_id,
+                    research_session_id=research_session_id,
+                    event_id=str(uuid.uuid4()),
+                )
+            ],
+        },
+    )
+    assert terminal.status_code == 200, terminal.text
+    assert len(terminal.json()["rejected"]) == 1
+    assert terminal.json()["rejected"][0]["reason"] == "REVOKED"
+
+
+def test_http_codex_byoa_adapter_normalization_and_terminal_closure(http_runtime):
+    """Codex BYOA release: adapter identity, generic normalization and closure.
+
+    The release is participant-installed (``BYOA_EXTERNAL``) and carries an
+    allowlisted adapter identity. The bootstrap manifest projects that identity
+    (and no secret/revision field); a raw ACP observation normalizes through the
+    generic path with an allowlisted adapter and with the generic fallback; the
+    enriched canonical event persists with study/enrollment/session provenance;
+    and terminal stop/revoke closes collection without deleting retained data.
+    """
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "codex-byoa-owner@example.com", can_research=True)
+        participant_id = _seed_user(session, "codex-byoa-participant@example.com")
+        release_id = _qualified_codex_byoa_release(session)
+        profile_id, _connection_id = _release_profile(session, owner_id, release_id)
+    finally:
+        session.close()
+
+    current_user["value"] = _owner(owner_id)
+    created = client.post(
+        "/api/research/studies",
+        json={
+            "name": "Codex BYOA lifecycle study",
+            "session_policy": {
+                "idle_timeout_seconds": 600,
+                "resume_grace_seconds": 120,
+                "heartbeat_seconds": 30,
+            },
+            "profile_ids": [str(profile_id)],
+        },
+    )
+    assert created.status_code == 201, created.text
+    study = created.json()["study"]
+    study_id = study["study_id"]
+
+    current_user["value"] = _participant(participant_id)
+    joined = client.post(
+        "/api/research/join",
+        json={"join_code": study["join_code"], "accept_consent": True},
+    )
+    assert joined.status_code == 201, joined.text
+    enrollment_id = joined.json()["enrollment_id"]
+
+    signing_secret = BOOTSTRAP_SIGNING_SECRET
+    assert signing_secret, "BOOTSTRAP_SIGNING_SECRET must be configured for this suite"
+    with patch(
+        "backend.routers.research.bootstrap._SIGNER",
+        BootstrapSigningContext(secret=signing_secret),
+    ):
+        bootstrap = client.post(
+            "/api/research/bootstrap/research-sessions",
+            json={
+                "enrollment_id": enrollment_id,
+                "context_id": "lifecycle-codex-byoa-context",
+                "environment": {"os": "macos", "arch": "arm64"},
+            },
+        )
+    assert bootstrap.status_code == 201, bootstrap.text
+    manifest = bootstrap.json()["manifest"]
+    agent_release = manifest["agent_release"]
+    assert agent_release["agent_id"] == "codex"
+    assert agent_release["distribution_mode"] == "BYOA_EXTERNAL"
+    assert agent_release["agent_package"] == "codex"
+    assert agent_release["artifact_digest"] == ""
+    assert agent_release["adapter_id"] == "acp-adapter"
+    assert agent_release["adapter_version"] == "0.4.0"
+    serialized = json.dumps(manifest)
+    for forbidden in (
+        "revision_id",
+        "study_revision_id",
+        "condition_id",
+        "condition_exposure",
+    ):
+        assert forbidden not in serialized
+    assert "TEST_KEY" not in serialized
+
+    capability = manifest["session_capability"]
+    research_session_id = manifest["research_session"]["research_session_id"]
+
+    adapter_ref = AdapterRef(
+        adapter_id=agent_release["adapter_id"],
+        version=agent_release["adapter_version"],
+        supported_release_ranges=[">=1.2.0,<1.3.0"],
+    )
+    register_adapter(
+        AdapterSpec(
+            adapter_id="acp-adapter",
+            adapter_version="0.4.0",
+            supported_release_ranges=(">=1.2.0,<1.3.0",),
+        ),
+        _CodexRecordingAdapter,
+    )
+    try:
+        # No adapter -> the untouched generic result (no adapter provenance).
+        generic = normalize_acp_observation(_CODEX_ACP_OBSERVATION)
+        assert generic.adapter_version is None
+        assert generic.candidates[0].adapter_version is None
+
+        # Allowlisted adapter + in-range release -> additive enrichment only.
+        enriched = normalize_acp_observation(
+            _CODEX_ACP_OBSERVATION,
+            adapter_ref=adapter_ref,
+            release_version="1.2.3",
+        )
+        assert enriched.adapter_version == "0.4.0"
+        candidate = enriched.candidates[0]
+        assert candidate.payload["session_id"] == "acp-session-1"
+        # Adapter-injected fields are re-filtered by the deny-by-default policy:
+        # the vendor label is redacted rather than passing through untouched.
+        assert candidate.payload["adapter_label"] == "[REDACTED]"
+    finally:
+        unregister_adapter("acp-adapter")
+
+    opened = client.post(
+        "/api/research/sessions/",
+        json={
+            "capability": capability,
+            "enrollment_id": enrollment_id,
+            "study_id": study_id,
+            "manifest_digest": manifest["manifest_digest"],
+            "context_id": "lifecycle-codex-byoa-context",
+        },
+    )
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["session"]["research_session_id"] == research_session_id
+
+    # The server opens the session in NOT_STARTED; a heartbeat is the documented
+    # transition to RUNNING (and makes the later terminal close legal).
+    heartbeat = client.post(
+        "/api/research/sessions/heartbeat",
+        json={
+            "capability": capability,
+            "research_session_id": research_session_id,
+        },
+    )
+    assert heartbeat.status_code == 200, heartbeat.text
+
+    event = materialize_candidate(
+        EventBuilder(SequenceAllocator()),
+        enriched.candidates[0],
+        enriched,
+        emitter_id="codex-byoa-emitter",
+        occurred_at=datetime.now(timezone.utc),
+        study_id=uuid.UUID(study_id),
+        enrollment_id=uuid.UUID(enrollment_id),
+        research_session_id=uuid.UUID(research_session_id),
+    )
+    batch = client.post(
+        "/api/research/telemetry/batches",
+        json={
+            "batch_id": str(uuid.uuid4()),
+            "session_capability": capability,
+            "client_instance_id": "codex-byoa-client",
+            "events": [event.model_dump(mode="json")],
+        },
+    )
+    assert batch.status_code == 200, batch.text
+    assert batch.json()["accepted"][0]["event_id"] == str(event.event_id)
+
+    session = session_factory()
+    try:
+        row = (
+            session.execute(
+                text(
+                    "SELECT study_id, enrollment_id, research_session_id, envelope_json "
+                    "FROM public.research_event WHERE event_id = :event_id"
+                ),
+                {"event_id": event.event_id},
+            )
+            .mappings()
+            .one()
+        )
+    finally:
+        session.close()
+    assert str(row["study_id"]) == study_id
+    assert str(row["enrollment_id"]) == enrollment_id
+    assert str(row["research_session_id"]) == research_session_id
+    envelope = row["envelope_json"]
+    if isinstance(envelope, str):
+        envelope = json.loads(envelope)
+    assert envelope["provenance"]["adapter_version"] == "0.4.0"
+    assert (
+        envelope["provenance"]["normalizer_version"] == GENERIC_ACP_NORMALIZER_VERSION
+    )
+    assert envelope["payload"]["adapter_label"] == "[REDACTED]"
+    assert envelope["payload"]["session_id"] == "acp-session-1"
+
+    # Terminal stop + revoke: collection closes and no later event is stored,
+    # while the already-persisted canonical event is retained.
+    closed = client.post(
+        "/api/research/sessions/close",
+        json={
+            "capability": capability,
+            "research_session_id": research_session_id,
+            "reason": "explicit_completion",
+        },
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["session"]["state"] == "ended"
+
+    current_user["value"] = _owner(owner_id)
+    revoked = client.post(
+        f"/api/research/studies/{study_id}/enrollments/{enrollment_id}/revoke",
+        json={"actor": "codex-byoa-owner"},
+    )
+    assert revoked.status_code == 200, revoked.text
+
+    current_user["value"] = _participant(participant_id)
+    terminal = client.post(
+        "/api/research/telemetry/batches",
+        json={
+            "batch_id": str(uuid.uuid4()),
+            "session_capability": capability,
+            "client_instance_id": "codex-byoa-client",
             "events": [
                 _telemetry_event(
                     study_id=study_id,

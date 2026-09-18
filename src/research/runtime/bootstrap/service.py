@@ -307,7 +307,9 @@ def compose_bootstrap(
         research_session_id=research_session.research_session_id,
         study_id=enrollment.study_id,
     )
-    adapter = getattr(getattr(release, "adapter", None), "version", None)
+    adapter = getattr(release, "adapter", None)
+    adapter_id = getattr(adapter, "adapter_id", None)
+    adapter_version = getattr(adapter, "version", None)
     draft = BootstrapManifestV1(
         generated_at=timestamp,
         study_id=enrollment.study_id,
@@ -325,7 +327,8 @@ def compose_bootstrap(
             agent_id=release.agent_id,
             release_id=release.release_id,
             artifact_digest=artifact_digest,
-            adapter_version=adapter,
+            adapter_id=adapter_id,
+            adapter_version=adapter_version,
             distribution_mode=getattr(getattr(release, "distribution_mode", None), "value", "PACKAGED"),
             agent_command=release.agent_command,
             agent_command_args=list(release.agent_command_args),
