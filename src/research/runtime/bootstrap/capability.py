@@ -65,11 +65,11 @@ def issue_capability(
     *,
     enrollment_id: uuid.UUID,
     research_session_id: uuid.UUID,
-    revision_id: uuid.UUID,
+    study_id: uuid.UUID,
 ) -> SessionCapability:
     """Issue a signed, short-lived capability bound to a subject.
 
-    ``enrollment_id``, ``research_session_id`` and ``revision_id`` are required
+    ``enrollment_id``, ``research_session_id`` and ``study_id`` are required
     and covered by the HMAC, so the capability is only usable for the exact
     enrollment/session/revision it was issued for. There is no default secret:
     issuing without a configured signing secret is refused.
@@ -89,7 +89,7 @@ def issue_capability(
         revocation_epoch=revocation_epoch,
         enrollment_id=enrollment_id,
         research_session_id=research_session_id,
-        revision_id=revision_id,
+        study_id=study_id,
         signature="",
     )
     return capability.model_copy(update={"signature": _signature_for(capability, secret)})
@@ -105,7 +105,7 @@ def verify_capability(
     *,
     expected_enrollment_id: Optional[uuid.UUID] = None,
     expected_research_session_id: Optional[uuid.UUID] = None,
-    expected_revision_id: Optional[uuid.UUID] = None,
+    expected_study_id: Optional[uuid.UUID] = None,
 ) -> CapabilityVerification:
     """Verify a capability server-side, returning a typed reason.
 
@@ -149,14 +149,11 @@ def verify_capability(
             message="capability belongs to a different research session",
         )
 
-    if (
-        expected_revision_id is not None
-        and capability.revision_id != expected_revision_id
-    ):
+    if expected_study_id is not None and capability.study_id != expected_study_id:
         return CapabilityVerification(
             ok=False,
-            reason=CapabilityReasonCode.REVISION_MISMATCH,
-            message="capability is bound to a different revision",
+            reason=CapabilityReasonCode.STUDY_MISMATCH,
+            message="capability is bound to a different study",
         )
 
     if capability.audience != expected_audience:

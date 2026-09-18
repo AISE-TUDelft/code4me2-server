@@ -17,16 +17,13 @@ beforeEach(() => {
   window.fetch = global.fetch;
 });
 
-test("getResearchStudyJoinCode reads the nested revision summary", async () => {
+test("getResearchStudyJoinCode reads the study-owned join code", async () => {
   global.fetch.mockResolvedValue(
     jsonResponse({
-      study_id: "s-1",
-      join_code: "JOIN-AB12",
-      revision: {
-        revision_id: "r-1",
-        revision_number: 3,
-        status: "PUBLISHED",
-        protocol_digest: "abcdef01",
+      study: {
+        study_id: "s-1",
+        join_code: "JOIN-AB12",
+        research_status: "DRAFT",
       },
     }),
   );
@@ -36,10 +33,7 @@ test("getResearchStudyJoinCode reads the nested revision summary", async () => {
   expect(result).toMatchObject({
     ok: true,
     join_code: "JOIN-AB12",
-    revision_id: "r-1",
-    revision_number: 3,
-    status: "PUBLISHED",
-    protocol_digest: "abcdef01",
+    status: "DRAFT",
   });
 });
 
@@ -51,7 +45,7 @@ test("listResearchStudies returns the studies array from the index envelope", as
           study_id: "s-1",
           name: "Focus study",
           join_code: "JOIN-AB12",
-          latest_revision: { revision_number: 2, status: "PUBLISHED" },
+          research_status: "DRAFT",
         },
       ],
     }),
@@ -61,7 +55,7 @@ test("listResearchStudies returns the studies array from the index envelope", as
 
   expect(result.ok).toBe(true);
   expect(result.data).toHaveLength(1);
-  expect(result.data[0].latest_revision.status).toBe("PUBLISHED");
+  expect(result.data[0].research_status).toBe("DRAFT");
 });
 
 test("listResearchStudies surfaces a 403 as a typed researcher error", async () => {

@@ -111,17 +111,17 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
 
         {/* Researcher control plane lives on its own routes (see App.js) so the
             immutable-revision workflow is not folded into the analytics views. */}
-        {user?.is_admin && (
+        {(user?.is_admin || user?.can_research) && (
           <Link
             to="/research/studies"
             className="nav-item research-launch-link"
-            title="Author study protocols, revisions and enrollment"
+            title="Create and manage research studies"
           >
             <span className="nav-icon" aria-hidden="true">🧪</span>
             <div className="nav-content">
               <span className="nav-label">Research Control Plane</span>
               <span className="nav-description">
-                Protocols, immutable revisions and enrollment
+                Study lifecycle, profiles and enrollment
               </span>
             </div>
           </Link>

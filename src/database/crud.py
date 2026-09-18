@@ -12,6 +12,38 @@ from database import db_schemas
 from database.db_schemas import DEFAULT_USER_PREFERENCE
 from database.embedding_service import encode_text
 from utils import hash_password, verify_password
+from research.canonical import canonical_hash
+from database.research_schemas import AgentRelease
+from research.study.agents.enums import QualificationStatus
+from research.study.agents.registry import SELECTABLE_STATUSES
+
+
+class ProfileReleaseError(ValueError):
+    """Raised when a profile pins a missing or non-selectable release."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def validate_profile_release(session: Session, release_id: Optional[str]) -> None:
+    """Validate a supplied profile release without changing registry rows."""
+    if release_id is None:
+        return
+    release = session.get(AgentRelease, release_id)
+    if release is None:
+        raise ProfileReleaseError(
+            "RELEASE_UNRESOLVED", f"release {release_id!r} is not registered"
+        )
+    status = str(release.status or "").upper()
+    if status in {QualificationStatus.RETIRED.value, QualificationStatus.BLOCKED.value}:
+        raise ProfileReleaseError(
+            "RELEASE_WITHDRAWN", f"release {release_id!r} is withdrawn"
+        )
+    if status not in {item.value for item in SELECTABLE_STATUSES}:
+        raise ProfileReleaseError(
+            "RELEASE_NOT_QUALIFIED", f"release {release_id!r} is not qualified"
+        )
 
 
 # User
@@ -1105,6 +1137,53 @@ def get_documentation_stats(db: Session) -> dict:
 # decision is made.
 
 
+class ProfileLockedError(PermissionError):
+    """Raised when an active research study owns a profile selection."""
+
+
+def _agent_profile_configuration(profile: db_schemas.AgentProfile) -> dict:
+    return {
+        "profile_id": str(profile.profile_id),
+        "name": profile.name,
+        "model": profile.model,
+        "framework_version": profile.framework_version,
+        "connection_id": str(profile.connection_id) if profile.connection_id else None,
+        "release_id": profile.release_id,
+        "tools_json": profile.tools_json,
+        "approval_policy": profile.approval_policy,
+        "max_steps": profile.max_steps,
+        "temperature": profile.temperature,
+        "max_context_tokens": profile.max_context_tokens,
+        "is_active": profile.is_active,
+    }
+
+
+def _refresh_agent_profile_digest(profile: db_schemas.AgentProfile) -> None:
+    profile.configuration_digest = canonical_hash(_agent_profile_configuration(profile))
+
+
+def _assert_agent_profile_editable(db: Session, profile_id: uuid.UUID) -> None:
+    from database.research_schemas import StudyAgentProfile
+
+    linked_active = (
+        db.query(StudyAgentProfile.study_id)
+        .join(
+            db_schemas.Study,
+            StudyAgentProfile.study_id == db_schemas.Study.study_id,
+        )
+        .filter(
+            StudyAgentProfile.profile_id == profile_id,
+            db_schemas.Study.is_research.is_(True),
+            db_schemas.Study.research_status == "ACTIVE",
+        )
+        .first()
+    )
+    if linked_active is not None:
+        raise ProfileLockedError(
+            "profile is locked while linked research study is ACTIVE"
+        )
+
+
 def create_agent_profile(
     db: Session,
     *,
@@ -1126,6 +1205,7 @@ def create_agent_profile(
     The provider endpoint/secret live on the referenced ``provider_connection``;
     a profile never stores a URL or a secret reference.
     """
+    validate_profile_release(db, release_id)
     profile = db_schemas.AgentProfile(
         profile_id=uuid.uuid4(),
         owner_user_id=owner_user_id,
@@ -1141,6 +1221,7 @@ def create_agent_profile(
         max_context_tokens=max_context_tokens,
         temperature=temperature,
     )
+    _refresh_agent_profile_digest(profile)
     db.add(profile)
     db.commit()
     db.refresh(profile)
@@ -1194,6 +1275,9 @@ def update_agent_profile(
     )
     if profile is None:
         return None
+    _assert_agent_profile_editable(db, profile_id)
+    if update_release_id:
+        validate_profile_release(db, release_id)
     if name is not None:
         profile.name = name
     if model is not None:
@@ -1216,6 +1300,7 @@ def update_agent_profile(
         profile.max_context_tokens = max_context_tokens
     if temperature is not None:
         profile.temperature = temperature
+    _refresh_agent_profile_digest(profile)
     db.commit()
     db.refresh(profile)
     return profile
@@ -1231,6 +1316,7 @@ def delete_agent_profile(db: Session, profile_id: uuid.UUID) -> bool:
     )
     if profile is None:
         return False
+    _assert_agent_profile_editable(db, profile_id)
     if not profile.is_active:
         return True
     profile.is_active = False
@@ -1403,12 +1489,9 @@ def create_agent_task(
     study_id: Optional[uuid.UUID] = None,
     study_assignment_id: Optional[uuid.UUID] = None,
     profile_id: Optional[uuid.UUID] = None,
-    study_arm_name: Optional[str] = None,
-    study_arm_is_baseline: Optional[bool] = None,
     consent_content_storage: Optional[bool] = None,
     research_session_id: Optional[uuid.UUID] = None,
     enrollment_id: Optional[uuid.UUID] = None,
-    study_revision_id: Optional[uuid.UUID] = None,
 ) -> db_schemas.AgentTask:
     task = db_schemas.AgentTask(
         task_id=task_id or uuid.uuid4(),
@@ -1429,12 +1512,9 @@ def create_agent_task(
         study_id=study_id,
         study_assignment_id=study_assignment_id,
         profile_id=profile_id,
-        study_arm_name=study_arm_name,
-        study_arm_is_baseline=study_arm_is_baseline,
         consent_content_storage=consent_content_storage,
         research_session_id=research_session_id,
         enrollment_id=enrollment_id,
-        study_revision_id=study_revision_id,
         started_at=started_at,
         policy_snapshot=policy_snapshot,
         task_description=task_description,

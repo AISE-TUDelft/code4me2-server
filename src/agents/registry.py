@@ -2,20 +2,19 @@
 
 There is exactly one assignment authority: the research ``study_assignment`` row
 allocated by :mod:`research.runtime.assignment`. Bootstrap and task creation both
-resolve that same persisted row, so a participant always gets one sticky
-condition per enrollment/revision.
+resolve that same persisted row, so a participant always gets one sticky agent
+profile per enrollment.
 
 A research run requires a real participant mapping, an **active** enrollment, an
-open research study window, and a published revision carrying a frozen condition
-config. When any of those is missing this returns ``None`` — there is no fallback
-to the first active profile, the first arm, a mutable ``AgentProfile`` row, or
-another researcher's configuration.
+open research study window, and a selected profile snapshot. When any of those
+is missing this returns ``None``; mutable profile templates are never used as a
+runtime fallback.
 """
 
 from __future__ import annotations
 
 import logging
-import random
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,9 +27,9 @@ from research.participants import identity as identity_store
 from research.participants.enums import EnrollmentStatus
 from research.runtime.assignment import store as assignment_store
 from research.runtime.assignment.enums import AllocationOutcome
+from research.runtime.assignment.models import StudyProfileSelection
 from research.runtime.assignment.service import allocate
 from research.study.protocol import store as protocol_store
-from research.study.protocol.models import ResolvedAgentConfig, ResolvedDistribution, StudyProtocolV1
 
 
 @dataclass(frozen=True)
@@ -70,9 +69,6 @@ class AgentAssignmentResolution:
     profile: FrozenAgentConfig
     study_id: Optional[uuid.UUID] = None
     assignment_id: Optional[uuid.UUID] = None
-    revision_id: Optional[uuid.UUID] = None
-    arm_name: Optional[str] = None
-    is_baseline: Optional[bool] = None
 
 
 def _now() -> datetime:
@@ -91,38 +87,33 @@ def _active_enrollment(db: Session, participant_id: uuid.UUID):
     return None
 
 
-def _frozen_config(
-    resolved: ResolvedDistribution, funding_owner_user_id: Optional[uuid.UUID]
+def _frozen_config_from_snapshot(
+    profile_snapshot: dict, funding_owner_user_id: Optional[uuid.UUID]
 ) -> Optional[FrozenAgentConfig]:
-    """Build the immutable execution config from a revision's frozen pin.
-
-    A revision without a frozen ``agent_config`` (one published before config
-    freezing) has no immutable config, so there is nothing to execute: this
-    returns ``None`` rather than reading a mutable profile row.
-    """
-    config: Optional[ResolvedAgentConfig] = resolved.agent_config
-    if config is None:
+    """Build runtime config only from the assignment's immutable snapshot."""
+    profile_id = profile_snapshot.get("profile_id")
+    if not profile_id:
         return None
+    tools_json = profile_snapshot.get("tools_json", "[]")
+    if not isinstance(tools_json, str):
+        tools_json = json.dumps(tools_json, separators=(",", ":"))
     return FrozenAgentConfig(
-        profile_id=config.profile_id,
-        name=config.name,
-        model=config.model,
-        framework_version=config.framework_version,
-        tools_json=config.tools_json,
-        approval_policy=config.approval_policy,
-        max_steps=config.max_steps,
-        temperature=config.temperature,
-        max_context_tokens=config.max_context_tokens,
-        connection_id=config.connection_id,
-        connection_label=config.connection_label,
-        release_id=resolved.release_id,
-        distribution_mode=resolved.distribution_mode,
-        artifact_digest=resolved.artifact_digest,
-        agent_command=resolved.agent_command,
-        agent_command_args=list(resolved.agent_command_args),
-        funding_owner_user_id=(
-            config.funding_owner_user_id or funding_owner_user_id
+        profile_id=uuid.UUID(str(profile_id)),
+        name=profile_snapshot.get("name", "assigned-profile"),
+        model=profile_snapshot.get("model", ""),
+        framework_version=profile_snapshot.get("framework_version", "code4me2-agent"),
+        tools_json=tools_json,
+        approval_policy=profile_snapshot.get("approval_policy", "per_step"),
+        max_steps=profile_snapshot.get("max_steps", 1),
+        temperature=profile_snapshot.get("temperature"),
+        max_context_tokens=profile_snapshot.get("max_context_tokens"),
+        connection_id=(
+            uuid.UUID(str(profile_snapshot["connection_id"]))
+            if profile_snapshot.get("connection_id")
+            else None
         ),
+        release_id=profile_snapshot.get("release_id"),
+        funding_owner_user_id=funding_owner_user_id,
     )
 
 
@@ -132,8 +123,8 @@ def resolve_assignment_context(
     """Resolve the frozen profile/assignment for a new research task.
 
     Steps: participant mapping → active enrollment → open research study →
-    published revision → sticky ``study_assignment`` (allocated once, conflict
-    safe) → frozen condition config. Any missing step is a refusal (``None``).
+    sticky ``study_assignment`` → frozen profile snapshot. Any missing step is
+    a refusal (``None``).
     """
     participant_row = identity_store.get_participant_by_account(db, user_id)
     if participant_row is None:
@@ -163,21 +154,29 @@ def resolve_assignment_context(
         )
         return None
 
-    revision_row = protocol_store.get_revision(db, enrollment.study_revision_id)
-    if revision_row is None:
-        logging.error("[Agent/registry] enrollment revision is missing")
-        return None
-    revision = protocol_store.row_to_revision(revision_row)
-
-    assignment_row = assignment_store.get_assignment_for_enrollment_revision(
-        db, enrollment.enrollment_id, revision.revision_id
+    assignment_row = assignment_store.get_assignment_for_enrollment(
+        db, enrollment.enrollment_id
     )
-    if assignment_row is not None:
-        assignment = assignment_store.row_to_assignment(assignment_row)
-    else:
-        allocation = allocate(
-            enrollment, revision, existing=None, rng=random.Random(), now=now
-        )
+    if assignment_row is None:
+        from sqlalchemy import select
+        from database.research_schemas import StudyAgentProfile
+
+        profile_rows = db.execute(
+            select(StudyAgentProfile)
+            .where(StudyAgentProfile.study_id == enrollment.study_id)
+            .order_by(StudyAgentProfile.selection_order.asc())
+        ).scalars().all()
+        profiles = [
+            StudyProfileSelection(
+                study_id=row.study_id,
+                agent_profile_id=row.profile_id,
+                profile_digest=row.profile_digest,
+                profile_snapshot_json=row.profile_snapshot_json,
+                selection_order=row.selection_order,
+            )
+            for row in profile_rows
+        ]
+        allocation = allocate(enrollment, profiles, existing=None, now=now)
         if (
             allocation.outcome
             not in (AllocationOutcome.CREATED, AllocationOutcome.EXISTING)
@@ -191,40 +190,19 @@ def resolve_assignment_context(
         assignment = allocation.assignment
         if allocation.created:
             # create_assignment returns the winning row on a concurrent first-use
-            # race, so this context adopts the authoritative sticky condition.
+            # race, so this context adopts the authoritative sticky profile.
             winner_row = assignment_store.create_assignment(db, assignment)
             if winner_row is not None and winner_row.assignment_id != assignment.assignment_id:
                 assignment = assignment_store.row_to_assignment(winner_row)
 
-    protocol = StudyProtocolV1.model_validate(revision.protocol_json)
-    condition = next(
-        (
-            candidate
-            for candidate in protocol.conditions
-            if candidate.condition_id == assignment.condition_id
-        ),
-        None,
+    if assignment_row is not None:
+        assignment = assignment_store.row_to_assignment(assignment_row)
+    profile = _frozen_config_from_snapshot(
+        assignment.profile_snapshot_json, getattr(study, "created_by", None)
     )
-    if condition is None:
-        logging.error(
-            "[Agent/registry] assignment condition %r is not in the revision",
-            assignment.condition_id,
-        )
-        return None
-
-    resolved = getattr(condition, "resolved_distribution", None)
-    if resolved is None:
-        logging.error(
-            "[Agent/registry] condition %r carries no frozen distribution",
-            condition.condition_id,
-        )
-        return None
-    profile = _frozen_config(resolved, getattr(study, "created_by", None))
     if profile is None:
         logging.error(
-            "[Agent/registry] revision has no frozen agent config for condition %r; "
-            "refusing assignment",
-            condition.condition_id,
+            "[Agent/registry] assignment has no frozen profile snapshot; refusing assignment",
         )
         return None
 
@@ -232,9 +210,6 @@ def resolve_assignment_context(
         profile=profile,
         study_id=enrollment.study_id,
         assignment_id=assignment.assignment_id,
-        revision_id=assignment.study_revision_id,
-        arm_name=assignment.condition_id,
-        is_baseline=getattr(condition, "is_baseline", None),
     )
 
 

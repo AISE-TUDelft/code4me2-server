@@ -38,11 +38,11 @@ class FamilyCoverage(BaseModel):
 
 
 class TelemetryCoverageV1(BaseModel):
-    """Versioned coverage projection for one revision and population."""
+    """Versioned coverage projection for one study and population."""
 
     model_config = _FROZEN
 
-    revision_id: UUID
+    study_id: UUID
     population: str
     coverage_version: str = COVERAGE_VERSION
     families: list[FamilyCoverage] = Field(default_factory=list)

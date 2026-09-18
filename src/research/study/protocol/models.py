@@ -96,12 +96,10 @@ class EnrollmentPolicy(BaseModel):
 
 
 class AssignmentPolicy(BaseModel):
-    """How the assignment service maps an enrollment unit to a condition.
+    """Legacy authoring policy retained only for protocol validation compatibility.
 
-    Assignments are always sticky: an existing assignment for the same
-    ``(enrollment_id, study_revision_id)`` is reused and never re-randomized.
-    There is no runtime toggle. Reallocation, if ever required, must be defined
-    by a successor revision rather than by mutating an existing assignment.
+    Active runtime assignment uses immutable study profile selections and the
+    ``RANDOM_EQUAL`` strategy in ``research.runtime.assignment``.
     """
 
     model_config = _BASE_CONFIG
@@ -115,12 +113,10 @@ class AssignmentPolicy(BaseModel):
 
 
 class ResolvedAgentConfig(BaseModel):
-    """The frozen, non-secret execution config of a condition's profile.
+    """Legacy non-secret profile projection used by validation compatibility code.
 
-    Publication copies these values into the revision so a later profile edit
-    changes neither historical display nor a published study's task/bootstrap
-    configuration. It deliberately contains no endpoint URL, secret reference or
-    secret value.
+    Active studies store equivalent configuration in ``study_agent_profile`` and
+    ``study_assignment`` snapshots; no publication or revision owns this data.
     """
 
     model_config = _BASE_CONFIG

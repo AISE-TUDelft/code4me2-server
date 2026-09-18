@@ -1,37 +1,26 @@
 """Pure server-authoritative allocation over enrollment-scoped units.
 
 The unit of assignment is ``enrollment_id`` (never account, device, task, or
-process). Assignments are always sticky: when one already exists for the same
-``(enrollment_id, study_revision_id)`` it is returned unchanged and never
-re-randomized, and a changed weight or a later revision never rebuckets an
-existing enrollment. There is no runtime switch. Reallocation, if it is ever
-required, must be defined by a successor revision rather than by mutating an
-existing assignment. Ambiguous eligibility fails closed with a typed reason
-rather than a default arm.
+process). Assignments are always sticky: a repeated bootstrap returns the
+existing profile and never re-randomizes it. Profiles are selected by the study
+at creation time and carry a digest-pinned, non-secret snapshot.
 """
 
 from __future__ import annotations
 
 import random
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
-from research.canonical import canonical_hash
 from research.participants.enums import EnrollmentStatus
-from research.study.protocol.enums import AssignmentStrategy, RevisionStatus
-from research.study.protocol.models import StudyProtocolV1
-from research.study.protocol.validation import (
-    ProtocolValidationError,
-    normalized_condition_weights,
-)
 
 from .enums import AllocationOutcome, AssignmentReasonCode
-from .models import AssignmentIssue, AssignmentResult, AssignmentV1
+from .models import AssignmentIssue, AssignmentResult, AssignmentV1, StudyProfileSelection
 
 if TYPE_CHECKING:
     from research.participants.models import Enrollment
-    from research.study.protocol.publication import StudyRevision
 
 
 
@@ -51,57 +40,14 @@ def _blocked(
     )
 
 
-def _protocol(revision: StudyRevision) -> StudyProtocolV1:
-    return StudyProtocolV1.model_validate(revision.protocol_json)
-
-
-def _weighted_condition(
-    weights: dict[str, float], rng: random.Random
-) -> str:
-    draw = rng.random()
-    cumulative = 0.0
-    last = ""
-    for condition_id in sorted(weights):
-        last = condition_id
-        cumulative += weights[condition_id]
-        if draw < cumulative:
-            return condition_id
-    return last
-
-
-def _deterministic_condition(
-    weights: dict[str, float],
-    *,
-    enrollment_id: uuid.UUID,
-    revision_id: uuid.UUID,
-    randomization_epoch: int,
-) -> str:
-    seed = canonical_hash(
-        {
-            "enrollment_id": str(enrollment_id),
-            "revision_id": str(revision_id),
-            "randomization_epoch": randomization_epoch,
-        }
-    )
-    draw = int(seed, 16) / float(1 << 256)
-    cumulative = 0.0
-    last = ""
-    for condition_id in sorted(weights):
-        last = condition_id
-        cumulative += weights[condition_id]
-        if draw < cumulative:
-            return condition_id
-    return last
-
-
 def allocate(
     enrollment: Enrollment,
-    revision: StudyRevision,
+    profiles: Sequence[StudyProfileSelection],
     existing: Optional[AssignmentV1] = None,
     rng: Optional[random.Random] = None,
     now: Optional[datetime] = None,
 ) -> AssignmentResult:
-    """Allocate (or return) the sticky condition for one enrollment/revision."""
+    """Allocate (or return) one sticky profile with equal probability."""
     timestamp = _now(now)
 
     if enrollment is None:
@@ -120,26 +66,18 @@ def allocate(
             "status",
         )
 
-    if revision is None or revision.revision_id != enrollment.study_revision_id:
+    if profiles is None:
         return _blocked(
             AllocationOutcome.INSUFFICIENT_EVIDENCE,
-            AssignmentReasonCode.REVISION_MISMATCH,
-            "enrollment is not bound to the requested revision",
-            "study_revision_id",
-        )
-
-    if revision.status != RevisionStatus.PUBLISHED:
-        return _blocked(
-            AllocationOutcome.INSUFFICIENT_EVIDENCE,
-            AssignmentReasonCode.REVISION_NOT_PUBLISHED,
-            f"revision is {revision.status.value}; only PUBLISHED revisions allocate",
-            "status",
+            AssignmentReasonCode.NO_PROFILES,
+            "study profiles are required for allocation",
+            "profiles",
         )
 
     if existing is not None:
         if (
             existing.enrollment_id == enrollment.enrollment_id
-            and existing.study_revision_id == revision.revision_id
+            and existing.study_id == enrollment.study_id
         ):
             return AssignmentResult(
                 outcome=AllocationOutcome.EXISTING,
@@ -149,72 +87,45 @@ def allocate(
             )
         return _blocked(
             AllocationOutcome.CONFLICT,
-            AssignmentReasonCode.REVISION_MISMATCH,
-            "an assignment already exists for a different enrollment/revision",
-            "study_revision_id",
+            AssignmentReasonCode.STUDY_MISMATCH,
+            "an assignment already exists for a different enrollment/study",
+            "study_id",
         )
 
-    protocol = _protocol(revision)
-    if not protocol.conditions:
+    normalized_profiles = [StudyProfileSelection.model_validate(profile) for profile in profiles]
+    if not normalized_profiles:
         return _blocked(
             AllocationOutcome.INSUFFICIENT_EVIDENCE,
-            AssignmentReasonCode.NO_CONDITIONS,
-            "the revision declares no conditions",
-            "conditions",
+            AssignmentReasonCode.NO_PROFILES,
+            "the study declares no agent profiles",
+            "profiles",
         )
-
-    try:
-        weights = normalized_condition_weights(protocol)
-    except ProtocolValidationError:
+    if any(profile.study_id != enrollment.study_id for profile in normalized_profiles):
         return _blocked(
             AllocationOutcome.INSUFFICIENT_EVIDENCE,
-            AssignmentReasonCode.WEIGHTS_INVALID,
-            "condition weights are not normalizable",
-            "conditions",
+            AssignmentReasonCode.STUDY_MISMATCH,
+            "all profiles must belong to the enrollment study",
+            "study_id",
         )
 
-    strategy = protocol.assignment.strategy
+    strategy = "RANDOM_EQUAL"
     randomization_epoch = 0
-
-    if strategy == AssignmentStrategy.WEIGHTED_RANDOM.value:
-        condition_id = _weighted_condition(weights, rng or random.Random())
-        reason = AssignmentReasonCode.WEIGHTED_DRAW
-    elif strategy == AssignmentStrategy.DETERMINISTIC_HASH.value:
-        condition_id = _deterministic_condition(
-            weights,
-            enrollment_id=enrollment.enrollment_id,
-            revision_id=revision.revision_id,
-            randomization_epoch=randomization_epoch,
-        )
-        reason = AssignmentReasonCode.DETERMINISTIC_HASH
-    elif strategy == AssignmentStrategy.STRATIFIED.value:
-        return _blocked(
-            AllocationOutcome.INSUFFICIENT_EVIDENCE,
-            AssignmentReasonCode.STRATIFIED_UNSUPPORTED,
-            "stratified allocation requires stratum values that are not available",
-            "assignment.strategy",
-        )
-    else:
-        return _blocked(
-            AllocationOutcome.INSUFFICIENT_EVIDENCE,
-            AssignmentReasonCode.UNKNOWN_STRATEGY,
-            f"unknown assignment strategy {strategy!r}",
-            "assignment.strategy",
-        )
+    selected = (rng or random.SystemRandom()).choice(normalized_profiles)
 
     assignment = AssignmentV1(
         assignment_id=uuid.uuid4(),
         enrollment_id=enrollment.enrollment_id,
-        study_revision_id=revision.revision_id,
-        condition_id=condition_id,
+        study_id=enrollment.study_id,
+        agent_profile_id=selected.agent_profile_id,
         strategy=strategy,
         randomization_epoch=randomization_epoch,
         assigned_at=timestamp,
-        protocol_digest=revision.protocol_digest,
+        profile_digest=selected.profile_digest,
+        profile_snapshot_json=selected.profile_snapshot_json,
     )
     return AssignmentResult(
         outcome=AllocationOutcome.CREATED,
         assignment=assignment,
         created=True,
-        reason=reason,
+        reason=AssignmentReasonCode.RANDOM_EQUAL,
     )

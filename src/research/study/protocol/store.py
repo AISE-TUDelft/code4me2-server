@@ -1,4 +1,4 @@
-"""CRUD-style persistence helpers for study protocols and revisions.
+"""CRUD-style persistence helpers for lifecycle-owned research studies.
 
 These functions take a caller-managed SQLAlchemy ``Session`` so the core package
 never imports ``App`` or touches the application singleton. The router is
@@ -9,7 +9,7 @@ responsible for session lifecycle (``App.get_db_session`` / ``rollback`` /
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
@@ -18,38 +18,17 @@ from sqlalchemy import select
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-    from .models import StudyProtocolV1
-    from .publication import AuditRecord, StudyRevision
+from database.db_schemas import AgentProfile, Study as StudyRow
+from database import crud as database_crud
+from database.research_schemas import StudyAgentProfile
+from research.study.agents.enums import QualificationStatus
+from research.study.agents.store import get_release
+from research.canonical import canonical_hash
 
-from database.research_schemas import (
-    RECORD_KIND_STUDY_PUBLICATION,
-    ResearchRecord,
-)
-from database.db_schemas import Study as StudyRow
-
-from .canonical import protocol_digest
-from .enums import RevisionStatus
-from .join_code import generate_join_code, normalize_join_code
-
-#: How many times to retry a join-code allocation on the (astronomically
-#: unlikely) event of a collision before failing closed.
-_JOIN_CODE_ALLOCATION_ATTEMPTS = 8
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-@dataclass(frozen=True)
-class DraftView:
-    """A draft is an unpublished ``study_revision`` row (``status = DRAFT``)."""
-
-    draft_id: uuid.UUID
-    study_id: uuid.UUID
-    name: str
-    schema_version: str
-    protocol_json: dict[str, Any]
-    created_at: Optional[datetime]
 
 
 @dataclass(frozen=True)
@@ -65,34 +44,58 @@ class StudyView:
     is_active: bool = False
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
+    research_status: Optional[str] = None
+    research_config_digest: Optional[str] = None
+    join_code: Optional[str] = None
+    consent_locked_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
+    stopped_by: Optional[str] = None
     created_at: Optional[datetime] = None
+    profile_selections: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _study_row_view(row: StudyRow) -> StudyView:
+def _study_row_view(
+    row: StudyRow, profile_selections: Optional[list[dict[str, Any]]] = None
+) -> StudyView:
     return StudyView(
-        study_id=row.study_id,
-        name=row.name,
-        description=row.description,
+        study_id=getattr(row, "study_id"),
+        name=getattr(row, "name"),
+        description=getattr(row, "description", None),
         owner=None,
-        created_by=row.created_by,
-        is_research=bool(row.is_research),
-        is_active=bool(row.is_active),
-        starts_at=row.starts_at,
-        ends_at=row.ends_at,
-        created_at=row.created_at,
+        created_by=getattr(row, "created_by", None),
+        is_research=bool(getattr(row, "is_research", False)),
+        is_active=bool(getattr(row, "is_active", False)),
+        starts_at=getattr(row, "starts_at", None),
+        ends_at=getattr(row, "ends_at", None),
+        research_status=getattr(row, "research_status", None),
+        research_config_digest=getattr(row, "research_config_digest", None),
+        join_code=getattr(row, "join_code", None),
+        consent_locked_at=getattr(row, "consent_locked_at", None),
+        stopped_at=getattr(row, "stopped_at", None),
+        stopped_by=getattr(row, "stopped_by", None),
+        created_at=getattr(row, "created_at", None),
+        profile_selections=list(profile_selections or []),
     )
 
 
-def _draft_view(row: StudyRevisionRow) -> DraftView:
-    protocol_json = row.protocol_json or {}
-    metadata = protocol_json.get("metadata") or {}
-    return DraftView(
-        draft_id=row.revision_id,
-        study_id=row.study_id,
-        name=str(metadata.get("name", "")),
-        schema_version=str(protocol_json.get("schema_version", "1")),
-        protocol_json=protocol_json,
-        created_at=row.created_at,
+def _study_view(session: Session, row: StudyRow) -> StudyView:
+    selections = session.execute(
+        select(StudyAgentProfile)
+        .where(StudyAgentProfile.study_id == row.study_id)
+        .order_by(StudyAgentProfile.selection_order.asc())
+    ).scalars().all()
+    return _study_row_view(
+        row,
+        [
+            {
+                "profile_id": str(selection.profile_id),
+                "name": (selection.profile_snapshot_json or {}).get("name", ""),
+                "model": (selection.profile_snapshot_json or {}).get("model", ""),
+                "profile_digest": selection.profile_digest,
+                "selection_order": selection.selection_order,
+            }
+            for selection in selections
+        ],
     )
 
 
@@ -108,15 +111,26 @@ def create_study(
     ends_at: Optional[datetime] = None,
     is_research: bool = True,
     default_config_id: Optional[int] = None,
+    research_status: Optional[str] = None,
+    research_config_json: Optional[dict[str, Any]] = None,
+    research_config_digest: Optional[str] = None,
+    join_code: Optional[str] = None,
+    profile_ids: Optional[Sequence[uuid.UUID]] = None,
+    allow_shared_profiles: bool = False,
     now: Optional[datetime] = None,
 ) -> StudyView:
     """Insert the real ``public.study`` identity row.
 
     Agent research studies set ``is_research`` and never fabricate a completion
-    ``default_config_id``. The study starts inactive; publication reserves the
-    owner's one live-study slot.
+    ``default_config_id``. Research rows start in ``DRAFT`` unless a caller
+    explicitly supplies another lifecycle state.
     """
     timestamp = now or _now()
+    selected_profile_ids = list(profile_ids or [])
+    config = dict(research_config_json or {})
+    if selected_profile_ids:
+        config["profile_ids"] = [str(profile_id) for profile_id in selected_profile_ids]
+    config_digest = research_config_digest or canonical_hash(config)
     row = StudyRow(
         study_id=study_id,
         name=name,
@@ -127,18 +141,67 @@ def create_study(
         is_active=False,
         default_config_id=default_config_id,
         is_research=is_research,
+        research_status=(research_status or ("DRAFT" if is_research else None)),
+        research_config_json=config,
+        research_config_digest=config_digest,
+        join_code=join_code,
         created_at=timestamp,
     )
     session.add(row)
+    if len(selected_profile_ids) != len(set(selected_profile_ids)):
+        raise ValueError("study profile selection contains duplicates")
+    for selection_order, profile_id in enumerate(selected_profile_ids):
+        profile = session.get(AgentProfile, profile_id)
+        if profile is None or not bool(getattr(profile, "is_active", True)):
+            raise ValueError("selected agent profile is unavailable")
+        if not allow_shared_profiles and profile.owner_user_id != created_by:
+            raise PermissionError("selected agent profile is not owned by the researcher")
+        database_crud.validate_profile_release(session, profile.release_id)
+        if not profile.release_id:
+            raise ValueError("RELEASE_UNRESOLVED: selected profile has no release")
+        release = get_release(session, profile.release_id)
+        if release is None:
+            raise ValueError("RELEASE_UNRESOLVED: selected profile release is missing")
+        release_status = str(release.status or "").upper()
+        if release_status in {
+            QualificationStatus.RETIRED.value,
+            QualificationStatus.BLOCKED.value,
+        }:
+            raise ValueError("RELEASE_WITHDRAWN: selected profile release is withdrawn")
+        if release_status != QualificationStatus.QUALIFIED.value:
+            raise ValueError("RELEASE_NOT_QUALIFIED: selected profile release is not qualified")
+        snapshot = {
+            "profile_id": str(profile.profile_id),
+            "name": profile.name,
+            "model": profile.model,
+            "framework_version": profile.framework_version,
+            "release_id": profile.release_id,
+            "connection_id": str(profile.connection_id) if profile.connection_id else None,
+            "tools_json": profile.tools_json,
+            "approval_policy": profile.approval_policy,
+            "max_steps": profile.max_steps,
+            "temperature": profile.temperature,
+            "max_context_tokens": profile.max_context_tokens,
+        }
+        session.add(
+            StudyAgentProfile(
+                study_id=study_id,
+                profile_id=profile.profile_id,
+                profile_digest=canonical_hash(snapshot),
+                profile_snapshot_json=snapshot,
+                selection_order=selection_order,
+                created_at=timestamp,
+            )
+        )
     session.commit()
     session.refresh(row)
-    return _study_row_view(row)
+    return _study_view(session, row)
 
 
 def get_study(session: Session, study_id: uuid.UUID) -> Optional[StudyView]:
     """Fetch a study identity row by id, or ``None``."""
     row = session.get(StudyRow, study_id)
-    return _study_row_view(row) if row is not None else None
+    return _study_view(session, row) if row is not None else None
 
 
 def list_studies(
@@ -149,7 +212,7 @@ def list_studies(
     if owner_user_id is not None:
         statement = statement.where(StudyRow.created_by == owner_user_id)
     statement = statement.order_by(StudyRow.created_at.asc())
-    return [_study_row_view(row) for row in session.execute(statement).scalars().all()]
+    return [_study_view(session, row) for row in session.execute(statement).scalars().all()]
 
 
 def set_study_active(
@@ -164,7 +227,14 @@ def set_study_active(
     row = session.get(StudyRow, study_id)
     if row is None:
         return None
-    row.is_active = active
+    if (
+        active
+        and getattr(row, "research_status", None) == "STUDY_STOPPED"
+    ):
+        raise ValueError("stopped research studies cannot be reactivated")
+    setattr(row, "is_active", active)
+    if getattr(row, "is_research", False):
+        setattr(row, "research_status", "ACTIVE" if active else "DRAFT")
     session.commit()
     session.refresh(row)
     return row
@@ -202,7 +272,9 @@ def deactivate_expired_research_studies(
     )
     rows = list(session.execute(statement).scalars().all())
     for row in rows:
-        row.is_active = False
+        setattr(row, "is_active", False)
+        if getattr(row, "is_research", False) and getattr(row, "research_status", None) != "STUDY_STOPPED":
+            setattr(row, "research_status", "DRAFT")
     if rows:
         session.commit()
     return len(rows)
@@ -229,298 +301,21 @@ def research_study_is_open(study: Any, now: Optional[datetime] = None) -> bool:
     return True
 
 
-def _next_draft_number(session: Session, study_id: uuid.UUID) -> int:
-    """Return a draft-only revision number that never collides with publication.
-
-    Published revisions use positive numbers; drafts use 0 or negative numbers so
-    publishing after a draft can never hit the ``(study_id, revision_number)``
-    uniqueness constraint.
-    """
-    statement = select(StudyRevisionRow).where(StudyRevisionRow.study_id == study_id)
-    numbers = [
-        row.revision_number
-        for row in session.execute(statement).scalars().all()
-        if isinstance(getattr(row, "revision_number", None), int)
-    ]
-    lowest = min(numbers) if numbers else 0
-    return min(lowest, 0) - 1
-
-
-def create_draft(
-    session: Session,
-    *,
-    draft_id: uuid.UUID,
-    study_id: uuid.UUID,
-    name: str,
-    protocol: StudyProtocolV1,
-    now: Optional[datetime] = None,
-) -> DraftView:
-    """Insert an editable draft as an unpublished revision row.
-
-    ``name`` is derived from ``protocol.metadata.name`` (the protocol document
-    is the draft's canonical content); ``draft_id`` is the revision id.
-    """
-    timestamp = now or _now()
-    protocol_json = protocol.model_dump(mode="json")
-    row = StudyRevisionRow(
-        revision_id=draft_id,
-        study_id=study_id,
-        revision_number=_next_draft_number(session, study_id),
-        status=RevisionStatus.DRAFT.value,
-        protocol_json=protocol_json,
-        protocol_digest=protocol_digest(protocol),
-        published_at=None,
-        supersedes_revision_id=None,
-        created_at=timestamp,
-    )
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return _draft_view(row)
-
-
-def get_draft(
-    session: Session, draft_id: uuid.UUID
-) -> Optional[DraftView]:
-    """Fetch a draft revision by id, or ``None`` if it is not a draft."""
-    row = session.get(StudyRevisionRow, draft_id)
-    if row is None or row.status != RevisionStatus.DRAFT.value:
-        return None
-    return _draft_view(row)
-
-
-def list_drafts(
-    session: Session, study_id: uuid.UUID
-) -> Sequence[DraftView]:
-    """List a study's draft revisions oldest-first."""
-    statement = (
-        select(StudyRevisionRow)
-        .where(
-            StudyRevisionRow.study_id == study_id,
-            StudyRevisionRow.status == RevisionStatus.DRAFT.value,
-        )
-        .order_by(StudyRevisionRow.created_at.asc())
-    )
-    return [
-        _draft_view(row) for row in session.execute(statement).scalars().all()
-    ]
-
-
-def persist_revision(
-    session: Session, revision: StudyRevision
-) -> StudyRevisionRow:
-    """Insert one immutable revision.
-
-    A ``PUBLISHED`` revision additionally receives a fresh, unique join code, so
-    the participant onboarding handle is minted atomically with publication and
-    can never point at a draft. Conditions are part of ``protocol_json`` (its
-    canonical content), so no child rows are written. The caller owns the
-    transaction boundary decisions around conflicts
-    (``study_id``/``revision_number`` is unique).
-    """
-    created_at = revision.created_at or _now()
-    published = revision.status == RevisionStatus.PUBLISHED
-    join_code = allocate_join_code(session) if published else None
-    row = StudyRevisionRow(
-        revision_id=revision.revision_id,
-        study_id=revision.study_id,
-        revision_number=revision.revision_number,
-        status=revision.status.value,
-        join_code=join_code,
-        protocol_json=revision.protocol_json,
-        protocol_digest=revision.protocol_digest,
-        published_at=revision.published_at,
-        supersedes_revision_id=revision.supersedes_revision_id,
-        created_at=created_at,
-    )
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return row
-
-
-def _join_code_taken(session: Session, join_code: str) -> bool:
-    """Whether ``join_code`` is already allocated to a stored revision."""
-    row = get_revision_by_join_code(session, join_code)
-    if row is None:
-        return False
-    return getattr(row, "join_code", None) == join_code
-
-
-def allocate_join_code(session: Session) -> str:
-    """Return a join code not yet present in the store.
-
-    Collisions are checked against the stored revisions (and additionally
-    guarded by the ``uq_study_revision_join_code`` unique constraint). The loop
-    is bounded so an exhausted allocator fails closed rather than spinning.
-    """
-    for _ in range(_JOIN_CODE_ALLOCATION_ATTEMPTS):
-        candidate = generate_join_code()
-        if not _join_code_taken(session, candidate):
-            return candidate
-    raise RuntimeError("unable to allocate a unique study join code")  # pragma: no cover
-
-
-def get_revision_by_join_code(
+def get_study_by_join_code(
     session: Session, join_code: str
-) -> Optional[StudyRevisionRow]:
-    """Fetch the revision a (possibly user-typed) join code resolves to.
-
-    The code is normalized before lookup, so case/separator and Crockford
-    look-alike differences still resolve. An empty code never resolves.
-    """
-    normalized = normalize_join_code(join_code)
+) -> Optional[Any]:
+    """Fetch a study by its study-owned join code."""
+    normalized = str(join_code or "").strip()
     if not normalized:
         return None
-    statement = select(StudyRevisionRow).where(
-        StudyRevisionRow.join_code == normalized
-    )
-    return session.execute(statement).scalars().first()
-
-
-def get_latest_published_revision(
-    session: Session, study_id: uuid.UUID
-) -> Optional[StudyRevisionRow]:
-    """Fetch a study's current (highest-numbered) ``PUBLISHED`` revision.
-
-    Retired revisions are excluded: the current onboarding handle is always the
-    live published revision.
-    """
-    statement = (
-        select(StudyRevisionRow)
-        .where(
-            StudyRevisionRow.study_id == study_id,
-            StudyRevisionRow.status == RevisionStatus.PUBLISHED.value,
-        )
-        .order_by(StudyRevisionRow.revision_number.desc())
-    )
-    return session.execute(statement).scalars().first()
+    return session.execute(
+        select(StudyRow).where(StudyRow.join_code == normalized)
+    ).scalars().first()
 
 
 def get_study_join_code(
     session: Session, study_id: uuid.UUID
-) -> Optional[StudyRevisionRow]:
-    """Fetch the current join-code-bearing revision for a study, or ``None``."""
-    row = get_latest_published_revision(session, study_id)
-    if row is None or not getattr(row, "join_code", None):
-        return None
-    return row
-
-
-def get_revision(
-    session: Session, revision_id: uuid.UUID
-) -> Optional[StudyRevisionRow]:
-    """Fetch a revision row by primary key, or ``None``."""
-    return session.get(StudyRevisionRow, revision_id)
-
-
-def list_revisions(
-    session: Session, study_id: uuid.UUID
-) -> Sequence[StudyRevisionRow]:
-    """List a study's published/retired revisions in ascending revision order.
-
-    Draft rows share the table but are not revisions of the publication lineage,
-    so they are excluded here (use :func:`list_drafts` for those).
-    """
-    statement = (
-        select(StudyRevisionRow)
-        .where(
-            StudyRevisionRow.study_id == study_id,
-            StudyRevisionRow.status != RevisionStatus.DRAFT.value,
-        )
-        .order_by(StudyRevisionRow.revision_number.asc())
-    )
-    return list(session.execute(statement).scalars().all())
-
-
-def retire_revision(
-    session: Session, revision_id: uuid.UUID, *, now: Optional[datetime] = None
-) -> Optional[StudyRevisionRow]:
-    """Flip a revision's lifecycle status to ``RETIRED`` without touching bytes."""
-    row = session.get(StudyRevisionRow, revision_id)
-    if row is None:
-        return None
-    row.status = RevisionStatus.RETIRED.value
-    session.commit()
-    session.refresh(row)
-    return row
-
-
-def persist_audit(
-    session: Session, audit: AuditRecord
-) -> ResearchRecord:
-    """Append a publication/lifecycle audit record to the generic record table."""
-    row = ResearchRecord(
-        record_id=uuid.uuid4(),
-        kind=RECORD_KIND_STUDY_PUBLICATION,
-        scope_type="study",
-        scope_id=audit.study_id,
-        study_id=audit.study_id,
-        actor=audit.actor,
-        occurred_at=audit.occurred_at,
-        payload_json={
-            "action": audit.event_type,
-            "revision_id": (
-                str(audit.revision_id) if audit.revision_id is not None else None
-            ),
-            "revision_number": audit.revision_number,
-            "protocol_digest": audit.protocol_digest,
-            "detail": audit.detail,
-        },
-    )
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return row
-
-
-def row_to_revision(row: StudyRevisionRow) -> StudyRevision:
-    """Rehydrate a stored revision row into the domain model."""
-    from .publication import StudyRevision as StudyRevisionModel
-
-    status = row.status
-    return StudyRevisionModel(
-        revision_id=row.revision_id,
-        study_id=row.study_id,
-        revision_number=row.revision_number,
-        status=status
-        if isinstance(status, RevisionStatus)
-        else RevisionStatus(status),
-        protocol_json=row.protocol_json,
-        protocol_digest=row.protocol_digest,
-        published_at=row.published_at,
-        supersedes_revision_id=row.supersedes_revision_id,
-        created_at=row.created_at,
-    )
-
-
-def row_to_protocol(row: StudyRevisionRow) -> StudyProtocolV1:
-    """Rehydrate and validate a stored revision's protocol document."""
-    from .models import StudyProtocolV1 as StudyProtocolV1Model
-
-    return StudyProtocolV1Model.model_validate(row.protocol_json)
-
-
-def revision_summary(row: StudyRevisionRow) -> dict[str, Any]:
-    """Return a compact, non-secret revision summary safe for list responses."""
-    published_at = row.published_at
-    created_at = row.created_at
-    return {
-        "revision_id": str(row.revision_id),
-        "study_id": str(row.study_id),
-        "revision_number": row.revision_number,
-        "status": row.status.value if isinstance(row.status, RevisionStatus) else row.status,
-        "join_code": getattr(row, "join_code", None),
-        "protocol_digest": row.protocol_digest,
-        "supersedes_revision_id": (
-            str(row.supersedes_revision_id)
-            if row.supersedes_revision_id is not None
-            else None
-        ),
-        "published_at": (
-            published_at.isoformat() if isinstance(published_at, datetime) else None
-        ),
-        "created_at": (
-            created_at.isoformat() if isinstance(created_at, datetime) else None
-        ),
-    }
+) -> Optional[Any]:
+    """Fetch the study-owned join code, or ``None``."""
+    row = session.get(StudyRow, study_id)
+    return row if row is not None and getattr(row, "join_code", None) else None

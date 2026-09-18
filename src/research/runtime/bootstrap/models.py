@@ -40,8 +40,7 @@ class BootstrapReasonCode(str, Enum):
     REVOKED = "REVOKED"
     STUDY_NOT_OPEN = "STUDY_NOT_OPEN"
     STUDY_CLOSED = "STUDY_CLOSED"
-    REVISION_NOT_PUBLISHED = "REVISION_NOT_PUBLISHED"
-    REVISION_MISMATCH = "REVISION_MISMATCH"
+    STUDY_MISMATCH = "STUDY_MISMATCH"
     ASSIGNMENT_MISMATCH = "ASSIGNMENT_MISMATCH"
     RELEASE_NOT_QUALIFIED = "RELEASE_NOT_QUALIFIED"
     RELEASE_NOT_FOUND = "RELEASE_NOT_FOUND"
@@ -80,7 +79,7 @@ class CapabilityReasonCode(str, Enum):
     # subject than the resource it is being presented for.
     SUBJECT_MISMATCH = "SUBJECT_MISMATCH"
     SESSION_MISMATCH = "SESSION_MISMATCH"
-    REVISION_MISMATCH = "REVISION_MISMATCH"
+    STUDY_MISMATCH = "STUDY_MISMATCH"
 
 
 class ResearchSessionRef(BaseModel):
@@ -95,8 +94,8 @@ class ResearchSessionRef(BaseModel):
 class SessionCapability(BaseModel):
     """Short-lived, scoped, signed session capability bound to its subject.
 
-    The capability is only meaningful for one ``(enrollment, research session,
-    revision)`` triple. It carries that subject explicitly and the signed
+    The capability is only meaningful for one ``(study, enrollment, research
+    session)`` tuple. It carries that subject explicitly and the signed
     payload covers it, so a capability issued for one participant cannot be
     replayed against another participant's enrollment, session, or revision.
     """
@@ -113,7 +112,7 @@ class SessionCapability(BaseModel):
     # capability can never be issued without an explicit binding.
     enrollment_id: UUID
     research_session_id: UUID
-    revision_id: UUID
+    study_id: UUID
     signature: str = ""
 
 
@@ -123,10 +122,10 @@ class BootstrapAssignment(BaseModel):
     model_config = _FROZEN
 
     assignment_id: UUID
-    condition_id: str
+    agent_profile_id: UUID
     strategy: str
     randomization_epoch: int = 0
-    protocol_digest: str
+    profile_digest: str
 
 
 class BootstrapAgentRelease(BaseModel):
@@ -229,9 +228,8 @@ class BootstrapManifestV1(BaseModel):
     signature: str = ""
     generated_at: datetime
     study_id: UUID
-    revision_id: UUID
-    revision_digest: str
     enrollment_id: UUID
+    research_config_digest: Optional[str] = None
     research_session: ResearchSessionRef
     assignment: BootstrapAssignment
     agent_release: BootstrapAgentRelease

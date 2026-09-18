@@ -341,19 +341,6 @@
       "default": null,
       "title": "Study Id"
     },
-    "revision_id": {
-      "anyOf": [
-        {
-          "format": "uuid",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Revision Id"
-    },
     "enrollment_id": {
       "anyOf": [
         {

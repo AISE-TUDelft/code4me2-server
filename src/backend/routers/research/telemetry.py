@@ -18,6 +18,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from App import App
 from backend.Responses import JsonResponseWithStatus
+from database.db_schemas import ResearchStudyStatus, Study as StudyRow
+from research.participants.enums import EnrollmentStatus
 from backend.routers.analytics.auth_utils import (
     AuthenticatedUser,
     get_current_user,
@@ -32,7 +34,6 @@ from research.runtime.bootstrap.models import (
     SessionCapability,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
 )
 from research.runtime.sessions import store as session_store
-from research.study.protocol import store as protocol_store
 from research.telemetry.ingestion.models import (
     TelemetryBatchAckV1,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
     TelemetryBatchRequestV1,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
@@ -84,7 +85,7 @@ def _verify_session_capability(
     current_revocation_epoch: int,
     expected_enrollment_id: Optional[uuid.UUID] = None,
     expected_research_session_id: Optional[uuid.UUID] = None,
-    expected_revision_id: Optional[uuid.UUID] = None,
+    expected_study_id: Optional[uuid.UUID] = None,
 ) -> CapabilityVerification:
     """Verify the batch capability against the subject resolved from its events."""
     return verify_capability(
@@ -96,7 +97,7 @@ def _verify_session_capability(
         current_revocation_epoch=current_revocation_epoch,
         expected_enrollment_id=expected_enrollment_id,
         expected_research_session_id=expected_research_session_id,
-        expected_revision_id=expected_revision_id,
+        expected_study_id=expected_study_id,
     )
 
 
@@ -111,7 +112,6 @@ def _ingestion_kill_switch_check(db, payload: TelemetryBatchRequestV1):
         if (
             event.enrollment_id is None
             or event.research_session_id is None
-            or event.revision_id is None
         ):
             continue
         session_row = session_store.get_session(db, event.research_session_id)
@@ -120,12 +120,10 @@ def _ingestion_kill_switch_check(db, payload: TelemetryBatchRequestV1):
         enrollment_row = identity_store.get_enrollment(db, event.enrollment_id)
         if enrollment_row is None:
             continue
-        revision_row = protocol_store.get_revision(db, session_row.study_revision_id)
-        study_id = revision_row.study_id if revision_row is not None else None
+        study_id = session_row.study_id
         return operations_store.db_kill_switch_check(
             db,
             study_id=study_id,
-            revision_id=session_row.study_revision_id,
             enrollment_id=event.enrollment_id,
         )
 
@@ -140,6 +138,10 @@ def _enrollment_resolver(db):
         # Lock the enrollment row so concurrent batches for the same subject
         # serialize inside the ingestion transaction.
         row = identity_store.get_enrollment(db, enrollment_id, for_update=True)
+        if row is not None:
+            study = db.get(StudyRow, row.study_id)
+            if getattr(study, "research_status", None) == ResearchStudyStatus.STUDY_STOPPED.value:
+                setattr(row, "status", EnrollmentStatus.STUDY_STOPPED.value)
         return identity_store.row_to_enrollment(row) if row is not None else None
 
     return resolve

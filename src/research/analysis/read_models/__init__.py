@@ -1,14 +1,14 @@
 """Researcher read models and scoped RBAC (Issue 12).
 
-Read models carry revision id/digest, coverage/derivation version, and the
+Read models carry study/profile identity, coverage/derivation version, and the
 explicit population definition. Unavailable data is ``null`` + a coverage state,
 never zero.
 
 Public surface:
 
 * :mod:`research.analysis.read_models.enums` - researcher roles and typed reason codes.
-* :mod:`research.analysis.read_models.models` - ``StudyRevisionSummaryV1``,
-  ``EnrollmentCoverageV1``, ``ConditionExposureV1``, ``TelemetryCoverageV1``,
+* :mod:`research.analysis.read_models.models` - ``StudySummaryV1``,
+    ``EnrollmentCoverageV1``, ``ProfileExposureV1``, ``TelemetryCoverageV1``,
   ``DerivedMetricV1``.
 * :mod:`research.analysis.read_models.rbac` - per-study authorization (privacy operator
   access is separate from telemetry read).
@@ -22,12 +22,12 @@ from .enums import ReadModelReasonCode, ResearcherRole
 from .models import (
     COVERAGE_VERSION,
     DERIVATION_VERSION,
-    ConditionExposureV1,
     DerivedMetricV1,
     EnrollmentCoverageV1,
     FamilyCoverage,
+    ProfileExposureV1,
     ReadModelIssue,
-    StudyRevisionSummaryV1,
+    StudySummaryV1,
     TelemetryCoverageV1,
 )
 from .rbac import (
@@ -41,10 +41,10 @@ from .rbac import (
     role_for_study,
 )
 from .service import (
-    build_condition_exposures,
     build_derived_metrics,
     build_enrollment_coverage,
-    build_revision_summary,
+    build_profile_exposures,
+    build_study_summary,
     build_telemetry_coverage,
     population_definition,
 )
@@ -52,18 +52,17 @@ from .service import (
 __all__ = [
     "COVERAGE_VERSION",
     "DERIVATION_VERSION",
-    "ConditionExposureV1",
     "DerivedMetricV1",
     "EnrollmentCoverageV1",
+    "ProfileExposureV1",
     "FamilyCoverage",
     "ReadModelAuthorizationError",
     "ReadModelIssue",
     "ReadModelReasonCode",
     "ResearcherGrant",
     "ResearcherRole",
-    "StudyRevisionSummaryV1",
+    "StudySummaryV1",
     "TelemetryCoverageV1",
-    "build_condition_exposures",
     "build_derived_metrics",
     "build_enrollment_coverage",
     "build_revision_summary",

@@ -7,7 +7,7 @@ records (never raw ORM/JSON) and never join login identity into a read model.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from sqlalchemy import select
 
@@ -39,16 +39,8 @@ __all__ = [
     "list_enrollments",
     "list_events",
     "list_exposures",
-    "list_revisions",
     "list_sessions",
 ]
-
-
-def list_revisions(
-    session: Session, study_id: uuid.UUID
-) -> Sequence[object]:
-    """Return no rows; study revisions are no longer a research authority."""
-    return []
 
 
 def list_enrollments(session: Session, study_id: uuid.UUID) -> Sequence[Enrollment]:
@@ -77,9 +69,9 @@ def list_assignments(session: Session, study_id: uuid.UUID) -> Sequence[Assignme
 
 
 def list_exposures(
-    session: Session, revision_id: uuid.UUID
+    session: Session, study_id: uuid.UUID
 ) -> Sequence[ExposureV1]:
-    """Return no rows; condition exposure persistence was removed."""
+    """Return no rows until durable profile exposure receipts are enabled."""
     return []
 
 
@@ -116,17 +108,17 @@ def list_agent_runs(
 
 def list_events(
     session: Session,
-    revision_id: uuid.UUID,
+    study_id: uuid.UUID,
     *,
     research_session_ids: Optional[Sequence[uuid.UUID]] = None,
 ) -> Sequence[ResearchEventRecord]:
-    """List a revision's canonical events as records (sorted deterministically).
+    """List a study's canonical events as records (sorted deterministically).
 
     Retention tombstones (``retention_state == "DELETED"``) are excluded so a
     post-withdrawal export never reads deleted data.
     """
     statement = select(ResearchEvent).where(
-        ResearchEvent.revision_id == revision_id,
+        ResearchEvent.study_id == study_id,
         ResearchEvent.retention_state != "DELETED",
     )
     if research_session_ids is not None:

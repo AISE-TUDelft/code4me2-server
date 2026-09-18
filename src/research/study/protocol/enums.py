@@ -1,8 +1,6 @@
-"""Closed vocabularies for the versioned study protocol (Issue 02).
+"""Closed vocabularies for validated study configuration.
 
-Every value here is part of a persisted contract (draft JSON, published
-revision JSON, API responses), so members are additive only: renaming or
-removing a member is a breaking change to already-stored revisions.
+Every value here is part of a persisted configuration or API contract.
 """
 
 from __future__ import annotations
@@ -14,18 +12,6 @@ class SchemaVersion(str, Enum):
     """Supported ``StudyProtocolV1.schema_version`` values."""
 
     V1 = "1"
-
-
-class RevisionStatus(str, Enum):
-    """Lifecycle of a study revision.
-
-    ``PUBLISHED`` is immutable in content; only ``RETIRED`` is a permitted
-    lifecycle transition, and it never changes the stored protocol bytes.
-    """
-
-    DRAFT = "DRAFT"
-    PUBLISHED = "PUBLISHED"
-    RETIRED = "RETIRED"
 
 
 class ScheduleKind(str, Enum):
@@ -169,11 +155,3 @@ class ReleaseResolutionStatus(str, Enum):
     NOT_FOUND = "NOT_FOUND"
     UNQUALIFIED = "UNQUALIFIED"
     WITHDRAWN = "WITHDRAWN"
-
-
-class PublicationOutcome(str, Enum):
-    """Terminal result of a publication attempt."""
-
-    PUBLISHED = "PUBLISHED"
-    CONFLICT = "CONFLICT"
-    VALIDATION_FAILED = "VALIDATION_FAILED"

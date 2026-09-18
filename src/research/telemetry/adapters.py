@@ -3,7 +3,7 @@
 The inference relay, the self-reporting runtime and the OTel span endpoint
 observe agent activity that used to be written to the legacy ``agent_event``
 table. For a *research-bound* task (an explicit ``research_session_id`` /
-``enrollment_id`` / ``study_revision_id`` on ``agent_task``) those observations
+``enrollment_id`` / ``study_id`` on ``agent_task``) those observations
 are now built as canonical events and persisted through the one ingestion writer
 (:func:`ingest_events_for_context`), so the dashboards read the canonical event
 authority and there is no parallel canonical writer.
@@ -97,7 +97,6 @@ def build_legacy_events(task: Any, facts: Sequence[LegacyFact]) -> list:
                 correlations=fact.correlations,
                 source_event_id=fact.source_event_id,
                 study_id=getattr(task, "study_id", None),
-                revision_id=getattr(task, "study_revision_id", None),
                 enrollment_id=getattr(task, "enrollment_id", None),
                 research_session_id=getattr(task, "research_session_id", None),
                 agent_run_id=getattr(task, "external_run_id", None),
@@ -136,7 +135,6 @@ def record_legacy_facts(db: Any, *, task: Any, facts: Sequence[LegacyFact]) -> b
         context = IngestionContext(
             study_id=task.study_id,
             enrollment_id=task.enrollment_id,
-            study_revision_id=task.study_revision_id,
             research_session_id=task.research_session_id,
             revocation_epoch=enrollment.revocation_epoch,
         )

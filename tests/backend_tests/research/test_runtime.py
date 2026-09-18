@@ -73,12 +73,10 @@ from research.study.packaging import (
 from research.study.packaging import store as packaging_store
 from research.study.packaging.verifier import resolve_under_root
 from research.study.protocol.enums import (
-    PublicationOutcome,
     ReleaseResolutionStatus,
     ValidationReasonCode,
 )
 from research.study.protocol.models import StudyProtocolV1
-from research.study.protocol.publication import RevisionLineage, publish_revision
 from research.study.protocol.validation import validate_protocol
 
 # --------------------------------------------------------------------------
@@ -1338,44 +1336,6 @@ def test_protocol_validation_rejects_draft_and_retired_releases():
             protocol, distribution_resolver=distribution_resolver
         )
         assert expected_code in agent_registry___codes(errors)
-
-
-def test_protocol_publication_cannot_use_unqualified_release():
-    registry = AgentRegistry()
-    draft = agent_registry___single_artifact_release(qualification_status=QualificationStatus.DRAFT)
-    registry.register_release(draft)
-    protocol = agent_registry___protocol_referencing(draft, draft.artifacts[0].sha256)
-    distribution_resolver = agent_registry___distribution_resolver(draft)
-
-    result = publish_revision(
-        protocol,
-        RevisionLineage(study_id=protocol.study_id),
-        distribution_resolver=distribution_resolver,
-        now=agent_registry__NOW,
-    )
-    assert result.outcome == PublicationOutcome.VALIDATION_FAILED
-    assert ValidationReasonCode.DISTRIBUTION_UNVERIFIED in agent_registry___codes(result.errors)
-
-
-def test_protocol_publication_succeeds_with_qualified_release():
-    registry = AgentRegistry()
-    release = agent_registry___single_artifact_release(qualification_status=QualificationStatus.QUALIFIED)
-    registry.register_release(release)
-    protocol = agent_registry___protocol_referencing(release, release.artifacts[0].sha256)
-    distribution_resolver = agent_registry___distribution_resolver(release)
-
-    result = publish_revision(
-        protocol,
-        RevisionLineage(study_id=protocol.study_id),
-        distribution_resolver=distribution_resolver,
-        actor_is_admin=True,
-        now=agent_registry__NOW,
-    )
-    assert result.outcome == PublicationOutcome.PUBLISHED
-    assert result.revision is not None
-    assert result.revision.revision_number == 1
-    frozen = result.revision.protocol_json["conditions"][0]["resolved_distribution"]
-    assert frozen["release_id"] == release.release_id
 
 
 # ---------------------------------------------------------------------------

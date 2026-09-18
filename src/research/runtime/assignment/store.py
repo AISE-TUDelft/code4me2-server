@@ -2,7 +2,7 @@
 
 These functions take a caller-managed SQLAlchemy ``Session`` so the core package
 never imports ``App`` or touches the application singleton. Assignments are
-immutable facts; the unique ``(enrollment_id, study_revision_id)`` constraint is
+immutable facts; the unique ``enrollment_id`` constraint is
 the concurrency guard, so a concurrent first-bootstrap race yields one row and
 the loser re-reads it.
 """
@@ -32,7 +32,7 @@ def create_assignment(
 ) -> StudyAssignment:
     """Insert one immutable assignment row, or return the existing winner.
 
-    The unique ``(enrollment_id, study_revision_id)`` constraint is the
+    The unique ``enrollment_id`` constraint is the
     concurrency guard: a savepoint around the insert means a losing concurrent
     create rolls back only its own insert and returns the winning row, so the
     caller always uses the authoritative sticky assignment. ``commit=False`` lets
@@ -41,20 +41,20 @@ def create_assignment(
     row = StudyAssignment(
         assignment_id=assignment.assignment_id,
         enrollment_id=assignment.enrollment_id,
-        study_revision_id=assignment.study_revision_id,
-        condition_id=assignment.condition_id,
+        study_id=assignment.study_id,
+        agent_profile_id=assignment.agent_profile_id,
         strategy=assignment.strategy,
         randomization_epoch=assignment.randomization_epoch,
-        protocol_digest=assignment.protocol_digest,
+        profile_digest=assignment.profile_digest,
+        profile_snapshot_json=assignment.profile_snapshot_json,
+        status=assignment.status,
         assigned_at=assignment.assigned_at,
     )
     try:
         with session.begin_nested():
             session.add(row)
     except IntegrityError:
-        existing = get_assignment_for_enrollment_revision(
-            session, assignment.enrollment_id, assignment.study_revision_id
-        )
+        existing = get_assignment_for_enrollment(session, assignment.enrollment_id)
         if existing is not None:
             return existing
         raise
@@ -73,13 +73,12 @@ def get_assignment(
     return session.get(StudyAssignment, assignment_id)
 
 
-def get_assignment_for_enrollment_revision(
-    session: Session, enrollment_id: uuid.UUID, study_revision_id: uuid.UUID
+def get_assignment_for_enrollment(
+    session: Session, enrollment_id: uuid.UUID
 ) -> Optional[StudyAssignment]:
-    """Fetch the unique sticky assignment for ``(enrollment, revision)``."""
+    """Fetch the unique sticky assignment for one enrollment."""
     statement = select(StudyAssignment).where(
         StudyAssignment.enrollment_id == enrollment_id,
-        StudyAssignment.study_revision_id == study_revision_id,
     )
     return session.execute(statement).scalars().first()
 
@@ -121,12 +120,14 @@ def row_to_assignment(row: StudyAssignment) -> AssignmentV1:
     return AssignmentV1Model(
         assignment_id=row.assignment_id,
         enrollment_id=row.enrollment_id,
-        study_revision_id=row.study_revision_id,
-        condition_id=row.condition_id,
+        study_id=row.study_id,
+        agent_profile_id=row.agent_profile_id,
         strategy=row.strategy,
         randomization_epoch=row.randomization_epoch,
         assigned_at=row.assigned_at,
-        protocol_digest=row.protocol_digest,
+        profile_digest=row.profile_digest,
+        profile_snapshot_json=row.profile_snapshot_json,
+        status=row.status,
     )
 
 
@@ -138,7 +139,7 @@ def row_to_exposure(row: Any) -> ExposureV1:
     return ExposureV1Model(
         exposure_id=row.exposure_id,
         assignment_id=row.assignment_id,
-        study_revision_id=row.study_revision_id,
+        study_id=row.study_id,
         environment=ExposureEnvironment.model_validate(row.environment_json or {}),
         agent_release_id=row.agent_release_id,
         artifact_digest=row.artifact_digest,
@@ -158,7 +159,7 @@ def exposure_summary(row: Any) -> dict[str, Any]:
     return {
         "exposure_id": str(row.exposure_id),
         "assignment_id": str(row.assignment_id),
-        "study_revision_id": str(row.study_revision_id),
+        "study_id": str(row.study_id),
         "agent_release_id": row.agent_release_id,
         "artifact_digest": row.artifact_digest,
         "outcome": row.outcome,

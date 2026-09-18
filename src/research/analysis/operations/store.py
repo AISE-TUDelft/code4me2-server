@@ -150,8 +150,8 @@ def create_release_evidence(
         kind=RECORD_KIND_RELEASE_EVIDENCE,
         occurred_at=evidence.recorded_at or datetime.now(),
         payload_json=evidence.model_dump(mode="json"),
-        scope_type="revision",
-        scope_id=evidence.study_revision_id,
+        scope_type="study",
+        scope_id=evidence.study_id,
     )
     session.add(row)
     session.commit()
@@ -174,15 +174,15 @@ def get_release_evidence(
 
 
 def list_release_evidence(
-    session: Session, study_revision_id: uuid.UUID
+    session: Session, study_id: uuid.UUID
 ) -> Sequence[ReleaseEvidenceV1]:
-    """List release evidence for a revision, oldest-first."""
+    """List release evidence for a study, oldest-first."""
     statement = (
         select(ResearchRecord)
         .where(
             ResearchRecord.kind == RECORD_KIND_RELEASE_EVIDENCE,
-            ResearchRecord.payload_json["study_revision_id"].astext
-            == str(study_revision_id),
+            ResearchRecord.payload_json["study_id"].astext
+            == str(study_id),
         )
         .order_by(ResearchRecord.occurred_at.asc())
     )
@@ -334,7 +334,6 @@ def is_kill_switch_engaged(
     session: Session,
     *,
     study_id: Optional[uuid.UUID] = None,
-    revision_id: Optional[uuid.UUID] = None,
     enrollment_id: Optional[uuid.UUID] = None,
     now: Optional[datetime] = None,
 ) -> bool:
@@ -343,13 +342,12 @@ def is_kill_switch_engaged(
     This is the DB-backed counterpart of the in-memory
     :class:`~research.analysis.operations.kill_switch.KillSwitchRegistry`: it rebuilds the
     registry from the persisted records and evaluates the same scope matching
-    (study/revision/enrollment). A record whose scope kind does not cover the
+    (study/enrollment). A record whose scope kind does not cover the
     requested identifiers does not block.
     """
     registry = KillSwitchRegistry(kill_switch_records(session))
     return registry.is_engaged(
         study_id=study_id,
-        revision_id=revision_id,
         enrollment_id=enrollment_id,
         now=now or datetime.now(timezone.utc),
     )
@@ -359,7 +357,6 @@ def db_kill_switch_check(
     session: Session,
     *,
     study_id: Optional[uuid.UUID] = None,
-    revision_id: Optional[uuid.UUID] = None,
     enrollment_id: Optional[uuid.UUID] = None,
     now: Optional[datetime] = None,
 ) -> Callable[[], bool]:
@@ -374,7 +371,6 @@ def db_kill_switch_check(
         return is_kill_switch_engaged(
             session,
             study_id=study_id,
-            revision_id=revision_id,
             enrollment_id=enrollment_id,
             now=now,
         )

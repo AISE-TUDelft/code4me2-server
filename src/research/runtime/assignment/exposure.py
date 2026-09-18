@@ -99,7 +99,7 @@ def record_exposure(
     exposure = ExposureV1(
         exposure_id=uuid.uuid4(),
         assignment_id=assignment.assignment_id,
-        study_revision_id=assignment.study_revision_id,
+        study_id=assignment.study_id,
         environment=environment,
         agent_release_id=agent_release_id or "",
         artifact_digest=artifact_digest,

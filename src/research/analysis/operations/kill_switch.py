@@ -1,6 +1,6 @@
 """Operator kill switch (Issue 13).
 
-A kill switch is engaged at a study, revision, or enrollment scope and is
+A kill switch is engaged at a study or enrollment scope and is
 auditable (actor, reason, engaged_at). While engaged it blocks new session
 bootstraps and rejects new telemetry batches; those services consult it through
 an injected zero-argument predicate so they keep no operations dependency.
@@ -36,11 +36,10 @@ def _matches(
     record: KillSwitchRecord,
     *,
     study_id: Optional[UUID],
-    revision_id: Optional[UUID],
     enrollment_id: Optional[UUID],
 ) -> bool:
     return record.scope.matches(
-        study_id=study_id, revision_id=revision_id, enrollment_id=enrollment_id
+        study_id=study_id, enrollment_id=enrollment_id
     )
 
 
@@ -101,7 +100,6 @@ class KillSwitchRegistry:
         self,
         *,
         study_id: Optional[UUID] = None,
-        revision_id: Optional[UUID] = None,
         enrollment_id: Optional[UUID] = None,
         now: Optional[datetime] = None,
     ) -> bool:
@@ -112,7 +110,6 @@ class KillSwitchRegistry:
             and _matches(
                 record,
                 study_id=study_id,
-                revision_id=revision_id,
                 enrollment_id=enrollment_id,
             )
             for record in self._records
@@ -145,14 +142,12 @@ def is_engaged(
     registry: KillSwitchRegistry,
     *,
     study_id: Optional[UUID] = None,
-    revision_id: Optional[UUID] = None,
     enrollment_id: Optional[UUID] = None,
     now: Optional[datetime] = None,
 ) -> bool:
     """Whether a kill switch blocks the requested scope."""
     return registry.is_engaged(
         study_id=study_id,
-        revision_id=revision_id,
         enrollment_id=enrollment_id,
         now=now,
     )
@@ -162,7 +157,6 @@ def kill_switch_issue(
     registry: KillSwitchRegistry,
     *,
     study_id: Optional[UUID] = None,
-    revision_id: Optional[UUID] = None,
     enrollment_id: Optional[UUID] = None,
     now: Optional[datetime] = None,
 ) -> Optional[OperationsIssue]:
@@ -170,7 +164,6 @@ def kill_switch_issue(
     if is_engaged(
         registry,
         study_id=study_id,
-        revision_id=revision_id,
         enrollment_id=enrollment_id,
         now=now,
     ):
@@ -186,7 +179,6 @@ def kill_switch_check(
     registry: KillSwitchRegistry,
     *,
     study_id: Optional[UUID] = None,
-    revision_id: Optional[UUID] = None,
     enrollment_id: Optional[UUID] = None,
     now: Optional[datetime] = None,
 ) -> Callable[[], bool]:
@@ -196,7 +188,6 @@ def kill_switch_check(
         return is_engaged(
             registry,
             study_id=study_id,
-            revision_id=revision_id,
             enrollment_id=enrollment_id,
             now=now,
         )

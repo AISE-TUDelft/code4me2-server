@@ -1,6 +1,6 @@
 """Pure research-session state machine (Issue 07).
 
-Idle and resume values are injected revision-policy inputs
+Idle and resume values are injected study-policy inputs
 (:class:`~research.runtime.sessions.models.SessionPolicyV1`), never compiled constants.
 Only the published lifecycle transitions are legal; every applied transition is
 returned as a :class:`~research.runtime.sessions.models.SessionTransition` carrying the
@@ -45,8 +45,7 @@ from .models import (
 
 if TYPE_CHECKING:
     from research.participants.models import Enrollment
-    from research.study.protocol.models import StudyProtocolV1
-    from research.study.protocol.publication import StudyRevision
+    from typing import Any
 
 _LEGAL_TARGETS: dict[SessionState, frozenset[SessionState]] = {
     SessionState.NOT_STARTED: frozenset({SessionState.RUNNING}),
@@ -110,42 +109,42 @@ def policy_ref(policy: SessionPolicyV1) -> str:
     )
 
 
-def session_policy_from_revision(
-    protocol: StudyProtocolV1,
-) -> Optional[SessionPolicyV1]:
-    """Extract a usable :class:`SessionPolicyV1` from a revision, or ``None``.
+def session_policy_from_study(study: Any) -> Optional[SessionPolicyV1]:
+    """Extract a usable :class:`SessionPolicyV1` from a study, or ``None``.
 
-    ``None`` means the revision does not declare both the idle timeout and the
+    ``None`` means the study does not declare both the idle timeout and the
     resume grace, so no timing decision can be made. The server never falls back
     to a compiled default.
     """
-    session_policy = protocol.session_policy
+    session_policy = (getattr(study, "research_config_json", None) or {}).get(
+        "session_policy", {}
+    )
     if (
-        session_policy.idle_timeout_seconds is None
-        or session_policy.resume_grace_seconds is None
+        session_policy.get("idle_timeout_seconds") is None
+        or session_policy.get("resume_grace_seconds") is None
     ):
         return None
     return SessionPolicyV1(
-        idle_timeout_seconds=session_policy.idle_timeout_seconds,
-        resume_grace_seconds=session_policy.resume_grace_seconds,
-        heartbeat_seconds=session_policy.heartbeat_seconds,
+        idle_timeout_seconds=session_policy["idle_timeout_seconds"],
+        resume_grace_seconds=session_policy["resume_grace_seconds"],
+        heartbeat_seconds=session_policy.get("heartbeat_seconds"),
     )
 
 
 def open_session(
     enrollment: Enrollment,
-    revision: StudyRevision,
+    study: Any,
     *,
     manifest_digest: str,
     environment_ref: Optional[str] = None,
     context_id: str = "",
     now: Optional[datetime] = None,
 ) -> ResearchSessionV1:
-    """Create a new, not-yet-started session bound to an enrollment/revision."""
+    """Create a new, not-yet-started session bound to an enrollment/study."""
     return ResearchSessionV1(
         research_session_id=uuid.uuid4(),
         enrollment_id=enrollment.enrollment_id,
-        study_revision_id=revision.revision_id,
+        study_id=study.study_id,
         context_id=context_id,
         state=SessionState.NOT_STARTED,
         opened_at=None,

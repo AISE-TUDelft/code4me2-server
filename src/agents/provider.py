@@ -93,8 +93,8 @@ def resolve_task_connection(
             db, connection.connection_id, owner_user_id
         ):
             raise ProviderReadinessError(
-                "GRANT_MISSING",
-                f"access to provider connection {connection.label!r} was not granted",
+                "CONNECTION_NOT_READY",
+                f"provider connection {connection.label!r} is not ready",
             )
     return connection_view(connection)
 

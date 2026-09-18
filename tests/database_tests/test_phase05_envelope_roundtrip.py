@@ -99,12 +99,82 @@ def _full_event() -> CanonicalEventV1:
     )
 
 
-def _context() -> IngestionContext:
+def _context(session) -> IngestionContext:
+    """Seed the authorized study/session chain required by fresh-schema FKs."""
+    config_id = session.execute(
+        text("INSERT INTO public.config (config_data) VALUES ('{}') RETURNING config_id")
+    ).scalar_one()
+    account_id = uuid.uuid4()
+    study_id = uuid.uuid4()
+    participant_id = uuid.uuid4()
+    enrollment_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    session.execute(
+        text(
+            "INSERT INTO public.\"user\" "
+            "(user_id, joined_at, email, name, password, config_id) "
+            "VALUES (:user_id, :joined_at, :email, 'Envelope', 'x', :config_id)"
+        ),
+        {
+            "user_id": account_id,
+            "joined_at": NOW,
+            "email": f"envelope-{account_id}@example.com",
+            "config_id": config_id,
+        },
+    )
+    session.execute(
+        text(
+            "INSERT INTO public.study "
+            "(study_id, name, created_by, starts_at, is_active, is_research, "
+            "research_status, research_config_json, created_at) "
+            "VALUES (:study_id, 'Envelope study', :account_id, :started_at, true, true, "
+            "'ACTIVE', '{}', :started_at)"
+        ),
+        {"study_id": study_id, "account_id": account_id, "started_at": NOW},
+    )
+    session.execute(
+        text(
+            "INSERT INTO public.research_participant "
+            "(participant_id, account_id, created_at) VALUES (:participant_id, :account_id, :created_at)"
+        ),
+        {"participant_id": participant_id, "account_id": account_id, "created_at": NOW},
+    )
+    session.execute(
+        text(
+            "INSERT INTO public.research_enrollment "
+            "(enrollment_id, participant_id, study_id, participant_code, status, "
+            "revocation_epoch, eligibility_json, enrolled_at, updated_at, "
+            "consent_accepted_at, retention_action) "
+            "VALUES (:enrollment_id, :participant_id, :study_id, 'p-envelope', 'ACTIVE', 0, "
+            "'{}', :started_at, :started_at, :started_at, 'RETAIN_ANONYMIZED')"
+        ),
+        {
+            "enrollment_id": enrollment_id,
+            "participant_id": participant_id,
+            "study_id": study_id,
+            "started_at": NOW,
+        },
+    )
+    session.execute(
+        text(
+            "INSERT INTO public.research_session "
+            "(session_id, enrollment_id, study_id, context_id, state, manifest_digest, "
+            "environment_json, transitions_json, created_at) "
+            "VALUES (:session_id, :enrollment_id, :study_id, 'envelope-context', 'running', "
+            "'manifest', '{}', '[]', :started_at)"
+        ),
+        {
+            "session_id": session_id,
+            "enrollment_id": enrollment_id,
+            "study_id": study_id,
+            "started_at": NOW,
+        },
+    )
+    session.flush()
     return IngestionContext(
-        study_id=uuid.uuid4(),
-        enrollment_id=uuid.uuid4(),
-        study_revision_id=uuid.uuid4(),
-        research_session_id=uuid.uuid4(),
+        study_id=study_id,
+        enrollment_id=enrollment_id,
+        research_session_id=session_id,
         revocation_epoch=0,
     )
 
@@ -114,7 +184,7 @@ def test_complete_envelope_survives_postgres_round_trip(SessionFactory):
     try:
         event = _full_event()
         record = _record_from_event(
-            event, _context(), compute_event_digest(event), accepted_at=NOW
+            event, _context(session), compute_event_digest(event), accepted_at=NOW
         )
         store = SqlAlchemyIngestionStore(session)
         store.insert_events([record])
@@ -158,7 +228,7 @@ def test_unknown_value_fields_are_preserved_not_reclassified(SessionFactory):
             }
         )
         record = _record_from_event(
-            event, _context(), compute_event_digest(event), accepted_at=NOW
+            event, _context(session), compute_event_digest(event), accepted_at=NOW
         )
         store = SqlAlchemyIngestionStore(session)
         store.insert_events([record])

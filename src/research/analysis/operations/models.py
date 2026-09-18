@@ -122,9 +122,9 @@ class ReleaseEvidenceV1(BaseModel):
     model_config = _FROZEN
 
     release_id: UUID
-    study_revision_id: UUID
-    revision_digest: Optional[str] = None
-    revision_expires_at: Optional[datetime] = None
+    study_id: UUID
+    config_digest: Optional[str] = None
+    config_expires_at: Optional[datetime] = None
     # name -> artifact/receipt digest. A blank or UNKNOWN digest is not a pass.
     component_artifacts: dict[str, str] = Field(default_factory=dict)
     component_expires_at: dict[str, datetime] = Field(default_factory=dict)
@@ -153,7 +153,7 @@ class ReleaseEvaluationResult(BaseModel):
 
     decision: ReleaseDecision
     reasons: list[ReleaseReason] = Field(default_factory=list)
-    revision_digest: Optional[str] = None
+    config_digest: Optional[str] = None
     evaluated_at: datetime
     evidence: ReleaseEvidenceV1
 
@@ -211,14 +211,11 @@ class KillSwitchScope(BaseModel):
         self,
         *,
         study_id: Optional[UUID] = None,
-        revision_id: Optional[UUID] = None,
         enrollment_id: Optional[UUID] = None,
     ) -> bool:
         """Whether this scope covers the requested identifiers."""
         if self.kind == KillSwitchScopeKind.STUDY:
             return study_id is not None and study_id == self.scope_id
-        if self.kind == KillSwitchScopeKind.REVISION:
-            return revision_id is not None and revision_id == self.scope_id
         return enrollment_id is not None and enrollment_id == self.scope_id
 
 

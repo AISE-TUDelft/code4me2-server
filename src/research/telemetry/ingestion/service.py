@@ -62,7 +62,7 @@ DEFAULT_MAX_EVENTS = 500
 class CapabilityVerifier(Protocol):
     """Verifies a session capability against its resolved subject.
 
-    The resolved ``(enrollment, session, revision)`` are passed so the verifier
+    The resolved ``(study, enrollment, session)`` are passed so the verifier
     can reject a cryptographically valid capability that was issued for a
     different subject. Verifiers may accept them as optional keyword arguments
     (the default ``None`` skips the subject comparison).
@@ -76,7 +76,7 @@ class CapabilityVerifier(Protocol):
         current_revocation_epoch: int,
         expected_enrollment_id: Optional[uuid.UUID] = None,
         expected_research_session_id: Optional[uuid.UUID] = None,
-        expected_revision_id: Optional[uuid.UUID] = None,
+        expected_study_id: Optional[uuid.UUID] = None,
     ) -> CapabilityVerification:  # pragma: no cover - structural protocol
         ...
 
@@ -98,7 +98,7 @@ def _record_from_event(
 ) -> ResearchEventRecord:
     """Build the stored record from the *authorized* context.
 
-    ``study_id``/``revision_id``/``enrollment_id``/``research_session_id`` are
+    ``study_id``/``enrollment_id``/``research_session_id`` are
     always taken from the authorized enrollment/session, never from the client
     event payload. A payload field that disagrees with the context is rejected
     by :func:`validate_batch_event` before this runs.
@@ -109,7 +109,6 @@ def _record_from_event(
         event_type=event.event_type,
         source=event.source,
         study_id=context.study_id,
-        revision_id=context.study_revision_id,
         enrollment_id=context.enrollment_id,
         research_session_id=context.research_session_id,
         agent_run_id=event.agent_run_id,
@@ -326,12 +325,11 @@ def _anchor_context(
             continue
         if session.enrollment_id != enrollment.enrollment_id:
             continue
-        if enrollment.study_revision_id != session.study_revision_id:
+        if enrollment.study_id != session.study_id:
             continue
         context = IngestionContext(
             study_id=enrollment.study_id,
             enrollment_id=enrollment.enrollment_id,
-            study_revision_id=session.study_revision_id,
             research_session_id=session.research_session_id,
             revocation_epoch=enrollment.revocation_epoch,
         )
@@ -425,7 +423,7 @@ def ingest_batch(
         current_revocation_epoch=enrollment.revocation_epoch,
         expected_enrollment_id=context.enrollment_id,
         expected_research_session_id=context.research_session_id,
-        expected_revision_id=context.study_revision_id,
+        expected_study_id=context.study_id,
     )
     if not verification.ok:
         if verification.reason == CapabilityReasonCode.REVOKED:

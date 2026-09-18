@@ -1444,8 +1444,8 @@ export const deleteAgentAssignment = async (userId, studyId) =>
 
 // ── Research control plane ──────────────────────────────────────────────────
 //
-// Backs the researcher-facing authoring pages (ResearchStudies,
-// ResearchStudyEditor, ResearchEnrollment). The backend mounts these under
+// Backs the researcher-facing lifecycle pages (ResearchStudies,
+// ResearchStudyEditor and ResearchJoin). The backend mounts these under
 // /api/research and every endpoint is admin/authorized-researcher only, so they
 // reuse the existing cookie-based session like the analytics/admin helpers.
 //
@@ -1508,15 +1508,17 @@ export const researchRequest = async (
  *
  * The server generates the UUID (and grants the caller OWNER so they can
  * author it immediately), which removes the "paste a UUID" step from the UI.
- * The identity materializes with the study's first draft/revision.
+ * The identity starts as a DRAFT study with a study-owned join code.
  */
-export const createResearchStudy = async ({ name, description, owner } = {}) =>
+export const createResearchStudy = async ({ name, description, telemetryPolicy, sessionPolicy, profileIds } = {}) =>
   researchRequest("/studies", {
     method: "POST",
     body: {
       name,
       description: description ?? null,
-      owner: owner ?? null,
+      telemetry_policy: telemetryPolicy || {},
+      session_policy: sessionPolicy || {},
+      profile_ids: profileIds || [],
     },
     label: "create research study",
   });
@@ -1547,6 +1549,57 @@ export const listResearchStudies = async () => {
   return result;
 };
 
+export const getResearchStudy = async (studyId) => {
+  const result = await researchRequest(
+    `/studies/${encodeURIComponent(studyId)}`,
+    { label: "load research study" },
+  );
+  return result.ok ? { ok: true, data: result.data.study || result.data } : result;
+};
+
+export const updateResearchStudyMetadata = async (studyId, metadata) =>
+  researchRequest(`/studies/${encodeURIComponent(studyId)}/metadata`, {
+    method: "PATCH",
+    body: metadata,
+    label: "update study metadata",
+  });
+
+export const stopResearchStudy = async (studyId, actor) =>
+  researchRequest(`/studies/${encodeURIComponent(studyId)}/stop`, {
+    method: "POST",
+    body: { actor: actor ?? null },
+    label: "stop research study",
+  });
+
+export const cloneResearchStudy = async (studyId) =>
+  researchRequest(`/studies/${encodeURIComponent(studyId)}/clone`, {
+    method: "POST",
+    label: "clone research study",
+  });
+
+export const revokeResearchEnrollment = async (studyId, enrollmentId, actor) =>
+  researchRequest(
+    `/studies/${encodeURIComponent(studyId)}/enrollments/${encodeURIComponent(enrollmentId)}/revoke`,
+    {
+      method: "POST",
+      body: { actor: actor ?? null },
+      label: "revoke research enrollment",
+    },
+  );
+
+export const engageResearchKillSwitch = async (studyId, reason) =>
+  researchRequest("/operations/kill-switch", {
+    method: "POST",
+    body: { scope_kind: "STUDY", scope_id: studyId, reason },
+    label: "engage study kill switch",
+  });
+
+export const releaseResearchKillSwitch = async (switchId) =>
+  researchRequest(`/operations/kill-switch/${encodeURIComponent(switchId)}/release`, {
+    method: "POST",
+    label: "release study kill switch",
+  });
+
 const RESEARCH_ENDPOINT_MISSING = (status) => status === 404 || status === 405;
 
 // Study-scoped join code: the value a researcher shares with participants. It is
@@ -1557,20 +1610,16 @@ const RESEARCH_ENDPOINT_MISSING = (status) => status === 404 || status === 405;
 // per-account enrollment id instead of failing.
 export const getResearchStudyJoinCode = async (studyId) => {
   const result = await researchRequest(
-    `/studies/${encodeURIComponent(studyId)}/join-code`,
+    `/studies/${encodeURIComponent(studyId)}`,
     { label: "load study join code" },
   );
   if (result.ok) {
-    const data = result.data || {};
-    // The endpoint returns the join code plus a nested ``revision`` summary.
-    const revision = data.revision || {};
+    const data = result.data.study || result.data || {};
     return {
       ok: true,
       join_code: data.join_code || "",
-      revision_id: data.revision_id || revision.revision_id || "",
-      revision_number: revision.revision_number ?? null,
-      status: data.status || revision.status || "",
-      protocol_digest: revision.protocol_digest || "",
+      status: data.research_status || "",
+      study: data,
     };
   }
   if (RESEARCH_ENDPOINT_MISSING(result.status)) {
@@ -1594,7 +1643,6 @@ export const resolveResearchJoinCode = async (joinCode) => {
   if (result.ok) {
     const data = result.data || {};
     const study = data.study || {};
-    const revision = data.revision || {};
     const consent = data.consent || {};
     return {
       ok: true,
@@ -1603,13 +1651,6 @@ export const resolveResearchJoinCode = async (joinCode) => {
         study: {
           studyId: study.study_id || "",
           name: study.name || "",
-        },
-        revision: {
-          revisionId: revision.revision_id || "",
-          revisionNumber: revision.revision_number ?? null,
-          status: revision.status || "",
-          protocolDigest: revision.protocol_digest || "",
-          publishedAt: revision.published_at || null,
         },
         // The single global policy text the participant accepts once at join.
         policyText: consent.text || "",
@@ -1642,7 +1683,6 @@ export const redeemResearchJoinCode = async (joinCode, acceptConsent) => {
       data: {
         enrollment_id: data.enrollment_id || "",
         study_id: data.study_id || "",
-        revision_id: data.revision_id || "",
         status: data.status || "",
       },
     };
@@ -1679,130 +1719,6 @@ export const getMyResearchEnrollments = async () => {
     };
   }
   return result;
-};
-
-export const listResearchRevisions = async (studyId) => {
-  const result = await researchRequest(
-    `/studies/revisions?study_id=${encodeURIComponent(studyId)}`,
-    { label: "load study revisions" },
-  );
-  return result.ok
-    ? { ok: true, data: result.data.revisions || [] }
-    : result;
-};
-
-export const getResearchRevision = async (revisionId) => {
-  const result = await researchRequest(
-    `/studies/revisions/${encodeURIComponent(revisionId)}`,
-    { label: "load study revision" },
-  );
-  return result.ok
-    ? { ok: true, revision: result.data.revision, protocol: result.data.protocol }
-    : result;
-};
-
-export const listResearchDrafts = async (studyId) => {
-  const result = await researchRequest(
-    `/studies/drafts?study_id=${encodeURIComponent(studyId)}`,
-    { label: "load study drafts" },
-  );
-  return result.ok ? { ok: true, data: result.data.drafts || [] } : result;
-};
-
-export const getResearchDraft = async (draftId) => {
-  const result = await researchRequest(
-    `/studies/drafts/${encodeURIComponent(draftId)}`,
-    { label: "load study draft" },
-  );
-  return result.ok
-    ? {
-        ok: true,
-        draft_id: result.data.draft_id,
-        study_id: result.data.study_id,
-        name: result.data.name,
-        protocol: result.data.protocol,
-      }
-    : result;
-};
-
-export const createResearchDraft = async ({ studyId, name, protocol }) =>
-  researchRequest("/studies/drafts", {
-    method: "POST",
-    body: { study_id: studyId, name, protocol },
-    label: "create study draft",
-  });
-
-export const validateResearchProtocol = async (protocol) => {
-  const result = await researchRequest("/studies/drafts/validate", {
-    method: "POST",
-    body: { protocol },
-    label: "validate study protocol",
-  });
-  if (result.ok) {
-    return {
-      ok: true,
-      valid: result.data.valid !== false,
-      errors: result.data.errors || [],
-      warnings: result.data.warnings || [],
-    };
-  }
-  if (result.status === 422) {
-    return {
-      ok: false,
-      valid: false,
-      errors: result.errors || [],
-      warnings: result.data ? result.data.warnings || [] : [],
-      error: result.error,
-    };
-  }
-  return {
-    ...result,
-    valid: false,
-    errors: result.errors || [],
-    warnings: [],
-  };
-};
-
-export const publishResearchDraft = (draftId, payload) =>
-  researchRequest(`/studies/drafts/${encodeURIComponent(draftId)}/publish`, {
-    method: "POST",
-    body: payload,
-    label: "publish study draft",
-  });
-
-export const supersedeResearchRevision = (revisionId, payload) =>
-  researchRequest(
-    `/studies/revisions/${encodeURIComponent(revisionId)}/supersede`,
-    {
-      method: "POST",
-      body: payload,
-      label: "supersede study revision",
-    },
-  );
-
-export const retireResearchRevision = (revisionId, actor) =>
-  researchRequest(`/studies/revisions/${encodeURIComponent(revisionId)}/retire`, {
-    method: "POST",
-    body: { actor: actor ?? null },
-    label: "retire study revision",
-  });
-
-// Derived read models (researcher control plane). Missing coverage is returned
-// with an explicit coverage state; the UI must render "unavailable", not zero.
-export const getResearchExposures = async (studyId, revisionId) => {
-  const result = await researchRequest(
-    `/operations/exposures?study_id=${encodeURIComponent(studyId)}&revision_id=${encodeURIComponent(revisionId)}`,
-    { label: "load condition exposures" },
-  );
-  return result.ok ? { ok: true, data: result.data.conditions || [] } : result;
-};
-
-export const getResearchEnrollmentCoverage = async (studyId, revisionId) => {
-  const result = await researchRequest(
-    `/operations/enrollments/coverage?study_id=${encodeURIComponent(studyId)}&revision_id=${encodeURIComponent(revisionId)}`,
-    { label: "load enrollment coverage" },
-  );
-  return result.ok ? { ok: true, data: result.data } : result;
 };
 
 // Registered agent releases (admin-only; digest-pinned artifacts). Used by the
@@ -1869,25 +1785,6 @@ export const getResearchPackages = async (releaseId) => {
     label: "load runtime packages",
   });
   return result.ok ? { ok: true, data: result.data.packages || [] } : result;
-};
-
-// Enroll the *current* account in a published revision and return the
-// researcher-safe enrollment projection (whose enrollment_id is the join code
-// surfaced on the enrollment page). Idempotent server-side: re-running reuses
-// the existing enrollment.
-export const requestResearchEnrollment = async (studyId, revisionId) =>
-  researchRequest("/participants/enrollments", {
-    method: "POST",
-    body: { study_id: studyId, revision_id: revisionId },
-    label: "request study enrollment",
-  });
-
-export const getResearchEnrollment = async (enrollmentId) => {
-  const result = await researchRequest(
-    `/participants/enrollments/${encodeURIComponent(enrollmentId)}`,
-    { label: "load enrollment" },
-  );
-  return result.ok ? { ok: true, data: result.data.enrollment } : result;
 };
 
 // Per-arm comparison for a study's agent arms.

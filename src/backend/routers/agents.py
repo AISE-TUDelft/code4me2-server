@@ -47,7 +47,7 @@ def _require_funded_task(db, task) -> None:
     if getattr(task, "study_id", None) is None:
         return
     kill_switch_check = operations_store.db_kill_switch_check(
-        db, study_id=task.study_id, revision_id=None, enrollment_id=None
+        db, study_id=task.study_id, enrollment_id=None
     )
     try:
         access.require_live_enrollment(
@@ -205,12 +205,9 @@ def create_agent_task(
             study_id=assignment.study_id,
             study_assignment_id=assignment.assignment_id,
             profile_id=profile.profile_id,
-            study_arm_name=assignment.arm_name,
-            study_arm_is_baseline=assignment.is_baseline,
             consent_content_storage=content_included,
             research_session_id=binding.research_session_id if binding else None,
             enrollment_id=binding.enrollment_id if binding else None,
-            study_revision_id=binding.study_revision_id if binding else None,
         )
         logging.info(
             f"[Agent/task] created task_id={task.task_id} profile={profile.name!r} "

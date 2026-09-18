@@ -112,7 +112,6 @@ class IngestionContext(BaseModel):
 
     study_id: UUID
     enrollment_id: UUID
-    study_revision_id: UUID
     research_session_id: UUID
     revocation_epoch: int = 0
 
@@ -148,7 +147,6 @@ class ResearchEventRecord(BaseModel):
     event_type: str
     source: str
     study_id: Optional[UUID] = None
-    revision_id: Optional[UUID] = None
     enrollment_id: Optional[UUID] = None
     research_session_id: Optional[UUID] = None
     agent_run_id: Optional[str] = None

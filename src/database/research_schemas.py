@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for the research platform stores.
 
-The research platform keeps its own revisioned namespace so the operational
-agent tables stay independent. Data that is a pure projection of an existing
+The research platform keeps its own namespace so operational agent tables stay
+independent. Data that is a pure projection of an existing
 JSON document lives inside that document rather than in a child table:
 
 * capability evidence is ``acp_capability_receipt.receipt_json.evidence[]``;
@@ -9,9 +9,9 @@ JSON document lives inside that document rather than in a child table:
 * runtime packaging evidence is ``agent_release.release_json.package_json`` and
   its conformance receipts are ``agent_release.release_json.conformance[]``;
 * a capability snapshot is ``research_agent_run.snapshot_json``;
-* conditions are ``study_revision.protocol_json.conditions``;
-* study identity is ``study_revision.study_json``;
-* drafts are ``study_revision.status = DRAFT``;
+* selected profiles are ``study_agent_profile.profile_snapshot_json``;
+* study identity/configuration is owned by ``study``;
+* draft lifecycle state is ``study.research_status = DRAFT``;
 * an emitter cursor is ``max(research_event.emitter_sequence)``;
 * rejections are ``telemetry_batch_receipt.receipt_json.rejected[]``;
 * session transitions are appended to ``research_session.transitions_json``;
@@ -20,7 +20,7 @@ JSON document lives inside that document rather than in a child table:
 
 Two cross-cutting concerns get a generic table: ``research_record`` for every
 append-only audit/evidence family (kill switch, health, release evidence, pilot
-run, publication, export, retention). Coverage/metric projections are derived
+run, export, retention). Coverage/metric projections are derived
 purely from canonical events and are not persisted.
 """
 
@@ -344,6 +344,12 @@ class ResearchAgentRun(Base):
         nullable=True,
     )
     agent_release_id = Column(String, nullable=True)
+    # Immutable assignment/profile identity for participant runs. Nullable for
+    # detached qualification runs and legacy rows.
+    assignment_id = Column(UUID(as_uuid=True), nullable=True)
+    agent_profile_id = Column(UUID(as_uuid=True), nullable=True)
+    profile_digest = Column(String, nullable=True)
+    profile_snapshot_json = Column(JSONB, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=False)
     ended_at = Column(DateTime(timezone=True), nullable=True)
     outcome = Column(String, nullable=True)
@@ -461,6 +467,7 @@ RECORD_KIND_HEALTH = "HEALTH"
 RECORD_KIND_RELEASE_EVIDENCE = "RELEASE_EVIDENCE"
 RECORD_KIND_PILOT_RUN = "PILOT_RUN"
 RECORD_KIND_STUDY_PUBLICATION = "STUDY_PUBLICATION"
+RECORD_KIND_STUDY_LIFECYCLE = "STUDY_LIFECYCLE"
 RECORD_KIND_RETENTION_EVIDENCE = "RETENTION_EVIDENCE"
 
 

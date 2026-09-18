@@ -1,32 +1,17 @@
-"""Bootstrap composition: validate everything, then project and sign.
-
-Nothing is issued until the enrollment is active with consent, the study window
-is open, the revision is published, the assignment matches, and the pinned agent
-release is qualified and resolvable for the participant platform. A revision that
-declares required capabilities additionally needs a COMPATIBLE compatibility
-result; a revision that declares none may proceed without a receipt. Every
-failure is a typed block; the service never fails open and never invents a
-default arm or fallback artifact.
-"""
+"""Bootstrap composition for an active, web-enrolled study participant."""
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Callable, Optional, Protocol
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from research.canonical import canonical_hash
 from research.compatibility.enums import CompatibilityDecision
 from research.participants.enums import EnrollmentStatus
-from research.study.protocol.enums import (
-    ReleaseResolutionStatus,
-    RevisionStatus,
-    TelemetryFieldClass,
-)
-from research.study.protocol.models import FixedSchedule, RollingSchedule, StudyProtocolV1
 from research.telemetry.enums import CoverageState
+from research.canonical import canonical_hash
 
 from .capability import issue_capability
 from .models import (
@@ -47,14 +32,6 @@ from .models import (
 )
 from .signer import sign_manifest
 
-if TYPE_CHECKING:
-    from research.compatibility.models import CompatibilityResult
-    from research.participants.models import Enrollment
-    from research.runtime.assignment.models import AssignmentV1
-    from research.study.agents.models import AgentReleaseV1
-    from research.study.protocol.publication import StudyRevision
-    from research.study.protocol.validation import ReleaseResolver
-
 __all__ = [
     "BootstrapSigningContext",
     "EphemeralSessionFactory",
@@ -66,12 +43,12 @@ _BASE = ConfigDict(extra="forbid")
 
 
 class SessionFactory(Protocol):
-    """Creates (or reuses) a research session for an enrollment."""
+    """Creates (or reuses) a research session for an enrollment and study."""
 
     def create_for_enrollment(
         self,
-        enrollment: Enrollment,
-        revision: StudyRevision,
+        enrollment: Any,
+        study: Any,
         now: datetime,
         context_id: str = "",
     ) -> ResearchSessionRef:  # pragma: no cover - structural protocol
@@ -79,19 +56,12 @@ class SessionFactory(Protocol):
 
 
 class EphemeralSessionFactory:
-    """Test-only factory: returns a fresh session ref and persists nothing.
-
-    This is **not** a production default. The production path always injects a
-    database-backed factory (:class:`backend.routers.research.bootstrap._PersistentSessionFactory`),
-    so a manifest's ``research_session_id`` resolves through the session store.
-    A build without a database passes this explicitly (tests); ``compose_bootstrap``
-    has no default factory and never falls back to an in-memory one.
-    """
+    """Test-only factory that returns a fresh session reference."""
 
     def create_for_enrollment(
         self,
-        enrollment: Enrollment,
-        revision: StudyRevision,
+        enrollment: Any,
+        study: Any,
         now: datetime,
         context_id: str = "",
     ) -> ResearchSessionRef:
@@ -129,229 +99,185 @@ def _blocked(
     )
 
 
-def _schedule_issue(
-    protocol: StudyProtocolV1, enrollment: Enrollment, now: datetime
-) -> Optional[BootstrapIssue]:
-    schedule = protocol.schedule
-    if isinstance(schedule, FixedSchedule):
-        if now < schedule.start_at:
-            return BootstrapIssue(
-                code=BootstrapReasonCode.STUDY_NOT_OPEN,
-                message="the study has not opened yet",
-                field="schedule.start_at",
-            )
-        if schedule.end_at is not None and now > schedule.end_at:
-            return BootstrapIssue(
-                code=BootstrapReasonCode.STUDY_CLOSED,
-                message="the study window has closed",
-                field="schedule.end_at",
-            )
-        return None
-    if isinstance(schedule, RollingSchedule):
-        duration = schedule.duration_seconds
-        if duration is None or duration <= 0:
-            return BootstrapIssue(
-                code=BootstrapReasonCode.STUDY_CLOSED,
-                message="rolling duration is not usable",
-                field="schedule.duration_seconds",
-            )
-        if now > enrollment.enrolled_at + timedelta(seconds=duration):
-            return BootstrapIssue(
-                code=BootstrapReasonCode.STUDY_CLOSED,
-                message="the rolling enrollment window has closed",
-                field="schedule.duration_seconds",
-            )
+def _study_is_open(study: Any, now: datetime) -> Optional[BootstrapIssue]:
+    if study is None or not getattr(study, "is_research", False):
+        return BootstrapIssue(
+            code=BootstrapReasonCode.STUDY_NOT_OPEN,
+            message="the study is not a research study",
+            field="study",
+        )
+    if getattr(study, "research_status", None) == "STUDY_STOPPED":
+        return BootstrapIssue(
+            code=BootstrapReasonCode.STUDY_CLOSED,
+            message="the study has been stopped",
+            field="research_status",
+        )
+    if not getattr(study, "is_active", False):
+        return BootstrapIssue(
+            code=BootstrapReasonCode.STUDY_NOT_OPEN,
+            message="the study is not active",
+            field="is_active",
+        )
+    starts_at = getattr(study, "starts_at", None)
+    ends_at = getattr(study, "ends_at", None)
+    if starts_at is not None and now < starts_at:
+        return BootstrapIssue(
+            code=BootstrapReasonCode.STUDY_NOT_OPEN,
+            message="the study has not opened yet",
+            field="starts_at",
+        )
+    if ends_at is not None and now > ends_at:
+        return BootstrapIssue(
+            code=BootstrapReasonCode.STUDY_CLOSED,
+            message="the study window has closed",
+            field="ends_at",
+        )
     return None
 
 
+def _policies(study: Any) -> BootstrapPolicies:
+    config = getattr(study, "research_config_json", None) or {}
+    telemetry = config.get("telemetry_policy", {}) or {}
+    privacy = config.get("privacy_policy", {}) or {}
+    session = config.get("session_policy", {}) or {}
+    allowed = telemetry.get("allowed_field_classes", [])
+    return BootstrapPolicies(
+        telemetry_policy=BootstrapTelemetryPolicy(
+            allowed_field_classes=[str(value) for value in allowed],
+            content_capture=bool(telemetry.get("content_capture", False)),
+        ),
+        privacy_policy=BootstrapPrivacyPolicy(
+            retention_action=privacy.get("retention_action", "RETAIN_ANONYMIZED"),
+            retention_days=privacy.get("retention_days"),
+        ),
+        session_policy=BootstrapSessionPolicy(
+            idle_timeout_seconds=session.get("idle_timeout_seconds"),
+            resume_grace_seconds=session.get("resume_grace_seconds"),
+            heartbeat_seconds=session.get("heartbeat_seconds"),
+        ),
+    )
+
+
+def _profile_projection(snapshot: dict[str, Any]) -> Optional[BootstrapAgentProfile]:
+    profile_id = snapshot.get("profile_id")
+    if not profile_id:
+        return None
+    return BootstrapAgentProfile(
+        profile_id=uuid.UUID(str(profile_id)),
+        name=str(snapshot.get("name", "assigned-profile")),
+        framework_version=str(snapshot.get("framework_version", "code4me2-agent")),
+        model=str(snapshot.get("model", "")),
+        temperature=snapshot.get("temperature"),
+    )
+
+
 def compose_bootstrap(
-    enrollment: Enrollment,
-    revision: StudyRevision,
-    assignment: AssignmentV1,
-    release: AgentReleaseV1,
+    enrollment: Any,
+    study: Any,
+    assignment: Any,
+    release: Any,
     compatibility_ref: Optional[str],
     session_factory: SessionFactory,
     signer: BootstrapSigningContext,
     now: Optional[datetime] = None,
     *,
-    compatibility_result: Optional[CompatibilityResult] = None,
+    compatibility_result: Optional[Any] = None,
     platform: Optional[tuple[str, str]] = None,
-    release_resolver: Optional[ReleaseResolver] = None,
     agent_profile: Optional[BootstrapAgentProfile] = None,
     kill_switch_check: Optional[Callable[[], bool]] = None,
     context_id: str = "",
 ) -> BootstrapResult:
     """Compose a signed, short-lived, secret-free bootstrap manifest."""
     timestamp = _now(now)
-
-    # Operator kill switch (Issue 13): when engaged, no new session is issued.
-    # The check is injected so this service keeps no operations dependency.
     if kill_switch_check is not None and kill_switch_check():
         return _blocked(
             BootstrapReasonCode.KILL_SWITCH_ENGAGED,
             "an operator kill switch is engaged for this scope",
             "kill_switch",
         )
-
-    # No signing secret is configured: never fall back to a hardcoded default,
-    # because a predictable secret would let anyone mint a capability.
     if signer is None or not signer.secret or not signer.secret.strip():
         return _blocked(
             BootstrapReasonCode.SIGNING_SECRET_MISSING,
-            "no bootstrap signing secret is configured; refusing to issue a manifest",
+            "no bootstrap signing secret is configured",
             "signer.secret",
         )
-
-    if enrollment is None:
+    if enrollment is None or enrollment.status != EnrollmentStatus.ACTIVE:
         return _blocked(
             BootstrapReasonCode.ENROLLMENT_NOT_ACTIVE,
-            "an enrollment is required",
+            "an active enrollment is required",
             "enrollment_id",
         )
-    if enrollment.status != EnrollmentStatus.ACTIVE:
-        return _blocked(
-            BootstrapReasonCode.ENROLLMENT_NOT_ACTIVE,
-            f"enrollment is {enrollment.status.value}",
-            "status",
-        )
-
-    if revision is None or revision.revision_id != enrollment.study_revision_id:
-        return _blocked(
-            BootstrapReasonCode.REVISION_MISMATCH,
-            "enrollment is not bound to the requested revision",
-            "revision_id",
-        )
-    if revision.status != RevisionStatus.PUBLISHED:
-        return _blocked(
-            BootstrapReasonCode.REVISION_NOT_PUBLISHED,
-            f"revision is {revision.status.value}",
-            "status",
-        )
-
-    protocol = StudyProtocolV1.model_validate(revision.protocol_json)
-
-    window_issue = _schedule_issue(protocol, enrollment, timestamp)
-    if window_issue is not None:
+    study_issue = _study_is_open(study, timestamp)
+    if study_issue is not None:
         return BootstrapResult(
             outcome=BootstrapOutcome.BLOCKED,
-            reason=window_issue.code,
-            issue=window_issue,
+            reason=study_issue.code,
+            issue=study_issue,
         )
-
     if assignment is None or (
         assignment.enrollment_id != enrollment.enrollment_id
-        or assignment.study_revision_id != revision.revision_id
+        or assignment.study_id != enrollment.study_id
     ):
         return _blocked(
             BootstrapReasonCode.ASSIGNMENT_MISMATCH,
-            "assignment does not belong to this enrollment/revision",
+            "assignment does not belong to this enrollment/study",
             "assignment_id",
         )
 
-    condition = next(
-        (
-            candidate
-            for candidate in protocol.conditions
-            if candidate.condition_id == assignment.condition_id
-        ),
-        None,
-    )
-    if condition is None:
+    snapshot = dict(assignment.profile_snapshot_json or {})
+    if not assignment.profile_digest or canonical_hash(snapshot) != assignment.profile_digest:
         return _blocked(
             BootstrapReasonCode.ASSIGNMENT_MISMATCH,
-            f"assigned condition {assignment.condition_id!r} is not in the revision",
-            "condition_id",
+            "assignment profile digest is missing",
+            "profile_digest",
+        )
+    profile = agent_profile or _profile_projection(snapshot)
+    if profile is None:
+        return _blocked(
+            BootstrapReasonCode.ASSIGNMENT_MISMATCH,
+            "assignment has no profile snapshot",
+            "profile_snapshot_json",
+        )
+    if str(snapshot.get("profile_id")) != str(assignment.agent_profile_id):
+        return _blocked(
+            BootstrapReasonCode.ASSIGNMENT_MISMATCH,
+            "assignment profile id does not match its profile snapshot",
+            "agent_profile_id",
+        )
+    if profile.profile_id != assignment.agent_profile_id:
+        return _blocked(
+            BootstrapReasonCode.ASSIGNMENT_MISMATCH,
+            "bootstrap profile does not match the assigned profile",
+            "agent_profile_id",
         )
 
-    pin = condition.resolved_distribution
-    if pin is None:
+    release_id = snapshot.get("release_id")
+    if release is None:
         return _blocked(
             BootstrapReasonCode.RELEASE_NOT_FOUND,
-            "the assigned condition has no frozen distribution pin",
-            "resolved_distribution",
+            "the assigned profile release is not registered",
+            "release_id",
         )
-
-    from research.study.agents.enums import DistributionMode
-
-    is_byoa = pin.distribution_mode == DistributionMode.BYOA_EXTERNAL.value
-
-    if release is None:
-        if not is_byoa:
-            return _blocked(
-                BootstrapReasonCode.RELEASE_NOT_FOUND,
-                "the pinned agent release is not registered",
-                "resolved_distribution",
-            )
-    else:
-        if pin.agent_id and pin.agent_id != release.agent_id:
-            return _blocked(
-                BootstrapReasonCode.ARTIFACT_MISMATCH,
-                "release agent does not match the assigned condition pin",
-                "resolved_distribution.agent_id",
-            )
-        if pin.release_id and pin.release_id != release.release_id:
-            return _blocked(
-                BootstrapReasonCode.ARTIFACT_MISMATCH,
-                "release id does not match the assigned condition pin",
-                "resolved_distribution.release_id",
-            )
-        if pin.version and pin.version != release.version:
-            return _blocked(
-                BootstrapReasonCode.ARTIFACT_MISMATCH,
-                "release version does not match the assigned condition pin",
-                "resolved_distribution.version",
-            )
-
-    from research.study.agents.enums import QualificationStatus
-
-    if not is_byoa:
-        # A PACKAGED release must be derived-qualified; a BYOA distribution is
-        # deliberately always unverified (it has no artifact to bind evidence to)
-        # and is launched from its frozen command/package identity instead.
-        if release is None or release.qualification_status != QualificationStatus.QUALIFIED:
-            qualification = (
-                release.qualification_status.value
-                if release is not None
-                else "unregistered"
-            )
-            return _blocked(
-                BootstrapReasonCode.RELEASE_NOT_QUALIFIED,
-                f"release is {qualification}",
-                "resolved_distribution",
-            )
-
-    selected_digest: Optional[str] = None
-    if is_byoa:
-        # BYOA: the participant installs the agent; there is no artifact to select
-        # or digest to pin. The manifest carries the command/package identity.
-        if not (
-            pin.agent_package
-            or pin.agent_command
-            or (release is not None and release.byoa_identity)
-        ):
-            return _blocked(
-                BootstrapReasonCode.ARTIFACT_UNAVAILABLE,
-                "the BYOA distribution declares no command or agent package",
-                "resolved_distribution",
-            )
-    elif release_resolver is not None:
-        resolution = release_resolver.resolve(
-            release.agent_id, release_id=release.release_id
+    if not release_id or str(release.release_id) != str(release_id):
+        return _blocked(
+            BootstrapReasonCode.ARTIFACT_MISMATCH,
+            "release does not match the assigned profile snapshot",
+            "release_id",
         )
-        if resolution.status == ReleaseResolutionStatus.NOT_FOUND:
-            return _blocked(
-                BootstrapReasonCode.RELEASE_NOT_FOUND,
-                "the pinned release could not be resolved",
-                "resolved_distribution",
-            )
-        if resolution.status != ReleaseResolutionStatus.RESOLVED:
-            return _blocked(
-                BootstrapReasonCode.RELEASE_NOT_QUALIFIED,
-                f"release resolution is {resolution.status.value}",
-                "resolved_distribution",
-            )
-        selected_digest = resolution.artifact_digest
-    else:
+    if compatibility_result is not None and compatibility_result.decision != CompatibilityDecision.COMPATIBLE:
+        return _blocked(
+            BootstrapReasonCode.INCOMPATIBLE_ENVIRONMENT,
+            f"compatibility decision is {compatibility_result.decision.value}",
+            "compatibility",
+        )
+    qualification = getattr(release, "qualification_status", None)
+    if getattr(qualification, "value", qualification) != "QUALIFIED":
+        return _blocked(
+            BootstrapReasonCode.RELEASE_NOT_QUALIFIED,
+            "the assigned release is not qualified",
+            "release_id",
+        )
+    if not getattr(release, "is_byoa", False):
         if platform is not None:
             artifact = release.artifact_for(platform[0], platform[1])
         else:
@@ -361,69 +287,14 @@ def compose_bootstrap(
             return _blocked(
                 BootstrapReasonCode.ARTIFACT_UNAVAILABLE,
                 "no artifact is available for this platform",
-                "resolved_distribution",
+                "release.artifacts",
             )
-        selected_digest = artifact.sha256
-
-    if not is_byoa and not selected_digest:
-        return _blocked(
-            BootstrapReasonCode.ARTIFACT_UNAVAILABLE,
-            "no resolvable artifact digest for the pinned release",
-            "resolved_distribution",
-        )
-
-    pinned_digest = pin.artifact_digest
-    if (
-        not is_byoa
-        and pinned_digest
-        and pinned_digest != selected_digest
-    ):
-        return _blocked(
-            BootstrapReasonCode.ARTIFACT_MISMATCH,
-            "selected artifact does not match the frozen distribution pin",
-            "resolved_distribution.artifact_digest",
-        )
-
-    required_capabilities = protocol.environment_requirements.required_capabilities
-    if compatibility_result is None and required_capabilities:
-        return _blocked(
-            BootstrapReasonCode.COMPATIBILITY_MISSING,
-            "no compatibility result was supplied; failing closed",
-            "compatibility",
-        )
-    if (
-        compatibility_result is not None
-        and compatibility_result.decision != CompatibilityDecision.COMPATIBLE
-    ):
-        return _blocked(
-            BootstrapReasonCode.INCOMPATIBLE_ENVIRONMENT,
-            f"compatibility decision is {compatibility_result.decision.value}",
-            "compatibility",
-        )
-
-    telemetry = protocol.telemetry_policy
-    policies = BootstrapPolicies(
-        telemetry_policy=BootstrapTelemetryPolicy(
-            allowed_field_classes=[
-                field_class.value for field_class in telemetry.allowed_field_classes
-            ],
-            content_capture=(
-                TelemetryFieldClass.CONTENT in telemetry.allowed_field_classes
-            ),
-        ),
-        privacy_policy=BootstrapPrivacyPolicy(
-            retention_action=protocol.privacy_policy.retention_action.value,
-            retention_days=protocol.privacy_policy.retention_days,
-        ),
-        session_policy=BootstrapSessionPolicy(
-            idle_timeout_seconds=protocol.session_policy.idle_timeout_seconds,
-            resume_grace_seconds=protocol.session_policy.resume_grace_seconds,
-            heartbeat_seconds=protocol.session_policy.heartbeat_seconds,
-        ),
-    )
+        artifact_digest = artifact.sha256
+    else:
+        artifact_digest = ""
 
     research_session = session_factory.create_for_enrollment(
-        enrollment, revision, timestamp, context_id
+        enrollment, study, timestamp, context_id
     )
     capability = issue_capability(
         audience=signer.audience,
@@ -434,80 +305,47 @@ def compose_bootstrap(
         now=timestamp,
         enrollment_id=enrollment.enrollment_id,
         research_session_id=research_session.research_session_id,
-        revision_id=revision.revision_id,
+        study_id=enrollment.study_id,
     )
-
-    if release is not None and release.adapter is not None:
-        adapter_version = release.adapter.version
-    else:
-        adapter_version = condition.adapter_version
-
-    if release is not None:
-        manifest_agent_id = release.agent_id
-        manifest_release_id = release.release_id
-        manifest_mode = release.distribution_mode.value
-        manifest_command = release.agent_command
-        manifest_command_args = list(release.agent_command_args)
-        manifest_package = release.agent_package
-    else:
-        # BYOA distribution with no registered release: launch from the frozen pin.
-        manifest_agent_id = (
-            pin.agent_id or pin.agent_package or pin.agent_command or ""
-        )
-        manifest_release_id = pin.release_id or ""
-        manifest_mode = pin.distribution_mode
-        manifest_command = pin.agent_command
-        manifest_command_args = list(pin.agent_command_args)
-        manifest_package = pin.agent_package
-
+    adapter = getattr(getattr(release, "adapter", None), "version", None)
     draft = BootstrapManifestV1(
         generated_at=timestamp,
-        study_id=revision.study_id,
-        revision_id=revision.revision_id,
-        revision_digest=revision.protocol_digest,
+        study_id=enrollment.study_id,
         enrollment_id=enrollment.enrollment_id,
+        research_config_digest=getattr(study, "research_config_digest", None),
         research_session=research_session,
         assignment=BootstrapAssignment(
             assignment_id=assignment.assignment_id,
-            condition_id=assignment.condition_id,
+            agent_profile_id=assignment.agent_profile_id,
             strategy=assignment.strategy,
             randomization_epoch=assignment.randomization_epoch,
-            protocol_digest=assignment.protocol_digest,
+            profile_digest=assignment.profile_digest,
         ),
         agent_release=BootstrapAgentRelease(
-            agent_id=manifest_agent_id,
-            release_id=manifest_release_id,
-            artifact_digest=selected_digest or "",
-            adapter_version=adapter_version,
-            distribution_mode=manifest_mode,
-            agent_command=manifest_command,
-            agent_command_args=manifest_command_args,
-            agent_package=manifest_package,
+            agent_id=release.agent_id,
+            release_id=release.release_id,
+            artifact_digest=artifact_digest,
+            adapter_version=adapter,
+            distribution_mode=getattr(getattr(release, "distribution_mode", None), "value", "PACKAGED"),
+            agent_command=release.agent_command,
+            agent_command_args=list(release.agent_command_args),
+            agent_package=release.agent_package,
         ),
-        agent_profile=agent_profile,
-        policies=policies,
+        agent_profile=profile,
+        policies=_policies(study),
         compatibility_receipt_ref=compatibility_ref,
         compatibility=BootstrapCompatibility(
             receipt_ref=compatibility_ref,
-            state=(
-                CoverageState.AVAILABLE
-                if compatibility_result is not None
-                else CoverageState.UNAVAILABLE
-            ),
+            state=(CoverageState.AVAILABLE if compatibility_result is not None else CoverageState.UNAVAILABLE),
             reason=None if compatibility_result is not None else "NOT_REQUIRED",
         ),
         session_capability=capability,
     )
-
     signature = sign_manifest(draft, signer.secret)
-    signed = draft.model_copy(
-        update={
-            "manifest_digest": signature.digest,
-            "signature": signature.signature,
-        }
-    )
     return BootstrapResult(
         outcome=BootstrapOutcome.ISSUED,
         reason=BootstrapReasonCode.OK,
-        manifest=signed,
+        manifest=draft.model_copy(
+            update={"manifest_digest": signature.digest, "signature": signature.signature}
+        ),
     )

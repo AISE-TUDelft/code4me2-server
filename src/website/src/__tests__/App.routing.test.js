@@ -11,9 +11,6 @@ jest.mock("../pages/research/ResearchStudies", () => () => <div>STUDIES-PAGE</di
 jest.mock("../pages/research/ResearchStudyEditor", () => () => (
   <div>EDITOR-PAGE</div>
 ));
-jest.mock("../pages/research/ResearchEnrollment", () => () => (
-  <div>ENROLLMENT-PAGE</div>
-));
 jest.mock("../pages/research/ResearchJoin", () => () => <div>JOIN-PAGE</div>);
 
 const STUDY_ID = "11111111-1111-1111-1111-111111111111";
@@ -45,13 +42,6 @@ test("a non-admin authenticated user can reach the studies route", async () => {
   renderAt("/research/studies");
 
   expect(await screen.findByText("STUDIES-PAGE")).toBeInTheDocument();
-});
-
-test("the admin-only enrollment surface stays admin-gated", async () => {
-  renderAt("/research/enrollment");
-
-  expect(await screen.findByText("DASHBOARD-PAGE")).toBeInTheDocument();
-  expect(screen.queryByText("ENROLLMENT-PAGE")).not.toBeInTheDocument();
 });
 
 test("an unauthenticated visitor is redirected to login", async () => {

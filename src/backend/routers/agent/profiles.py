@@ -15,7 +15,7 @@ A profile is a private, editable template owned by exactly one researcher
 release it pins is the approved artifact. The provider endpoint and secret live
 on the connection, never on the profile. Names are unique per owner.
 
-There is no client-chosen arm: task/run assignment is server-authoritative (see
+There is no client-chosen profile assignment: task/run assignment is server-authoritative (see
 ``agents.registry``).
 """
 
@@ -161,7 +161,7 @@ class AgentProfilePayload(BaseModel):
 def _authorize_connection(
     db: Any, payload: AgentProfilePayload, current_user: AuthenticatedUser
 ) -> Any:
-    """Resolve the selected connection and enforce grant + model allowlist."""
+    """Resolve the selected admin-managed connection and model allowlist."""
     connection = crud.get_provider_connection(db, payload.connection_id)
     if connection is None:
         raise HTTPException(
@@ -178,9 +178,9 @@ def _authorize_connection(
         raise HTTPException(
             status_code=403,
             detail={
-                "code": "CONNECTION_NOT_GRANTED",
+                "code": "CONNECTION_NOT_AVAILABLE",
                 "message": (
-                    "the caller is not authorized to use this provider connection"
+                    "the provider connection is not active or available"
                 ),
             },
         )
@@ -239,6 +239,7 @@ def _profile_to_dict(db: Any, profile: AgentProfile) -> dict[str, Any]:
         "is_active": profile.is_active,
         "temperature": profile.temperature,
         "max_context_tokens": profile.max_context_tokens,
+        "configuration_digest": getattr(profile, "configuration_digest", ""),
         "connection": _connection_summary(db, profile),
         "release_id": view.release_id,
         "release_version": view.version,
@@ -355,6 +356,18 @@ def create_agent_profile(
         return JsonResponseWithStatus(
             status_code=201, content={"profile": _profile_to_dict(db, profile)}
         )
+    except crud.ProfileLockedError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "PROFILE_LOCKED", "message": str(exc)},
+        ) from exc
+    except crud.ProfileReleaseError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
@@ -394,8 +407,8 @@ def update_agent_profile(
 ):
     """Update a profile template.
 
-    Editing a template never rewrites a published study snapshot: publication
-    frozen the profile's configuration into the revision.
+    Editing a template never rewrites an existing study snapshot; active-study
+    links are locked by the repository before any mutation.
     """
     require_researcher(current_user)
     db = app.get_db_session()
@@ -425,6 +438,18 @@ def update_agent_profile(
         return JsonResponseWithStatus(
             status_code=200, content={"profile": _profile_to_dict(db, profile)}
         )
+    except crud.ProfileLockedError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "PROFILE_LOCKED", "message": str(exc)},
+        ) from exc
+    except crud.ProfileReleaseError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
@@ -454,6 +479,12 @@ def delete_agent_profile(
             status_code=200,
             content={"retired": True, "profile_id": str(profile_id)},
         )
+    except crud.ProfileLockedError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "PROFILE_LOCKED", "message": str(exc)},
+        ) from exc
     finally:
         db.close()
 

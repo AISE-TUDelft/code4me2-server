@@ -60,12 +60,12 @@ def event_family(event_type: str) -> str:
 
 def coverage_by_family(
     events: Iterable[object],
-    revision_id: UUID,
+    study_id: UUID,
     *,
     population: str = "all_events",
     computed_at: Optional[datetime] = None,
 ) -> TelemetryCoverageV1:
-    """Build the explicit per-family coverage projection for a revision."""
+    """Build the explicit per-family coverage projection for a study."""
     counts: dict[str, dict[str, int]] = {}
     total = 0
     for record in events:
@@ -91,7 +91,7 @@ def coverage_by_family(
         for family, bucket in sorted(counts.items())
     ]
     return TelemetryCoverageV1(
-        revision_id=revision_id,
+        study_id=study_id,
         population=population,
         coverage_version=COVERAGE_VERSION,
         families=families,

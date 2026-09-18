@@ -81,7 +81,7 @@ def _require_funded_task(db, task) -> None:
     if getattr(task, "study_id", None) is None:
         return
     kill_switch_check = operations_store.db_kill_switch_check(
-        db, study_id=task.study_id, revision_id=None, enrollment_id=None
+        db, study_id=task.study_id, enrollment_id=None
     )
     try:
         access.require_live_enrollment(
@@ -845,8 +845,6 @@ def create_managed_run(
             study_id=assignment.study_id,
             study_assignment_id=assignment.assignment_id,
             profile_id=profile.profile_id,
-            study_arm_name=assignment.arm_name,
-            study_arm_is_baseline=assignment.is_baseline,
             consent_content_storage=policy["store_agent_content"],
         )
         return JSONResponse(

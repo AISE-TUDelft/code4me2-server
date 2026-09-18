@@ -1,10 +1,9 @@
-"""Pydantic v2 contracts for enrollment-scoped assignment and exposure.
+"""Pydantic v2 contracts for enrollment-scoped profile assignment and exposure.
 
 Assignment and exposure are **separate immutable facts**:
 
-* :class:`AssignmentV1` is the server-authoritative, sticky condition allocated
-  for one ``(enrollment_id, study_revision_id)``. It is never re-randomized for
-  a revision.
+* :class:`AssignmentV1` is the server-authoritative, sticky agent profile
+    allocated for one enrollment. It is never re-randomized.
 * :class:`ExposureV1` records what the runtime actually started, with its own
   id and timestamp; it never rewrites the assignment.
 """
@@ -29,18 +28,32 @@ _BASE = ConfigDict(extra="forbid")
 
 
 class AssignmentV1(BaseModel):
-    """The immutable condition assigned to one enrollment/revision."""
+    """The immutable agent profile assigned to one enrollment."""
 
     model_config = _FROZEN
 
     assignment_id: UUID
     enrollment_id: UUID
-    study_revision_id: UUID
-    condition_id: str
+    study_id: UUID
+    agent_profile_id: UUID
     strategy: str
     randomization_epoch: int = 0
+    profile_digest: str
+    profile_snapshot_json: dict[str, Any]
+    status: str = "ACTIVE"
     assigned_at: datetime
-    protocol_digest: str
+
+
+class StudyProfileSelection(BaseModel):
+    """A study-owned, digest-pinned profile available for random assignment."""
+
+    model_config = _FROZEN
+
+    study_id: UUID
+    agent_profile_id: UUID
+    profile_digest: str
+    profile_snapshot_json: dict[str, Any]
+    selection_order: int = 0
 
 
 class ExposureEnvironment(BaseModel):
@@ -62,7 +75,7 @@ class ExposureV1(BaseModel):
 
     exposure_id: UUID
     assignment_id: UUID
-    study_revision_id: UUID
+    study_id: UUID
     environment: ExposureEnvironment
     agent_release_id: str
     artifact_digest: Optional[str] = None

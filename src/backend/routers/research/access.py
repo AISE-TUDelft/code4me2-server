@@ -27,6 +27,7 @@ from fastapi import HTTPException
 
 from backend.routers.analytics.auth_utils import AuthenticatedUser
 from database.db_schemas import Study as StudyRow
+from database.db_schemas import ResearchStudyStatus
 from database.research_schemas import ResearchSessionV1 as ResearchSessionRow
 from research.participants import identity as identity_store
 from research.participants.enums import EnrollmentStatus
@@ -166,6 +167,11 @@ def require_live_enrollment(
         )
 
     study = db.get(StudyRow, active.study_id)
+    if getattr(study, "research_status", None) == ResearchStudyStatus.STUDY_STOPPED.value:
+        raise FundedAccessRefused(
+            "STUDY_STOPPED",
+            "the study has been stopped and cannot accept funded activity",
+        )
     if not protocol_store.research_study_is_open(study, _now(now)):
         # Lazy terminal sweep: a study that ended or was terminated is marked
         # completed here (COMPLETED enrollments, revoked sessions, bumped epoch)
@@ -193,6 +199,8 @@ def _sweep_ended_study(db, study, study_id, *, now: datetime) -> None:
     intact.
     """
     if study is None or not getattr(study, "is_research", False):
+        return
+    if getattr(study, "research_status", None) != "ACTIVE":
         return
     ends_at = getattr(study, "ends_at", None)
     ended = ends_at is not None and now > ends_at
@@ -226,7 +234,7 @@ class ResearchBinding:
     """
 
     enrollment_id: uuid.UUID
-    study_revision_id: uuid.UUID
+    study_id: uuid.UUID
     research_session_id: Optional[uuid.UUID]
 
 
@@ -270,7 +278,7 @@ def resolve_research_binding(
     )
     return ResearchBinding(
         enrollment_id=active.enrollment_id,
-        study_revision_id=active.study_revision_id,
+        study_id=active.study_id,
         research_session_id=research_session_id,
     )
 

@@ -1,41 +1,25 @@
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import * as api from "../../../utils/api";
 import ResearchStudies from "../ResearchStudies";
+import * as api from "../../../utils/api";
 
 jest.mock("../../../utils/api");
 
-const STUDY_ID = "11111111-1111-1111-1111-111111111111";
-
-const REVISION = {
-  revision_id: "22222222-2222-2222-2222-222222222222",
-  study_id: STUDY_ID,
-  revision_number: 1,
-  status: "PUBLISHED",
-  protocol_digest: "abcdef0123456789",
-  supersedes_revision_id: null,
-  published_at: "2026-01-02T03:04:05Z",
-  created_at: "2026-01-02T03:04:05Z",
-};
-
-const DRAFT = {
-  draft_id: "33333333-3333-3333-3333-333333333333",
-  study_id: STUDY_ID,
-  name: "My protocol",
-  schema_version: "1",
-};
+beforeEach(() => {
+  api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: false } });
+});
 
 const STUDY = {
-  study_id: STUDY_ID,
-  name: "Focus study",
-  join_code: "JOIN-AB12",
-  latest_revision: {
-    revision_id: "22222222-2222-2222-2222-222222222222",
-    revision_number: 2,
-    status: "PUBLISHED",
-    protocol_digest: "abcdef0123456789",
-  },
+  study_id: "study-1",
+  name: "Pilot study",
+  description: "Metadata only",
+  research_status: "DRAFT",
+  join_code: "JOIN1234",
+  consent_locked_at: null,
+  profile_selections: [
+    { profile_id: "profile-1", name: "Code4Me", model: "model-a" },
+  ],
 };
 
 const renderPage = () =>
@@ -45,185 +29,99 @@ const renderPage = () =>
     </MemoryRouter>,
   );
 
-const loadStudy = async () => {
-  fireEvent.change(screen.getByLabelText(/Study ID \(UUID\)/i), {
-    target: { value: STUDY_ID },
-  });
-  fireEvent.click(screen.getByRole("button", { name: /load study/i }));
-};
+test("renders lifecycle study list without revision controls", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
 
-beforeEach(() => {
-  jest.clearAllMocks();
+  renderPage();
+
+  expect(await screen.findByText("Pilot study")).toBeInTheDocument();
+  expect(screen.getByText("Draft")).toBeInTheDocument();
+  expect(screen.queryByText(/supersede|revision|publish draft/i)).not.toBeInTheDocument();
+});
+
+test("shows selected profiles as read-only study configuration", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+
+  expect(await screen.findByText("Selected agent profiles")).toBeInTheDocument();
+  expect(screen.getByText("Code4Me")).toBeInTheDocument();
+  expect(screen.getByText("Profile selection is fixed after study creation.")).toBeInTheDocument();
+});
+
+test("creates a Draft study through the lifecycle API", async () => {
   api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
-  api.listResearchRevisions.mockResolvedValue({ ok: true, data: [REVISION] });
-  api.listResearchDrafts.mockResolvedValue({ ok: true, data: [DRAFT] });
-  api.getResearchDraft.mockResolvedValue({
+  api.getAgentProfiles.mockResolvedValue({
     ok: true,
-    draft_id: DRAFT.draft_id,
-    study_id: STUDY_ID,
-    name: DRAFT.name,
-    protocol: { schema_version: "1" },
+    data: [{ profile_id: "profile-1", name: "Code4Me", model: "model-a", is_active: true }],
   });
-  api.getResearchExposures.mockResolvedValue({
+  api.createResearchStudy.mockResolvedValue({ ok: true, data: { study: STUDY } });
+
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New pilot" } });
+  fireEvent.click(await screen.findByLabelText("Code4Me"));
+  fireEvent.click(screen.getByRole("button", { name: "Create Draft study" }));
+
+  await waitFor(() => expect(api.createResearchStudy).toHaveBeenCalledWith({
+    name: "New pilot",
+    description: "",
+    profileIds: ["profile-1"],
+  }));
+});
+
+test("selects agent profiles when creating a study", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
+  api.getAgentProfiles.mockResolvedValue({
     ok: true,
     data: [
-      {
-        condition_id: "arm-a",
-        assigned_count: 3,
-        exposed_count: 2,
-        non_exposure_count: 1,
-        exposure_rate: 0.6667,
-        coverage: "AVAILABLE",
-      },
+      { profile_id: "profile-1", name: "Code4Me", model: "model-a", is_active: true },
+      { profile_id: "profile-2", name: "Codex", model: "model-b", is_active: true },
     ],
   });
-  api.getResearchEnrollmentCoverage.mockResolvedValue({
-    ok: true,
-    data: {
-      total_enrollments: 3,
-      coverage: "AVAILABLE",
-    },
-  });
-  api.validateResearchProtocol.mockResolvedValue({
-    ok: true,
-    valid: true,
-    errors: [],
-  });
-  api.publishResearchDraft.mockResolvedValue({ ok: true, data: {} });
-  api.retireResearchRevision.mockResolvedValue({ ok: true, data: {} });
-});
+  api.createResearchStudy.mockResolvedValue({ ok: true, data: { study: STUDY } });
 
-test("renders immutable revisions, drafts and derived counts", async () => {
   renderPage();
-  await loadStudy();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Agent study" } });
+  fireEvent.click(await screen.findByLabelText("Code4Me"));
+  fireEvent.click(screen.getByRole("button", { name: "Create Draft study" }));
 
-  expect(
-    await screen.findByText(/My protocol/, {}, { timeout: 3000 }),
-  ).toBeInTheDocument();
-
-  // Revision digest + status are surfaced.
-  expect(screen.getByTitle(REVISION.revision_id)).toBeInTheDocument();
-  expect(screen.getByText("PUBLISHED")).toBeInTheDocument();
-
-  // Derived counts load for the selected revision.
-  fireEvent.click(screen.getByRole("button", { name: /view counts/i }));
-
-  expect(await screen.findByText("arm-a")).toBeInTheDocument();
-  // Coverage state appears for both exposures and enrollment coverage.
-  expect(screen.getAllByText("AVAILABLE").length).toBeGreaterThan(0);
-  expect(api.getResearchExposures).toHaveBeenCalledWith(
-    STUDY_ID,
-    REVISION.revision_id,
-  );
-  // Enrollment total (3) also appears in the exposure assignment count.
-  expect(screen.getAllByText("3").length).toBeGreaterThan(0);
+  await waitFor(() => expect(api.createResearchStudy).toHaveBeenCalledWith({
+    name: "Agent study",
+    description: "",
+    profileIds: ["profile-1"],
+  }));
 });
 
-test("renders the study index with join code and revision status", async () => {
+test("stops a study and exposes clone for stopped studies", async () => {
+  const stopped = { ...STUDY, research_status: "STUDY_STOPPED" };
+  api.listResearchStudies
+    .mockResolvedValueOnce({ ok: true, data: [STUDY] })
+    .mockResolvedValue({ ok: true, data: [stopped] });
+  api.stopResearchStudy.mockResolvedValue({ ok: true, data: { study: stopped } });
+  api.cloneResearchStudy.mockResolvedValue({ ok: true, data: { study: { ...STUDY, study_id: "study-2" } } });
+  jest.spyOn(window, "confirm").mockReturnValue(true);
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("button", { name: "Stop study" }));
+
+  await waitFor(() => expect(api.stopResearchStudy).toHaveBeenCalledWith("study-1"));
+  fireEvent.click(await screen.findByRole("button", { name: "Clone as new Draft" }));
+  await waitFor(() => expect(api.cloneResearchStudy).toHaveBeenCalledWith("study-1"));
+  window.confirm.mockRestore();
+});
+
+test("shows the kill-switch control to admins and calls the operations API", async () => {
+  api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: true } });
   api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.engageResearchKillSwitch.mockResolvedValue({ ok: true, data: { switch_id: "switch-1" } });
+
   renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("button", { name: "Engage kill switch" }));
 
-  expect(await screen.findByText("Focus study")).toBeInTheDocument();
-  // Study-scoped join code and latest revision status are surfaced per study.
-  expect(screen.getByText("JOIN-AB12")).toBeInTheDocument();
-  expect(screen.getByText("PUBLISHED")).toBeInTheDocument();
-  expect(screen.getByText("#2")).toBeInTheDocument();
-
-  // The index is the primary entry point: Open loads that study's revisions.
-  fireEvent.click(screen.getByRole("button", { name: /^open$/i }));
-  await waitFor(() =>
-    expect(api.listResearchRevisions).toHaveBeenCalledWith(STUDY_ID),
-  );
-});
-
-test("shows an API error state when revisions fail to load", async () => {
-  api.listResearchRevisions.mockResolvedValue({
-    ok: false,
-    error: "revisions exploded",
-    errors: [],
-  });
-  renderPage();
-  await loadStudy();
-
-  const alert = await screen.findByRole("alert");
-  expect(alert).toHaveTextContent(/revisions exploded/);
-});
-
-test("mints a study server-side so no UUID has to be pasted", async () => {
-  api.createResearchStudy.mockResolvedValue({
-    ok: true,
-    data: {
-      study: {
-        study_id: "44444444-4444-4444-8444-444444444444",
-        name: "My new study",
-      },
-    },
-  });
-  renderPage();
-
-  fireEvent.click(
-    await screen.findByRole("button", { name: /^new study$/i }),
-  );
-  fireEvent.change(await screen.findByLabelText(/^Name$/i), {
-    target: { value: "My new study" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: /create study/i }));
-
-  await waitFor(() =>
-    expect(api.createResearchStudy).toHaveBeenCalledWith({
-      name: "My new study",
-      description: null,
-    }),
-  );
-});
-
-test("surfaces a create-study failure instead of navigating", async () => {
-  api.createResearchStudy.mockResolvedValue({
-    ok: false,
-    error: "not allowed",
-  });
-  renderPage();
-
-  fireEvent.click(
-    await screen.findByRole("button", { name: /^new study$/i }),
-  );
-  fireEvent.change(await screen.findByLabelText(/^Name$/i), {
-    target: { value: "Denied study" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: /create study/i }));
-
-  await waitFor(() =>
-    expect(screen.getByRole("alert")).toHaveTextContent(/not allowed/i),
-  );
-});
-
-test("notes when the study index endpoint is unavailable", async () => {
-  api.listResearchStudies.mockResolvedValue({
-    ok: false,
-    missing: true,
-    error: "missing",
-  });
-  renderPage();
-
-  expect(
-    await screen.findByText(/does not expose a study index/i),
-  ).toBeInTheDocument();
-});
-
-test("publishing a draft surfaces a conflict without inventing success", async () => {
-  api.publishResearchDraft.mockResolvedValue({
-    ok: false,
-    status: 409,
-    error: "conflict",
-    errors: [],
-  });
-  renderPage();
-  await loadStudy();
-
-  const publishButton = await screen.findByRole("button", { name: /^publish$/i });
-  fireEvent.click(publishButton);
-
-  await waitFor(() =>
-    expect(screen.getByRole("alert")).toHaveTextContent(/conflict/i),
-  );
+  await waitFor(() => expect(api.engageResearchKillSwitch).toHaveBeenCalledWith("study-1", "Admin maintenance"));
 });

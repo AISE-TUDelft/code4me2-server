@@ -40,7 +40,7 @@ def _session_row(research_session: ResearchSessionV1) -> ResearchSessionRow:
     return ResearchSessionRow(
         session_id=research_session.research_session_id,
         enrollment_id=research_session.enrollment_id,
-        study_revision_id=research_session.study_revision_id,
+        study_id=research_session.study_id,
         context_id=research_session.context_id or str(research_session.research_session_id),
         state=research_session.state.value,
         opened_at=research_session.opened_at,
@@ -211,6 +211,10 @@ def create_agent_run(session: Session, run: AgentRunV1) -> ResearchAgentRun:
         agent_run_id=run.agent_run_id,
         research_session_id=run.research_session_id,
         agent_release_id=run.agent_release_id,
+        assignment_id=run.assignment_id,
+        agent_profile_id=run.agent_profile_id,
+        profile_digest=run.profile_digest,
+        profile_snapshot_json=run.profile_snapshot_json,
         started_at=run.started_at,
         ended_at=run.ended_at,
         outcome=run.outcome.value if run.outcome is not None else None,
@@ -250,7 +254,7 @@ def row_to_session(row: ResearchSessionRow) -> ResearchSessionV1:
     return ResearchSessionModel(
         research_session_id=row.session_id,
         enrollment_id=row.enrollment_id,
-        study_revision_id=row.study_revision_id,
+        study_id=row.study_id,
         context_id=row.context_id or "",
         state=state if isinstance(state, SessionState) else SessionState(state),
         opened_at=row.opened_at,
@@ -276,6 +280,10 @@ def row_to_agent_run(row: ResearchAgentRun) -> AgentRunV1:
         agent_run_id=row.agent_run_id,
         research_session_id=row.research_session_id,
         agent_release_id=row.agent_release_id,
+        assignment_id=row.assignment_id,
+        agent_profile_id=row.agent_profile_id,
+        profile_digest=row.profile_digest,
+        profile_snapshot_json=row.profile_snapshot_json,
         started_at=row.started_at,
         ended_at=row.ended_at,
         outcome=(
@@ -299,7 +307,7 @@ def session_summary(row: ResearchSessionRow) -> dict[str, Any]:
     return {
         "research_session_id": str(row.session_id),
         "enrollment_id": str(row.enrollment_id),
-        "study_revision_id": str(row.study_revision_id),
+        "study_id": str(row.study_id),
         "context_id": row.context_id,
         "state": row.state,
         "opened_at": _iso(row.opened_at),

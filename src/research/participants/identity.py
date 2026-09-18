@@ -23,9 +23,8 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy import select
@@ -58,19 +57,16 @@ from .enums import (
 from .models import (
     DeletionLedgerEntry,
     Enrollment,
-    EnrollmentResult,
     IdentityIssue,
     Participant,
     PseudonymousRecord,
     ResearchEligibility,
     RetentionResult,
-    RevisionRef,
 )
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
-    from research.study.protocol.publication import StudyRevision
 
 # Audit action used for the append-only deletion/retention ledger.
 LEDGER_AUDIT_ACTION = "retention.deletion_ledger"
@@ -93,10 +89,6 @@ def _now(now: Optional[datetime] = None) -> datetime:
 
 def _issue(code: IdentityReasonCode, message: str, field: str = "") -> IdentityIssue:
     return IdentityIssue(code=code, message=message, field=field)
-
-
-def _rejected(code: IdentityReasonCode, message: str, field: str = "") -> EnrollmentResult:
-    return EnrollmentResult(accepted=False, issue=_issue(code, message, field))
 
 
 def _isoformat(value: Optional[datetime]) -> Optional[str]:
@@ -124,129 +116,6 @@ def default_eligibility(now: Optional[datetime] = None) -> ResearchEligibility:
         reasons=[IdentityReasonCode.ELIGIBLE],
         evaluated_at=_now(now),
     )
-
-
-def revision_ref_from_mapping(
-    protocol_json: Mapping,
-    *,
-    revision_id: UUID,
-    study_id: UUID,
-) -> RevisionRef:
-    """Build the enrollment slice from a revision protocol document."""
-    privacy = protocol_json.get("privacy_policy") or {}
-    raw_action = privacy.get("retention_action")
-    try:
-        retention = (
-            RetentionAction(raw_action)
-            if raw_action
-            else RetentionAction.RETAIN_ANONYMIZED
-        )
-    except ValueError:
-        retention = RetentionAction.RETAIN_ANONYMIZED
-
-    return RevisionRef(
-        revision_id=revision_id,
-        study_id=study_id,
-        retention_action=retention,
-    )
-
-
-def revision_ref_from_study_revision(revision: StudyRevision) -> RevisionRef:
-    """Build the enrollment slice from a published ``StudyRevision``."""
-    return revision_ref_from_mapping(
-        revision.protocol_json,
-        revision_id=revision.revision_id,
-        study_id=revision.study_id,
-    )
-
-
-def enroll(
-    participant: Participant,
-    revision: RevisionRef,
-    *,
-    existing_enrollment: Optional[Enrollment] = None,
-    other_active_enrollment: Optional[Enrollment] = None,
-    eligibility: Optional[ResearchEligibility] = None,
-    now: Optional[datetime] = None,
-) -> EnrollmentResult:
-    """Create (or reuse) a study-local enrollment for ``participant``.
-
-    Joining records the single consent acceptance (``consent_accepted_at``) and
-    creates an ACTIVE enrollment directly: there is no pending-consent,
-    re-consent or withdrawal state. A duplicate request for the same
-    ``(participant, revision)`` returns the existing enrollment. A second active
-    enrollment is never created: ``other_active_enrollment`` is the participant's
-    live enrollment in another study (resolved under a participant lock by the
-    caller), and is rejected with a typed ``ALREADY_ENROLLED`` naming the other
-    study.
-    """
-    timestamp = _now(now)
-
-    if revision is None:
-        return _rejected(
-            IdentityReasonCode.UNKNOWN_REVISION,
-            "enrollment requires a published revision",
-            "revision_id",
-        )
-
-    if existing_enrollment is not None:
-        if (
-            existing_enrollment.study_revision_id == revision.revision_id
-            and existing_enrollment.status in _REUSABLE_ENROLLMENT_STATES
-        ):
-            return EnrollmentResult(
-                accepted=True,
-                enrollment=existing_enrollment,
-                created=False,
-                reused=True,
-            )
-        return _rejected(
-            IdentityReasonCode.DUPLICATE_ENROLLMENT,
-            (
-                "an existing enrollment for this revision is not reusable "
-                f"({existing_enrollment.status.value})"
-            ),
-            "study_revision_id",
-        )
-
-    # One active enrollment account-wide. Completion of another study frees
-    # the slot, so only the live state counts.
-    if (
-        other_active_enrollment is not None
-        and other_active_enrollment.status in _REUSABLE_ENROLLMENT_STATES
-    ):
-        return _rejected(
-            IdentityReasonCode.ALREADY_ENROLLED,
-            (
-                "this account already has an active enrollment in study "
-                f"{other_active_enrollment.study_id}"
-            ),
-            "enrollment_id",
-        )
-
-    result_eligibility = eligibility or default_eligibility(timestamp)
-    if not result_eligibility.eligible:
-        return _rejected(
-            IdentityReasonCode.INELIGIBLE,
-            "this account is not eligible for the study",
-            "eligibility",
-        )
-
-    enrollment = Enrollment(
-        enrollment_id=uuid.uuid4(),
-        participant_id=participant.participant_id,
-        study_id=revision.study_id,
-        study_revision_id=revision.revision_id,
-        participant_code=generate_participant_code(),
-        status=EnrollmentStatus.ACTIVE,
-        eligibility=result_eligibility,
-        enrolled_at=timestamp,
-        consent_accepted_at=timestamp,
-        revocation_epoch=0,
-        updated_at=timestamp,
-        retention_action=revision.retention_action,
-    )
-    return EnrollmentResult(accepted=True, enrollment=enrollment, created=True)
 
 
 def apply_retention(
@@ -326,7 +195,6 @@ def researcher_projection(enrollment: Enrollment) -> dict[str, Any]:
         "enrollment_id": str(enrollment.enrollment_id),
         "participant_code": enrollment.participant_code,
         "study_id": str(enrollment.study_id),
-        "study_revision_id": str(enrollment.study_revision_id),
         "status": enrollment.status.value,
         "eligible": enrollment.eligibility.eligible,
         "revocation_epoch": enrollment.revocation_epoch,
@@ -407,7 +275,11 @@ def lock_participant_by_account(
 
 
 def get_or_create_participant_row(
-    session: Session, account_id: uuid.UUID, *, now: Optional[datetime] = None
+    session: Session,
+    account_id: uuid.UUID,
+    *,
+    now: Optional[datetime] = None,
+    commit: bool = True,
 ) -> ResearchParticipant:
     """Return the account's participant row, creating it race-safely and durably.
 
@@ -415,7 +287,8 @@ def get_or_create_participant_row(
     ``account_id`` and then re-reads the winning row, so exactly one mapping
     exists. The mapping is committed so it is durable and visible to the other
     first-use transactions (a caller that needs the row lock re-acquires it with
-    :func:`lock_participant_by_account`).
+    :func:`lock_participant_by_account`). ``commit=False`` keeps the mapping in
+    the caller's transaction, which is required by web consent.
     """
     row = session.execute(
         select(ResearchParticipant).where(
@@ -432,7 +305,8 @@ def get_or_create_participant_row(
             )
             .on_conflict_do_nothing(index_elements=["account_id"])
         )
-        session.commit()
+        if commit:
+            session.commit()
         row = session.execute(
             select(ResearchParticipant).where(
                 ResearchParticipant.account_id == account_id
@@ -473,7 +347,6 @@ def create_enrollment(session: Session, enrollment: Enrollment) -> ResearchEnrol
         enrollment_id=enrollment.enrollment_id,
         participant_id=enrollment.participant_id,
         study_id=enrollment.study_id,
-        study_revision_id=enrollment.study_revision_id,
         participant_code=enrollment.participant_code,
         status=enrollment.status.value,
         revocation_epoch=enrollment.revocation_epoch,
@@ -530,17 +403,6 @@ def get_enrollment(
     return session.execute(statement).scalars().first()
 
 
-def get_enrollment_for_participant_revision(
-    session: Session, participant_id: uuid.UUID, study_revision_id: uuid.UUID
-) -> Optional[ResearchEnrollment]:
-    """Fetch the unique enrollment for ``(participant, revision)``, or ``None``."""
-    statement = select(ResearchEnrollment).where(
-        ResearchEnrollment.participant_id == participant_id,
-        ResearchEnrollment.study_revision_id == study_revision_id,
-    )
-    return session.execute(statement).scalars().first()
-
-
 def get_enrollment_for_participant_study(
     session: Session, participant_id: uuid.UUID, study_id: uuid.UUID
 ) -> Optional[ResearchEnrollment]:
@@ -558,121 +420,6 @@ def get_enrollment_for_participant_study(
         .order_by(ResearchEnrollment.enrolled_at.desc())
     )
     return session.execute(statement).scalars().first()
-
-
-#: Terminal states from which a self-service rejoin to the same study is refused.
-_TERMINAL_ENROLLMENT_STATES = frozenset({EnrollmentStatus.COMPLETED})
-
-
-@dataclass(frozen=True)
-class EnrollmentOpenResult:
-    """Result of the shared account-wide enrollment entry point."""
-
-    participant: Optional[Participant]
-    enrollment: Optional[Enrollment]
-    created: bool
-    reused: bool
-    issue: Optional[IdentityIssue]
-
-
-def open_enrollment(
-    session: Session,
-    account_id: uuid.UUID,
-    revision: RevisionRef,
-    *,
-    now: Optional[datetime] = None,
-) -> EnrollmentOpenResult:
-    """Create or reuse an enrollment under the account-wide single-active rule.
-
-    This is the single shared entry point used by both the join-code and the
-    participants routers. It locks the participant row first, so concurrent
-    cross-study joins serialize, then rejects:
-
-    * a second live enrollment for the account (``ALREADY_ENROLLED``);
-    * a rejoin to a study the account already withdrew from or completed
-      (``REJOIN_NOT_ALLOWED``), including via a different revision.
-
-    Repeat enrollment in the same live revision is idempotent.
-    """
-    timestamp = _now(now)
-    participant_row = get_or_create_participant_row(session, account_id, now=timestamp)
-    # Commit the mapping durably, then hold a row lock for the whole
-    # account-wide check-and-insert so concurrent cross-study joins serialize.
-    locked_row = lock_participant_by_account(session, account_id)
-    if locked_row is not None:
-        participant_row = locked_row
-    session.flush()
-    participant = row_to_participant(participant_row)
-
-    prior_study_row = get_enrollment_for_participant_study(
-        session, participant.participant_id, revision.study_id
-    )
-    if prior_study_row is not None:
-        prior_status = EnrollmentStatus(prior_study_row.status)
-        if prior_status in _TERMINAL_ENROLLMENT_STATES:
-            return EnrollmentOpenResult(
-                participant=participant,
-                enrollment=None,
-                created=False,
-                reused=False,
-                issue=_issue(
-                    IdentityReasonCode.REJOIN_NOT_ALLOWED,
-                    "this account already left or completed this study; rejoin is "
-                    "not available",
-                    "enrollment_id",
-                ),
-            )
-
-    existing_row = get_enrollment_for_participant_revision(
-        session, participant.participant_id, revision.revision_id
-    )
-    existing = row_to_enrollment(existing_row) if existing_row is not None else None
-
-    other_row = get_active_enrollment_for_participant(
-        session,
-        participant.participant_id,
-        exclude_enrollment_id=existing.enrollment_id if existing is not None else None,
-    )
-    other = row_to_enrollment(other_row) if other_row is not None else None
-
-    result = enroll(
-        participant,
-        revision,
-        existing_enrollment=existing,
-        other_active_enrollment=other,
-        now=timestamp,
-    )
-    if not result.accepted or result.enrollment is None:
-        return EnrollmentOpenResult(
-            participant=participant,
-            enrollment=None,
-            created=False,
-            reused=False,
-            issue=result.issue,
-        )
-
-    if result.created:
-        try:
-            create_enrollment(session, result.enrollment)
-        except ActiveEnrollmentConflict:
-            return EnrollmentOpenResult(
-                participant=participant,
-                enrollment=None,
-                created=False,
-                reused=False,
-                issue=_issue(
-                    IdentityReasonCode.ALREADY_ENROLLED,
-                    "this account already has an active enrollment",
-                    "enrollment_id",
-                ),
-            )
-    return EnrollmentOpenResult(
-        participant=participant,
-        enrollment=result.enrollment,
-        created=result.created,
-        reused=result.reused,
-        issue=None,
-    )
 
 
 def list_enrollments(
@@ -783,7 +530,6 @@ def complete_enrollments_for_study(
     for row in rows:
         revoke_active_sessions(session, row.enrollment_id, now=timestamp)
         row.status = EnrollmentStatus.COMPLETED.value
-        row.revocation_epoch = row.revocation_epoch + 1
         row.updated_at = timestamp
         session.add(row)
     session.commit()
@@ -900,7 +646,6 @@ def row_to_enrollment(row: ResearchEnrollment) -> Enrollment:
         enrollment_id=row.enrollment_id,
         participant_id=row.participant_id,
         study_id=row.study_id,
-        study_revision_id=row.study_revision_id,
         participant_code=row.participant_code,
         status=status
         if isinstance(status, EnrollmentStatus)

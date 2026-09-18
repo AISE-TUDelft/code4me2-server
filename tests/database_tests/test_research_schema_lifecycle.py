@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 import os
+import json
+import random
+import threading
 import uuid
 from datetime import datetime, timezone
 
 import pytest
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from database.migration.migration_manager import MigrationManager
-from research.study.lifecycle import stop_research_study
+from database import crud
+from database.crud import ProfileLockedError
+from research.study.lifecycle import (
+    clone_stopped_research_study,
+    open_study_enrollment,
+    revoke_research_enrollment,
+    stop_research_study,
+    update_research_metadata,
+)
+from research.study.protocol import store as study_store
+from research.canonical import canonical_hash
 
 load_dotenv()
 
@@ -193,6 +206,391 @@ def test_one_active_enrollment_and_one_assignment_per_enrollment():
         engine.dispose()
 
 
+def test_web_consent_creates_equal_random_assignment_and_is_idempotent():
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        study_id = _create_study(session, owner_id)
+        profile_ids = [uuid.uuid4(), uuid.uuid4()]
+        for index, profile_id in enumerate(profile_ids):
+            session.execute(
+                text(
+                    "INSERT INTO public.agent_profile "
+                    "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
+                    "VALUES (:profile_id, :owner_id, :name, 'model', '[]', 'auto', 1)"
+                ),
+                {"profile_id": profile_id, "owner_id": owner_id, "name": f"profile-{index}"},
+            )
+            session.execute(
+                text(
+                    "INSERT INTO public.study_agent_profile "
+                    "(study_id, profile_id, profile_digest, profile_snapshot_json, selection_order, created_at) "
+                    "VALUES (:study_id, :profile_id, :digest, :snapshot, :selection_order, now())"
+                ),
+                {
+                    "study_id": study_id,
+                    "profile_id": profile_id,
+                    "digest": f"digest-{index}",
+                    "snapshot": '{"model":"model"}',
+                    "selection_order": index,
+                },
+            )
+        session.commit()
+
+        first = open_study_enrollment(
+            session, owner_id, f"SCHEMA-{study_id}", rng=random.Random(7)
+        )
+        second = open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
+        assert first.created is True
+        assert first.reused is False
+        assert second.created is False
+        assert second.reused is True
+        assert second.enrollment_id == first.enrollment_id
+        assert second.agent_profile_id == first.agent_profile_id
+        assert session.execute(
+            text("SELECT count(*) FROM public.study_assignment WHERE enrollment_id = :id"),
+            {"id": first.enrollment_id},
+        ).scalar_one() == 1
+        assert session.execute(
+            text("SELECT research_status, consent_locked_at FROM public.study WHERE study_id = :id"),
+            {"id": study_id},
+        ).one()[0] == "ACTIVE"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_historical_run_and_assignment_snapshots_survive_profile_edit():
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        study_id = _create_study(session, owner_id)
+        profile_id = uuid.uuid4()
+        snapshot = {"profile_id": str(profile_id), "model": "before-edit"}
+        session.execute(
+            text(
+                "INSERT INTO public.agent_profile "
+                "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'historical', 'before-edit', '[]', 'auto', 1)"
+            ),
+            {"profile_id": profile_id, "owner_id": owner_id},
+        )
+        session.execute(
+            text(
+                "INSERT INTO public.study_agent_profile "
+                "(study_id, profile_id, profile_digest, profile_snapshot_json, selection_order, created_at) "
+                "VALUES (:study_id, :profile_id, 'digest-before', :snapshot, 0, now())"
+            ),
+            {
+                "study_id": study_id,
+                "profile_id": profile_id,
+                "snapshot": json.dumps(snapshot),
+            },
+        )
+        session.commit()
+        enrollment = open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
+        run_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.research_agent_run "
+                "(agent_run_id, agent_release_id, assignment_id, agent_profile_id, "
+                "profile_digest, profile_snapshot_json, started_at) "
+                "SELECT :run_id, 'release-before', assignment_id, agent_profile_id, "
+                "profile_digest, profile_snapshot_json, now() "
+                "FROM public.study_assignment WHERE assignment_id = :assignment_id"
+            ),
+            {"run_id": run_id, "assignment_id": enrollment.assignment_id},
+        )
+        session.execute(
+            text("UPDATE public.agent_profile SET model = 'after-edit' WHERE profile_id = :profile_id"),
+            {"profile_id": profile_id},
+        )
+        session.commit()
+        assignment = session.execute(
+            text("SELECT profile_digest, profile_snapshot_json FROM public.study_assignment WHERE assignment_id = :id"),
+            {"id": enrollment.assignment_id},
+        ).one()
+        run = session.execute(
+            text("SELECT assignment_id, agent_profile_id, profile_digest, profile_snapshot_json FROM public.research_agent_run WHERE agent_run_id = :id"),
+            {"id": run_id},
+        ).one()
+        assert assignment == ("digest-before", snapshot)
+        assert run == (enrollment.assignment_id, profile_id, "digest-before", snapshot)
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_concurrent_first_consent_creates_one_enrollment_and_assignment():
+    engine, session = _fresh_session()
+    sessions = []
+    try:
+        owner_id = _create_user(session)
+        study_id = _create_study(session, owner_id)
+        profile_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.agent_profile "
+                "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'concurrent', 'model', '[]', 'auto', 1)"
+            ),
+            {"profile_id": profile_id, "owner_id": owner_id},
+        )
+        session.execute(
+            text(
+                "INSERT INTO public.study_agent_profile "
+                "(study_id, profile_id, profile_digest, profile_snapshot_json, selection_order, created_at) "
+                "VALUES (:study_id, :profile_id, 'digest', '{\"model\":\"model\"}', 0, now())"
+            ),
+            {"study_id": study_id, "profile_id": profile_id},
+        )
+        session.commit()
+        session.close()
+        session = None
+        session_factory = sessionmaker(bind=engine)
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def consent():
+            db = session_factory()
+            sessions.append(db)
+            try:
+                barrier.wait(timeout=5)
+                results.append(open_study_enrollment(db, owner_id, f"SCHEMA-{study_id}"))
+            except Exception as error:  # pragma: no cover - assertion reports the worker error
+                errors.append(error)
+                db.rollback()
+
+        workers = [threading.Thread(target=consent) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+            assert not worker.is_alive(), "consent worker retained a database lock"
+        assert not errors
+        assert len(results) == 2
+        assert sum(result.created for result in results) == 1
+        with session_factory() as check_session:
+            assert check_session.execute(
+                text("SELECT count(*) FROM public.research_enrollment WHERE participant_id = (SELECT participant_id FROM public.research_participant WHERE account_id = :account_id)"),
+                {"account_id": owner_id},
+            ).scalar_one() == 1
+            assert check_session.execute(
+                text("SELECT count(*) FROM public.study_assignment WHERE study_id = :study_id"),
+                {"study_id": study_id},
+            ).scalar_one() == 1
+    finally:
+        if session is not None:
+            session.close()
+        for db in sessions:
+            db.close()
+        engine.dispose()
+
+
+def test_failed_consent_does_not_commit_first_use_participant_mapping():
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        study_id = _create_study(session, owner_id)
+        with pytest.raises(ValueError, match="no selected agent profiles"):
+            open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
+        session.rollback()
+        assert session.execute(
+            text(
+                "SELECT count(*) FROM public.research_participant "
+                "WHERE account_id = :account_id"
+            ),
+            {"account_id": owner_id},
+        ).scalar_one() == 0
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_study_creation_freezes_owned_profiles_and_rejects_foreign_profiles():
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        foreign_owner_id = _create_user(session)
+        foreign_profile_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.agent_profile "
+                "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'foreign', 'model', '[]', 'auto', 1)"
+            ),
+            {"profile_id": foreign_profile_id, "owner_id": foreign_owner_id},
+        )
+        session.commit()
+
+        with pytest.raises(PermissionError):
+            study_store.create_study(
+                session,
+                study_id=uuid.uuid4(),
+                name="Rejected study",
+                created_by=owner_id,
+                join_code=f"REJECT-{uuid.uuid4()}",
+                profile_ids=[foreign_profile_id],
+            )
+        session.rollback()
+
+        owned_profile_id = uuid.uuid4()
+        release_id = f"release-{uuid.uuid4()}"
+        session.execute(
+            text(
+                "INSERT INTO public.agent_release "
+                "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+                "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', '{}', now())"
+            ),
+            {"release_id": release_id},
+        )
+        session.execute(
+            text(
+                "INSERT INTO public.agent_profile "
+                "(profile_id, owner_user_id, name, model, release_id, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'owned', 'model', :release_id, '[]', 'auto', 1)"
+            ),
+            {"profile_id": owned_profile_id, "owner_id": owner_id, "release_id": release_id},
+        )
+        session.commit()
+        study = study_store.create_study(
+            session,
+            study_id=uuid.uuid4(),
+            name="Frozen study",
+            created_by=owner_id,
+            join_code=f"FROZEN-{uuid.uuid4()}",
+            research_config_json={"telemetry_policy": {"metadata_only": True}},
+            profile_ids=[owned_profile_id],
+        )
+        assert study.research_config_digest == canonical_hash(
+            {
+                "telemetry_policy": {"metadata_only": True},
+                "profile_ids": [str(owned_profile_id)],
+            }
+        )
+        stored_profile = session.execute(
+            text(
+                "SELECT profile_digest, profile_snapshot_json, selection_order "
+                "FROM public.study_agent_profile WHERE study_id = :study_id"
+            ),
+            {"study_id": study.study_id},
+        ).one()
+        assert stored_profile[2] == 0
+        assert stored_profile[1]["profile_id"] == str(owned_profile_id)
+        assert stored_profile[0]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_active_study_locks_profile_edits_until_stop_and_keeps_digest():
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        profile_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.agent_profile "
+                "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'locked', 'model', '[]', 'auto', 1)"
+            ),
+            {"profile_id": profile_id, "owner_id": owner_id},
+        )
+        session.commit()
+        study = study_store.create_study(
+            session,
+            study_id=uuid.uuid4(),
+            name="Lock study",
+            created_by=owner_id,
+            join_code=f"LOCK-{uuid.uuid4()}",
+            profile_ids=[profile_id],
+        )
+        open_study_enrollment(session, owner_id, study.join_code)
+
+        with pytest.raises(ProfileLockedError):
+            crud.update_agent_profile(session, profile_id, model="blocked-model")
+        session.rollback()
+        with pytest.raises(ProfileLockedError):
+            crud.delete_agent_profile(session, profile_id)
+        session.rollback()
+
+        stop_research_study(session, study.study_id, actor="owner")
+        updated = crud.update_agent_profile(session, profile_id, model="stopped-model")
+        assert updated.model == "stopped-model"
+        assert updated.configuration_digest
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_profile_stays_locked_until_last_active_study_stops():
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        second_owner_id = _create_user(session)
+        profile_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.agent_profile "
+                "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'shared-lock', 'model', '[]', 'auto', 1)"
+            ),
+            {"profile_id": profile_id, "owner_id": owner_id},
+        )
+        study_ids = [_create_study(session, owner_id), _create_study(session, second_owner_id)]
+        for study_id in study_ids:
+            session.execute(
+                text(
+                    "INSERT INTO public.study_agent_profile "
+                    "(study_id, profile_id, profile_digest, profile_snapshot_json, selection_order, created_at) "
+                    "VALUES (:study_id, :profile_id, 'digest', '{}', 0, now())"
+                ),
+                {"study_id": study_id, "profile_id": profile_id},
+            )
+            session.execute(
+                text(
+                    "UPDATE public.study SET is_active = true, research_status = 'ACTIVE' "
+                    "WHERE study_id = :study_id"
+                ),
+                {"study_id": study_id},
+            )
+        session.commit()
+
+        with pytest.raises(ProfileLockedError):
+            crud.update_agent_profile(session, profile_id, model="blocked")
+        session.rollback()
+        stop_research_study(session, study_ids[0], actor="owner")
+        with pytest.raises(ProfileLockedError):
+            crud.update_agent_profile(session, profile_id, model="still-blocked")
+        session.rollback()
+        stop_research_study(session, study_ids[1], actor="owner")
+        updated = crud.update_agent_profile(session, profile_id, model="unlocked")
+        assert updated.model == "unlocked"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_agent_task_crud_uses_current_profile_bound_columns():
+    engine, session = _fresh_session()
+    try:
+        task = crud.create_agent_task(
+            session,
+            agent_profile="http-profile",
+            model="model",
+            approval_policy="auto",
+            tools_json="[]",
+            source="test",
+        )
+        assert task.task_id is not None
+        assert task.profile_id is None
+        assert not hasattr(task, "study_revision_id")
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_stopping_study_preserves_research_rows_and_revokes_collection():
     engine, session = _fresh_session()
     try:
@@ -281,11 +679,21 @@ def test_stopping_study_preserves_research_rows_and_revokes_collection():
         summary = stop_research_study(session, study_id, actor="researcher")
         assert summary.enrollment_count == 1
         assert summary.session_count == 1
+        repeated = stop_research_study(session, study_id, actor="researcher")
+        assert repeated.enrollment_count == 0
+        assert repeated.session_count == 0
 
         assert session.execute(
             text("SELECT research_status FROM public.study WHERE study_id = :study_id"),
             {"study_id": study_id},
         ).scalar_one() == "STUDY_STOPPED"
+        assert session.execute(
+            text(
+                "SELECT kind, payload_json->>'event' FROM public.research_record "
+                "WHERE study_id = :study_id"
+            ),
+            {"study_id": study_id},
+        ).one() == ("STUDY_LIFECYCLE", "STUDY_STOPPED")
         assert session.execute(
             text("SELECT status, revocation_epoch FROM public.research_enrollment WHERE enrollment_id = :id"),
             {"id": enrollment_id},
@@ -303,6 +711,174 @@ def test_stopping_study_preserves_research_rows_and_revokes_collection():
                 text(f"SELECT count(*) FROM public.{table} WHERE {key} = :value"),
                 {"value": value},
             ).scalar_one() == 1
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_metadata_locks_after_consent_and_clone_requires_stop():
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        study_id = _create_study(session, owner_id)
+        updated = update_research_metadata(
+            session,
+            study_id,
+            name="Updated name",
+            description="Updated description",
+        )
+        assert updated.name == "Updated name"
+
+        session.execute(
+            text(
+                "UPDATE public.study SET consent_locked_at = now() "
+                "WHERE study_id = :study_id"
+            ),
+            {"study_id": study_id},
+        )
+        session.commit()
+        with pytest.raises(PermissionError, match="metadata is locked"):
+            update_research_metadata(session, study_id, name="Rejected")
+        session.rollback()
+
+        with pytest.raises(PermissionError, match="only stopped"):
+            clone_stopped_research_study(session, study_id, actor="owner")
+
+        stop_research_study(session, study_id, actor="owner")
+        clone = clone_stopped_research_study(session, study_id, actor="owner")
+        assert clone.study_id != study_id
+        assert clone.research_status == "DRAFT"
+        assert clone.join_code
+        assert clone.join_code != session.get(type(clone), study_id).join_code
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_metadata_update_cannot_race_past_first_consent_lock():
+    engine, session = _fresh_session()
+    second_session = sessionmaker(bind=engine)()
+    try:
+        owner_id = _create_user(session)
+        study_id = _create_study(session, owner_id)
+        session.execute(
+            text(
+                "SELECT study_id FROM public.study "
+                "WHERE study_id = :study_id FOR UPDATE"
+            ),
+            {"study_id": study_id},
+        )
+        session.execute(
+            text(
+                "UPDATE public.study SET consent_locked_at = now(), "
+                "research_status = 'ACTIVE' WHERE study_id = :study_id"
+            ),
+            {"study_id": study_id},
+        )
+        second_session.execute(text("SET lock_timeout = '200ms'"))
+        with pytest.raises(OperationalError):
+            update_research_metadata(second_session, study_id, name="Blocked by consent lock")
+        session.commit()
+        second_session.rollback()
+        with pytest.raises(PermissionError, match="metadata is locked"):
+            update_research_metadata(second_session, study_id, name="Still blocked")
+    finally:
+        second_session.close()
+        session.close()
+        engine.dispose()
+
+
+def test_revoke_enrollment_is_terminal_but_retains_identity():
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        study_id = _create_study(session, owner_id)
+        participant_id = uuid.uuid4()
+        enrollment_id = uuid.uuid4()
+        session_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.research_participant "
+                "(participant_id, account_id, created_at) VALUES (:participant_id, :account_id, now())"
+            ),
+            {"participant_id": participant_id, "account_id": owner_id},
+        )
+        session.execute(
+            text(
+                "INSERT INTO public.research_enrollment "
+                "(enrollment_id, participant_id, study_id, participant_code, status, "
+                "revocation_epoch, eligibility_json, enrolled_at, updated_at, "
+                "consent_accepted_at, retention_action) VALUES "
+                "(:enrollment_id, :participant_id, :study_id, 'p_revoke', 'ACTIVE', 0, '{}', now(), now(), now(), 'RETAIN_ANONYMIZED')"
+            ),
+            {
+                "enrollment_id": enrollment_id,
+                "participant_id": participant_id,
+                "study_id": study_id,
+            },
+        )
+        session.execute(
+            text(
+                "INSERT INTO public.research_session "
+                "(session_id, enrollment_id, study_id, context_id, state, manifest_digest, environment_json, transitions_json, created_at) "
+                "VALUES (:session_id, :enrollment_id, :study_id, 'ctx-revoke', 'running', 'manifest', '{}', '[]', now())"
+            ),
+            {
+                "session_id": session_id,
+                "enrollment_id": enrollment_id,
+                "study_id": study_id,
+            },
+        )
+        session.commit()
+
+        summary = revoke_research_enrollment(session, study_id, enrollment_id)
+        assert summary.session_count == 1
+        assert session.execute(
+            text(
+                "SELECT status, revocation_epoch FROM public.research_enrollment "
+                "WHERE enrollment_id = :enrollment_id"
+            ),
+            {"enrollment_id": enrollment_id},
+        ).one() == ("REVOKED", 1)
+        assert session.execute(
+            text(
+                "SELECT state, close_reason FROM public.research_session "
+                "WHERE session_id = :session_id"
+            ),
+            {"session_id": session_id},
+        ).one() == ("revoked", "REVOKED")
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_revoked_enrollment_cannot_rejoin_same_study():
+    engine, session = _fresh_session()
+    try:
+        owner_id = _create_user(session)
+        study_id = _create_study(session, owner_id)
+        profile_id = uuid.uuid4()
+        session.execute(
+            text(
+                "INSERT INTO public.agent_profile "
+                "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'rejoin profile', 'model', '[]', 'auto', 1)"
+            ),
+            {"profile_id": profile_id, "owner_id": owner_id},
+        )
+        session.execute(
+            text(
+                "INSERT INTO public.study_agent_profile "
+                "(study_id, profile_id, profile_digest, profile_snapshot_json, selection_order, created_at) "
+                "VALUES (:study_id, :profile_id, 'digest', '{}', 0, now())"
+            ),
+            {"study_id": study_id, "profile_id": profile_id},
+        )
+        session.commit()
+        first = open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
+        revoke_research_enrollment(session, study_id, first.enrollment_id)
+        with pytest.raises(PermissionError, match="cannot rejoin"):
+            open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
     finally:
         session.close()
         engine.dispose()

@@ -188,7 +188,7 @@ class TestConfig:
 
             # Build command with quoted paths for Windows
             cmd = [
-                "python",
+                sys.executable,
                 str(migration_script),  # This handles spaces in paths
             ] + cmd_parts
 

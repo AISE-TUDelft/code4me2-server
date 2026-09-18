@@ -7,7 +7,7 @@ Public surface:
 * :mod:`research.runtime.sessions.models` - ``ResearchSessionV1``, ``AgentRunV1``,
   ``SessionPolicyV1``, transitions and typed results.
 * :mod:`research.runtime.sessions.service` - the pure state machine (idle/resume values
-  are injected revision policy, never compiled constants).
+  are injected study policy, never compiled constants).
 * :mod:`research.runtime.sessions.store` - persistence adapters taking a caller-supplied
   SQLAlchemy ``Session``.
 
@@ -40,7 +40,7 @@ from .service import (
     recover,
     resume,
     revoke,
-    session_policy_from_revision,
+    session_policy_from_study,
     start_agent_run,
     suspend,
 )
@@ -72,7 +72,7 @@ __all__ = [
     "recover",
     "resume",
     "revoke",
-    "session_policy_from_revision",
+    "session_policy_from_study",
     "start_agent_run",
     "suspend",
 ]

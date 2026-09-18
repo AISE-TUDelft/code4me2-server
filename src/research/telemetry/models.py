@@ -105,7 +105,6 @@ class CanonicalEventV1(BaseModel):
     source: str
 
     study_id: Optional[UUID] = None
-    revision_id: Optional[UUID] = None
     enrollment_id: Optional[UUID] = None
     research_session_id: Optional[UUID] = None
     agent_run_id: Optional[str] = None

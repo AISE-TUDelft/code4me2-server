@@ -4,7 +4,6 @@ import Dashboard from "./pages/Dashboard";
 import ThemeToggle from "./components/common/ThemeToggle";
 import ResearchStudies from "./pages/research/ResearchStudies";
 import ResearchStudyEditor from "./pages/research/ResearchStudyEditor";
-import ResearchEnrollment from "./pages/research/ResearchEnrollment";
 import ResearchJoin from "./pages/research/ResearchJoin";
 import "./App.css";
 import { GoogleOAuthProvider } from "@react-oauth/google";
@@ -94,17 +93,6 @@ function App() {
     return children;
   };
 
-  // Any signed-in account may reach the research authoring shell; the backend
-  // authorizes per study (a role grant for draft/publish) and reserves the
-  // deployment-wide surfaces (role grants, pilot/release operations, the kill
-  // switch) for administrators. The frontend only gates those genuinely
-  // admin-only surfaces; everything else defers to the server's 403.
-  const AdminRoute = ({ children }) => {
-    if (!user) return <Navigate to="/login" replace />;
-    if (!user.is_admin) return <Navigate to="/dashboard" replace />;
-    return children;
-  };
-
   const ResearchLayout = () => {
     const navigate = useNavigate();
     const onLogoutWrapped = async () => {
@@ -120,7 +108,7 @@ function App() {
             <div className="header-left">
               <h1>Research Control Plane</h1>
               <span className="header-subtitle">
-                {user?.is_admin ? "Researcher" : "Restricted"}
+                {user?.is_admin || user?.can_research ? "Researcher" : "Restricted"}
               </span>
             </div>
             <div className="header-right">
@@ -142,29 +130,20 @@ function App() {
           <nav className="analytics-navigation" aria-label="Research navigation">
             <div className="nav-header">
               <h2>Research</h2>
-              <span className="admin-badge">Admin View</span>
+              <span className="admin-badge">
+                {user?.is_admin ? "Admin View" : "Researcher View"}
+              </span>
             </div>
             <div className="nav-items">
               <NavLink to="/research/studies" className={linkClass}>
                 <span className="nav-icon" aria-hidden="true">🔬</span>
                 <div className="nav-content">
-                  <span className="nav-label">Study Protocols</span>
+                  <span className="nav-label">Studies</span>
                   <span className="nav-description">
-                    Draft, validate, publish and supersede revisions
+                      Create studies, manage metadata and stop collection
                   </span>
                 </div>
               </NavLink>
-              {user?.is_admin && (
-                <NavLink to="/research/enrollment" className={linkClass}>
-                  <span className="nav-icon" aria-hidden="true">🎟️</span>
-                  <div className="nav-content">
-                    <span className="nav-label">Enrollment</span>
-                    <span className="nav-description">
-                      Join code, instructions and agent packaging
-                    </span>
-                  </div>
-                </NavLink>
-              )}
             </div>
           </nav>
 
@@ -286,16 +265,6 @@ function App() {
                 <Route
                   path="studies/:studyId/editor"
                   element={<ResearchStudyEditor />}
-                />
-                {/* Enrollment manages the deployment-wide join code and the
-                    study index; both backing endpoints are require_admin. */}
-                <Route
-                  path="enrollment"
-                  element={
-                    <AdminRoute>
-                      <ResearchEnrollment />
-                    </AdminRoute>
-                  }
                 />
               </Route>
               <Route

@@ -845,9 +845,8 @@ class AgentProfile(Base):
 
     A profile fixes the runtime, the provider connection/model, the tool
     allowlist, the release artifact pin and the approval policy. It is a
-    *template*: publishing a study freezes a copy into the study revision, so
-    later edits never change historical display or an already-published study's
-    execution. ``connection_id`` names an administrator-managed
+    researcher-owned template whose configuration digest is refreshed on edit;
+    study selections store their own immutable snapshot. ``connection_id`` names an administrator-managed
     :class:`ProviderConnection`; the provider endpoint and secret live there,
     never on the profile.
     """
@@ -896,8 +895,9 @@ class AgentProfile(Base):
     max_context_tokens = Column(
         Integer, nullable=True
     )  # per-turn rolling window; NULL = model max
-    # Only active profiles are candidate arms for new assignments. Inactive
-    # profiles stay in the table (drafts, or arms retired mid-study).
+    configuration_digest = Column(String, nullable=False, server_default="")
+    # Only active profiles are candidates for new study selections. Inactive
+    # profiles stay in the table for historical snapshots.
     is_active = Column(Boolean, server_default="true", default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
 
@@ -913,7 +913,7 @@ class AgentTask(Base):
 
     The profile's config (model, temperature, approval_policy, tools_json) is
     *snapshotted* onto this row at creation time, so later edits to the profile
-    never retroactively change the conditions a completed task ran under.
+    never retroactively change the profile configuration a completed task ran under.
     """
 
     __tablename__ = "agent_task"

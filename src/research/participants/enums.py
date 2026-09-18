@@ -27,15 +27,17 @@ __all__ = [
 
 
 class EnrollmentStatus(str, Enum):
-    """Lifecycle of one participant's enrollment in one study revision.
+    """Lifecycle of one participant's enrollment in one research study.
 
     ``ACTIVE`` is the only state in which telemetry may be accepted. A study that
-    ends (or is terminated) marks its enrollments ``COMPLETED``, which is
-    terminal: the enrollment keeps its assignment but accepts nothing new.
+    stops marks its enrollments ``STUDY_STOPPED``; an administrative revoke is
+    ``REVOKED``. Both are terminal and accept nothing new.
     """
 
     ACTIVE = "ACTIVE"
-    COMPLETED = "COMPLETED"
+    REVOKED = "REVOKED"
+    STUDY_STOPPED = "STUDY_STOPPED"
+    COMPLETED = "COMPLETED"  # legacy compatibility for non-research callers
 
 
 class IdentityReasonCode(str, Enum):

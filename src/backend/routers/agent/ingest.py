@@ -189,15 +189,12 @@ def _resolve_or_create_task(
         study_id=assignment.study_id,
         study_assignment_id=assignment.assignment_id,
         profile_id=profile.profile_id,
-        study_arm_name=assignment.arm_name,
-        study_arm_is_baseline=assignment.is_baseline,
         consent_content_storage=content_included,
         # Explicit phase-05 attribution: resolved from the authorized account
         # and the frozen assignment, never guessed. A non-research task keeps
         # these NULL (an explicit "no research context").
         research_session_id=binding.research_session_id if binding else None,
         enrollment_id=binding.enrollment_id if binding else None,
-        study_revision_id=binding.study_revision_id if binding else None,
     )
     logging.info(
         f"[Agent/ingest] created task {task.task_id} for run {run.run_id} "

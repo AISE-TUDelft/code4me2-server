@@ -1,770 +1,313 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import React, { useEffect, useState } from "react";
 import {
+  cloneResearchStudy,
   createResearchStudy,
-  getResearchDraft,
-  getResearchEnrollmentCoverage,
-  getResearchExposures,
-  listResearchDrafts,
-  listResearchRevisions,
+  engageResearchKillSwitch,
+  getAgentProfiles,
+  getCurrentUser,
   listResearchStudies,
-  publishResearchDraft,
-  retireResearchRevision,
-  validateResearchProtocol,
+  releaseResearchKillSwitch,
+  stopResearchStudy,
+  updateResearchStudyMetadata,
 } from "../../utils/api";
-import { formatDateTime, shortId } from "./protocol";
 import "./research.css";
 import "./ResearchStudies.css";
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const RevisionStatusBadge = ({ status }) => {
-  const normalized = String(status || "").toLowerCase();
-  return (
-    <span className={`research-status research-status-${normalized}`}>
-      {status || "UNKNOWN"}
-    </span>
-  );
+const STATUS_LABELS = {
+  DRAFT: "Draft",
+  ACTIVE: "Active",
+  STUDY_STOPPED: "Stopped",
 };
 
 const ResearchStudies = () => {
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-
-  const [studyId, setStudyId] = useState(searchParams.get("study_id") || "");
-  const [appliedStudyId, setAppliedStudyId] = useState(
-    searchParams.get("study_id") || "",
-  );
   const [studies, setStudies] = useState([]);
-  const [studiesMissing, setStudiesMissing] = useState(false);
-  const [studiesForbidden, setStudiesForbidden] = useState(false);
-
-  const [revisions, setRevisions] = useState([]);
-  const [drafts, setDrafts] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [selectedStudy, setSelectedStudy] = useState(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [form, setForm] = useState({ name: "", description: "", profileIds: [] });
+  const [profiles, setProfiles] = useState([]);
+  const [metadata, setMetadata] = useState({ name: "", description: "" });
   const [isBusy, setIsBusy] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [killSwitchId, setKillSwitchId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [validationErrors, setValidationErrors] = useState([]);
 
-  const [selectedRevisionId, setSelectedRevisionId] = useState("");
-  const [exposures, setExposures] = useState([]);
-  const [enrollmentCoverage, setEnrollmentCoverage] = useState(null);
-  const [coverageError, setCoverageError] = useState("");
-
-  // "New study" mints the study UUID server-side so the researcher never pastes
-  // one. The form stays inline (no modal) and degrades to the manual UUID entry
-  // below when the create endpoint is unavailable on an older server.
-  const [isCreatingStudy, setIsCreatingStudy] = useState(false);
-  const [newStudyName, setNewStudyName] = useState("");
-  const [newStudyDescription, setNewStudyDescription] = useState("");
-
-  const selectedRevision = useMemo(
-    () =>
-      revisions.find((revision) => revision.revision_id === selectedRevisionId) ||
-      null,
-    [revisions, selectedRevisionId],
-  );
-
-  // Study index may not exist on the server; the guarded call degrades to
-  // manual study-id entry and a visible note rather than a hard failure.
-  useEffect(() => {
-    let cancelled = false;
-    listResearchStudies().then((response) => {
-      if (cancelled) return;
-      if (response.ok) {
-        setStudies(Array.isArray(response.data) ? response.data : []);
-        setStudiesMissing(false);
-        setStudiesForbidden(false);
-      } else {
-        setStudies([]);
-        setStudiesMissing(!!response.missing);
-        setStudiesForbidden(!!response.forbidden);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const loadStudy = useCallback(async (id) => {
-    const trimmed = (id || "").trim();
-    if (!trimmed) {
-      setError("Enter a study ID first.");
-      return;
-    }
-    setIsLoading(true);
+  const loadStudies = async () => {
     setError("");
-    setNotice("");
-    setValidationErrors([]);
-    setAppliedStudyId(trimmed);
-    setSelectedRevisionId("");
-    setExposures([]);
-    setEnrollmentCoverage(null);
-    setCoverageError("");
-
-    const [revisionsRes, draftsRes] = await Promise.all([
-      listResearchRevisions(trimmed),
-      listResearchDrafts(trimmed),
-    ]);
-
-    if (revisionsRes.ok) {
-      setRevisions(Array.isArray(revisionsRes.data) ? revisionsRes.data : []);
+    const result = await listResearchStudies();
+    if (result.ok) {
+      const nextStudies = Array.isArray(result.data) ? result.data : [];
+      setStudies(nextStudies);
+      if (selectedStudy) {
+        setSelectedStudy(
+          nextStudies.find((study) => study.study_id === selectedStudy.study_id) || null,
+        );
+      }
     } else {
-      setRevisions([]);
-      setError(revisionsRes.error);
+      setError(result.error || "Research studies are unavailable.");
     }
-    if (draftsRes.ok) {
-      setDrafts(Array.isArray(draftsRes.data) ? draftsRes.data : []);
-    } else {
-      setDrafts([]);
-      if (revisionsRes.ok) setError(draftsRes.error);
-    }
-    setIsLoading(false);
-  }, []);
+  };
 
   useEffect(() => {
-    const fromUrl = searchParams.get("study_id");
-    if (fromUrl) loadStudy(fromUrl);
-    // Only auto-load once from the initial URL; subsequent navigations use the
-    // form so we do not fight the researcher's edits.
+    loadStudies();
+    // Initial load only; actions explicitly refresh state below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Derived assignment/exposure counts for the selected revision. These come
-  // from researcher read models; a failure is shown as "unavailable" rather
-  // than as zero.
   useEffect(() => {
-    if (!appliedStudyId || !selectedRevisionId) return undefined;
-    let cancelled = false;
-    (async () => {
-      const [exposuresRes, coverageRes] = await Promise.all([
-        getResearchExposures(appliedStudyId, selectedRevisionId),
-        getResearchEnrollmentCoverage(appliedStudyId, selectedRevisionId),
-      ]);
-      if (cancelled) return;
-      setExposures(exposuresRes.ok ? exposuresRes.data : []);
-      setEnrollmentCoverage(coverageRes.ok ? coverageRes.data : null);
-      setCoverageError(
-        !exposuresRes.ok && !coverageRes.ok
-          ? exposuresRes.error || coverageRes.error
-          : !exposuresRes.ok
-            ? exposuresRes.error
-            : !coverageRes.ok
-              ? coverageRes.error
-              : "",
-      );
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [appliedStudyId, selectedRevisionId]);
-
-  const handleLoad = (event) => {
-    event.preventDefault();
-    if (!UUID_RE.test(studyId.trim())) {
-      setError("A study ID must be a UUID.");
-      return;
-    }
-    loadStudy(studyId);
-  };
-
-  const openNewDraft = () => {
-    navigate(
-      `/research/studies/${encodeURIComponent(appliedStudyId)}/editor`,
-    );
-  };
-
-  const handleCreateStudy = async (event) => {
-    event.preventDefault();
-    const name = newStudyName.trim();
-    if (!name) {
-      setError("A study name is required.");
-      return;
-    }
-    setIsBusy(true);
-    setError("");
-    setNotice("");
-    setValidationErrors([]);
-    const description = newStudyDescription.trim();
-    const result = await createResearchStudy({
-      name,
-      description: description || null,
+    Promise.resolve(getAgentProfiles()).then((result) => {
+      if (result && result.ok) setProfiles((result.data || []).filter((profile) => profile.is_active !== false));
     });
-    if (result.ok) {
-      const study = result.data.study || {};
-      setNewStudyName("");
-      setNewStudyDescription("");
-      setIsCreatingStudy(false);
-      const query = new URLSearchParams({ name });
-      if (description) query.set("description", description);
-      navigate(
-        `/research/studies/${encodeURIComponent(study.study_id)}/editor?${query.toString()}`,
-      );
-    } else {
-      setError(result.error);
-    }
-    setIsBusy(false);
-  };
+  }, []);
 
-  const openDraft = (draftId) => {
-    navigate(
-      `/research/studies/${encodeURIComponent(appliedStudyId)}/editor?draft_id=${encodeURIComponent(draftId)}`,
-    );
-  };
-
-  const supersedeRevision = (revisionId) => {
-    navigate(
-      `/research/studies/${encodeURIComponent(appliedStudyId)}/editor?revision_id=${encodeURIComponent(revisionId)}`,
-    );
-  };
-
-  const handleValidateDraft = async (draftId) => {
-    setIsBusy(true);
-    setError("");
-    setNotice("");
-    setValidationErrors([]);
-    const draftRes = await getResearchDraft(draftId);
-    if (!draftRes.ok) {
-      setError(draftRes.error);
-      setIsBusy(false);
-      return;
-    }
-    const validation = await validateResearchProtocol(draftRes.protocol);
-    if (validation.ok && validation.valid) {
-      setNotice("Draft is valid and publishable.");
-    } else {
-      setValidationErrors(validation.errors || []);
-      setError(validation.error || "Draft failed validation.");
-    }
-    setIsBusy(false);
-  };
-
-  const handlePublishDraft = async (draftId) => {
-    setIsBusy(true);
-    setError("");
-    setNotice("");
-    setValidationErrors([]);
-    const draftRes = await getResearchDraft(draftId);
-    if (!draftRes.ok) {
-      setError(draftRes.error);
-      setIsBusy(false);
-      return;
-    }
-    const result = await publishResearchDraft(draftId, {
-      protocol: draftRes.protocol,
+  useEffect(() => {
+    getCurrentUser().then((result) => {
+      if (result && result.ok && result.user) setIsAdmin(result.user.is_admin === true);
     });
+  }, []);
+
+  const openStudy = (study) => {
+    setSelectedStudy(study);
+    setMetadata({ name: study.name || "", description: study.description || "" });
+    setNotice("");
+    setError("");
+  };
+
+  const handleCreate = async (event) => {
+    event.preventDefault();
+    setIsBusy(true);
+    setError("");
+    setNotice("");
+    const result = await createResearchStudy(form);
     if (result.ok) {
-      const revision = result.data.revision;
-      setNotice(
-        `Published revision #${revision ? revision.revision_number : "?"} (${
-          revision ? shortId(revision.protocol_digest) : ""
-        }).`,
-      );
-      await loadStudy(appliedStudyId);
-    } else if (result.status === 409) {
-      setError("Publication conflict: a newer revision exists. Reload and retry.");
+      setForm({ name: "", description: "", profileIds: [] });
+      setIsCreating(false);
+      setNotice("Study created in Draft state.");
+      await loadStudies();
     } else {
-      setValidationErrors(result.errors || []);
-      setError(result.error);
+      setError(result.error || "Study could not be created.");
     }
     setIsBusy(false);
   };
 
-  const handleRetire = async (revision) => {
-    const confirmed = window.confirm(
-      `Retire revision #${revision.revision_number}? Its stored content and digest are unchanged; retirement is a lifecycle status only.`,
-    );
-    if (!confirmed) return;
+  const handleMetadataSave = async (event) => {
+    event.preventDefault();
+    if (!selectedStudy) return;
     setIsBusy(true);
     setError("");
     setNotice("");
-    const result = await retireResearchRevision(revision.revision_id);
+    const result = await updateResearchStudyMetadata(selectedStudy.study_id, metadata);
     if (result.ok) {
-      setNotice(
-        result.data.retired
-          ? `Revision #${revision.revision_number} retired.`
-          : result.data.message || "Revision was already retired.",
-      );
-      await loadStudy(appliedStudyId);
+      setNotice("Study metadata updated.");
+      await loadStudies();
     } else {
-      setError(result.error);
+      setError(result.error || "Study metadata is locked.");
+    }
+    setIsBusy(false);
+  };
+
+  const handleStop = async () => {
+    if (!selectedStudy || !window.confirm("Stop this study permanently? Research data will be retained.")) {
+      return;
+    }
+    setIsBusy(true);
+    setError("");
+    setNotice("");
+    const result = await stopResearchStudy(selectedStudy.study_id);
+    if (result.ok) {
+      setNotice("Study stopped. Collection is revoked and retained data remains available.");
+      await loadStudies();
+    } else {
+      setError(result.error || "Study could not be stopped.");
+    }
+    setIsBusy(false);
+  };
+
+  const handleClone = async () => {
+    if (!selectedStudy) return;
+    setIsBusy(true);
+    setError("");
+    setNotice("");
+    const result = await cloneResearchStudy(selectedStudy.study_id);
+    if (result.ok) {
+      setNotice("A new Draft study was created without participants or agent profiles.");
+      await loadStudies();
+    } else {
+      setError(result.error || "Only stopped studies can be cloned.");
+    }
+    setIsBusy(false);
+  };
+
+  const handleKillSwitch = async () => {
+    if (!selectedStudy) return;
+    setIsBusy(true);
+    setError("");
+    const result = killSwitchId
+      ? await releaseResearchKillSwitch(killSwitchId)
+      : await engageResearchKillSwitch(selectedStudy.study_id, "Admin maintenance");
+    if (result.ok) {
+      setKillSwitchId(killSwitchId ? "" : result.data.switch_id || "");
+      setNotice(killSwitchId ? "Kill switch released." : "Kill switch engaged.");
+    } else {
+      setError(result.error || "Kill switch operation failed.");
     }
     setIsBusy(false);
   };
 
   return (
     <section className="research-page" aria-labelledby="research-studies-title">
-      <div className="research-header">
+      <header className="research-header">
         <div>
           <h2 id="research-studies-title">Research Studies</h2>
-          <p>
-            Draft, validate, publish and supersede versioned study protocols.
-            Published revisions are immutable and content-addressed: editing one
-            creates a successor revision rather than mutating it.
-          </p>
+          <p>Create a study once, monitor its lifecycle, and stop it when collection ends.</p>
         </div>
-        <div className="research-header-actions">
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => appliedStudyId && loadStudy(appliedStudyId)}
-            disabled={isLoading || !appliedStudyId}
-          >
-            Refresh
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => setIsCreatingStudy((current) => !current)}
-            disabled={isBusy}
-          >
-            New study
-          </button>
-        </div>
-      </div>
+        <button
+          type="button"
+          className="primary-button"
+          onClick={() => setIsCreating((value) => !value)}
+          disabled={isBusy}
+        >
+          {isCreating ? "Close" : "New study"}
+        </button>
+      </header>
 
-      {isCreatingStudy && (
-        <form className="research-card" onSubmit={handleCreateStudy}>
+      {error && <p className="research-error" role="alert">{error}</p>}
+      {notice && <p className="research-notice" role="status">{notice}</p>}
+
+      {isCreating && (
+        <form className="research-card" onSubmit={handleCreate}>
           <h3>New study</h3>
-          <p className="research-hint">
-            The server mints the study UUID; you are taken straight to its
-            editor. No identifier needs to be copied and pasted.
-          </p>
           <label>
             Name
             <input
-              value={newStudyName}
-              onChange={(event) => setNewStudyName(event.target.value)}
+              value={form.name}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              required
               disabled={isBusy}
-              placeholder="Adaptive agent study"
             />
           </label>
           <label>
-            Description (optional)
+            Description
             <textarea
-              value={newStudyDescription}
-              onChange={(event) => setNewStudyDescription(event.target.value)}
+              value={form.description}
+              onChange={(event) => setForm({ ...form, description: event.target.value })}
+              rows={3}
               disabled={isBusy}
-              rows={2}
             />
           </label>
-          <div className="research-actions">
-            <button
-              type="submit"
-              className="primary-button"
-              disabled={isBusy || !newStudyName.trim()}
-            >
-              Create study
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => setIsCreatingStudy(false)}
-              disabled={isBusy}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-
-      {studies.length === 0 && (studiesForbidden || studiesMissing) && (
-        <div className="research-message error" role="alert">
-          {studiesForbidden
-            ? "Your account is not enabled for research. Ask an administrator to enable researcher access."
-            : "The study index is not available on this server yet. Enter a study UUID below to continue."}
-        </div>
-      )}
-
-      {studies.length > 0 && (
-        <div className="research-card">
-          <h3>Study index</h3>
-          <p className="research-hint">
-            Indexed studies with their study-scoped join code and latest revision
-            status. Open a study to manage its revisions, or enter its UUID below
-            when it is not listed.
-          </p>
-          <div className="research-table-wrap">
-            <table className="research-table">
-              <caption className="research-visually-hidden">
-                Indexed research studies
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Study</th>
-                  <th scope="col">Join code</th>
-                  <th scope="col">Latest revision</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {studies.map((study) => (
-                  <tr
-                    key={study.study_id}
-                    className={
-                      study.study_id === appliedStudyId
-                        ? "research-row-selected"
-                        : ""
-                    }
-                  >
-                    <td>
-                      <div className="research-study-name">
-                        {study.name || "Untitled study"}
-                      </div>
-                      <span
-                        className="research-study-id"
-                        title={study.study_id}
-                      >
-                        {shortId(study.study_id)}
-                      </span>
-                    </td>
-                    <td>
-                      {study.join_code ? (
-                        <code className="research-code-inline">
-                          {study.join_code}
-                        </code>
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td>
-                      {(() => {
-                        const latest = study.latest_revision || {};
-                        const number = latest.revision_number;
-                        if (number === null || number === undefined) {
-                          return "—";
-                        }
-                        return (
-                          <>
-                            <span>#{number}</span>
-                            {latest.protocol_digest ? (
-                              <span
-                                className="research-draft-meta"
-                                title={latest.protocol_digest}
-                              >
-                                {shortId(latest.protocol_digest)}
-                              </span>
-                            ) : null}
-                          </>
-                        );
-                      })()}
-                    </td>
-                    <td>
-                      <RevisionStatusBadge
-                        status={(study.latest_revision || {}).status}
-                      />
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        onClick={() => {
-                          setStudyId(study.study_id);
-                          loadStudy(study.study_id);
-                        }}
-                        disabled={isLoading || isBusy}
-                      >
-                        Open
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      <form className="research-card research-study-scope" onSubmit={handleLoad}>
-        <h3>Study scope</h3>
-        <label>
-          Study ID (UUID)
-          <input
-            value={studyId}
-            onChange={(event) => setStudyId(event.target.value)}
-            placeholder="00000000-0000-0000-0000-000000000000"
-            disabled={isLoading || isBusy}
-            aria-describedby={
-              studiesMissing ? "research-study-index-note" : undefined
-            }
-          />
-        </label>
-        {studiesMissing && (
-          <p className="research-hint" id="research-study-index-note">
-            This server does not expose a study index yet, so enter the study UUID
-            (from the seed or bootstrap step) to load its revisions.
-          </p>
-        )}
-        <div className="research-actions">
+          <fieldset className="research-profile-selection">
+            <legend>Agent profiles</legend>
+            {profiles.length === 0 ? (
+              <p className="research-hint">No active agent profiles available.</p>
+            ) : (
+              profiles.map((profile) => (
+                <label key={profile.profile_id}>
+                  <input
+                    type="checkbox"
+                    aria-label={profile.name}
+                    checked={form.profileIds.includes(profile.profile_id)}
+                    onChange={(event) => {
+                      const nextIds = event.target.checked
+                        ? [...form.profileIds, profile.profile_id]
+                        : form.profileIds.filter((id) => id !== profile.profile_id);
+                      setForm({ ...form, profileIds: nextIds });
+                    }}
+                    disabled={isBusy}
+                  />
+                  <span>{profile.name}</span>
+                  <small>{profile.model}</small>
+                </label>
+              ))
+            )}
+          </fieldset>
           <button
             type="submit"
             className="primary-button"
-            disabled={isLoading || isBusy}
+            disabled={isBusy || !form.name.trim() || form.profileIds.length === 0}
           >
-            Load study
+            Create Draft study
           </button>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={openNewDraft}
-            disabled={!appliedStudyId || isBusy}
-          >
-            New draft
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() =>
-              navigate(
-                `/research/enrollment?study_id=${encodeURIComponent(appliedStudyId)}`,
-              )
-            }
-            disabled={!appliedStudyId}
-          >
-            Enrollment &amp; join code
-          </button>
-        </div>
-      </form>
-
-      {(error || notice) && (
-        <div
-          className={`research-message ${error ? "error" : "success"}`}
-          role={error ? "alert" : "status"}
-        >
-          {error || notice}
-        </div>
+        </form>
       )}
 
-      {validationErrors.length > 0 && (
-        <div className="research-card research-validation" role="alert">
-          <h3>Validation problems</h3>
-          <ul>
-            {validationErrors.map((validationError, index) => (
-              <li key={`${validationError.field}-${index}`}>
-                <code>{validationError.field || "protocol"}</code>{" "}
-                <span className="research-severity">
-                  {validationError.severity || "ERROR"}
-                </span>
-                {validationError.message}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="research-card">
-        <h3>Revisions</h3>
-        {isLoading ? (
-          <p className="research-empty">Loading revisions…</p>
-        ) : revisions.length === 0 ? (
-          <p className="research-empty">
-            No published revisions for this study yet.
-          </p>
-        ) : (
-          <div className="research-table-wrap">
-            <table className="research-table">
-              <caption className="research-visually-hidden">
-                Immutable study revisions
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Rev</th>
-                  <th scope="col">Revision ID</th>
-                  <th scope="col">Digest</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Published</th>
-                  <th scope="col">Supersedes</th>
-                  <th scope="col">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {revisions.map((revision) => (
-                  <tr
-                    key={revision.revision_id}
-                    className={
-                      revision.revision_id === selectedRevisionId
-                        ? "research-row-selected"
-                        : ""
-                    }
-                  >
-                    <td>{revision.revision_number}</td>
-                    <td title={revision.revision_id}>
-                      {shortId(revision.revision_id)}
-                    </td>
-                    <td title={revision.protocol_digest}>
-                      <code>{shortId(revision.protocol_digest)}</code>
-                    </td>
-                    <td>
-                      <RevisionStatusBadge status={revision.status} />
-                    </td>
-                    <td>{formatDateTime(revision.published_at)}</td>
-                    <td title={revision.supersedes_revision_id || ""}>
-                      {revision.supersedes_revision_id
-                        ? shortId(revision.supersedes_revision_id)
-                        : "—"}
-                    </td>
-                    <td>
-                      <div className="research-actions research-actions-inline">
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() =>
-                            setSelectedRevisionId(revision.revision_id)
-                          }
-                          aria-pressed={
-                            revision.revision_id === selectedRevisionId
-                          }
-                        >
-                          View counts
-                        </button>
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={() => supersedeRevision(revision.revision_id)}
-                          disabled={isBusy}
-                        >
-                          Supersede
-                        </button>
-                        <button
-                          type="button"
-                          className="danger-button"
-                          onClick={() => handleRetire(revision)}
-                          disabled={isBusy || revision.status === "RETIRED"}
-                        >
-                          Retire
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <div className="research-layout">
+        <section className="research-card" aria-label="Study list">
+          <div className="research-card-header">
+            <h3>Studies</h3>
+            <button type="button" className="secondary-button" onClick={loadStudies} disabled={isBusy}>
+              Refresh
+            </button>
           </div>
-        )}
-      </div>
-
-      {selectedRevision && (
-        <div className="research-card">
-          <h3>
-            Derived counts for revision #{selectedRevision.revision_number}
-          </h3>
-          <p className="research-hint">
-            Population is the revision; missing data is shown as unavailable,
-            never as zero.
-          </p>
-          {coverageError && (
-            <p className="research-empty" role="status">
-              Coverage unavailable: {coverageError}
-            </p>
+          {studies.length === 0 ? (
+            <p className="research-hint">No research studies yet.</p>
+          ) : (
+            <ul className="research-list">
+              {studies.map((study) => (
+                <li key={study.study_id}>
+                  <button type="button" className="research-list-item" onClick={() => openStudy(study)}>
+                    <span>
+                      <strong>{study.name}</strong>
+                      <small>{study.description || "No description"}</small>
+                    </span>
+                    <span className={`research-status research-status-${String(study.research_status || "DRAFT").toLowerCase()}`}>
+                      {STATUS_LABELS[study.research_status] || study.research_status || "Draft"}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
-          {enrollmentCoverage && (
+        </section>
+
+        {selectedStudy && (
+          <section className="research-card" aria-label="Study details">
+            <h3>{selectedStudy.name}</h3>
             <dl className="research-metrics">
-              <div>
-                <dt>Enrollments</dt>
-                <dd>
-                  {enrollmentCoverage.total_enrollments ?? "unavailable"}
-                </dd>
-              </div>
-              <div>
-              </div>
-              <div>
-                <dt>Coverage</dt>
-                <dd>{enrollmentCoverage.coverage || "UNKNOWN"}</dd>
-              </div>
+              <div><dt>Status</dt><dd>{STATUS_LABELS[selectedStudy.research_status] || selectedStudy.research_status}</dd></div>
+              <div><dt>Join code</dt><dd>{selectedStudy.join_code || "Not available"}</dd></div>
+              <div><dt>Study ID</dt><dd>{selectedStudy.study_id}</dd></div>
             </dl>
-          )}
-          {!coverageError && exposures.length === 0 && (
-            <p className="research-empty">No condition exposures recorded yet.</p>
-          )}
-          {exposures.length > 0 && (
-            <div className="research-table-wrap">
-              <table className="research-table">
-                <caption className="research-visually-hidden">
-                  Assignment and exposure counts per condition
-                </caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Condition</th>
-                    <th scope="col">Assigned</th>
-                    <th scope="col">Exposed</th>
-                    <th scope="col">Non-exposure</th>
-                    <th scope="col">Exposure rate</th>
-                    <th scope="col">Coverage</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {exposures.map((exposure) => (
-                    <tr key={exposure.condition_id}>
-                      <td>{exposure.condition_id}</td>
-                      <td>{exposure.assigned_count}</td>
-                      <td>{exposure.exposed_count}</td>
-                      <td>{exposure.non_exposure_count}</td>
-                      <td>
-                        {exposure.exposure_rate === null ||
-                        exposure.exposure_rate === undefined
-                          ? "unavailable"
-                          : exposure.exposure_rate.toFixed(3)}
-                      </td>
-                      <td>{exposure.coverage || "UNKNOWN"}</td>
-                    </tr>
+            <div className="research-profile-summary">
+              <h4>Selected agent profiles</h4>
+              {selectedStudy.profile_selections?.length ? (
+                <ul>
+                  {selectedStudy.profile_selections.map((profile) => (
+                    <li key={profile.profile_id}>
+                      <strong>{profile.name || profile.profile_id}</strong>
+                      <small>{profile.model || "Model not specified"}</small>
+                    </li>
                   ))}
-                </tbody>
-              </table>
+                </ul>
+              ) : (
+                <p className="research-hint">No profiles selected.</p>
+              )}
+              <p className="research-hint">Profile selection is fixed after study creation.</p>
             </div>
-          )}
-        </div>
-      )}
-
-      <div className="research-card">
-        <h3>Drafts</h3>
-        {isLoading ? (
-          <p className="research-empty">Loading drafts…</p>
-        ) : drafts.length === 0 ? (
-          <p className="research-empty">
-            No editable drafts. Use “New draft” to author a protocol.
-          </p>
-        ) : (
-          <ul className="research-draft-list">
-            {drafts.map((draft) => (
-              <li key={draft.draft_id} className="research-draft-item">
-                <div>
-                  <strong>{draft.name || "Untitled draft"}</strong>
-                  <span className="research-draft-meta" title={draft.draft_id}>
-                    {shortId(draft.draft_id)} · schema {draft.schema_version}
-                  </span>
+            {selectedStudy.research_status !== "STUDY_STOPPED" && (
+              <form onSubmit={handleMetadataSave}>
+                <label>
+                  Name
+                  <input value={metadata.name} onChange={(event) => setMetadata({ ...metadata, name: event.target.value })} disabled={isBusy || Boolean(selectedStudy.consent_locked_at)} />
+                </label>
+                <label>
+                  Description
+                  <textarea value={metadata.description} onChange={(event) => setMetadata({ ...metadata, description: event.target.value })} rows={3} disabled={isBusy || Boolean(selectedStudy.consent_locked_at)} />
+                </label>
+                <div className="research-actions">
+                  <button type="submit" className="secondary-button" disabled={isBusy || Boolean(selectedStudy.consent_locked_at)}>Save metadata</button>
+                  <button type="button" className="danger-button" onClick={handleStop} disabled={isBusy}>Stop study</button>
                 </div>
-                <div className="research-actions research-actions-inline">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => openDraft(draft.draft_id)}
-                    disabled={isBusy}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => handleValidateDraft(draft.draft_id)}
-                    disabled={isBusy}
-                  >
-                    Validate
-                  </button>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => handlePublishDraft(draft.draft_id)}
-                    disabled={isBusy}
-                  >
-                    Publish
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
+              </form>
+            )}
+            {isAdmin && selectedStudy.research_status !== "STUDY_STOPPED" && (
+              <button type="button" className="secondary-button" onClick={handleKillSwitch} disabled={isBusy}>
+                {killSwitchId ? "Release kill switch" : "Engage kill switch"}
+              </button>
+            )}
+            {selectedStudy.research_status === "STUDY_STOPPED" && (
+              <button type="button" className="primary-button" onClick={handleClone} disabled={isBusy}>Clone as new Draft</button>
+            )}
+          </section>
         )}
       </div>
     </section>

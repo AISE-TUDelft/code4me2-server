@@ -26,7 +26,7 @@ _BASE = ConfigDict(extra="forbid")
 
 
 class SessionPolicyV1(BaseModel):
-    """Revision-policy timing inputs for a session (never compiled constants)."""
+    """Study-policy timing inputs for a session (never compiled constants)."""
 
     model_config = _BASE
 
@@ -52,7 +52,7 @@ class ResearchSessionV1(BaseModel):
 
     research_session_id: UUID
     enrollment_id: UUID
-    study_revision_id: UUID
+    study_id: UUID
     # Opaque execution-context id (project/window instance); never a path.
     context_id: str = ""
     state: SessionState = SessionState.NOT_STARTED
@@ -84,6 +84,10 @@ class AgentRunV1(BaseModel):
     agent_run_id: UUID
     research_session_id: UUID
     agent_release_id: str | None = None
+    assignment_id: UUID | None = None
+    agent_profile_id: UUID | None = None
+    profile_digest: str | None = None
+    profile_snapshot_json: dict[str, object] | None = None
     started_at: datetime
     ended_at: datetime | None = None
     outcome: AgentRunOutcome | None = None

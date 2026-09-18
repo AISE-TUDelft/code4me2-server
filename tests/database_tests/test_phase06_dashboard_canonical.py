@@ -22,7 +22,7 @@ from research.analysis.read_models.dashboard import agent_overview
 
 load_dotenv()
 TEST_DB_URL = os.getenv(
-    "TEST_DATABASE_URL", "postgresql://postgres:postgres@db:5433/test_db"
+    "TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/test_db"
 )
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
 

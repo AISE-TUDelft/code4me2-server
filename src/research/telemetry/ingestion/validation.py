@@ -103,14 +103,6 @@ def validate_batch_event(
                     "event study does not match the authorized study",
                 )
             )
-        if event.revision_id is not None and event.revision_id != context.study_revision_id:
-            issues.append(
-                _issue(
-                    IngestionReasonCode.CONTEXT_MISMATCH,
-                    "revision_id",
-                    "event revision does not match the authorized revision",
-                )
-            )
         if (
             event.enrollment_id is not None
             and event.enrollment_id != context.enrollment_id

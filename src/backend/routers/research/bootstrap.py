@@ -10,7 +10,6 @@ signed, secret-free manifest for their own active enrollment.
 from __future__ import annotations
 
 import os
-import random
 import uuid  # noqa: TC003 - FastAPI evaluates route annotations at runtime
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -25,6 +24,7 @@ from backend.routers.analytics.auth_utils import (
     get_current_user,
 )
 from database import crud
+from database.db_schemas import ResearchStudyStatus, Study as StudyRow
 from research.analysis.operations import store as operations_store
 from research.compatibility.enums import CapabilityId, CapabilityState
 from research.compatibility.evaluate import evaluate_compatibility
@@ -58,7 +58,7 @@ from research.runtime.sessions.enums import SessionState
 from research.runtime.sessions.models import ResearchSessionV1
 from research.study.agents import store as registry_store
 from research.study.protocol import store as protocol_store
-from research.study.protocol.models import StudyProtocolV1
+from research.runtime.assignment.models import StudyProfileSelection
 
 router = APIRouter()
 
@@ -95,14 +95,12 @@ def _kill_switch_for_scope(
     db: Any,
     *,
     study_id: Optional[uuid.UUID],
-    revision_id: Optional[uuid.UUID],
     enrollment_id: Optional[uuid.UUID],
 ) -> Callable[[], bool]:
     """DB-backed kill-switch predicate for one bootstrap/exposure scope."""
     return operations_store.db_kill_switch_check(
         db,
         study_id=study_id,
-        revision_id=revision_id,
         enrollment_id=enrollment_id,
     )
 
@@ -134,7 +132,7 @@ def _verify_exposure_capability(
         now=now,
         current_revocation_epoch=enrollment.revocation_epoch,
         expected_enrollment_id=enrollment.enrollment_id,
-        expected_revision_id=assignment.study_revision_id,
+        expected_study_id=assignment.study_id,
     )
     if not verification.ok:
         raise HTTPException(
@@ -206,14 +204,28 @@ def _owned_enrollment(db: Any, current_user: AuthenticatedUser, enrollment_id: u
     enrollment = identity_store.row_to_enrollment(row)
     if enrollment.participant_id != participant_row.participant_id:
         raise HTTPException(status_code=404, detail="Enrollment not found")
+    study = db.get(StudyRow, enrollment.study_id)
+    if getattr(study, "research_status", None) == ResearchStudyStatus.STUDY_STOPPED.value:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "STUDY_STOPPED",
+                "message": "the study has been stopped and cannot be bootstrapped",
+            },
+        )
+    if getattr(enrollment.status, "value", enrollment.status) != "ACTIVE":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "ENROLLMENT_NOT_ACTIVE",
+                "message": "the enrollment is not active",
+            },
+        )
     return enrollment
 
 
 def _evaluate_compatibility(
-    payload: ResearchSessionRequest,
-    protocol: StudyProtocolV1,
-    release: Any,
-    db: Any,
+    payload: ResearchSessionRequest, release: Any, db: Any
 ) -> tuple[Any, Optional[str]]:
     """Evaluate compatibility from an inline receipt or a stored receipt id."""
     receipt = payload.capability_receipt
@@ -230,17 +242,6 @@ def _evaluate_compatibility(
         return None, receipt_ref
 
     requirements: list[RequiredCapability] = []
-    for expectation in protocol.environment_requirements.required_capabilities:
-        try:
-            capability = CapabilityId(str(expectation.capability).strip().upper())
-            require_state = CapabilityState(
-                str(expectation.require_state).strip().upper()
-            )
-        except ValueError:
-            continue
-        requirements.append(
-            RequiredCapability(capability=capability, require_state=require_state)
-        )
 
     expected_agent = None
     if release is not None:
@@ -261,9 +262,7 @@ def _evaluate_compatibility(
             host_kind=payload.environment.host_kind,
         ),
         expected_agent=expected_agent,
-        expected_protocol_version=(
-            protocol.environment_requirements.expected_protocol_version
-        ),
+        expected_protocol_version=None,
     )
     return evaluate_compatibility(request), receipt_ref
 
@@ -273,32 +272,6 @@ def _compatibility_store():
     from research.compatibility import store as compatibility_store
 
     return compatibility_store
-
-
-def _agent_profile_projection(
-    db: Any, condition: Any
-) -> Optional[BootstrapAgentProfile]:
-    """Project a condition's frozen config into the secret-free manifest.
-
-    Only non-secret provider/model identity is read, and only from the config
-    frozen into the published revision: a later edit to the profile template must
-    not change a published study's manifest. The connection endpoint and secret
-    reference are deliberately absent — inference is relayed through the backend,
-    which resolves the secret at request time.
-    """
-    resolved = getattr(condition, "resolved_distribution", None)
-    config = getattr(resolved, "agent_config", None) if resolved is not None else None
-    if config is None:
-        return None
-    return BootstrapAgentProfile(
-        profile_id=config.profile_id,
-        name=config.name,
-        framework_version=config.framework_version or "",
-        model=config.model,
-        # Provider endpoint stays server-side; the runtime never needs it.
-        base_url=None,
-        temperature=config.temperature,
-    )
 
 
 class _PersistentSessionFactory:
@@ -335,7 +308,7 @@ class _PersistentSessionFactory:
     def create_for_enrollment(
         self,
         enrollment: Any,
-        revision: Any,
+        study: Any,
         now: datetime,
         context_id: str = "",
     ) -> ResearchSessionRef:
@@ -351,7 +324,7 @@ class _PersistentSessionFactory:
         session = ResearchSessionV1(
             research_session_id=uuid.uuid4(),
             enrollment_id=enrollment.enrollment_id,
-            study_revision_id=revision.revision_id,
+            study_id=study.study_id,
             context_id=context_id,
             state=SessionState.NOT_STARTED,
             opened_at=now,
@@ -379,27 +352,39 @@ def create_research_session(
     try:
         enrollment = _owned_enrollment(db, current_user, payload.enrollment_id)
 
-        revision_row = protocol_store.get_revision(db, enrollment.study_revision_id)
-        if revision_row is None:
-            raise HTTPException(status_code=404, detail="Study revision not found")
-        revision = protocol_store.row_to_revision(revision_row)
-        protocol = StudyProtocolV1.model_validate(revision.protocol_json)
-
-        assignment_row = assignment_store.get_assignment_for_enrollment_revision(
-            db, enrollment.enrollment_id, revision.revision_id
+        study = db.get(StudyRow, enrollment.study_id)
+        if study is None:
+            raise HTTPException(status_code=404, detail="Study not found")
+        assignment_row = assignment_store.get_assignment_for_enrollment(
+            db, enrollment.enrollment_id
         )
         existing = (
             assignment_store.row_to_assignment(assignment_row)
             if assignment_row is not None
             else None
         )
-        allocation = allocate(
-            enrollment,
-            revision,
-            existing=existing,
-            rng=random.Random(),
-            now=_now(),
-        )
+        if existing is not None:
+            allocation = allocate(enrollment, [], existing=existing, now=_now())
+        else:
+            from sqlalchemy import select
+            from database.research_schemas import StudyAgentProfile
+
+            profile_rows = db.execute(
+                select(StudyAgentProfile)
+                .where(StudyAgentProfile.study_id == enrollment.study_id)
+                .order_by(StudyAgentProfile.selection_order.asc())
+            ).scalars().all()
+            profiles = [
+                StudyProfileSelection(
+                    study_id=row.study_id,
+                    agent_profile_id=row.profile_id,
+                    profile_digest=row.profile_digest,
+                    profile_snapshot_json=row.profile_snapshot_json,
+                    selection_order=row.selection_order,
+                )
+                for row in profile_rows
+            ]
+            allocation = allocate(enrollment, profiles, now=_now())
         if allocation.outcome not in (
             AllocationOutcome.CREATED,
             AllocationOutcome.EXISTING,
@@ -409,29 +394,14 @@ def create_research_session(
             )
         assert allocation.assignment is not None
 
-        condition = next(
-            (
-                candidate
-                for candidate in protocol.conditions
-                if candidate.condition_id == allocation.assignment.condition_id
-            ),
-            None,
-        )
+        release_id = allocation.assignment.profile_snapshot_json.get("release_id")
         release = None
-        if condition is not None:
-            # Read the release pin from the revision's frozen distribution, never
-            # from the mutable profile row (a later profile edit must not change
-            # a published study's manifest).
-            resolved_pin = getattr(condition, "resolved_distribution", None)
-            release_id = getattr(resolved_pin, "release_id", None)
-            if release_id:
-                release_row = registry_store.get_release(db, release_id)
-                if release_row is not None:
-                    release = registry_store.row_to_release(release_row)
+        if release_id:
+            release_row = registry_store.get_release(db, release_id)
+            if release_row is not None:
+                release = registry_store.row_to_release(release_row)
 
-        compatibility_result, receipt_ref = _evaluate_compatibility(
-            payload, protocol, release, db
-        )
+        compatibility_result, receipt_ref = _evaluate_compatibility(payload, release, db)
 
         # Single unit of work (lock order: participant/enrollment already
         # resolved by the caller → sticky assignment → this context's execution
@@ -439,7 +409,7 @@ def create_research_session(
         # here lands only in the one commit below; any failure rolls back.
         result = compose_bootstrap(
             enrollment,
-            revision,
+            study,
             allocation.assignment,
             release,
             receipt_ref,
@@ -448,11 +418,9 @@ def create_research_session(
             now=_now(),
             compatibility_result=compatibility_result,
             platform=(payload.environment.os, payload.environment.arch),
-            agent_profile=_agent_profile_projection(db, condition),
             kill_switch_check=_kill_switch_for_scope(
                 db,
-                study_id=revision.study_id,
-                revision_id=revision.revision_id,
+                study_id=study.study_id,
                 enrollment_id=enrollment.enrollment_id,
             ),
             context_id=payload.context_id,
@@ -484,8 +452,8 @@ def create_research_session(
                     detail={
                         "code": "ASSIGNMENT_RACE",
                         "message": (
-                            "the sticky assignment was allocated concurrently; "
-                            "retry to adopt the existing condition"
+                                    "the sticky assignment was allocated concurrently; "
+                                    "retry to adopt the existing profile"
                         ),
                     },
                 )
@@ -526,7 +494,7 @@ def create_exposure(
             raise HTTPException(status_code=404, detail="Assignment not found")
 
         # The exposure must be authorized by a capability bound to this exact
-        # enrollment (and revision): a capability for another participant can
+        # enrollment and study: a capability for another participant can
         # never be replayed to record an exposure here.
         _verify_exposure_capability(
             payload.capability, enrollment=enrollment, assignment=assignment, now=now
@@ -556,7 +524,6 @@ def create_exposure(
             kill_switch_check=_kill_switch_for_scope(
                 db,
                 study_id=enrollment.study_id,
-                revision_id=assignment.study_revision_id,
                 enrollment_id=enrollment.enrollment_id,
             ),
         )

@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from App import App
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.research.bootstrap import BOOTSTRAP_SIGNING_SECRET
+from database.db_schemas import ResearchStudyStatus, Study as StudyRow
 from research.analysis.operations import store as operations_store
 from research.participants import identity as identity_store
 from research.participants.enums import EnrollmentStatus
@@ -37,11 +38,8 @@ from research.runtime.sessions.service import (
     expire_if_idle,
     on_qualifying_activity,
     open_session,
-    session_policy_from_revision,
+    session_policy_from_study,
 )
-from research.study.protocol import store as protocol_store
-from research.study.protocol.enums import RevisionStatus
-from research.study.protocol.models import StudyProtocolV1
 
 if TYPE_CHECKING:
     from research.runtime.sessions.models import ResearchSessionV1, SessionPolicyV1
@@ -59,7 +57,7 @@ class CreateSessionRequest(BaseModel):
 
     capability: SessionCapability
     enrollment_id: uuid.UUID
-    study_revision_id: uuid.UUID
+    study_id: uuid.UUID
     manifest_digest: str
     # Opaque execution-context id for this project/window (never a path).
     # Required: one context maps to one live session; different contexts differ.
@@ -101,12 +99,9 @@ def _detail(code: str, message: str, **extra: Any) -> dict[str, Any]:
 
 def _kill_switch_for_session(db: Any, session: ResearchSessionV1) -> Any:
     """DB-backed kill-switch predicate scoped to this session's subject."""
-    revision_row = protocol_store.get_revision(db, session.study_revision_id)
-    study_id = revision_row.study_id if revision_row is not None else None
     return operations_store.db_kill_switch_check(
         db,
-        study_id=study_id,
-        revision_id=session.study_revision_id,
+        study_id=session.study_id,
         enrollment_id=session.enrollment_id,
     )
 
@@ -118,11 +113,11 @@ def _authorize(
     scope: str,
     now: datetime,
     research_session_id: Optional[uuid.UUID] = None,
-    revision_id: Optional[uuid.UUID] = None,
+    study_id: Optional[uuid.UUID] = None,
 ) -> None:
     """Verify the capability and recheck the enrollment's revocation epoch.
 
-    ``research_session_id`` and ``revision_id`` bind the capability to the exact
+    ``research_session_id`` and ``study_id`` bind the capability to the exact
     session/revision being acted on, so a valid capability for another session
     is rejected with a typed reason.
     """
@@ -135,7 +130,7 @@ def _authorize(
         current_revocation_epoch=enrollment.revocation_epoch,
         expected_enrollment_id=enrollment.enrollment_id,
         expected_research_session_id=research_session_id,
-        expected_revision_id=revision_id,
+        expected_study_id=study_id,
     )
     if not verification.ok:
         raise HTTPException(
@@ -160,6 +155,15 @@ def _load_enrollment(db: Any, enrollment_id: uuid.UUID):
     row = identity_store.get_enrollment(db, enrollment_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Enrollment not found")
+    study = db.get(StudyRow, row.study_id)
+    if getattr(study, "research_status", None) == ResearchStudyStatus.STUDY_STOPPED.value:
+        raise HTTPException(
+            status_code=403,
+            detail=_detail(
+                "STUDY_STOPPED",
+                "the study has been stopped and cannot accept session activity",
+            ),
+        )
     return identity_store.row_to_enrollment(row)
 
 
@@ -171,11 +175,8 @@ def _load_session(db: Any, research_session_id: uuid.UUID) -> ResearchSessionV1:
 
 
 def _load_policy(db: Any, session: ResearchSessionV1) -> Optional[SessionPolicyV1]:
-    revision_row = protocol_store.get_revision(db, session.study_revision_id)
-    if revision_row is None:
-        return None
-    protocol = StudyProtocolV1.model_validate(revision_row.protocol_json)
-    return session_policy_from_revision(protocol)
+    study = db.get(StudyRow, session.study_id)
+    return session_policy_from_study(study)
 
 
 def _persist_result(db: Any, result: Any) -> None:
@@ -225,34 +226,24 @@ def create_research_session(
             enrollment,
             scope=_SCOPE_WRITE,
             now=now,
-            revision_id=payload.study_revision_id,
+            study_id=payload.study_id,
         )
-
-        revision_row = protocol_store.get_revision(db, payload.study_revision_id)
-        if revision_row is None:
-            raise HTTPException(status_code=404, detail="Study revision not found")
-        if revision_row.revision_id != enrollment.study_revision_id:
+        if payload.study_id != enrollment.study_id:
             raise HTTPException(
                 status_code=409,
                 detail=_detail(
-                    "REVISION_MISMATCH",
-                    "enrollment is not bound to the requested revision",
+                    "STUDY_MISMATCH",
+                    "enrollment is not bound to the requested study",
                 ),
             )
-        if revision_row.status != RevisionStatus.PUBLISHED.value:
-            raise HTTPException(
-                status_code=409,
-                detail=_detail("REVISION_NOT_PUBLISHED", "revision is not published"),
-            )
-
-        protocol = StudyProtocolV1.model_validate(revision_row.protocol_json)
-        policy = session_policy_from_revision(protocol)
+        study = db.get(StudyRow, enrollment.study_id)
+        policy = session_policy_from_study(study)
         if policy is None:
             raise HTTPException(
                 status_code=409,
                 detail=_detail(
                     SessionReasonCode.POLICY_MISSING.value,
-                    "revision does not declare idle/resume session policy",
+                    "study does not declare idle/resume session policy",
                 ),
             )
 
@@ -273,7 +264,7 @@ def create_research_session(
 
         session = open_session(
             enrollment,
-            revision_row,
+            study,
             manifest_digest=payload.manifest_digest,
             environment_ref=payload.environment_ref,
             context_id=payload.context_id,
@@ -282,8 +273,7 @@ def create_research_session(
         # An engaged kill switch blocks new funded session creation.
         kill_switch_check = operations_store.db_kill_switch_check(
             db,
-            study_id=revision_row.study_id,
-            revision_id=payload.study_revision_id,
+            study_id=study.study_id,
             enrollment_id=enrollment.enrollment_id,
         )
         if kill_switch_check():
@@ -325,7 +315,7 @@ def heartbeat(
             scope=_SCOPE_HEARTBEAT,
             now=now,
             research_session_id=session.research_session_id,
-            revision_id=session.study_revision_id,
+            study_id=session.study_id,
         )
 
         if session.state.is_terminal:
@@ -343,7 +333,7 @@ def heartbeat(
                 status_code=409,
                 detail=_detail(
                     SessionReasonCode.POLICY_MISSING.value,
-                    "revision does not declare idle/resume session policy",
+                    "study does not declare idle/resume session policy",
                 ),
             )
 
@@ -422,7 +412,7 @@ def close_research_session(
             scope=_SCOPE_CLOSE,
             now=now,
             research_session_id=session.research_session_id,
-            revision_id=session.study_revision_id,
+            study_id=session.study_id,
         )
 
         if session.state.is_terminal:
@@ -475,7 +465,7 @@ def get_research_session(
             scope=_SCOPE_WRITE,
             now=now,
             research_session_id=session.research_session_id,
-            revision_id=session.study_revision_id,
+            study_id=session.study_id,
         )
         row = session_store.get_session(db, session.research_session_id)
         return JsonResponseWithStatus(

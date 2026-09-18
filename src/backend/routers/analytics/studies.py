@@ -752,10 +752,10 @@ def evaluate_study_agents(
         task_query = """
         SELECT
             t.profile_id,
-            t.study_arm_name AS profile_name,
+            t.agent_profile AS profile_name,
             t.model,
             t.framework_version,
-            t.study_arm_is_baseline AS is_baseline,
+            false AS is_baseline,
             COUNT(DISTINCT t.task_id) AS total_tasks,
             COUNT(DISTINCT t.task_id) FILTER (WHERE t.status = 'done') AS completed_tasks,
             COUNT(DISTINCT t.task_id) FILTER (WHERE t.status = 'failed') AS failed_tasks,
@@ -765,9 +765,8 @@ def evaluate_study_agents(
             SUM(t.output_tokens) AS total_output_tokens
         FROM agent_task t
         WHERE t.study_id = :study_id AND t.profile_id IS NOT NULL
-        GROUP BY t.profile_id, t.study_arm_name, t.model, t.framework_version,
-             t.study_arm_is_baseline
-        ORDER BY t.study_arm_name, t.profile_id
+           GROUP BY t.profile_id, t.agent_profile, t.model, t.framework_version
+           ORDER BY t.agent_profile, t.profile_id
         """
         task_rows = db_session.execute(text(task_query), window).fetchall()
 

@@ -50,7 +50,6 @@ __all__ = [
     "RetentionJob",
     "RetentionPlan",
     "RetentionResult",
-    "RevisionRef",
 ]
 
 
@@ -84,29 +83,14 @@ class ResearchEligibility(BaseModel):
     evaluated_at: Optional[datetime] = None
 
 
-class RevisionRef(BaseModel):
-    """The slice of a published revision that enrollment needs.
-
-    Only the identity (revision/study) and the study's retention choice are
-    carried: consent has no per-study document identity.
-    """
-
-    model_config = _BASE_CONFIG
-
-    revision_id: UUID
-    study_id: UUID
-    retention_action: RetentionAction = RetentionAction.RETAIN_ANONYMIZED
-
-
 class Enrollment(BaseModel):
-    """One participant's revision-bound enrollment (the research identity)."""
+    """One participant's study enrollment and consent identity."""
 
     model_config = _BASE_CONFIG
 
     enrollment_id: UUID
     participant_id: UUID
     study_id: UUID
-    study_revision_id: UUID
     # Random, opaque, study-local. Never derived from the account id and never
     # parsed for meaning; it is the only participant handle researchers see.
     participant_code: str

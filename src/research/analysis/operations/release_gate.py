@@ -2,9 +2,9 @@
 
 ``evaluate_release`` is a pure function over immutable evidence plus the
 required component/evidence lists. Any unknown or missing required item yields
-``NO_GO``; an expired component receipt or revision yields ``EXPIRED``; a GO
-with recorded limitations is explicitly ``GO_WITH_LIMITS``. A material
-artifact/revision change invalidates an old GO.
+``NO_GO``; an expired component receipt or fixed study configuration yields
+``EXPIRED``; a GO with recorded limitations is explicitly ``GO_WITH_LIMITS``.
+A material artifact/configuration change invalidates an old GO.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ HARD_REASONS = frozenset(
 EXPIRED_REASONS = frozenset(
     {
         OperationsReasonCode.COMPONENT_RECEIPT_EXPIRED,
-        OperationsReasonCode.REVISION_EXPIRED,
+        OperationsReasonCode.CONFIG_EXPIRED,
     }
 )
 
@@ -66,7 +66,7 @@ def evaluate_release(
     required_evidence: Iterable[str],
     now: Optional[datetime] = None,
     current_component_digests: Optional[dict[str, str]] = None,
-    current_revision_digest: Optional[str] = None,
+    current_config_digest: Optional[str] = None,
 ) -> ReleaseEvaluationResult:
     """Evaluate release evidence and return the typed gate decision."""
     timestamp = _now(now)
@@ -123,26 +123,26 @@ def evaluate_release(
                 )
             )
 
-    if evidence.revision_expires_at is not None and evidence.revision_expires_at < timestamp:
+    if evidence.config_expires_at is not None and evidence.config_expires_at < timestamp:
         reasons.append(
             _reason(
-                OperationsReasonCode.REVISION_EXPIRED,
-                "the study revision expired at "
-                f"{evidence.revision_expires_at.isoformat()}",
-                "study_revision_id",
+                OperationsReasonCode.CONFIG_EXPIRED,
+                "the fixed study configuration expired at "
+                f"{evidence.config_expires_at.isoformat()}",
+                "study_id",
             )
         )
 
     if (
-        current_revision_digest is not None
-        and evidence.revision_digest is not None
-        and current_revision_digest != evidence.revision_digest
+        current_config_digest is not None
+        and evidence.config_digest is not None
+        and current_config_digest != evidence.config_digest
     ):
         reasons.append(
             _reason(
                 OperationsReasonCode.MATERIAL_CHANGE,
-                "the study revision digest changed since the recorded evidence",
-                "study_revision_id",
+                "the study configuration digest changed since the recorded evidence",
+                "study_id",
             )
         )
 
@@ -167,7 +167,7 @@ def evaluate_release(
     return ReleaseEvaluationResult(
         decision=decision,
         reasons=reasons,
-        revision_digest=evidence.revision_digest,
+        config_digest=evidence.config_digest,
         evaluated_at=timestamp,
         evidence=evidence,
     )
