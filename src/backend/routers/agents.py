@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
@@ -23,11 +24,43 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from agents import inference, lifecycle, registry
+from agents import provider as provider_module
 from App import App
 from backend.routers.agent.consent import resolve_store_agent_content
+from backend.routers.research import access
 from database import crud
+from research.analysis.operations import store as operations_store
+from research.telemetry.adapters import LegacyFact, record_legacy_facts
+from research.telemetry.enums import CoverageState
+from research.telemetry.models import Coverage, EventMetrics
 
 router = APIRouter(tags=["Agent"])
+
+
+def _require_funded_task(db, task) -> None:
+    """Re-check live enrollment/window/kill switch for a study-funded task.
+
+    Non-research operational tasks (no ``study_id``) are unaffected. A research
+    task must resolve an ACTIVE enrollment in its own study, with the study
+    window open and no operator kill switch engaged.
+    """
+    if getattr(task, "study_id", None) is None:
+        return
+    kill_switch_check = operations_store.db_kill_switch_check(
+        db, study_id=task.study_id, revision_id=None, enrollment_id=None
+    )
+    try:
+        access.require_live_enrollment(
+            db,
+            account_id=getattr(task, "owner_user_id", None),
+            study_id=task.study_id,
+            kill_switch_check=kill_switch_check,
+        )
+    except access.FundedAccessRefused as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 
 def require_session(
@@ -143,8 +176,17 @@ def create_agent_task(
         profile = assignment.profile
 
         # task_description is the user's own words — content, so honour the
-        # consent gate even at creation time.
-        content_included = resolve_store_agent_content(db, session_id)
+        # consent gate even at creation time. The research enrollment gate is
+        # applied on top of the legacy preference.
+        content_included = resolve_store_agent_content(
+            db, session_id, study_id=assignment.study_id
+        )
+        # Explicit phase-05 attribution: resolved from the authorized account and
+        # the frozen assignment, never guessed (NULL when there is no live
+        # research context).
+        binding = access.resolve_research_binding(
+            db, account_id=session.user_id, study_id=assignment.study_id
+        )
 
         task = crud.create_agent_task(
             db,
@@ -157,6 +199,7 @@ def create_agent_task(
             task_description=body.task_description if content_included else None,
             session_id=session_id,
             owner_user_id=session.user_id,
+            funding_owner_user_id=getattr(profile, "funding_owner_user_id", None),
             task_id=body.task_id,
             source="plugin",
             study_id=assignment.study_id,
@@ -165,6 +208,9 @@ def create_agent_task(
             study_arm_name=assignment.arm_name,
             study_arm_is_baseline=assignment.is_baseline,
             consent_content_storage=content_included,
+            research_session_id=binding.research_session_id if binding else None,
+            enrollment_id=binding.enrollment_id if binding else None,
+            study_revision_id=binding.study_revision_id if binding else None,
         )
         logging.info(
             f"[Agent/task] created task_id={task.task_id} profile={profile.name!r} "
@@ -228,12 +274,36 @@ async def run_agent_inference(
     db = app.get_db_session()
     try:
         task = _require_own_task(db, body.task_id, session_id)
+        # Funded research use requires a live enrollment and an open study
+        # window, re-checked here on every call (a previously issued capability
+        # never substitutes for current server state).
+        _require_funded_task(db, task)
         # Resolved server-side from the stored preference, never from the
-        # request body — see backend.routers.agent.consent.
-        content_included = resolve_store_agent_content(db, session_id)
-        profile = task.profile or crud.get_agent_profile(db, task.agent_profile)
-        base_url = profile.base_url if profile else None
-        api_key_ref = profile.api_key_ref if profile else None
+        # request body — see backend.routers.agent.consent. The research
+        # enrollment gate is applied on top.
+        content_included = resolve_store_agent_content(
+            db, session_id, study_id=task.study_id
+        )
+        profile = task.profile
+        if profile is None and task.profile_id is not None:
+            profile = crud.get_agent_profile_by_id(db, task.profile_id)
+        # The connection grant belongs to the study's funding owner, never the
+        # participant (whose own admin flag must not widen access).
+        funding_owner_user_id, owner_is_admin = provider_module.funding_owner_for_task(
+            db, task
+        )
+        try:
+            connection = provider_module.resolve_task_connection(
+                db,
+                profile,
+                funding_owner_user_id,
+                owner_is_admin=owner_is_admin,
+            )
+        except provider_module.ProviderReadinessError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": exc.code, "message": exc.message},
+            ) from exc
         task_snapshot = {
             "agent_profile": task.agent_profile,
             "model": task.model,
@@ -257,9 +327,8 @@ async def run_agent_inference(
         enrichment=body.enrichment,
         agent_profile=task_snapshot["agent_profile"],
         model=task_snapshot["model"],
+        connection=connection,
         temperature=task_snapshot["temperature"],
-        base_url=base_url,
-        api_key_ref=api_key_ref,
         framework_version=task_snapshot["framework_version"],
         profile_tools_json=task_snapshot["tools_json"],
         content_included=content_included,
@@ -276,6 +345,46 @@ _SPAN_EVENT_TYPE: dict[str, str] = {
     "agent.tool.execute": "tool_call",
     "agent.retrieval": "observation",
 }
+
+
+def _span_fact(span: "SpanPayload", event_type: str) -> "LegacyFact":
+    """Build the canonical fact for one OTel child span (structural only)."""
+    attrs = span.attributes or {}
+    payload: dict[str, Any] = {}
+    model = attrs.get("llm.model") or attrs.get("model")
+    if model:
+        payload["model"] = model
+    if event_type == "tool_call" and attrs.get("tool.name"):
+        payload["tool_name"] = attrs.get("tool.name")
+    prompt = _safe_int(attrs.get("llm.prompt_tokens"))
+    completion = _safe_int(attrs.get("llm.completion_tokens"))
+    total = _safe_int(attrs.get("llm.total_tokens"))
+    counts: dict[str, int] = {}
+    if prompt is not None:
+        counts["prompt_tokens"] = prompt
+    if completion is not None:
+        counts["completion_tokens"] = completion
+    return LegacyFact(
+        kind=event_type,
+        occurred_at=datetime.now(timezone.utc),
+        payload=payload,
+        metrics=EventMetrics(
+            usage_tokens=total,
+            usage_capability=Coverage(
+                state=(
+                    CoverageState.AVAILABLE
+                    if total is not None
+                    else CoverageState.UNAVAILABLE
+                ),
+                capability="usage",
+            ),
+            latency_ms=span.duration_ms if span.duration_ms > 0 else None,
+            counts=counts,
+        ),
+        coverage=Coverage(state=CoverageState.AVAILABLE, capability="span"),
+        source_event_id=span.span_id,
+        emitter_id="proxy",
+    )
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -367,6 +476,20 @@ def upload_agent_telemetry(
                 f"[Agent/telemetry] task {task_id} updated — "
                 f"steps={len(child_spans)} tokens={total_prompt}/{total_completion}"
             )
+
+        task_row = crud.get_agent_task(db, task_id)
+        span_facts = [
+            _span_fact(span, _SPAN_EVENT_TYPE.get(span.name, "observation"))
+            for span in child_spans
+        ]
+        if task_row is not None and record_legacy_facts(
+            db, task=task_row, facts=span_facts
+        ):
+            logging.info(
+                f"[Agent/telemetry] canonicalized {len(child_spans)} span(s) "
+                f"for task {task_id}"
+            )
+            return Response(status_code=204)
 
         base_index = (
             crud.reserve_agent_event_indexes(db, task_id, len(child_spans))

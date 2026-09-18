@@ -1,0 +1,58 @@
+[
+  [
+    {
+      "event_type": "interaction.started",
+      "fidelity": "normalized",
+      "mapping_rule_id": "acp.initialize",
+      "coverage_state": "AVAILABLE"
+    }
+  ],
+  [
+    {
+      "event_type": "tool.created",
+      "fidelity": "normalized",
+      "mapping_rule_id": "acp.update.tool_call.created",
+      "coverage_state": "AVAILABLE"
+    }
+  ],
+  [
+    {
+      "event_type": "tool.completed",
+      "fidelity": "normalized",
+      "mapping_rule_id": "acp.update.tool_call_update.completed",
+      "coverage_state": "AVAILABLE"
+    }
+  ],
+  [
+    {
+      "event_type": "permission.requested",
+      "fidelity": "normalized",
+      "mapping_rule_id": "acp.permission.request",
+      "coverage_state": "AVAILABLE"
+    }
+  ],
+  [
+    {
+      "event_type": "agent.message.started",
+      "fidelity": "normalized",
+      "mapping_rule_id": "acp.update.agent_message_chunk",
+      "coverage_state": "AVAILABLE"
+    }
+  ],
+  [
+    {
+      "event_type": "agent.message.started",
+      "fidelity": "normalized",
+      "mapping_rule_id": "acp.update.agent_thought_chunk",
+      "coverage_state": "AVAILABLE"
+    }
+  ],
+  [
+    {
+      "event_type": "unknown_source_event",
+      "fidelity": "normalized",
+      "mapping_rule_id": "acp.unknown",
+      "coverage_state": "NEEDS_REVIEW"
+    }
+  ]
+]

@@ -27,9 +27,10 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy.orm import Session
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 from database import crud
 from database.db_schemas import (
@@ -62,13 +63,18 @@ def _preference_allows_content(preference: Optional[str]) -> bool:
 
 
 def resolve_store_agent_content_for_user(
-    db: Session, user_id: Optional[uuid.UUID]
+    db: Session,
+    user_id: Optional[uuid.UUID],
+    *,
+    study_id: Optional[uuid.UUID] = None,
 ) -> bool:
     """Resolve the preference for a known user id.
 
     Returns False when the user can't be resolved at all: an unattributable
     request has nobody's consent to rely on, so it gets the conservative answer
-    even though the default for a real user is True.
+    even though the default for a real user is True. What is actually collected
+    follows the study's published telemetry policy, which is delivered to the
+    client and enforced by the privacy filter.
     """
     if user_id is None:
         return False
@@ -82,7 +88,12 @@ def resolve_store_agent_content_for_user(
     return _preference_allows_content(user.preference)
 
 
-def resolve_store_agent_content(db: Session, session_id: uuid.UUID) -> bool:
+def resolve_store_agent_content(
+    db: Session,
+    session_id: uuid.UUID,
+    *,
+    study_id: Optional[uuid.UUID] = None,
+) -> bool:
     """Resolve the preference for the user owning ``session_id``.
 
     This is the plugin/proxy path, where the caller is identified by the
@@ -95,10 +106,17 @@ def resolve_store_agent_content(db: Session, session_id: uuid.UUID) -> bool:
         return False
     if session is None or session.user_id is None:
         return False
-    return resolve_store_agent_content_for_user(db, session.user_id)
+    return resolve_store_agent_content_for_user(
+        db, session.user_id, study_id=study_id
+    )
 
 
-def resolve_store_agent_content_for_acp(db: Session, raw_user_id: str) -> bool:
+def resolve_store_agent_content_for_acp(
+    db: Session,
+    raw_user_id: str,
+    *,
+    study_id: Optional[uuid.UUID] = None,
+) -> bool:
     """Resolve the preference for an ACP-authorized agent process.
 
     ``raw_user_id`` comes from the server-derived ACP scope (see
@@ -110,4 +128,4 @@ def resolve_store_agent_content_for_acp(db: Session, raw_user_id: str) -> bool:
     except (ValueError, TypeError, AttributeError):
         logging.warning(f"[Agent/consent] ACP scope user_id is not a UUID: {raw_user_id!r}")
         return False
-    return resolve_store_agent_content_for_user(db, user_uuid)
+    return resolve_store_agent_content_for_user(db, user_uuid, study_id=study_id)

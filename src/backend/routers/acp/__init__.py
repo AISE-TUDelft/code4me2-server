@@ -27,18 +27,22 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import httpx
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi import APIRouter, Body, Cookie, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 import Queries  # noqa: TC001 - FastAPI evaluates route annotations at runtime
+from agents import provider as provider_module
+from agents import registry
 from agents.tools import CODE4ME2_AGENT_TOOLS
 from App import App
-from agents import provider as provider_module
 from backend.acp_authorization import (
     AcpAuthorizationDenied,
     AcpAuthorizationService,
@@ -60,11 +64,37 @@ from backend.routers.analytics.auth_utils import (
     get_current_user,
     require_admin,
 )
-from agents import registry
+from backend.routers.research import access
 from database import crud
+from research.analysis.operations import store as operations_store
 from utils import create_uuid
 
 router = APIRouter()
+
+
+def _require_funded_task(db, task) -> None:
+    """Re-check live enrollment/window/kill switch for a study-funded task.
+
+    Applied to the managed run replay and inference paths so a previously issued
+    run/capability never bypasses current server state.
+    """
+    if getattr(task, "study_id", None) is None:
+        return
+    kill_switch_check = operations_store.db_kill_switch_check(
+        db, study_id=task.study_id, revision_id=None, enrollment_id=None
+    )
+    try:
+        access.require_live_enrollment(
+            db,
+            account_id=getattr(task, "owner_user_id", None),
+            study_id=task.study_id,
+            kill_switch_check=kill_switch_check,
+        )
+    except access.FundedAccessRefused as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
 # Fallback runtime config, used only when no agent profile can be resolved for
 # the user (e.g. every profile has been deactivated). Deliberately minimal and
@@ -78,10 +108,20 @@ FALLBACK_MAX_ITERATIONS = 6
 FALLBACK_MAX_CONTEXT_TOKENS = 16_000
 MANAGED_PROTOCOL_VERSION = "1"
 MANAGED_RUNTIME = "code4me2-agent"
-EXPECTED_SCHEMA_REVISION = "f3c4d5e6f7a9"
 SUPPORTED_APPROVAL_POLICIES = frozenset({"auto", "per_step", "suggestion_only"})
 
 _BEARER_PREFIX = "Bearer "
+
+# The managed-agent schema readiness check compares the applied Alembic revision
+# against the deployment's code head. Derive that head from the migration graph
+# instead of baking a literal into the release: a hardcoded value silently goes
+# stale the moment a migration is added and would falsely report readiness.
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_ALEMBIC_INI = _REPO_ROOT / "alembic.ini"
+_ALEMBIC_SCRIPT_LOCATION = _REPO_ROOT / "src" / "database" / "migration"
+
+_expected_schema_revision_cache: Optional[str] = None
+_expected_schema_revision_resolved = False
 
 
 @router.post("/chat/completions")
@@ -96,22 +136,36 @@ async def acp_chat_completions(
 
     db = app.get_db_session()
     try:
-        profile = registry.resolve_assignment(db, uuid.UUID(scope.user_id))
+        user_uuid = uuid.UUID(scope.user_id)
+        profile = registry.resolve_assignment(db, user_uuid)
+        if profile is None:
+            raise HTTPException(status_code=503, detail="No active agent profile is configured.")
+        funding_owner_user_id, owner_is_admin = provider_module.funding_owner_for_profile(
+            db, profile
+        )
+        try:
+            connection = provider_module.resolve_task_connection(
+                db,
+                profile,
+                funding_owner_user_id,
+                owner_is_admin=owner_is_admin,
+            )
+            upstream = provider_module.resolve_upstream(
+                model=profile.model,
+                connection=connection,
+                framework_version=profile.framework_version,
+            )
+        except provider_module.ProviderReadinessError as exc:
+            raise HTTPException(
+                status_code=503, detail={"code": exc.code, "message": exc.message}
+            ) from exc
     finally:
         db.close()
-    if profile is None:
-        raise HTTPException(status_code=503, detail="No active agent profile is configured.")
 
     payload = dict(body)
     payload["model"] = profile.model
     if profile.temperature is not None:
         payload["temperature"] = profile.temperature
-    upstream = provider_module.resolve_upstream(
-        model=profile.model,
-        base_url=profile.base_url,
-        api_key_ref=profile.api_key_ref,
-        framework_version=profile.framework_version,
-    )
     async with httpx.AsyncClient(timeout=120) as client:
         upstream_response = await client.post(
             upstream.endpoint(responses_api=False),
@@ -153,6 +207,56 @@ def _schema_revision(app: App) -> Optional[str]:
         db.close()
 
 
+def _derive_expected_schema_revision() -> Optional[str]:
+    """Return the single Alembic head, or ``None`` when it is not unique.
+
+    ``alembic.ini`` records ``script_location``/``version_locations`` relative to
+    the package root, so resolve them explicitly: Alembic otherwise resolves
+    relative locations against the process working directory, which differs
+    between a dev shell and the deployed server.
+    """
+    try:
+        cfg = Config(str(_ALEMBIC_INI))
+        cfg.set_main_option("path_separator", "os")
+        cfg.set_main_option("script_location", str(_ALEMBIC_SCRIPT_LOCATION))
+        cfg.set_main_option(
+            "version_locations", str(_ALEMBIC_SCRIPT_LOCATION / "versions")
+        )
+        heads = ScriptDirectory.from_config(cfg).get_heads()
+    except Exception as error:
+        logging.warning(
+            "[ACP/capabilities] could not derive the Alembic head: %s", error
+        )
+        return None
+    if len(heads) != 1:
+        logging.warning(
+            "[ACP/capabilities] expected exactly one Alembic head, found %d: %r",
+            len(heads),
+            heads,
+        )
+        return None
+    return heads[0]
+
+
+def expected_schema_revision() -> Optional[str]:
+    """Alembic revision the managed-agent schema must be at to be ready.
+
+    ``MANAGED_SCHEMA_REQUIRED_REVISION`` is an operator escape hatch that pins an
+    explicit revision (for example in a staged rollout). Otherwise the expected
+    revision is the migration graph's single head; zero or multiple heads yield
+    ``None`` so the readiness probe fails closed instead of guessing. The derived
+    value is memoized because the head cannot change while the process runs.
+    """
+    override = os.environ.get("MANAGED_SCHEMA_REQUIRED_REVISION", "").strip()
+    if override:
+        return override
+    global _expected_schema_revision_cache, _expected_schema_revision_resolved
+    if not _expected_schema_revision_resolved:
+        _expected_schema_revision_cache = _derive_expected_schema_revision()
+        _expected_schema_revision_resolved = True
+    return _expected_schema_revision_cache
+
+
 @router.get("/capabilities")
 def get_acp_capabilities(app: App = Depends(App.get_instance)) -> dict:
     """Advertise the managed-agent contract and whether its schema is deployed.
@@ -163,20 +267,21 @@ def get_acp_capabilities(app: App = Depends(App.get_instance)) -> dict:
     ``schema_ready=False``.
     """
     revision = _schema_revision(app)
-    ready = revision == EXPECTED_SCHEMA_REVISION
+    expected = expected_schema_revision()
+    ready = revision is not None and revision == expected
     payload = {
         "managed_protocol_versions": [MANAGED_PROTOCOL_VERSION],
         "supported_runtimes": [MANAGED_RUNTIME],
         "schema_ready": ready,
         "schema_revision": revision,
-        "expected_schema_revision": EXPECTED_SCHEMA_REVISION,
+        "expected_schema_revision": expected,
     }
     if not ready:
         raise HTTPException(
             status_code=503,
             detail=(
                 f"Managed agent schema not ready: have {revision!r}, "
-                f"want {EXPECTED_SCHEMA_REVISION!r}"
+                f"want {expected!r}"
             ),
         )
     return payload
@@ -224,7 +329,26 @@ def prepare_acp_grant(
 
     The plugin writes the returned grant where the agent process will find it.
     Grants are short-lived and single-use, so a stale handoff file is inert.
+
+    The grant is the participant's funded launch credential, so it is gated by
+    the same live-enrollment/window/kill-switch rule as every other funded path.
     """
+    user_id = _resolve_cookie_account(app, auth_token)
+    if user_id is not None:
+        db = app.get_db_session()
+        try:
+            kill_switch_check = operations_store.db_kill_switch_check(db)
+            access.require_live_enrollment(
+                db, account_id=user_id, kill_switch_check=kill_switch_check
+            )
+        except access.FundedAccessRefused as exc:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": exc.code, "message": exc.message},
+            ) from exc
+        finally:
+            db.close()
+
     service = AcpAuthorizationService(app.get_redis_manager())
     try:
         prepared = service.prepare_grant(
@@ -251,6 +375,19 @@ def prepare_acp_grant(
             status_code=401,
             content=AcpAuthorizationError(message=str(error)),
         )
+
+
+def _resolve_cookie_account(app: App, auth_token: str) -> Optional[uuid.UUID]:
+    """Resolve the cookie's account id, or ``None`` when it is not authenticated."""
+    if not auth_token:
+        return None
+    try:
+        info = app.get_redis_manager().get("auth_token", auth_token)
+        if not isinstance(info, dict) or not info.get("user_id"):
+            return None
+        return uuid.UUID(str(info["user_id"]))
+    except Exception:
+        return None
 
 
 @router.post("/session/exchange", response_model=ExchangeAcpGrantPostResponse)
@@ -391,8 +528,6 @@ def get_acp_agent_config(
                 agent_profile = profile.name
                 framework_version = profile.framework_version
                 model = profile.model
-                base_url = profile.base_url
-                api_key_ref = profile.api_key_ref
                 approval_policy = profile.approval_policy
                 temperature = profile.temperature
                 max_context_tokens = profile.max_context_tokens
@@ -601,14 +736,26 @@ def get_participant_readiness(
                 detail="No active study agent profile is assigned to this user",
             )
         policy = _managed_policy(db, current_user.user_id, profile)
-        if profile.api_key_ref and not os.getenv(profile.api_key_ref, "").strip():
+        funding_owner_user_id, owner_is_admin = provider_module.funding_owner_for_profile(
+            db, profile
+        )
+        try:
+            connection = provider_module.resolve_task_connection(
+                db,
+                profile,
+                funding_owner_user_id,
+                owner_is_admin=owner_is_admin,
+            )
+            provider_module.resolve_upstream(
+                model=profile.model,
+                connection=connection,
+                framework_version=profile.framework_version,
+            )
+        except provider_module.ProviderReadinessError as exc:
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    "The assigned model provider is not configured on the study server "
-                    f"(missing {profile.api_key_ref})"
-                ),
-            )
+                detail={"code": exc.code, "message": exc.message},
+            ) from exc
         return {
             "ready": True,
             "managed_protocol_version": MANAGED_PROTOCOL_VERSION,
@@ -659,6 +806,8 @@ def create_managed_run(
         existing = crud.get_agent_task_by_external_run_id(db, body.run_id)
         if existing is not None:
             task = _require_managed_task(db, body, scope)
+            # A replayed run must still satisfy current funded state.
+            _require_funded_task(db, task)
             if not isinstance(task.policy_snapshot, dict):
                 raise HTTPException(status_code=503, detail="Managed run policy is unavailable")
             return JSONResponse(
@@ -685,6 +834,7 @@ def create_managed_run(
             framework_version=profile.framework_version,
             session_id=parent_session_id,
             owner_user_id=user_id,
+            funding_owner_user_id=getattr(profile, "funding_owner_user_id", None),
             owner_project_id=project_id,
             external_run_id=body.run_id,
             agent_session_id=body.session_id,
@@ -712,6 +862,8 @@ def create_managed_run(
         existing = crud.get_agent_task_by_external_run_id(db, body.run_id)
         if existing is not None:
             task = _require_managed_task(db, body, scope)
+            # A replayed run must still satisfy current funded state.
+            _require_funded_task(db, task)
             if not isinstance(task.policy_snapshot, dict):
                 raise HTTPException(status_code=503, detail="Managed run policy is unavailable")
             return JSONResponse(
@@ -740,12 +892,27 @@ async def run_managed_inference(
     db = app.get_db_session()
     try:
         task = _require_managed_task(db, body, scope)
+        # Live enrollment/window/kill-switch gate for funded managed inference.
+        _require_funded_task(db, task)
         policy = task.policy_snapshot
         if not _valid_managed_policy_snapshot(policy):
             raise HTTPException(status_code=503, detail="Managed run policy is unavailable")
-        profile = crud.get_agent_profile(db, task.agent_profile)
+        profile = None
+        if task.profile_id is not None:
+            profile = crud.get_agent_profile_by_id(db, task.profile_id)
         if profile is None:
             raise HTTPException(status_code=503, detail="Managed run provider configuration is unavailable")
+        funding_owner_user_id, owner_is_admin = provider_module.funding_owner_for_task(
+            db, task
+        )
+        try:
+            connection = provider_module.resolve_task_connection(
+                db, profile, funding_owner_user_id, owner_is_admin=owner_is_admin
+            )
+        except provider_module.ProviderReadinessError as exc:
+            raise HTTPException(
+                status_code=503, detail={"code": exc.code, "message": exc.message}
+            ) from exc
         snapshot = {
             "task_id": task.task_id,
             "agent_profile": task.agent_profile,
@@ -753,8 +920,7 @@ async def run_managed_inference(
             "temperature": policy.get("temperature"),
             "tools_json": json.dumps(policy.get("tools", [])),
             "framework_version": task.framework_version,
-            "base_url": profile.base_url,
-            "api_key_ref": profile.api_key_ref,
+            "connection": connection,
             "content_included": bool(policy.get("store_agent_content", False)),
         }
     finally:
@@ -780,9 +946,8 @@ async def run_managed_inference(
         enrichment=None,
         agent_profile=snapshot["agent_profile"],
         model=snapshot["model"],
+        connection=snapshot["connection"],
         temperature=snapshot["temperature"],
-        base_url=snapshot["base_url"],
-        api_key_ref=snapshot["api_key_ref"],
         framework_version=snapshot["framework_version"],
         profile_tools_json=snapshot["tools_json"],
         content_included=snapshot["content_included"],

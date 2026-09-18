@@ -1,0 +1,61 @@
+[
+  {
+    "case_id": "initialize.session",
+    "prerequisites": [
+      "acp.initialize"
+    ],
+    "fixture_ref": "bootstrap fixture",
+    "action_steps": [
+      "start proxy+agent",
+      "initialize",
+      "shutdown"
+    ],
+    "expected_host_observations": [
+      "session-running"
+    ],
+    "expected_agent_observations": [
+      "initialize-ok"
+    ],
+    "cleanup_assertion": "no surviving process",
+    "status": "UNKNOWN"
+  },
+  {
+    "case_id": "tool.read",
+    "prerequisites": [
+      "acp.initialize",
+      "acp.tools.read"
+    ],
+    "fixture_ref": "read fixture",
+    "action_steps": [
+      "prompt read"
+    ],
+    "expected_host_observations": [
+      "tool-completed"
+    ],
+    "expected_agent_observations": [
+      "read-ok"
+    ],
+    "cleanup_assertion": "temp file removed",
+    "status": "UNKNOWN"
+  },
+  {
+    "case_id": "permission.cancel",
+    "prerequisites": [
+      "acp.permissions"
+    ],
+    "fixture_ref": "permission fixture",
+    "action_steps": [
+      "prompt write",
+      "cancel"
+    ],
+    "expected_host_observations": [
+      "permission-requested",
+      "permission-cancelled"
+    ],
+    "expected_agent_observations": [
+      "write-cancelled"
+    ],
+    "cleanup_assertion": "no partial file",
+    "status": "UNKNOWN"
+  }
+]

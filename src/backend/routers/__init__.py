@@ -12,6 +12,7 @@ from .user import router as user_router
 from .ws import router as ws_routers
 from .analytics import router as analytics_router
 from .config import router as config_router
+from .research import router as research_router
 
 # Main API router to aggregate and expose sub-routes
 router = APIRouter()
@@ -50,6 +51,10 @@ router.include_router(agent_tasks_router, prefix="/agent", tags=["Agent"])
 
 # ACP grant handoff, so a locally launched agent process can authenticate.
 router.include_router(acp_router, prefix="/acp", tags=["ACP"])
+
+# Research platform (Issue 01+): ACP capability receipts and the compatibility
+# gate. Admin-only; mounted under /api/research.
+router.include_router(research_router, prefix="/research", tags=["Research"])
 
 
 @router.api_route("/ping", methods=["HEAD"])

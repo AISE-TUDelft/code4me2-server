@@ -340,9 +340,11 @@ const StudyManagement = ({ user }) => {
                             <span className="metric-value">{config.metrics.total_queries}</span>
                           </div>
                           <div className="metric-row">
-                            <span className="metric-label">Acceptance:</span>
+                            <span className="metric-label">Completion acceptance:</span>
                             <span className="metric-value">
-                              {(config.metrics.acceptance_rate * 100).toFixed(1)}%
+                              {config.metrics.acceptance_rate == null
+                                ? "unavailable"
+                                : `${(config.metrics.acceptance_rate * 100).toFixed(1)}%`}
                             </span>
                           </div>
                           <div className="metric-row">
@@ -357,9 +359,10 @@ const StudyManagement = ({ user }) => {
                           <div className="baseline-comparison">
                             <div className="comparison-item">
                               <span className="comparison-label">vs Baseline:</span>
-                              <span className={`comparison-value ${config.vs_baseline.is_better_acceptance ? 'positive' : 'negative'}`}>
-                                {config.vs_baseline.acceptance_rate_uplift_pct > 0 ? '+' : ''}
-                                {config.vs_baseline.acceptance_rate_uplift_pct.toFixed(1)}%
+                              <span className={`comparison-value ${config.vs_baseline.is_better_acceptance === true ? 'positive' : config.vs_baseline.is_better_acceptance === false ? 'negative' : ''}`}>
+                                {config.vs_baseline.acceptance_rate_uplift_pct == null
+                                  ? "unavailable"
+                                  : `${config.vs_baseline.acceptance_rate_uplift_pct > 0 ? '+' : ''}${config.vs_baseline.acceptance_rate_uplift_pct.toFixed(1)}%`}
                               </span>
                             </div>
                             <div className="comparison-item">

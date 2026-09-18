@@ -109,6 +109,67 @@
   flex-wrap: wrap;
 }
 
+/* Derived, read-only distribution verification detail. */
+.profile-derived {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background-color: var(--background-color);
+  padding: 12px;
+}
+
+.profile-badge {
+  align-self: flex-start;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  text-transform: uppercase;
+}
+
+.profile-badge.verified {
+  color: #0b6b35;
+  background: rgba(11, 107, 53, 0.1);
+  border: 1px solid rgba(11, 107, 53, 0.25);
+}
+
+.profile-badge.unverified {
+  color: #92500a;
+  background: rgba(146, 80, 10, 0.1);
+  border: 1px solid rgba(146, 80, 10, 0.3);
+}
+
+.profile-derived-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.profile-derived-fields dt {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.profile-derived-fields dd {
+  color: var(--text-color);
+  font-size: 13px;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.profile-derived-release {
+  color: var(--text-secondary);
+  display: block;
+  font-size: 12px;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
 .primary-button,
 .secondary-button,
 .danger-button {

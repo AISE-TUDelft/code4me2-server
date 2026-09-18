@@ -1,33 +1,33 @@
-"""Admin CRUD for agent profiles, plus the plugin-facing registry.
+"""Researcher-owned agent profiles plus the plugin-facing registry.
 
 Endpoints (mounted under ``/api/agent``):
 
   GET    /available-tools        tool names a profile may select
-  GET    /profiles               list profiles (admin)
-  POST   /profiles               create a profile (admin)
-  PUT    /profiles/{id}          update a profile (admin)
-  DELETE /profiles/{id}          delete a profile (admin)
+  GET    /profiles               list the caller's profiles (admin: all)
+  POST   /profiles               create a profile
+  PUT    /profiles/{id}          update a profile
+  DELETE /profiles/{id}          archive a profile
   GET    /registry               profiles in the shape the plugin consumes
-  GET    /assignments            list A/B assignments (admin)
-  PUT    /assignments/{user_id}  add a study-specific assignment (admin)
-  DELETE /assignments/{user_id}  clear a user's assignments (admin)
 
-Profiles are the unit of experimental control: a profile fixes the runtime, the
-provider, the model, the tool allowlist and the approval policy, and users are
-assigned to one as an A/B arm.
+A profile is a private, editable template owned by exactly one researcher
+(``agent_profile.owner_user_id``). It selects an administrator-managed
+``provider_connection`` and a ``model`` from that connection's allowed list; the
+release it pins is the approved artifact. The provider endpoint and secret live
+on the connection, never on the profile. Names are unique per owner.
+
+There is no client-chosen arm: task/run assignment is server-authoritative (see
+``agents.registry``).
 """
 
 from __future__ import annotations
 
 import json
-import re
 import uuid  # noqa: TC003 - FastAPI evaluates route annotations at runtime
 from datetime import datetime
 from typing import Any, Optional
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 
 from agents.tools import KNOWN_AGENT_TOOLS, tools_for_framework
@@ -38,40 +38,71 @@ from backend.routers.analytics.auth_utils import (
     get_current_user,
     require_admin,
 )
+from backend.routers.research.access import (
+    is_owner,
+    require_owner,
+    require_researcher,
+)
 from database import crud
-from database.db_schemas import (
-    AgentProfile,
-    AgentStudyAssignment,
-    Study,
-    StudyAgentProfile,
-    User,
+from database.db_schemas import AgentProfile
+from research.study.agents import store as registry_store
+from research.study.agents.distributions import (
+    distribution_supported_platforms,
+    resolve_distribution_view,
 )
 
 router = APIRouter()
 
-# Runtimes a profile may target. Anything else would mint tasks the plugin has
-# no way to launch, so it's rejected at the API boundary rather than failing
-# later at agent-startup time.
 SUPPORTED_FRAMEWORKS = ("code4me2-agent", "goose", "codex")
 SUPPORTED_APPROVAL_POLICIES = ("auto", "per_step", "suggestion_only")
 
 
+def _models_for(connection: Any) -> list[str]:
+    try:
+        parsed = json.loads(getattr(connection, "models_json", None) or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed]
+
+
 class AgentProfilePayload(BaseModel):
+    """A profile template payload.
+
+    ``extra="forbid"`` deliberately rejects the retired fields
+    (``base_url``/``api_key_ref``/``distribution_mode``/``agent_package``/
+    ``agent_command``): researchers select an authorized ``connection_id`` and a
+    model, never an endpoint or a secret reference.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(..., min_length=1)
     model: str = Field(..., min_length=1)
     framework_version: str = Field(default="code4me2-agent")
-    # Generic OpenAI-compatible endpoint. None = fall back to the server default.
-    base_url: Optional[str] = Field(default=None)
-    # Name of the env var holding the upstream key — never the key itself, so a
-    # profile is always safe to read back over the API.
-    api_key_ref: Optional[str] = Field(default=None)
+    # Administrator-managed provider connection this profile uses.
+    connection_id: uuid.UUID
+    # Exact approved artifact pin (agent_release.release_id).
+    release_id: Optional[str] = Field(default=None)
     tools_json: str = Field(default="[]")
     approval_policy: str = Field(..., min_length=1)
     max_steps: int = Field(..., ge=1)
     is_active: bool = Field(default=True)
-    # None = don't inject; let the provider use its own default.
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     max_context_tokens: Optional[int] = Field(default=None, ge=1)
+
+    @field_validator("release_id")
+    @classmethod
+    def normalize_release_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        candidate = value.strip()
+        if not candidate:
+            return None
+        if candidate.lower() == "latest":
+            raise ValueError("release_id must be an immutable pin, not 'latest'")
+        return candidate
 
     @field_validator("name", "model")
     @classmethod
@@ -80,26 +111,6 @@ class AgentProfilePayload(BaseModel):
         if not normalized:
             raise ValueError("value must not be blank")
         return normalized
-
-    @field_validator("base_url")
-    @classmethod
-    def validate_base_url(cls, value: Optional[str]) -> Optional[str]:
-        if value is None or not value.strip():
-            return None
-        candidate = value.strip().rstrip("/")
-        parsed = urlparse(candidate)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ValueError(
-                "base_url must be an HTTP(S) endpoint without credentials, query, or fragment"
-            )
-        return candidate
 
     @field_validator("tools_json")
     @classmethod
@@ -112,7 +123,6 @@ class AgentProfilePayload(BaseModel):
             isinstance(item, str) for item in parsed
         ):
             raise ValueError("tools_json must be a JSON array of strings")
-        # Re-serialise so stored values are canonical regardless of input spacing.
         return json.dumps(parsed)
 
     @field_validator("framework_version")
@@ -147,43 +157,93 @@ class AgentProfilePayload(BaseModel):
             )
         return self
 
-    @field_validator("api_key_ref")
-    @classmethod
-    def validate_api_key_ref(cls, value: Optional[str]) -> Optional[str]:
-        """Reject anything that looks like a key rather than a variable name.
 
-        This is a guardrail against the obvious mistake: pasting the actual
-        secret into the field. Env var names are short and uppercase, so a long
-        value or one containing key-ish punctuation is almost certainly a
-        credential that must not be persisted.
-        """
-        if value is None:
-            return None
-        candidate = value.strip()
-        if not candidate:
-            return None
-        if not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,127}", candidate):
-            raise ValueError(
-                "api_key_ref must be the NAME of an environment variable "
-                "(e.g. OPENAI_API_KEY), not an API key value"
-            )
-        return candidate
+def _authorize_connection(
+    db: Any, payload: AgentProfilePayload, current_user: AuthenticatedUser
+) -> Any:
+    """Resolve the selected connection and enforce grant + model allowlist."""
+    connection = crud.get_provider_connection(db, payload.connection_id)
+    if connection is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "CONNECTION_UNRESOLVED",
+                "field": "connection_id",
+                "message": "the selected provider connection does not exist",
+            },
+        )
+    if not current_user.is_admin and not crud.provider_connection_is_available(
+        db, connection.connection_id, current_user.user_id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "CONNECTION_NOT_GRANTED",
+                "message": (
+                    "the caller is not authorized to use this provider connection"
+                ),
+            },
+        )
+    if payload.model not in _models_for(connection):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "MODEL_NOT_ALLOWED",
+                "field": "model",
+                "message": (
+                    f"model {payload.model!r} is not allowed by connection "
+                    f"{connection.label!r}"
+                ),
+            },
+        )
+    return connection
 
 
-def _profile_to_dict(profile: AgentProfile) -> dict[str, Any]:
+def _release_for(db: Any, profile: AgentProfile):
+    """Rehydrate the registry release a profile pins, if any."""
+    release_id = getattr(profile, "release_id", None)
+    if not release_id:
+        return None
+    row = registry_store.get_release(db, release_id)
+    if row is None:
+        return None
+    return registry_store.row_to_release(row)
+
+
+def _connection_summary(db: Any, profile: AgentProfile) -> Optional[dict[str, Any]]:
+    if getattr(profile, "connection_id", None) is None:
+        return None
+    connection = crud.get_provider_connection(db, profile.connection_id)
+    if connection is None:
+        return {"connection_id": str(profile.connection_id), "label": None}
+    return {
+        "connection_id": str(connection.connection_id),
+        "label": connection.label,
+        "models": _models_for(connection),
+        "is_active": bool(connection.is_active),
+    }
+
+
+def _profile_to_dict(db: Any, profile: AgentProfile) -> dict[str, Any]:
+    release = _release_for(db, profile)
+    view = resolve_distribution_view(profile, release)
     return {
         "profile_id": str(profile.profile_id),
+        "owner_user_id": str(profile.owner_user_id),
         "name": profile.name,
         "model": profile.model,
         "framework_version": profile.framework_version,
-        "base_url": profile.base_url,
-        "api_key_ref": profile.api_key_ref,
         "tools_json": profile.tools_json,
         "approval_policy": profile.approval_policy,
         "max_steps": profile.max_steps,
         "is_active": profile.is_active,
         "temperature": profile.temperature,
         "max_context_tokens": profile.max_context_tokens,
+        "connection": _connection_summary(db, profile),
+        "release_id": view.release_id,
+        "release_version": view.version,
+        "verified": view.verified,
+        "supported_platforms": distribution_supported_platforms(release),
         "created_at": (
             profile.created_at.isoformat()
             if isinstance(profile.created_at, datetime)
@@ -193,12 +253,7 @@ def _profile_to_dict(profile: AgentProfile) -> dict[str, Any]:
 
 
 def _profile_to_registry_dict(profile: AgentProfile) -> dict[str, Any]:
-    """Shape a profile for the plugin, including the env the runtime expects.
-
-    Note that ``api_key_ref`` is exposed but the key is not: the plugin only
-    ever launches a *local* agent process, and the process reads the credential
-    from the backend at runtime, so the secret never transits this endpoint.
-    """
+    """Shape a profile for the plugin: non-secret identity only."""
     try:
         tools = json.loads(profile.tools_json or "[]")
     except json.JSONDecodeError:
@@ -216,14 +271,13 @@ def _profile_to_registry_dict(profile: AgentProfile) -> dict[str, Any]:
         "name": profile.name,
         "model": profile.model,
         "framework_version": profile.framework_version,
-        "base_url": profile.base_url,
-        "api_key_ref": profile.api_key_ref,
         "tools": tools,
         "approval_policy": profile.approval_policy,
         "max_steps": profile.max_steps,
         "max_context_tokens": profile.max_context_tokens,
         "is_active": profile.is_active,
         "temperature": profile.temperature,
+        "release_id": getattr(profile, "release_id", None),
         "env": env,
     }
 
@@ -235,8 +289,9 @@ def list_available_tools(
         description="Restrict to the tools relevant for one runtime "
         "(code4me2-agent | goose | codex). Omit for the full catalogue.",
     ),
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(get_current_user),
 ):
+    require_researcher(current_user)
     tools = (
         tools_for_framework(framework_version)
         if framework_version
@@ -254,15 +309,19 @@ def list_available_tools(
 
 @router.get("/profiles", summary="List agent profiles")
 def list_agent_profiles(
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
+    require_researcher(current_user)
     db = app.get_db_session()
     try:
-        profiles = crud.list_agent_profiles(db)
+        owner_scope = None if current_user.is_admin else current_user.user_id
+        profiles = crud.list_agent_profiles(db, owner_scope)
         return JsonResponseWithStatus(
             status_code=200,
-            content={"profiles": [_profile_to_dict(p) for p in profiles]},
+            content={
+                "profiles": [_profile_to_dict(db, profile) for profile in profiles]
+            },
         )
     finally:
         db.close()
@@ -271,18 +330,21 @@ def list_agent_profiles(
 @router.post("/profiles", summary="Create an agent profile")
 def create_agent_profile(
     payload: AgentProfilePayload,
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
+    require_researcher(current_user)
     db = app.get_db_session()
     try:
+        _authorize_connection(db, payload, current_user)
         profile = crud.create_agent_profile(
             db,
+            owner_user_id=current_user.user_id,
             name=payload.name,
             model=payload.model,
             framework_version=payload.framework_version,
-            base_url=payload.base_url,
-            api_key_ref=payload.api_key_ref,
+            connection_id=payload.connection_id,
+            release_id=payload.release_id,
             tools_json=payload.tools_json,
             approval_policy=payload.approval_policy,
             max_steps=payload.max_steps,
@@ -291,13 +353,34 @@ def create_agent_profile(
             max_context_tokens=payload.max_context_tokens,
         )
         return JsonResponseWithStatus(
-            status_code=201, content={"profile": _profile_to_dict(profile)}
+            status_code=201, content={"profile": _profile_to_dict(db, profile)}
         )
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
-            status_code=409, detail="Agent profile name already exists"
+            status_code=409,
+            detail="You already have a profile with that name",
         ) from exc
+    finally:
+        db.close()
+
+
+@router.get("/profiles/{profile_id}", summary="Fetch one agent profile")
+def get_agent_profile(
+    profile_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    app: App = Depends(App.get_instance),
+):
+    require_researcher(current_user)
+    db = app.get_db_session()
+    try:
+        profile = crud.get_agent_profile_by_id(db, profile_id)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Agent profile not found")
+        require_owner(current_user, profile.owner_user_id, subject="profile")
+        return JsonResponseWithStatus(
+            status_code=200, content={"profile": _profile_to_dict(db, profile)}
+        )
     finally:
         db.close()
 
@@ -306,47 +389,47 @@ def create_agent_profile(
 def update_agent_profile(
     profile_id: uuid.UUID,
     payload: AgentProfilePayload,
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
-    """Update a profile.
+    """Update a profile template.
 
-    A profile used by an active study cannot change. Agent tasks also copy the
-    effective runtime configuration at creation, so later changes never alter
-    completed task records.
+    Editing a template never rewrites a published study snapshot: publication
+    frozen the profile's configuration into the revision.
     """
+    require_researcher(current_user)
     db = app.get_db_session()
     try:
+        existing = crud.get_agent_profile_by_id(db, profile_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Agent profile not found")
+        require_owner(current_user, existing.owner_user_id, subject="profile")
+        _authorize_connection(db, payload, current_user)
         profile = crud.update_agent_profile(
             db,
             profile_id=profile_id,
             name=payload.name,
             model=payload.model,
             framework_version=payload.framework_version,
-            base_url=payload.base_url,
-            api_key_ref=payload.api_key_ref,
             tools_json=payload.tools_json,
             approval_policy=payload.approval_policy,
             max_steps=payload.max_steps,
             is_active=payload.is_active,
             temperature=payload.temperature,
             max_context_tokens=payload.max_context_tokens,
+            connection_id=payload.connection_id,
+            release_id=payload.release_id,
+            update_connection_id=True,
+            update_release_id=True,
         )
-        if profile is None:
-            raise HTTPException(status_code=404, detail="Agent profile not found")
         return JsonResponseWithStatus(
-            status_code=200, content={"profile": _profile_to_dict(profile)}
+            status_code=200, content={"profile": _profile_to_dict(db, profile)}
         )
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(
-            status_code=409, detail="Agent profile name already exists"
-        ) from exc
-    except crud.AgentProfileInActiveStudyError as exc:
-        db.rollback()
-        raise HTTPException(
             status_code=409,
-            detail="Profiles attached to an active study cannot be changed",
+            detail="You already have a profile with that name",
         ) from exc
     finally:
         db.close()
@@ -355,25 +438,22 @@ def update_agent_profile(
 @router.delete("/profiles/{profile_id}", summary="Retire an agent profile")
 def delete_agent_profile(
     profile_id: uuid.UUID,
-    current_user: AuthenticatedUser = Depends(require_admin),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
-    """Retire a profile that is not part of an active study."""
+    """Archive a profile; frozen study snapshots are never erased."""
+    require_researcher(current_user)
     db = app.get_db_session()
     try:
-        deleted = crud.delete_agent_profile(db, profile_id)
-        if not deleted:
+        existing = crud.get_agent_profile_by_id(db, profile_id)
+        if existing is None:
             raise HTTPException(status_code=404, detail="Agent profile not found")
+        require_owner(current_user, existing.owner_user_id, subject="profile")
+        crud.delete_agent_profile(db, profile_id)
         return JsonResponseWithStatus(
             status_code=200,
             content={"retired": True, "profile_id": str(profile_id)},
         )
-    except crud.AgentProfileInActiveStudyError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="Profiles attached to an active study cannot be retired",
-        ) from exc
     finally:
         db.close()
 
@@ -383,171 +463,14 @@ def list_agent_registry(
     current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
+    require_researcher(current_user)
     db = app.get_db_session()
     try:
-        profiles = crud.list_agent_profiles(db)
+        owner_scope = None if current_user.is_admin else current_user.user_id
+        profiles = crud.list_agent_profiles(db, owner_scope)
         return JsonResponseWithStatus(
             status_code=200,
             content={"profiles": [_profile_to_registry_dict(p) for p in profiles]},
-        )
-    finally:
-        db.close()
-
-
-# ── A/B assignments ─────────────────────────────────────────────────────────
-#
-# Assignments are normally created automatically (sticky random draw) on a
-# user's first agent task. These admin endpoints let you inspect them and pin a
-# specific user to a specific profile (source="manual"), which overrides the
-# random draw and is excluded from A/B analysis.
-
-
-class AssignmentPayload(BaseModel):
-    profile_id: uuid.UUID
-    study_id: Optional[uuid.UUID] = None
-
-
-def _assignment_to_dict(assignment: AgentStudyAssignment) -> dict[str, Any]:
-    profile = assignment.profile
-    return {
-        "assignment_id": str(assignment.assignment_id),
-        "study_id": str(assignment.study_id),
-        "user_id": str(assignment.user_id),
-        "profile_id": str(assignment.profile_id),
-        "profile_name": profile.name if profile is not None else None,
-        "arm_name": assignment.arm_name,
-        "is_baseline": assignment.is_baseline,
-        "source": assignment.source,
-        "assigned_at": (
-            assignment.assigned_at.isoformat()
-            if isinstance(assignment.assigned_at, datetime)
-            else assignment.assigned_at
-        ),
-    }
-
-
-@router.get("/assignments", summary="List all agent profile assignments")
-def list_agent_assignments(
-    current_user: AuthenticatedUser = Depends(require_admin),
-    app: App = Depends(App.get_instance),
-):
-    db = app.get_db_session()
-    try:
-        assignments = crud.list_agent_study_assignments(db)
-        return JsonResponseWithStatus(
-            status_code=200,
-            content={"assignments": [_assignment_to_dict(a) for a in assignments]},
-        )
-    finally:
-        db.close()
-
-
-@router.get("/assignment-options", summary="List users and studies for agent assignments")
-def list_agent_assignment_options(
-    current_user: AuthenticatedUser = Depends(require_admin),
-    app: App = Depends(App.get_instance),
-):
-    db = app.get_db_session()
-    try:
-        users = db.query(User).order_by(User.name, User.email).all()
-        studies = db.query(Study).order_by(Study.is_active.desc(), Study.name).all()
-        profile_ids_by_study: dict[uuid.UUID, list[str]] = {}
-        for link in db.query(StudyAgentProfile).all():
-            profile_ids_by_study.setdefault(link.study_id, []).append(
-                str(link.profile_id)
-            )
-        return JsonResponseWithStatus(
-            status_code=200,
-            content={
-                "users": [
-                    {"user_id": str(user.user_id), "name": user.name, "email": user.email}
-                    for user in users
-                ],
-                "studies": [
-                    {
-                        "study_id": str(study.study_id),
-                        "name": study.name,
-                        "is_active": study.is_active,
-                        "profile_ids": profile_ids_by_study.get(study.study_id, []),
-                    }
-                    for study in studies
-                ],
-            },
-        )
-    finally:
-        db.close()
-
-
-@router.put(
-    "/assignments/{user_id}", summary="Add an agent study assignment"
-)
-def set_agent_assignment(
-    user_id: uuid.UUID,
-    payload: AssignmentPayload,
-    current_user: AuthenticatedUser = Depends(require_admin),
-    app: App = Depends(App.get_instance),
-):
-    db = app.get_db_session()
-    try:
-        study_id = payload.study_id
-        if study_id is None:
-            active_study = crud.get_active_agent_study(db)
-            if active_study is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="No active study with agent arms; specify an active study first",
-                )
-            study_id = active_study.study_id
-        arm = crud.get_study_agent_profile(db, study_id, payload.profile_id)
-        if arm is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Profile is not an arm of the specified study",
-            )
-        profile = crud.get_agent_profile_by_id(db, payload.profile_id)
-        if profile is None:
-            raise HTTPException(status_code=404, detail="Agent profile not found")
-        if crud.get_agent_study_assignment(db, study_id, user_id) is not None:
-            raise HTTPException(
-                status_code=409,
-                detail="Study assignment already exists and cannot be changed",
-            )
-        assignment = crud.create_agent_study_assignment(
-            db,
-            study_id=study_id,
-            user_id=user_id,
-            profile_id=profile.profile_id,
-            arm_name=profile.name,
-            is_baseline=arm.is_baseline,
-            source="manual",
-        )
-        if assignment is None:
-            raise HTTPException(
-                status_code=409,
-                detail="Study assignment was created concurrently; reload assignments",
-            )
-        return JsonResponseWithStatus(
-            status_code=201, content={"assignment": _assignment_to_dict(assignment)}
-        )
-    finally:
-        db.close()
-
-
-@router.delete("/assignments/{user_id}", summary="Clear a user's agent assignments")
-def delete_agent_assignment(
-    user_id: uuid.UUID,
-    study_id: Optional[uuid.UUID] = Query(default=None),
-    current_user: AuthenticatedUser = Depends(require_admin),
-    app: App = Depends(App.get_instance),
-):
-    db = app.get_db_session()
-    try:
-        deleted = crud.delete_agent_study_assignments(db, user_id, study_id)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Assignment not found")
-        return JsonResponseWithStatus(
-            status_code=200,
-            content={"deleted": True, "user_id": str(user_id)},
         )
     finally:
         db.close()

@@ -1277,6 +1277,64 @@ const AGENT_BASE = () =>
 
 // Shared request helper. The hand-rolled fetch blocks above predate it; new
 // agent endpoints funnel through here so error handling stays consistent.
+//
+// Error bodies are normalized so no raw object/array ever reaches JSX:
+//   * FastAPI's default 422 `detail` array (`{type,loc,msg,input}`) becomes
+//     `errors: [{field, message, code}]` (loc joined with "."), with a readable
+//     summary string;
+//   * a custom `detail` object `{code, field, message}` becomes one entry;
+//   * a plain `detail`/`message` string is used as-is.
+// The same helpers back `researchRequest`, so there is one pattern, not two.
+const normalizeErrorEntries = (payload) => {
+  if (!payload || typeof payload !== "object") return [];
+  const detail = payload.detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => {
+      if (typeof item === "string") return { field: "", message: item, code: "" };
+      const loc = Array.isArray(item.loc) ? item.loc.join(".") : "";
+      return {
+        field: item.field || loc || "",
+        message: item.msg || item.message || "",
+        code: item.code || item.type || "",
+        severity: item.severity,
+      };
+    });
+  }
+  if (Array.isArray(payload.errors)) return payload.errors;
+  if (detail && typeof detail === "object") {
+    return [
+      {
+        field: detail.field || "",
+        message: detail.message || detail.msg || detail.reason || "",
+        code: detail.code || "",
+        severity: detail.severity,
+      },
+    ];
+  }
+  return [];
+};
+
+const normalizeRequestError = (payload, response) => {
+  const detail = payload ? payload.detail : undefined;
+  const errors = normalizeErrorEntries(payload);
+  const detailObject =
+    detail && typeof detail === "object" && !Array.isArray(detail) ? detail : null;
+  const detailMessage =
+    (typeof detail === "string" && detail) ||
+    (detailObject &&
+      (detailObject.message || detailObject.code || detailObject.reason)) ||
+    (payload && payload.message) ||
+    "";
+  // A typed validation failure must never surface as
+  // "422 Unprocessable Entity": summarize the field errors instead.
+  const error =
+    detailMessage ||
+    (errors.length
+      ? summarizeValidationErrors(errors)
+      : `${response.status}: ${response.statusText}`);
+  return { error, errors, status: response.status };
+};
+
 const agentRequest = async (path, { method = "GET", body, label } = {}) => {
   try {
     const response = await fetch(`${AGENT_BASE()}${path}`, {
@@ -1289,18 +1347,16 @@ const agentRequest = async (path, { method = "GET", body, label } = {}) => {
     const payload =
       response.status === 204 ? {} : await response.json().catch(() => ({}));
     if (!response.ok) {
-      return {
-        ok: false,
-        error:
-          payload["detail"] ||
-          payload["message"] ||
-          `${response.status}: ${response.statusText}`,
-      };
+      return { ok: false, ...normalizeRequestError(payload, response) };
     }
-    return { ok: true, data: payload };
+    return { ok: true, data: payload, status: response.status };
   } catch (e) {
     console.error(`Error ${label || path}:`, e);
-    return { ok: false, error: `Failed to ${label || "complete request"}` };
+    return {
+      ok: false,
+      error: `Failed to ${label || "complete request"}`,
+      errors: [],
+    };
   }
 };
 
@@ -1385,6 +1441,454 @@ export const deleteAgentAssignment = async (userId, studyId) =>
       label: "clear agent assignment",
     },
   );
+
+// ── Research control plane ──────────────────────────────────────────────────
+//
+// Backs the researcher-facing authoring pages (ResearchStudies,
+// ResearchStudyEditor, ResearchEnrollment). The backend mounts these under
+// /api/research and every endpoint is admin/authorized-researcher only, so they
+// reuse the existing cookie-based session like the analytics/admin helpers.
+//
+// Validation failures from the protocol service are 422 responses whose
+// `detail` is a *list* of {code, field, message, severity} entries. Those are
+// preserved on `errors` so the UI can render field-level messages instead of
+// collapsing them into one opaque string.
+
+const RESEARCH_BASE = () =>
+  `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/research`;
+
+const summarizeValidationErrors = (errors) =>
+  errors
+    .slice(0, 3)
+    .map((error) => {
+      if (typeof error === "string") return error;
+      return `${error.field || error.code || "protocol"}: ${error.message || ""}`.trim();
+    })
+    .join("; ");
+
+export const researchRequest = async (
+  path,
+  { method = "GET", body, label } = {},
+) => {
+  try {
+    const response = await fetch(`${RESEARCH_BASE()}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    // 204 has no body to parse.
+    const payload =
+      response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, ...normalizeRequestError(payload, response) };
+    }
+    return { ok: true, data: payload, status: response.status };
+  } catch (e) {
+    console.error(`Error ${label || path}:`, e);
+    return {
+      ok: false,
+      error: `Failed to ${label || "complete request"}`,
+      errors: [],
+    };
+  }
+};
+
+/**
+ * List study identities.
+ *
+ * NOTE: the study protocol router currently exposes only
+ * `/studies/drafts` and `/studies/revisions`, both of which require an
+ * explicit `study_id`. A study index is therefore not guaranteed to exist; the
+ * call is made optimistically and a 404/405 is reported as `missing` so the UI
+ * can fall back to manual study-id entry instead of failing hard.
+ */
+/**
+ * Create a study identity.
+ *
+ * The server generates the UUID (and grants the caller OWNER so they can
+ * author it immediately), which removes the "paste a UUID" step from the UI.
+ * The identity materializes with the study's first draft/revision.
+ */
+export const createResearchStudy = async ({ name, description, owner } = {}) =>
+  researchRequest("/studies", {
+    method: "POST",
+    body: {
+      name,
+      description: description ?? null,
+      owner: owner ?? null,
+    },
+    label: "create research study",
+  });
+
+export const listResearchStudies = async () => {
+  const result = await researchRequest("/studies", {
+    label: "load research studies",
+  });
+  if (result.ok) {
+    const data = result.data || {};
+    return { ok: true, data: data.studies || data || [] };
+  }
+  if (result.status === 403) {
+    return {
+      ok: false,
+      forbidden: true,
+      error:
+        "Your account is not enabled for research. Ask an administrator to enable researcher access.",
+    };
+  }
+  if (result.status === 404 || result.status === 405) {
+    return {
+      ok: false,
+      missing: true,
+      error: "The study-listing endpoint is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+const RESEARCH_ENDPOINT_MISSING = (status) => status === 404 || status === 405;
+
+// Study-scoped join code: the value a researcher shares with participants. It is
+// bound to the study's latest published revision, not to the researcher's own
+// account, so it replaces the per-account enrollment id as the "share this"
+// value on the enrollment page. The endpoint is newer than the rest of the
+// control plane; a 404/405 is reported as `missing` so the UI can degrade to the
+// per-account enrollment id instead of failing.
+export const getResearchStudyJoinCode = async (studyId) => {
+  const result = await researchRequest(
+    `/studies/${encodeURIComponent(studyId)}/join-code`,
+    { label: "load study join code" },
+  );
+  if (result.ok) {
+    const data = result.data || {};
+    // The endpoint returns the join code plus a nested ``revision`` summary.
+    const revision = data.revision || {};
+    return {
+      ok: true,
+      join_code: data.join_code || "",
+      revision_id: data.revision_id || revision.revision_id || "",
+      revision_number: revision.revision_number ?? null,
+      status: data.status || revision.status || "",
+      protocol_digest: revision.protocol_digest || "",
+    };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    return {
+      ok: false,
+      missing: true,
+      error: "The study join-code endpoint is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+// Resolve a participant join code to the study/revision it points at, without
+// redeeming it. Read-only, so a participant can confirm the study before
+// accepting the policy and the join page can compare it with any existing enrollment.
+export const resolveResearchJoinCode = async (joinCode) => {
+  const result = await researchRequest(
+    `/join/${encodeURIComponent(joinCode)}`,
+    { label: "resolve study join code" },
+  );
+  if (result.ok) {
+    const data = result.data || {};
+    const study = data.study || {};
+    const revision = data.revision || {};
+    const consent = data.consent || {};
+    return {
+      ok: true,
+      data: {
+        joinCode: data.join_code || joinCode,
+        study: {
+          studyId: study.study_id || "",
+          name: study.name || "",
+        },
+        revision: {
+          revisionId: revision.revision_id || "",
+          revisionNumber: revision.revision_number ?? null,
+          status: revision.status || "",
+          protocolDigest: revision.protocol_digest || "",
+          publishedAt: revision.published_at || null,
+        },
+        // The single global policy text the participant accepts once at join.
+        policyText: consent.text || "",
+      },
+    };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    return {
+      ok: false,
+      missing: true,
+      error:
+        "That join code could not be found, or the join service is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+// Redeem a participant join code for the signed-in account. Idempotent
+// server-side: re-running reuses the existing enrollment.
+export const redeemResearchJoinCode = async (joinCode, acceptConsent) => {
+  const result = await researchRequest("/join", {
+    method: "POST",
+    body: { join_code: joinCode, accept_consent: !!acceptConsent },
+    label: "redeem study join code",
+  });
+  if (result.ok) {
+    const data = result.data || {};
+    return {
+      ok: true,
+      data: {
+        enrollment_id: data.enrollment_id || "",
+        study_id: data.study_id || "",
+        revision_id: data.revision_id || "",
+        status: data.status || "",
+      },
+    };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    // Same ambiguity as resolve: unknown/expired code or an unmounted service.
+    return {
+      ok: false,
+      missing: true,
+      error:
+        "That join code could not be redeemed, or the join service is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+// The signed-in account's own enrollment projections (study-local, no account
+// data). Used by the join page to avoid re-asking for the policy when an active
+// enrollment already exists for the code's revision.
+export const getMyResearchEnrollments = async () => {
+  const result = await researchRequest("/participants/me", {
+    label: "load my research enrollments",
+  });
+  if (result.ok) {
+    const data = result.data || {};
+    return { ok: true, data: data.enrollments || [] };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    return {
+      ok: false,
+      missing: true,
+      error:
+        "Your enrollment status is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+export const listResearchRevisions = async (studyId) => {
+  const result = await researchRequest(
+    `/studies/revisions?study_id=${encodeURIComponent(studyId)}`,
+    { label: "load study revisions" },
+  );
+  return result.ok
+    ? { ok: true, data: result.data.revisions || [] }
+    : result;
+};
+
+export const getResearchRevision = async (revisionId) => {
+  const result = await researchRequest(
+    `/studies/revisions/${encodeURIComponent(revisionId)}`,
+    { label: "load study revision" },
+  );
+  return result.ok
+    ? { ok: true, revision: result.data.revision, protocol: result.data.protocol }
+    : result;
+};
+
+export const listResearchDrafts = async (studyId) => {
+  const result = await researchRequest(
+    `/studies/drafts?study_id=${encodeURIComponent(studyId)}`,
+    { label: "load study drafts" },
+  );
+  return result.ok ? { ok: true, data: result.data.drafts || [] } : result;
+};
+
+export const getResearchDraft = async (draftId) => {
+  const result = await researchRequest(
+    `/studies/drafts/${encodeURIComponent(draftId)}`,
+    { label: "load study draft" },
+  );
+  return result.ok
+    ? {
+        ok: true,
+        draft_id: result.data.draft_id,
+        study_id: result.data.study_id,
+        name: result.data.name,
+        protocol: result.data.protocol,
+      }
+    : result;
+};
+
+export const createResearchDraft = async ({ studyId, name, protocol }) =>
+  researchRequest("/studies/drafts", {
+    method: "POST",
+    body: { study_id: studyId, name, protocol },
+    label: "create study draft",
+  });
+
+export const validateResearchProtocol = async (protocol) => {
+  const result = await researchRequest("/studies/drafts/validate", {
+    method: "POST",
+    body: { protocol },
+    label: "validate study protocol",
+  });
+  if (result.ok) {
+    return {
+      ok: true,
+      valid: result.data.valid !== false,
+      errors: result.data.errors || [],
+      warnings: result.data.warnings || [],
+    };
+  }
+  if (result.status === 422) {
+    return {
+      ok: false,
+      valid: false,
+      errors: result.errors || [],
+      warnings: result.data ? result.data.warnings || [] : [],
+      error: result.error,
+    };
+  }
+  return {
+    ...result,
+    valid: false,
+    errors: result.errors || [],
+    warnings: [],
+  };
+};
+
+export const publishResearchDraft = (draftId, payload) =>
+  researchRequest(`/studies/drafts/${encodeURIComponent(draftId)}/publish`, {
+    method: "POST",
+    body: payload,
+    label: "publish study draft",
+  });
+
+export const supersedeResearchRevision = (revisionId, payload) =>
+  researchRequest(
+    `/studies/revisions/${encodeURIComponent(revisionId)}/supersede`,
+    {
+      method: "POST",
+      body: payload,
+      label: "supersede study revision",
+    },
+  );
+
+export const retireResearchRevision = (revisionId, actor) =>
+  researchRequest(`/studies/revisions/${encodeURIComponent(revisionId)}/retire`, {
+    method: "POST",
+    body: { actor: actor ?? null },
+    label: "retire study revision",
+  });
+
+// Derived read models (researcher control plane). Missing coverage is returned
+// with an explicit coverage state; the UI must render "unavailable", not zero.
+export const getResearchExposures = async (studyId, revisionId) => {
+  const result = await researchRequest(
+    `/operations/exposures?study_id=${encodeURIComponent(studyId)}&revision_id=${encodeURIComponent(revisionId)}`,
+    { label: "load condition exposures" },
+  );
+  return result.ok ? { ok: true, data: result.data.conditions || [] } : result;
+};
+
+export const getResearchEnrollmentCoverage = async (studyId, revisionId) => {
+  const result = await researchRequest(
+    `/operations/enrollments/coverage?study_id=${encodeURIComponent(studyId)}&revision_id=${encodeURIComponent(revisionId)}`,
+    { label: "load enrollment coverage" },
+  );
+  return result.ok ? { ok: true, data: result.data } : result;
+};
+
+// Registered agent releases (admin-only; digest-pinned artifacts). Used by the
+// editor/enrollment views to distinguish packaged agents from BYOA setups.
+export const getAgentReleases = async () => {
+  const result = await researchRequest("/agents/releases", {
+    label: "load agent releases",
+  });
+  return result.ok ? { ok: true, data: result.data.releases || [] } : result;
+};
+
+// Derived, read-only distribution views. A profile IS a distribution; every
+// entry carries the resolved `release_id`/`release_version`, the server-derived
+// `verified` flag and the release's `supported_platforms`. Readable by any
+// authenticated user and exposes no secret, so a researcher can pick exactly one
+// distribution without ever seeing a release id or digest as an input.
+export const getAgentDistributions = async () => {
+  const result = await researchRequest("/agents/distributions", {
+    label: "load agent distributions",
+  });
+  return result.ok
+    ? { ok: true, data: result.data.distributions || [] }
+    : result;
+};
+
+export const getAgentDistribution = async (distributionId) => {
+  const result = await researchRequest(
+    `/agents/distributions/${encodeURIComponent(distributionId)}`,
+    { label: "load agent distribution" },
+  );
+  return result.ok ? { ok: true, data: result.data.distribution } : result;
+};
+
+// Provider connections the caller may select for a profile. Administrators see
+// every connection (including endpoint/secret_ref); researchers see only the
+// connections granted to them. The response never includes a secret value.
+export const getProviderConnections = async () => {
+  const result = await researchRequest("/provider-connections", {
+    label: "load provider connections",
+  });
+  return result.ok
+    ? { ok: true, data: result.data.connections || [] }
+    : result;
+};
+
+// One registered release with its full digest-pinned artifact and adapter
+// metadata. The list endpoint returns a compact summary, so the release picker
+// resolves the selected release to auto-fill version/digest/adapter_version.
+export const getAgentRelease = async (releaseId) => {
+  const result = await researchRequest(
+    `/agents/releases/${encodeURIComponent(releaseId)}`,
+    { label: "load agent release" },
+  );
+  return result.ok
+    ? { ok: true, release: result.data.release, model: result.data.model }
+    : result;
+};
+
+export const getResearchPackages = async (releaseId) => {
+  const query = releaseId
+    ? `?release_id=${encodeURIComponent(releaseId)}`
+    : "";
+  const result = await researchRequest(`/packages${query}`, {
+    label: "load runtime packages",
+  });
+  return result.ok ? { ok: true, data: result.data.packages || [] } : result;
+};
+
+// Enroll the *current* account in a published revision and return the
+// researcher-safe enrollment projection (whose enrollment_id is the join code
+// surfaced on the enrollment page). Idempotent server-side: re-running reuses
+// the existing enrollment.
+export const requestResearchEnrollment = async (studyId, revisionId) =>
+  researchRequest("/participants/enrollments", {
+    method: "POST",
+    body: { study_id: studyId, revision_id: revisionId },
+    label: "request study enrollment",
+  });
+
+export const getResearchEnrollment = async (enrollmentId) => {
+  const result = await researchRequest(
+    `/participants/enrollments/${encodeURIComponent(enrollmentId)}`,
+    { label: "load enrollment" },
+  );
+  return result.ok ? { ok: true, data: result.data.enrollment } : result;
+};
 
 // Per-arm comparison for a study's agent arms.
 export const getStudyAgentEvaluation = async (studyId) => {

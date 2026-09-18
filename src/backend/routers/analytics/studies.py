@@ -94,33 +94,27 @@ def create_study(
 
         # Validate the optional agent-profile arms. Done before any writes so a
         # bad arm list can't leave a half-configured study behind.
-        agent_profile_uuids: List[uuid.UUID] = []
-        baseline_profile_uuid: Optional[uuid.UUID] = None
+        #
+        # The legacy ``study_agent_profile`` arm authority was removed by the
+        # wave-1 consolidation (profiles are researcher-owned templates, and
+        # agent allocation is enrollment-scoped via the research
+        # ``study_assignment`` authority). Completion studies keep working, but
+        # they can no longer attach agent-profile arms through this route.
         try:
             agent_profile_uuids = [
                 uuid.UUID(pid) for pid in study_request.agent_profile_ids
             ]
-            if study_request.baseline_agent_profile_id is not None:
-                baseline_profile_uuid = uuid.UUID(
-                    study_request.baseline_agent_profile_id
-                )
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid agent profile ID format")
-
-        for profile_uuid in agent_profile_uuids:
-            if crud.get_agent_profile_by_id(db_session, profile_uuid) is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Agent profile {profile_uuid} not found",
-                )
-        if (
-            baseline_profile_uuid is not None
-            and baseline_profile_uuid not in agent_profile_uuids
-        ):
+        if agent_profile_uuids or study_request.baseline_agent_profile_id is not None:
             raise HTTPException(
                 status_code=400,
-                detail="Baseline agent profile must be one of the selected profiles",
+                detail=(
+                    "agent-profile arms are no longer supported on completion "
+                    "studies; create a research study for agent conditions"
+                ),
             )
+        baseline_profile_uuid: Optional[uuid.UUID] = None
 
         # Check if there's already an active study
         active_study_query = """
@@ -160,20 +154,6 @@ def create_study(
         # If study is active, assign configurations to users
         if is_active:
             assign_users_to_study(db_session, study_id, study_request.config_ids)
-
-        # Attach the agent-profile arms. Persisted regardless of active state:
-        # only an *active* study's arms are drawn from
-        # (crud.list_active_study_agent_profiles), and agent assignment is
-        # sticky-lazy — drawn on a user's first agent task rather than
-        # pre-assigned like completion configs — so there's nothing to backfill
-        # here.
-        if agent_profile_uuids:
-            crud.set_study_agent_profiles(
-                db_session,
-                study_id=study_id,
-                profile_ids=agent_profile_uuids,
-                baseline_profile_id=baseline_profile_uuid,
-            )
 
         db_session.commit()
 
@@ -392,21 +372,9 @@ def get_study_details(
                 "engagement_rate": float(assignment.engagement_rate) if assignment.engagement_rate else 0.0
             })
         
-        # Agent-profile arms attached to this study. Empty for completion-only
-        # studies, which is the backwards-compatible default.
-        agent_profiles = [
-            {
-                "profile_id": str(link.profile_id),
-                "name": link.profile.name if link.profile else None,
-                "model": link.profile.model if link.profile else None,
-                "framework_version": (
-                    link.profile.framework_version if link.profile else None
-                ),
-                "is_active": link.profile.is_active if link.profile else None,
-                "is_baseline": link.is_baseline,
-            }
-            for link in crud.list_study_agent_profiles(db_session, study_uuid)
-        ]
+        # Agent-profile arms were removed by the wave-1 consolidation; a
+        # completion study has none.
+        agent_profiles: list[dict] = []
 
         return JsonResponseWithStatus(
             status_code=200,
@@ -606,15 +574,23 @@ def evaluate_study(
         if not study:
             raise HTTPException(status_code=404, detail="Study not found")
         
-        # Get study results by configuration
+        # Get study results by configuration.
+        #
+        # ``acceptance_rate`` here is the *legacy completion* acceptance
+        # (``had_generation.was_accepted``), a real completion-product producer —
+        # it is NOT the research edit acceptance (which has no producer and is
+        # rendered unavailable on the research surfaces). Unresolved generations
+        # (NULL ``was_accepted``) are excluded from the manual ratio rather than
+        # counted as rejections (L07).
         evaluation_query = """
         SELECT 
             cah.assigned_config_id,
             COUNT(DISTINCT cah.user_id) as total_users,
             COUNT(DISTINCT mq.user_id) as active_users,
             COUNT(mq.meta_query_id) as total_queries,
-            AVG(CASE WHEN hg.was_accepted THEN 1.0 ELSE 0.0 END) as acceptance_rate,
-            COUNT(CASE WHEN hg.was_accepted THEN 1 END) as total_accepted,
+            AVG(CASE WHEN hg.was_accepted THEN 1.0 END)
+                FILTER (WHERE hg.was_accepted IS NOT NULL) as acceptance_rate,
+            COUNT(CASE WHEN hg.was_accepted IS TRUE THEN 1 END) as total_accepted,
             COUNT(hg.meta_query_id) as total_generations,
             AVG(hg.generation_time) as avg_generation_time,
             AVG(hg.confidence) as avg_confidence,
@@ -652,7 +628,11 @@ def evaluate_study(
                     "activation_rate": (row.active_users or 0) / max(row.total_users, 1),
                     "total_queries": row.total_queries or 0,
                     "total_generations": row.total_generations or 0,
-                    "acceptance_rate": float(row.acceptance_rate) if row.acceptance_rate else 0.0,
+                    "acceptance_rate": (
+                        float(row.acceptance_rate)
+                        if row.acceptance_rate is not None
+                        else None
+                    ),
                     "total_accepted": row.total_accepted or 0,
                     "avg_generation_time": float(row.avg_generation_time) if row.avg_generation_time else 0.0,
                     "avg_confidence": float(row.avg_confidence) if row.avg_confidence else 0.0,
@@ -676,14 +656,23 @@ def evaluate_study(
                     config_acceptance = config_data["metrics"]["acceptance_rate"]
                     config_generation_time = config_data["metrics"]["avg_generation_time"]
                     
-                    # Calculate uplift percentages
-                    acceptance_uplift = ((config_acceptance - baseline_acceptance) / max(baseline_acceptance, 0.001)) * 100
+                    # Calculate uplift percentages (None when the acceptance
+                    # rate is unavailable because no generation was decided).
+                    acceptance_uplift = (
+                        ((config_acceptance - baseline_acceptance) / max(baseline_acceptance, 0.001)) * 100
+                        if config_acceptance is not None and baseline_acceptance is not None
+                        else None
+                    )
                     generation_time_change = ((config_generation_time - baseline_generation_time) / max(baseline_generation_time, 1)) * 100
                     
                     config_data["vs_baseline"] = {
                         "acceptance_rate_uplift_pct": acceptance_uplift,
                         "generation_time_change_pct": generation_time_change,
-                        "is_better_acceptance": config_acceptance > baseline_acceptance,
+                        "is_better_acceptance": (
+                            config_acceptance > baseline_acceptance
+                            if config_acceptance is not None and baseline_acceptance is not None
+                            else None
+                        ),
                         "is_faster": config_generation_time < baseline_generation_time
                     }
         
@@ -718,18 +707,19 @@ def evaluate_study_agents(
     """
     Evaluate an A/B study's *agent* arms.
 
-    The agent-side mirror of ``evaluate_study``: aggregates agent telemetry
-    (``agent_task`` + ``agent_event``) per snapshotted profile and reports
-    uplift against the baseline arm.
+    The agent-side mirror of ``evaluate_study``: aggregates canonical agent
+    telemetry per snapshotted profile and reports uplift against the baseline
+    arm.
 
     A task counts only when its immutable ``study_id`` and ``profile_id``
     snapshots identify this study. Legacy tasks without those snapshots are
     intentionally excluded rather than inferred from a mutable profile name or
-    a time window.
+    a time window. Canonical events join their task by the explicit phase-05
+    binding (``research_event.agent_run_id = agent_task.external_run_id``), never
+    by an ACP session id or a time window.
 
-    Because both telemetry paths write into the same ``agent_event`` table, the
-    same aggregation works whether an arm ran Goose, Codex, or the built-in
-    ``code4me2-agent`` runtime — which is the whole point of the unified schema.
+    Edit acceptance has no canonical producer, so it is reported unavailable
+    (see ``edit_acceptance_rate: None``) rather than inferred.
 
     Admin only endpoint.
     """
@@ -781,20 +771,29 @@ def evaluate_study_agents(
         """
         task_rows = db_session.execute(text(task_query), window).fetchall()
 
-        # Per-arm event-level aggregates, kept as a separate query so the task
-        # aggregates above aren't inflated by the event-row fan-out.
+        # Canonical per-arm event aggregates. Events join their task by the
+        # explicit phase-05 binding (research_event.agent_run_id =
+        # agent_task.external_run_id), never by an ACP session id or time window.
         event_query = """
         SELECT
             t.profile_id,
-            COUNT(e.event_id) FILTER (WHERE e.event_type = 'model_request') AS model_requests,
-            COUNT(e.event_id) FILTER (WHERE e.event_type = 'model_call') AS model_calls,
-            COUNT(e.event_id) FILTER (WHERE e.event_type = 'tool_request') AS tool_requests,
-            COUNT(e.event_id) FILTER (WHERE e.event_type = 'tool_call') AS tool_calls,
-            COUNT(e.event_id) FILTER (WHERE e.event_type IN ('tool_failed', 'error')) AS failures,
-            AVG(e.latency_ms) FILTER (WHERE e.event_type = 'model_call') AS avg_model_latency_ms,
-            SUM(e.total_tokens) AS total_tokens
+            COUNT(e.event_id) FILTER (
+                WHERE e.envelope_json -> 'payload' ->> 'legacy_kind' = 'model_call'
+            ) AS model_calls,
+            COUNT(e.event_id) FILTER (
+                WHERE e.envelope_json -> 'payload' ->> 'legacy_kind' = 'tool_call'
+            ) AS tool_calls,
+            COUNT(e.event_id) FILTER (
+                WHERE e.envelope_json -> 'payload' ->> 'legacy_kind' = 'tool_failed'
+            ) AS failures,
+            AVG((e.envelope_json -> 'metrics' ->> 'latency_ms')::float) FILTER (
+                WHERE e.envelope_json -> 'payload' ->> 'legacy_kind' = 'model_call'
+            ) AS avg_model_latency_ms,
+            SUM((e.envelope_json -> 'metrics' ->> 'usage_tokens')::bigint) FILTER (
+                WHERE e.envelope_json -> 'payload' ->> 'legacy_kind' = 'model_call'
+            ) AS total_tokens
         FROM agent_task t
-        LEFT JOIN agent_event e ON e.task_id = t.task_id
+        LEFT JOIN research_event e ON e.agent_run_id = t.external_run_id
         WHERE t.study_id = :study_id AND t.profile_id IS NOT NULL
         GROUP BY t.profile_id
         """
@@ -803,26 +802,10 @@ def evaluate_study_agents(
             for row in db_session.execute(text(event_query), window).fetchall()
         }
 
-        # Human-in-the-loop signal: what the developer actually did with the
-        # agent's proposals. This is the metric group-5 couldn't report at all,
-        # and it's arguably the most important one — an arm that proposes more
-        # edits but gets fewer accepted is worse, not better.
-        edit_query = """
-        SELECT
-            t.profile_id,
-            COUNT(ed.edit_id) AS total_edits,
-            COUNT(ed.edit_id) FILTER (WHERE ed.was_accepted IS TRUE) AS accepted_edits,
-            COUNT(ed.edit_id) FILTER (WHERE ed.was_accepted IS FALSE) AS rejected_edits,
-            COUNT(ed.edit_id) FILTER (WHERE ed.was_modified IS TRUE) AS modified_edits
-        FROM agent_task t
-        LEFT JOIN agent_edit ed ON ed.task_id = t.task_id
-        WHERE t.study_id = :study_id AND t.profile_id IS NOT NULL
-        GROUP BY t.profile_id
-        """
-        edit_rows = {
-            str(row.profile_id): row
-            for row in db_session.execute(text(edit_query), window).fetchall()
-        }
+        # Edit acceptance has no canonical producer (the contract records it only
+        # "when truly exposed"), so it is reported unavailable rather than
+        # computed from anything else. There is no second, legacy edit source.
+        edit_rows: dict[str, object] = {}
 
         def _f(value) -> float:
             return float(value) if value is not None else 0.0
@@ -835,10 +818,7 @@ def evaluate_study_agents(
 
         for row in task_rows:
             events = event_rows.get(str(row.profile_id))
-            edits = edit_rows.get(str(row.profile_id))
             total_tasks = _i(row.total_tasks)
-            total_edits = _i(edits.total_edits) if edits else 0
-            accepted_edits = _i(edits.accepted_edits) if edits else 0
 
             arm = {
                 "profile_id": str(row.profile_id),
@@ -855,28 +835,20 @@ def evaluate_study_agents(
                     "avg_steps": _f(row.avg_steps),
                     "total_input_tokens": _i(row.total_input_tokens),
                     "total_output_tokens": _i(row.total_output_tokens),
-                    "model_requests": _i(events.model_requests) if events else 0,
                     "model_calls": _i(events.model_calls) if events else 0,
-                    "tool_requests": _i(events.tool_requests) if events else 0,
                     "tool_calls": _i(events.tool_calls) if events else 0,
                     "failures": _i(events.failures) if events else 0,
                     "avg_model_latency_ms": (
                         _f(events.avg_model_latency_ms) if events else 0.0
                     ),
                     "total_tokens": _i(events.total_tokens) if events else 0,
-                    "total_edits": total_edits,
-                    "accepted_edits": accepted_edits,
-                    "rejected_edits": _i(edits.rejected_edits) if edits else 0,
-                    "modified_edits": _i(edits.modified_edits) if edits else 0,
-                    # Undecided edits are excluded from the denominator: an edit
-                    # the developer hasn't ruled on yet is not a rejection.
-                    "edit_acceptance_rate": (
-                        accepted_edits
-                        / max(
-                            accepted_edits + (_i(edits.rejected_edits) if edits else 0),
-                            1,
-                        )
-                    ),
+                    # No canonical edit producer exists, so edit acceptance is
+                    # explicitly unavailable (never computed from tool success).
+                    "total_edits": None,
+                    "accepted_edits": None,
+                    "rejected_edits": None,
+                    "modified_edits": None,
+                    "edit_acceptance_rate": None,
                 },
             }
 
@@ -895,9 +867,9 @@ def evaluate_study_agents(
                     "completion_rate_change_pct": _pct_change(
                         metrics["completion_rate"], base["completion_rate"]
                     ),
-                    "edit_acceptance_change_pct": _pct_change(
-                        metrics["edit_acceptance_rate"], base["edit_acceptance_rate"]
-                    ),
+                    # Edit acceptance is unavailable (no canonical producer), so
+                    # its uplift is reported as unknown rather than zero.
+                    "edit_acceptance_change_pct": None,
                     "avg_steps_change_pct": _pct_change(
                         metrics["avg_steps"], base["avg_steps"]
                     ),
@@ -907,9 +879,7 @@ def evaluate_study_agents(
                     "is_better_completion": (
                         metrics["completion_rate"] > base["completion_rate"]
                     ),
-                    "is_better_acceptance": (
-                        metrics["edit_acceptance_rate"] > base["edit_acceptance_rate"]
-                    ),
+                    "is_better_acceptance": None,
                     "is_faster": (
                         metrics["avg_model_latency_ms"] < base["avg_model_latency_ms"]
                     ),

@@ -16,12 +16,6 @@ const BAR_METRICS = [
     format: (v) => `${((v || 0) * 100).toFixed(1)}%`,
   },
   {
-    key: "edit_acceptance_rate",
-    label: "Edit acceptance rate",
-    better: "higher",
-    format: (v) => `${((v || 0) * 100).toFixed(1)}%`,
-  },
-  {
     key: "avg_steps",
     label: "Avg steps / task",
     better: "lower",
@@ -223,9 +217,7 @@ const ArmCard = ({ arm }) => {
         </div>
         <div className="metric-row">
           <span className="metric-label">Edits accepted:</span>
-          <span className="metric-value">
-            {m.accepted_edits || 0} of {m.total_edits || 0}
-          </span>
+          <span className="metric-value">unavailable</span>
         </div>
       </div>
 
@@ -234,10 +226,6 @@ const ArmCard = ({ arm }) => {
           <Uplift
             label="Completion vs baseline"
             value={arm.uplift.completion_rate_change_pct}
-          />
-          <Uplift
-            label="Edit acceptance"
-            value={arm.uplift.edit_acceptance_change_pct}
           />
           <Uplift
             label="Steps"

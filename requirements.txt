@@ -14,6 +14,9 @@ pytest-mock~=3.10.0
 pytest-postgresql~=6.0.0
 pytest-env~=1.1.0
 hypothesis~=6.70.0
+# Used by tests/backend_tests/research/test_telemetry.py to validate the emitted
+# telemetry JSON Schema (Draft 2020-12) directly.
+jsonschema~=4.26.0
 
 # -----------------------
 # Core Backend
@@ -73,3 +76,9 @@ huggingface_hub[cli]
 # Utilities
 # -----------------------
 requests~=2.32.3
+
+# -----------------------
+# Research exports (Issue 12)
+# -----------------------
+# Canonical research export artifact writer/reader. The export service degrades
+# to CSV/JSONL with a typed EXPORT_WRITER_UNAVAILABLE when this is absent.

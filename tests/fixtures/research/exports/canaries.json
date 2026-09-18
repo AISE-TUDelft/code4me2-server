@@ -1,0 +1,9 @@
+{
+  "synthetic_account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "synthetic_email": "export-canary@example.invalid",
+  "synthetic_session_token": "sess-CANARY-EXPORT-0000000001",
+  "synthetic_prompt": "CANARY-EXPORT-PROMPT-TEXT",
+  "synthetic_reasoning": "CANARY-EXPORT-REASONING-TEXT",
+  "synthetic_source": "CANARY-EXPORT-SOURCE-CODE",
+  "synthetic_secret": "sk-CANARY-EXPORT-0000000002"
+}

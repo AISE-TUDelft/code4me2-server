@@ -1,0 +1,73 @@
+{
+  "agent_profile": null,
+  "agent_release": {
+    "adapter_version": "0.4.0",
+    "agent_command": null,
+    "agent_command_args": [],
+    "agent_id": "synthetic-agent",
+    "agent_package": null,
+    "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "distribution_mode": "PACKAGED",
+    "release_id": "rel-0002"
+  },
+  "assignment": {
+    "assignment_id": "cd4c52c7-c1f0-4aa2-b84b-8f12978dff17",
+    "condition_id": "treatment",
+    "protocol_digest": "3f64bc00160663ef5c71e1dd65121182cb4d224e5c3fd4dad830b72d09bb8ef5",
+    "randomization_epoch": 0,
+    "strategy": "DETERMINISTIC_HASH"
+  },
+  "compatibility": {
+    "reason": null,
+    "receipt_ref": "receipt-synthetic",
+    "state": "AVAILABLE"
+  },
+  "compatibility_receipt_ref": "receipt-synthetic",
+  "enrollment_id": "77777777-7777-4777-8777-777777777777",
+  "generated_at": "2026-09-15T12:00:00Z",
+  "manifest_digest": "d9ba0a1b7ef22267fdfca570f152245bcd9c79a5cbd769c78948c5dc1ba79f6b",
+  "manifest_version": "1",
+  "policies": {
+    "consent_policy_digest": "fc6e0d242a24bb374bb4d506c6e62cde3b33d6893ecbc51e481060c7a8e7f6e0",
+    "privacy_policy": {
+      "retention_action": "RETAIN_ANONYMIZED",
+      "retention_days": 365
+    },
+    "session_policy": {
+      "heartbeat_seconds": 30,
+      "idle_timeout_seconds": 900,
+      "resume_grace_seconds": 300
+    },
+    "telemetry_policy": {
+      "allowed_field_classes": [
+        "STRUCTURAL",
+        "METRICS"
+      ],
+      "content_capture": false
+    }
+  },
+  "research_session": {
+    "opened_at": "2026-09-15T12:00:00Z",
+    "research_session_id": "945cbed9-55d7-43c7-ae7a-3e0f91b31629"
+  },
+  "revision_digest": "3f64bc00160663ef5c71e1dd65121182cb4d224e5c3fd4dad830b72d09bb8ef5",
+  "revision_id": "66666666-6666-4666-8666-666666666666",
+  "session_capability": {
+    "audience": "research-runtime",
+    "capability_id": "a54ae27a-938a-463d-877c-425fbd58fb7b",
+    "enrollment_id": "77777777-7777-4777-8777-777777777777",
+    "expires_at": "2026-09-15T12:15:00Z",
+    "issued_at": "2026-09-15T12:00:00Z",
+    "research_session_id": "945cbed9-55d7-43c7-ae7a-3e0f91b31629",
+    "revision_id": "66666666-6666-4666-8666-666666666666",
+    "revocation_epoch": 0,
+    "scope": [
+      "session:close",
+      "session:heartbeat",
+      "telemetry:write"
+    ],
+    "signature": "6443aa64e0b9bfba0880fdcd0de408d49518a40d2da3fb24715e8e26978a57be"
+  },
+  "signature": "d4745e5ace856fe8db91baef69eed65cad63e12a41fce58b14896e2ec2087f49",
+  "study_id": "11111111-1111-4111-8111-111111111111"
+}

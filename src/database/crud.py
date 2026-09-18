@@ -14,10 +14,6 @@ from database.embedding_service import encode_text
 from utils import hash_password, verify_password
 
 
-class AgentProfileInActiveStudyError(Exception):
-    pass
-
-
 # User
 def create_user(
     db: Session, user: Union[Queries.CreateUser, Queries.CreateUserOauth]
@@ -234,27 +230,6 @@ def create_behavioral_telemetry(
     return db_telemetry
 
 
-def get_contextual_telemetry_by_id(
-    db: Session, telemetry_id: uuid.UUID
-) -> Optional[db_schemas.ContextualTelemetry]:
-    return (
-        db.query(db_schemas.ContextualTelemetry)
-        .filter(db_schemas.ContextualTelemetry.contextual_telemetry_id == telemetry_id)
-        .first()
-    )
-
-
-def get_behavioral_telemetry_by_id(
-    db: Session, telemetry_id: uuid.UUID
-) -> Optional[db_schemas.BehavioralTelemetry]:
-    return (
-        db.query(db_schemas.BehavioralTelemetry)
-        .filter(db_schemas.BehavioralTelemetry.behavioral_telemetry_id == telemetry_id)
-        .first()
-    )
-
-
-# MetaQuery operations
 def create_completion_query(
     db: Session, query: Queries.CreateCompletionQuery, id: str = ""
 ) -> db_schemas.CompletionQuery:
@@ -341,26 +316,6 @@ def get_meta_query_by_id(
     )
 
 
-def get_completion_query_by_id(
-    db: Session, meta_query_id: uuid.UUID
-) -> Optional[db_schemas.CompletionQuery]:
-    return (
-        db.query(db_schemas.CompletionQuery)
-        .filter(db_schemas.CompletionQuery.meta_query_id == meta_query_id)
-        .first()
-    )
-
-
-def get_chat_query_by_id(
-    db: Session, meta_query_id: uuid.UUID
-) -> Optional[db_schemas.ChatQuery]:
-    return (
-        db.query(db_schemas.ChatQuery)
-        .filter(db_schemas.ChatQuery.meta_query_id == meta_query_id)
-        .first()
-    )
-
-
 def get_chat_queries_for_chat(
     db: Session, chat_id: uuid.UUID
 ) -> list[db_schemas.ChatQuery]:
@@ -408,16 +363,6 @@ def create_generation(
     db.commit()
     # db.refresh(db_generation)
     return db_generation
-
-
-def get_generations_by_meta_query(
-    db: Session, meta_query_id: uuid.UUID
-) -> list[db_schemas.HadGeneration]:
-    return (
-        db.query(db_schemas.HadGeneration)
-        .filter(db_schemas.HadGeneration.meta_query_id == meta_query_id)
-        .all()
-    )
 
 
 # def update_generation_acceptance(
@@ -921,16 +866,6 @@ def create_ground_truth(
     return db_ground_truth
 
 
-def get_ground_truths_for_completion(
-    db: Session, completion_query_id: uuid.UUID
-) -> list[db_schemas.GroundTruth]:
-    return (
-        db.query(db_schemas.GroundTruth)
-        .filter(db_schemas.GroundTruth.completion_query_id == completion_query_id)
-        .all()
-    )
-
-
 def get_all_programming_languages(db: Session) -> list[db_schemas.ProgrammingLanguage]:
     return db.query(db_schemas.ProgrammingLanguage).all()
 
@@ -1129,37 +1064,6 @@ def search_similar_documentation(
         return []
 
 
-def regenerate_embeddings(db: Session, language: Optional[str] = None) -> int:
-    """
-    Regenerate embeddings for all documentation entries.
-    Useful when changing embedding models or fixing corrupted embeddings.
-
-    Args:
-        language: Optional language filter to regenerate only specific language docs
-
-    Returns:
-        Number of embeddings regenerated
-    """
-    query = db.query(db_schemas.Documentation)
-
-    if language:
-        query = query.filter(db_schemas.Documentation.language == language)
-
-    docs = query.all()
-
-    updated_count = 0
-    for doc in docs:
-        try:
-            new_embedding = encode_text(doc.content)
-            doc.embedding = new_embedding
-            updated_count += 1
-        except Exception as e:
-            print(f"Failed to regenerate embedding for doc {doc.documentation_id}: {e}")
-
-    db.commit()
-    return updated_count
-
-
 def get_documentation_stats(db: Session) -> dict:
     """Get statistics about documentation entries."""
     total_docs = db.query(db_schemas.Documentation).count()
@@ -1201,39 +1105,35 @@ def get_documentation_stats(db: Session) -> dict:
 # decision is made.
 
 
-class DuplicateAgentEventError(ValueError):
-    """Raised when a self-reported event batch replays already-ingested ids.
-
-    Ingestion is idempotent by ``span_id`` (the runtime's own event id), so a
-    retried upload is rejected rather than duplicated.
-    """
-
-    def __init__(self, event_ids: List[str]) -> None:
-        self.event_ids = event_ids
-        super().__init__(f"Duplicate agent event IDs: {', '.join(event_ids)}")
-
-
 def create_agent_profile(
     db: Session,
+    *,
+    owner_user_id: uuid.UUID,
     name: str,
     model: str,
     tools_json: str,
     approval_policy: str,
     max_steps: int,
     framework_version: str = "code4me2-agent",
-    base_url: Optional[str] = None,
-    api_key_ref: Optional[str] = None,
+    connection_id: Optional[uuid.UUID] = None,
+    release_id: Optional[str] = None,
     is_active: bool = True,
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
 ) -> db_schemas.AgentProfile:
+    """Create a researcher-owned profile template.
+
+    The provider endpoint/secret live on the referenced ``provider_connection``;
+    a profile never stores a URL or a secret reference.
+    """
     profile = db_schemas.AgentProfile(
         profile_id=uuid.uuid4(),
+        owner_user_id=owner_user_id,
         name=name,
         model=model,
         framework_version=framework_version,
-        base_url=base_url,
-        api_key_ref=api_key_ref,
+        connection_id=connection_id,
+        release_id=release_id,
         tools_json=tools_json,
         approval_policy=approval_policy,
         max_steps=max_steps,
@@ -1247,14 +1147,6 @@ def create_agent_profile(
     return profile
 
 
-def get_agent_profile(db: Session, name: str) -> Optional[db_schemas.AgentProfile]:
-    return (
-        db.query(db_schemas.AgentProfile)
-        .filter(db_schemas.AgentProfile.name == name)
-        .first()
-    )
-
-
 def get_agent_profile_by_id(
     db: Session, profile_id: uuid.UUID
 ) -> Optional[db_schemas.AgentProfile]:
@@ -1265,39 +1157,35 @@ def get_agent_profile_by_id(
     )
 
 
-def list_agent_profiles(db: Session) -> List[db_schemas.AgentProfile]:
-    return db.query(db_schemas.AgentProfile).order_by(db_schemas.AgentProfile.name).all()
-
-
-def list_active_agent_profiles(db: Session) -> List[db_schemas.AgentProfile]:
-    """Candidate arms for new A/B assignments — only profiles flagged active.
-
-    Ordered deterministically by name so behaviour is reproducible across calls
-    (relevant for tests and for any future deterministic bucketing).
-    """
-    return (
-        db.query(db_schemas.AgentProfile)
-        .filter(db_schemas.AgentProfile.is_active.is_(True))
-        .order_by(db_schemas.AgentProfile.name)
-        .all()
-    )
+def list_agent_profiles(
+    db: Session, owner_user_id: Optional[uuid.UUID] = None
+) -> List[db_schemas.AgentProfile]:
+    """List profiles; ``owner_user_id`` scopes to one researcher (admin = all)."""
+    query = db.query(db_schemas.AgentProfile)
+    if owner_user_id is not None:
+        query = query.filter(db_schemas.AgentProfile.owner_user_id == owner_user_id)
+    return query.order_by(db_schemas.AgentProfile.name).all()
 
 
 def update_agent_profile(
     db: Session,
     profile_id: uuid.UUID,
-    name: str,
-    model: str,
-    tools_json: str,
-    approval_policy: str,
-    max_steps: int,
-    framework_version: str = "code4me2-agent",
-    base_url: Optional[str] = None,
-    api_key_ref: Optional[str] = None,
-    is_active: bool = True,
+    *,
+    name: Optional[str] = None,
+    model: Optional[str] = None,
+    tools_json: Optional[str] = None,
+    approval_policy: Optional[str] = None,
+    max_steps: Optional[int] = None,
+    framework_version: Optional[str] = None,
+    connection_id: Optional[uuid.UUID] = None,
+    release_id: Optional[str] = None,
+    is_active: Optional[bool] = None,
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    update_connection_id: bool = False,
+    update_release_id: bool = False,
 ) -> Optional[db_schemas.AgentProfile]:
+    """Update a profile template in place (caller performs ownership checks)."""
     profile = (
         db.query(db_schemas.AgentProfile)
         .filter(db_schemas.AgentProfile.profile_id == profile_id)
@@ -1306,25 +1194,35 @@ def update_agent_profile(
     )
     if profile is None:
         return None
-    if is_agent_profile_in_active_study(db, profile_id):
-        raise AgentProfileInActiveStudyError
-    profile.name = name
-    profile.model = model
-    profile.framework_version = framework_version
-    profile.base_url = base_url
-    profile.api_key_ref = api_key_ref
-    profile.tools_json = tools_json
-    profile.approval_policy = approval_policy
-    profile.max_steps = max_steps
-    profile.is_active = is_active
-    profile.max_context_tokens = max_context_tokens
-    profile.temperature = temperature
+    if name is not None:
+        profile.name = name
+    if model is not None:
+        profile.model = model
+    if framework_version is not None:
+        profile.framework_version = framework_version
+    if tools_json is not None:
+        profile.tools_json = tools_json
+    if approval_policy is not None:
+        profile.approval_policy = approval_policy
+    if max_steps is not None:
+        profile.max_steps = max_steps
+    if update_connection_id:
+        profile.connection_id = connection_id
+    if update_release_id:
+        profile.release_id = release_id
+    if is_active is not None:
+        profile.is_active = is_active
+    if max_context_tokens is not None:
+        profile.max_context_tokens = max_context_tokens
+    if temperature is not None:
+        profile.temperature = temperature
     db.commit()
     db.refresh(profile)
     return profile
 
 
 def delete_agent_profile(db: Session, profile_id: uuid.UUID) -> bool:
+    """Archive a profile template (never erase a frozen study snapshot)."""
     profile = (
         db.query(db_schemas.AgentProfile)
         .filter(db_schemas.AgentProfile.profile_id == profile_id)
@@ -1333,8 +1231,6 @@ def delete_agent_profile(db: Session, profile_id: uuid.UUID) -> bool:
     )
     if profile is None:
         return False
-    if is_agent_profile_in_active_study(db, profile_id):
-        raise AgentProfileInActiveStudyError
     if not profile.is_active:
         return True
     profile.is_active = False
@@ -1342,261 +1238,141 @@ def delete_agent_profile(db: Session, profile_id: uuid.UUID) -> bool:
     return True
 
 
-# ── Agent profile assignments (A/B testing) ─────────────────────────────────
+# ── Provider connections and grants ─────────────────────────────────────────
 
 
-def get_agent_profile_assignment(
-    db: Session, user_id: uuid.UUID
-) -> Optional[db_schemas.AgentProfileAssignment]:
-    return (
-        db.query(db_schemas.AgentProfileAssignment)
-        .filter(db_schemas.AgentProfileAssignment.user_id == user_id)
-        .first()
-    )
-
-
-def get_agent_study_assignment(
-    db: Session, study_id: uuid.UUID, user_id: uuid.UUID
-) -> Optional[db_schemas.AgentStudyAssignment]:
-    return (
-        db.query(db_schemas.AgentStudyAssignment)
-        .filter(
-            db_schemas.AgentStudyAssignment.study_id == study_id,
-            db_schemas.AgentStudyAssignment.user_id == user_id,
-        )
-        .first()
-    )
-
-
-def create_agent_study_assignment(
+def create_provider_connection(
     db: Session,
     *,
-    study_id: uuid.UUID,
-    user_id: uuid.UUID,
-    profile_id: uuid.UUID,
-    arm_name: str,
-    is_baseline: bool,
-    source: str,
-) -> Optional[db_schemas.AgentStudyAssignment]:
-    assignment_id = uuid.uuid4()
-    inserted_assignment_id = db.execute(
-        pg_insert(db_schemas.AgentStudyAssignment)
-        .values(
-            assignment_id=assignment_id,
-            study_id=study_id,
-            user_id=user_id,
-            profile_id=profile_id,
-            arm_name=arm_name,
-            is_baseline=is_baseline,
-            source=source,
-        )
-        .on_conflict_do_nothing(index_elements=["study_id", "user_id"])
-        .returning(db_schemas.AgentStudyAssignment.assignment_id)
-    ).scalar_one_or_none()
-    if inserted_assignment_id is None:
+    label: str,
+    base_url: str,
+    secret_ref: str,
+    models_json: str,
+    is_active: bool = True,
+) -> db_schemas.ProviderConnection:
+    connection = db_schemas.ProviderConnection(
+        connection_id=uuid.uuid4(),
+        label=label,
+        base_url=base_url,
+        secret_ref=secret_ref,
+        models_json=models_json,
+        is_active=is_active,
+    )
+    db.add(connection)
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def get_provider_connection(
+    db: Session, connection_id: uuid.UUID
+) -> Optional[db_schemas.ProviderConnection]:
+    return db.get(db_schemas.ProviderConnection, connection_id)
+
+
+def get_provider_connection_by_label(
+    db: Session, label: str
+) -> Optional[db_schemas.ProviderConnection]:
+    return (
+        db.query(db_schemas.ProviderConnection)
+        .filter(db_schemas.ProviderConnection.label == label)
+        .first()
+    )
+
+
+def list_provider_connections(db: Session) -> List[db_schemas.ProviderConnection]:
+    return (
+        db.query(db_schemas.ProviderConnection)
+        .order_by(db_schemas.ProviderConnection.label)
+        .all()
+    )
+
+
+def update_provider_connection(
+    db: Session,
+    connection_id: uuid.UUID,
+    *,
+    label: Optional[str] = None,
+    base_url: Optional[str] = None,
+    secret_ref: Optional[str] = None,
+    models_json: Optional[str] = None,
+    is_active: Optional[bool] = None,
+) -> Optional[db_schemas.ProviderConnection]:
+    connection = db.get(db_schemas.ProviderConnection, connection_id)
+    if connection is None:
         return None
+    if label is not None:
+        connection.label = label
+    if base_url is not None:
+        connection.base_url = base_url
+    if secret_ref is not None:
+        connection.secret_ref = secret_ref
+    if models_json is not None:
+        connection.models_json = models_json
+    if is_active is not None:
+        connection.is_active = is_active
     db.commit()
-    return db.get(db_schemas.AgentStudyAssignment, inserted_assignment_id)
+    db.refresh(connection)
+    return connection
 
 
-def list_agent_study_assignments(
-    db: Session,
-) -> List[db_schemas.AgentStudyAssignment]:
+def delete_provider_connection(db: Session, connection_id: uuid.UUID) -> bool:
+    connection = db.get(db_schemas.ProviderConnection, connection_id)
+    if connection is None:
+        return False
+    db.delete(connection)
+    db.commit()
+    return True
+
+
+def list_available_provider_connections(
+    db: Session, user_id: uuid.UUID
+) -> List[db_schemas.ProviderConnection]:
+    """Active admin-managed connections available to an authorized researcher."""
     return (
-        db.query(db_schemas.AgentStudyAssignment)
-        .order_by(db_schemas.AgentStudyAssignment.assigned_at.desc())
+        db.query(db_schemas.ProviderConnection)
+        .filter(db_schemas.ProviderConnection.is_active.is_(True))
+        .order_by(db_schemas.ProviderConnection.label)
         .all()
     )
 
 
-def delete_agent_study_assignments(
-    db: Session, user_id: uuid.UUID, study_id: Optional[uuid.UUID] = None
-) -> int:
-    query = db.query(db_schemas.AgentStudyAssignment).filter(
-        db_schemas.AgentStudyAssignment.user_id == user_id
-    )
-    if study_id is not None:
-        query = query.filter(db_schemas.AgentStudyAssignment.study_id == study_id)
-    deleted = query.delete()
-    db.commit()
-    return deleted
-
-
-def set_agent_profile_assignment(
-    db: Session,
-    user_id: uuid.UUID,
-    profile_id: uuid.UUID,
-    source: str = "auto",
-) -> db_schemas.AgentProfileAssignment:
-    """Upsert a user's profile assignment.
-
-    Used both for the first-contact random draw (source="auto") and for admin
-    overrides (source="manual"). Re-assigning overwrites the existing row.
-    """
-    assignment = get_agent_profile_assignment(db, user_id)
-    if assignment is None:
-        assignment = db_schemas.AgentProfileAssignment(
-            user_id=user_id,
-            profile_id=profile_id,
-            source=source,
-        )
-        db.add(assignment)
-    else:
-        assignment.profile_id = profile_id
-        assignment.source = source
-        assignment.assigned_at = datetime.now()
-    db.commit()
-    db.refresh(assignment)
-    return assignment
-
-
-def delete_agent_profile_assignment(db: Session, user_id: uuid.UUID) -> bool:
-    result = (
-        db.query(db_schemas.AgentProfileAssignment)
-        .filter(db_schemas.AgentProfileAssignment.user_id == user_id)
-        .delete()
-    )
-    db.commit()
-    return result > 0
-
-
-def list_agent_profile_assignments(
-    db: Session,
-) -> List[db_schemas.AgentProfileAssignment]:
-    return db.query(db_schemas.AgentProfileAssignment).all()
-
-
-# ── Study ↔ agent profile links (A/B studies for agents) ────────────────────
-
-
-def set_study_agent_profiles(
-    db: Session,
-    study_id: uuid.UUID,
-    profile_ids: List[uuid.UUID],
-    baseline_profile_id: Optional[uuid.UUID] = None,
-) -> None:
-    """Replace the agent-profile arms attached to a study.
-
-    Idempotent: clears any existing rows for the study and writes one row per
-    profile, flagging ``baseline_profile_id`` (if given) as the baseline arm.
-    Does not commit — the caller owns the transaction (study create/activate
-    writes several tables atomically).
-    """
-    db.query(db_schemas.StudyAgentProfile).filter(
-        db_schemas.StudyAgentProfile.study_id == study_id
-    ).delete()
-    for profile_id in profile_ids:
-        db.add(
-            db_schemas.StudyAgentProfile(
-                study_id=study_id,
-                profile_id=profile_id,
-                is_baseline=(profile_id == baseline_profile_id),
-            )
-        )
-
-
-def list_study_agent_profiles(
-    db: Session, study_id: uuid.UUID
-) -> List[db_schemas.StudyAgentProfile]:
-    """All agent-profile arm links for a study (with the joined profile loaded)."""
+def provider_connection_is_available(
+    db: Session, connection_id: uuid.UUID, user_id: uuid.UUID
+) -> bool:
+    """Whether an active admin-managed connection can be selected."""
     return (
-        db.query(db_schemas.StudyAgentProfile)
-        .filter(db_schemas.StudyAgentProfile.study_id == study_id)
-        .all()
-    )
-
-
-def get_study_agent_profile(
-    db: Session, study_id: uuid.UUID, profile_id: uuid.UUID
-) -> Optional[db_schemas.StudyAgentProfile]:
-    return (
-        db.query(db_schemas.StudyAgentProfile)
+        db.query(db_schemas.ProviderConnection)
         .filter(
-            db_schemas.StudyAgentProfile.study_id == study_id,
-            db_schemas.StudyAgentProfile.profile_id == profile_id,
+            db_schemas.ProviderConnection.connection_id == connection_id,
+            db_schemas.ProviderConnection.is_active.is_(True),
         )
-        .first()
-    )
-
-
-def get_active_agent_study(db: Session) -> Optional[db_schemas.Study]:
-    """Return the active study when it has at least one active agent arm."""
-    return (
-        db.query(db_schemas.Study)
-        .join(
-            db_schemas.StudyAgentProfile,
-            db_schemas.Study.study_id == db_schemas.StudyAgentProfile.study_id,
-        )
-        .join(
-            db_schemas.AgentProfile,
-            db_schemas.AgentProfile.profile_id
-            == db_schemas.StudyAgentProfile.profile_id,
-        )
-        .filter(db_schemas.Study.is_active.is_(True))
-        .filter(db_schemas.AgentProfile.is_active.is_(True))
-        .first()
-    )
-
-
-def is_agent_profile_in_active_study(db: Session, profile_id: uuid.UUID) -> bool:
-    return (
-        db.query(db_schemas.StudyAgentProfile)
-        .join(
-            db_schemas.Study,
-            db_schemas.Study.study_id == db_schemas.StudyAgentProfile.study_id,
-        )
-        .filter(db_schemas.StudyAgentProfile.profile_id == profile_id)
-        .filter(db_schemas.Study.is_active.is_(True))
         .first()
         is not None
     )
 
 
-def list_active_study_agent_profiles(db: Session) -> List[db_schemas.AgentProfile]:
-    """Candidate arms drawn from the currently-active study's selected profiles.
+# ── Researcher enablement ────────────────────────────────────────────────────
 
-    Returns only profiles that are both attached to the active study and still
-    flagged ``is_active``. Empty when there is no active study, or the active
-    study selected no agent profiles — callers fall back to
-    ``list_active_agent_profiles`` in that case (backwards compatible).
-    Ordered by name for reproducibility, matching ``list_active_agent_profiles``.
-    """
+
+def set_user_can_research(
+    db: Session, user_id: uuid.UUID, enabled: bool
+) -> Optional[db_schemas.User]:
+    """Administrator toggle of the single researcher-enablement flag."""
+    user = db.get(db_schemas.User, user_id)
+    if user is None:
+        return None
+    user.can_research = enabled
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def list_researchers(db: Session) -> List[db_schemas.User]:
     return (
-        db.query(db_schemas.AgentProfile)
-        .join(
-            db_schemas.StudyAgentProfile,
-            db_schemas.StudyAgentProfile.profile_id
-            == db_schemas.AgentProfile.profile_id,
-        )
-        .join(
-            db_schemas.Study,
-            db_schemas.Study.study_id == db_schemas.StudyAgentProfile.study_id,
-        )
-        .filter(db_schemas.Study.is_active.is_(True))
-        .filter(db_schemas.AgentProfile.is_active.is_(True))
-        .order_by(db_schemas.AgentProfile.name)
-        .all()
-    )
-
-
-def list_active_study_agent_profile_links(
-    db: Session,
-) -> List[db_schemas.StudyAgentProfile]:
-    """Return the arm links of the active agent study, if one exists."""
-    return (
-        db.query(db_schemas.StudyAgentProfile)
-        .join(
-            db_schemas.Study,
-            db_schemas.Study.study_id == db_schemas.StudyAgentProfile.study_id,
-        )
-        .join(
-            db_schemas.AgentProfile,
-            db_schemas.AgentProfile.profile_id
-            == db_schemas.StudyAgentProfile.profile_id,
-        )
-        .filter(db_schemas.Study.is_active.is_(True))
-        .filter(db_schemas.AgentProfile.is_active.is_(True))
-        .order_by(db_schemas.AgentProfile.name)
+        db.query(db_schemas.User)
+        .filter(db_schemas.User.can_research.is_(True))
+        .order_by(db_schemas.User.name)
         .all()
     )
 
@@ -1617,6 +1393,7 @@ def create_agent_task(
     framework_version: Optional[str] = None,
     source: str = "plugin",
     owner_user_id: Optional[uuid.UUID] = None,
+    funding_owner_user_id: Optional[uuid.UUID] = None,
     owner_project_id: Optional[uuid.UUID] = None,
     external_run_id: Optional[str] = None,
     agent_session_id: Optional[str] = None,
@@ -1629,6 +1406,9 @@ def create_agent_task(
     study_arm_name: Optional[str] = None,
     study_arm_is_baseline: Optional[bool] = None,
     consent_content_storage: Optional[bool] = None,
+    research_session_id: Optional[uuid.UUID] = None,
+    enrollment_id: Optional[uuid.UUID] = None,
+    study_revision_id: Optional[uuid.UUID] = None,
 ) -> db_schemas.AgentTask:
     task = db_schemas.AgentTask(
         task_id=task_id or uuid.uuid4(),
@@ -1642,6 +1422,7 @@ def create_agent_task(
         source=source,
         session_id=session_id,
         owner_user_id=owner_user_id,
+        funding_owner_user_id=funding_owner_user_id,
         owner_project_id=owner_project_id,
         external_run_id=external_run_id,
         agent_session_id=agent_session_id,
@@ -1651,6 +1432,9 @@ def create_agent_task(
         study_arm_name=study_arm_name,
         study_arm_is_baseline=study_arm_is_baseline,
         consent_content_storage=consent_content_storage,
+        research_session_id=research_session_id,
+        enrollment_id=enrollment_id,
+        study_revision_id=study_revision_id,
         started_at=started_at,
         policy_snapshot=policy_snapshot,
         task_description=task_description,
@@ -1790,16 +1574,6 @@ def get_last_agent_event_for_session(
     if event_type is not None:
         q = q.filter(db_schemas.AgentEvent.event_type == event_type)
     return q.order_by(db_schemas.AgentEvent.created_at.desc()).first()
-
-
-def count_agent_events_for_task(db: Session, task_id: uuid.UUID) -> int:
-    """Return the number of persisted events for a task."""
-    return (
-        db.query(func.count(db_schemas.AgentEvent.event_id))
-        .filter(db_schemas.AgentEvent.task_id == task_id)
-        .scalar()
-        or 0
-    )
 
 
 def reserve_agent_event_indexes(
@@ -1989,58 +1763,6 @@ def append_agent_event(
 
 
 # ── Agent edits (human-in-the-loop decisions) ───────────────────────────────
-
-
-def create_agent_edit(
-    db: Session,
-    task_id: uuid.UUID,
-    file_path: str,
-    diff_text: Optional[str] = None,
-) -> db_schemas.AgentEdit:
-    edit = db_schemas.AgentEdit(
-        edit_id=uuid.uuid4(),
-        task_id=task_id,
-        file_path=file_path,
-        diff_text=diff_text,
-    )
-    db.add(edit)
-    db.commit()
-    db.refresh(edit)
-    return edit
-
-
-def get_agent_edits_by_task(
-    db: Session, task_id: uuid.UUID
-) -> List[db_schemas.AgentEdit]:
-    return (
-        db.query(db_schemas.AgentEdit)
-        .filter(db_schemas.AgentEdit.task_id == task_id)
-        .all()
-    )
-
-
-def update_agent_edit_decision(
-    db: Session,
-    edit_id: uuid.UUID,
-    was_accepted: bool,
-    was_modified: Optional[bool] = None,
-    edit_delta_json: Optional[str] = None,
-) -> bool:
-    data: dict = {"was_accepted": was_accepted, "decided_at": datetime.now()}
-    if was_modified is not None:
-        data["was_modified"] = was_modified
-    if edit_delta_json is not None:
-        data["edit_delta_json"] = edit_delta_json
-    result = (
-        db.query(db_schemas.AgentEdit)
-        .filter(db_schemas.AgentEdit.edit_id == edit_id)
-        .update(data)
-    )
-    db.commit()
-    return result > 0
-
-
-# ── Agent memory (survives IDE restarts) ────────────────────────────────────
 
 
 def get_agent_memory_by_session_id(

@@ -63,9 +63,11 @@
 .agent-graph-rail::before { position: absolute; top: 0; bottom: -6px; left: 5px; width: 2px; background: var(--border-color); content: ""; }
 .agent-graph-rail::after { position: absolute; top: 18px; left: 1px; width: 10px; height: 10px; border: 2px solid var(--card-background); border-radius: 50%; background: #0f766e; box-shadow: 0 0 0 1px #0f766e; content: ""; }
 .agent-graph-rail.tool::after { background: #d97706; box-shadow: 0 0 0 1px #d97706; }
+.agent-graph-rail.observed::after { background: #6d28d9; box-shadow: 0 0 0 1px #6d28d9; }
 .agent-graph-rail.failure::after { background: #c2410c; box-shadow: 0 0 0 1px #c2410c; }
 .agent-graph-node { display: flex; justify-content: space-between; gap: 14px; width: 100%; padding: 8px 10px; border: 1px solid rgba(15, 118, 110, .25); border-radius: 6px; background: rgba(15, 118, 110, .06); }
 .agent-graph-node.tool { border-color: rgba(217, 119, 6, .3); background: rgba(217, 119, 6, .06); }
+.agent-graph-node.observed { border-color: rgba(109, 40, 217, .3); background: rgba(109, 40, 217, .06); }
 .agent-graph-node.failure { border-color: rgba(194, 65, 12, .4); background: rgba(194, 65, 12, .07); }
 .agent-graph-node-main { min-width: 0; }
 .agent-graph-node-main strong, .agent-graph-node-main small { display: block; }

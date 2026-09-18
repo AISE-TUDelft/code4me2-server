@@ -47,8 +47,11 @@ def db_session():
     except Exception:
         pass  # Schema might not exist
 
-    # Initialize using migration system
+    # Initialize using migration system, then apply migrations so the schema
+    # matches the ORM (init_test.sql only describes the pre-Alembic baseline).
+    os.environ.setdefault("TEST_MODE", "true")
     migration_manager.init_migrations()
+    migration_manager.migrate()
 
     # Create session
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

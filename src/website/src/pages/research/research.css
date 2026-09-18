@@ -1,0 +1,381 @@
+/* Shared styles for the researcher control-plane pages. */
+
+.research-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Research pages reuse the dashboard nav-item chrome, but are rendered as
+   react-router links rather than buttons, so reset the anchor defaults. */
+.nav-item.research-nav-link,
+.nav-item.research-launch-link,
+.nav-item.research-join-link {
+  text-decoration: none;
+  color: inherit;
+}
+
+.research-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.research-header h2 {
+  color: var(--text-color);
+  margin: 0;
+}
+
+.research-header p {
+  color: var(--text-secondary);
+  margin: 8px 0 0;
+  line-height: 1.5;
+  max-width: 760px;
+}
+
+.research-header-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.research-card {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px var(--shadow-color);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.research-card h3 {
+  color: var(--text-color);
+  margin: 0;
+}
+
+fieldset.research-card {
+  margin: 0;
+}
+
+fieldset.research-card legend {
+  color: var(--text-color);
+  font-size: 15px;
+  font-weight: 700;
+  padding: 0 6px;
+}
+
+.research-card label {
+  color: var(--text-color);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.research-card label.research-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.research-card input,
+.research-card select,
+.research-card textarea {
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-color);
+  font-size: 14px;
+  padding: 10px 12px;
+  font-family: inherit;
+}
+
+.research-card input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  margin: 0;
+}
+
+.research-card input:focus,
+.research-card select:focus,
+.research-card textarea:focus {
+  border-color: var(--primary-color);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--focus-color);
+}
+
+.research-group-label {
+  color: var(--text-color);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.research-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.research-actions-inline {
+  flex-wrap: nowrap;
+}
+
+.primary-button,
+.secondary-button,
+.danger-button {
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 14px;
+  transition: all 0.2s ease;
+}
+
+.primary-button {
+  background-color: var(--primary-color);
+  border: 1px solid var(--primary-color);
+  color: white;
+}
+
+.secondary-button {
+  background-color: var(--secondary-color);
+  border: 1px solid var(--border-color);
+  color: var(--text-color);
+}
+
+.danger-button {
+  background-color: transparent;
+  border: 1px solid rgba(179, 38, 30, 0.45);
+  color: #b3261e;
+}
+
+.primary-button:hover,
+.secondary-button:hover,
+.danger-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px var(--shadow-color);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled,
+.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  transform: none;
+}
+
+.research-message {
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.research-message.error {
+  color: #b3261e;
+  background: rgba(179, 38, 30, 0.08);
+  border: 1px solid rgba(179, 38, 30, 0.25);
+}
+
+.research-message.success {
+  color: #0b6b35;
+  background: rgba(11, 107, 53, 0.08);
+  border: 1px solid rgba(11, 107, 53, 0.25);
+}
+
+.research-validation ul {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.research-validation li {
+  color: var(--text-color);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.research-validation code,
+.research-field-errors code {
+  color: var(--text-secondary);
+}
+
+.research-severity {
+  display: inline-block;
+  background: var(--secondary-color);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  margin: 0 6px;
+  padding: 1px 8px;
+  text-transform: uppercase;
+}
+
+.research-field-errors {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.research-field-errors li {
+  color: var(--error-color);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Advisory (non-blocking) publish/validate warnings. */
+.research-warnings {
+  border-color: rgba(146, 80, 10, 0.35);
+}
+
+.research-warnings ul {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.research-warnings li {
+  color: var(--text-color);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.research-warnings code {
+  color: var(--text-secondary);
+}
+
+.research-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.research-empty {
+  color: var(--text-secondary);
+  line-height: 1.5;
+  padding: 12px 0;
+  text-align: center;
+}
+
+.research-table-wrap {
+  overflow-x: auto;
+}
+
+.research-table {
+  border-collapse: collapse;
+  min-width: 720px;
+  width: 100%;
+}
+
+.research-table th,
+.research-table td {
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-color);
+  padding: 12px 14px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.research-table th {
+  background-color: var(--secondary-color);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.research-table tbody tr:hover {
+  background-color: var(--hover-color);
+}
+
+.research-status {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 10px;
+  text-transform: uppercase;
+}
+
+.research-status-published {
+  color: #0b6b35;
+  background: rgba(11, 107, 53, 0.1);
+  border: 1px solid rgba(11, 107, 53, 0.25);
+}
+
+.research-status-retired {
+  color: #92500a;
+  background: rgba(146, 80, 10, 0.1);
+  border: 1px solid rgba(146, 80, 10, 0.3);
+}
+
+.research-status-draft {
+  color: var(--text-secondary);
+  background: var(--secondary-color);
+  border: 1px solid var(--border-color);
+}
+
+.research-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.research-metrics div {
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.research-metrics dt {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.research-metrics dd {
+  color: var(--text-color);
+  font-size: 18px;
+  font-weight: 700;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.research-visually-hidden {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  width: 1px;
+}
+
+@media (max-width: 900px) {
+  .research-header {
+    flex-direction: column;
+  }
+
+  .research-actions-inline {
+    flex-wrap: wrap;
+  }
+}

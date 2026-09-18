@@ -1,0 +1,182 @@
+[
+  {
+    "event_type": "permission.requested",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.permission.request",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": null,
+    "usage_tokens": null,
+    "usage_state": "UNKNOWN",
+    "permission_id": "4",
+    "tool_call_id": "call-4",
+    "payload": {
+      "tool_call_id": "call-4",
+      "options": [
+        {
+          "option_id": "allow_once",
+          "kind": "allow_once"
+        },
+        {
+          "option_id": "reject_once",
+          "kind": "reject_once"
+        }
+      ],
+      "option_count": 2
+    }
+  },
+  {
+    "event_type": "permission.decided",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.permission.decided",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": null,
+    "usage_tokens": null,
+    "usage_state": "UNKNOWN",
+    "permission_id": "4",
+    "tool_call_id": "call-4",
+    "payload": {
+      "outcome": "selected",
+      "selected_option_id": "allow_once",
+      "selected_option_kind": "allow_once",
+      "decision": "allow"
+    }
+  },
+  {
+    "event_type": "tool.created",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.update.tool_call.created",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": "pending",
+    "usage_tokens": null,
+    "usage_state": "UNKNOWN",
+    "permission_id": null,
+    "tool_call_id": null,
+    "payload": {
+      "tool_call_id": "call-5",
+      "tool_name": "Read file",
+      "tool_kind": "read",
+      "status": "pending"
+    }
+  },
+  {
+    "event_type": "tool.started",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.update.tool_call_update",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": "started",
+    "usage_tokens": null,
+    "usage_state": "UNKNOWN",
+    "permission_id": null,
+    "tool_call_id": null,
+    "payload": {
+      "tool_call_id": "call-5",
+      "status": "in_progress"
+    }
+  },
+  {
+    "event_type": "tool.completed",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.update.tool_call_update.completed",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": "completed",
+    "usage_tokens": null,
+    "usage_state": "UNKNOWN",
+    "permission_id": null,
+    "tool_call_id": null,
+    "payload": {
+      "tool_call_id": "call-5",
+      "status": "completed"
+    }
+  },
+  {
+    "event_type": "tool.failed",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.update.tool_call_update.failed",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": "failed",
+    "usage_tokens": null,
+    "usage_state": "UNKNOWN",
+    "permission_id": null,
+    "tool_call_id": null,
+    "payload": {
+      "tool_call_id": "call-6",
+      "status": "failed"
+    }
+  },
+  {
+    "event_type": "agent.message.started",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.session.prompt",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": null,
+    "usage_tokens": null,
+    "usage_state": "UNKNOWN",
+    "permission_id": null,
+    "tool_call_id": null,
+    "payload": {
+      "session_id": "sess-completeness-1"
+    }
+  },
+  {
+    "event_type": "agent.message.completed",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.message.completed",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": "completed",
+    "usage_tokens": 15,
+    "usage_state": "AVAILABLE",
+    "permission_id": null,
+    "tool_call_id": null,
+    "payload": {
+      "stop_reason": "end_turn"
+    }
+  },
+  {
+    "event_type": "usage.updated",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.update.usage_update",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": null,
+    "usage_tokens": 0,
+    "usage_state": "AVAILABLE",
+    "permission_id": null,
+    "tool_call_id": null,
+    "payload": {}
+  },
+  {
+    "event_type": "plan.updated",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.update.plan",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": null,
+    "usage_tokens": null,
+    "usage_state": "UNKNOWN",
+    "permission_id": null,
+    "tool_call_id": null,
+    "payload": {
+      "plan_size": 1,
+      "plan_status_counts": [
+        {
+          "status": "pending",
+          "count": 1
+        }
+      ]
+    }
+  },
+  {
+    "event_type": "agent.error",
+    "fidelity": "normalized",
+    "mapping_rule_id": "acp.error_response",
+    "coverage_state": "AVAILABLE",
+    "lifecycle_state": null,
+    "usage_tokens": null,
+    "usage_state": "UNKNOWN",
+    "permission_id": null,
+    "tool_call_id": null,
+    "payload": {
+      "error_source": "agent",
+      "error_code": -32601,
+      "error_message": "method not found"
+    }
+  }
+]

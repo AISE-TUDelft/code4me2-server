@@ -31,5 +31,9 @@ data/
 Dockerfile*
 docker-compose*.yml
 
+# Development-only scripts (e.g. the guarded research-study seeder) must never
+# be baked into the server image.
+scripts/dev/
+
 # OS
 .DS_Store

@@ -1,0 +1,113 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "sess-completeness-1",
+      "toolCall": { "toolCallId": "call-4" },
+      "options": [
+        { "optionId": "allow_once", "name": "Allow", "kind": "allow_once" },
+        { "optionId": "reject_once", "name": "Reject", "kind": "reject_once" }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": { "outcome": { "outcome": "selected", "optionId": "allow_once" } }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-completeness-1",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call-5",
+        "title": "Read file",
+        "kind": "read",
+        "status": "pending"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-completeness-1",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-5",
+        "status": "in_progress"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-completeness-1",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-5",
+        "status": "completed"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-completeness-1",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-6",
+        "status": "failed"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "session/prompt",
+    "params": {
+      "sessionId": "sess-completeness-1",
+      "prompt": [ { "type": "text", "text": "synthetic prompt" } ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "stopReason": "end_turn",
+      "usage": { "inputTokens": 10, "outputTokens": 5 }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-completeness-1",
+      "update": { "sessionUpdate": "usage_update", "totalTokens": 0 }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-completeness-1",
+      "update": {
+        "sessionUpdate": "plan",
+        "entries": [
+          { "content": "step one", "priority": "high", "status": "pending" }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "error": { "code": -32601, "message": "method not found" }
+  }
+]

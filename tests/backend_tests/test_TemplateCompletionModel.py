@@ -1,7 +1,8 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 from langchain_core.prompts import PromptTemplate
 
 from backend.completion.TemplateCompletionModel import (

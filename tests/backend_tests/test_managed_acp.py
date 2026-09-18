@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from backend.acp_authorization import (
     AcpAuthorizationService,
@@ -12,18 +13,18 @@ from backend.acp_authorization import (
     AcpSessionAuthorization,
 )
 from backend.routers.acp import (
-    EXPECTED_SCHEMA_REVISION,
     ManagedInferenceRequest,
     ManagedRunRequest,
     _managed_policy,
     create_managed_run,
+    expected_schema_revision,
     get_acp_capabilities,
     get_participant_readiness,
     run_managed_inference,
 )
 from backend.routers.agent.ingest import get_agent_run
-from backend.routers.agents import TaskCreateRequest, create_agent_task
 from backend.routers.agent.profiles import AgentProfilePayload
+from backend.routers.agents import TaskCreateRequest, create_agent_task
 from backend.routers.analytics.auth_utils import AuthenticatedUser
 
 
@@ -104,17 +105,61 @@ def test_managed_grants_are_isolated_per_launch_and_accept_windows_paths():
 
 
 def test_capabilities_report_schema_readiness():
+    expected = expected_schema_revision()
+    assert expected is not None
     db = MagicMock()
-    db.execute.return_value.scalar.return_value = EXPECTED_SCHEMA_REVISION
+    db.execute.return_value.scalar.return_value = expected
     app = MagicMock()
     app.get_db_session.return_value = db
 
     result = get_acp_capabilities(app)
 
     assert result["schema_ready"] is True
+    assert result["expected_schema_revision"] == expected
     assert result["managed_protocol_versions"] == ["1"]
     assert result["supported_runtimes"] == ["code4me2-agent"]
     db.close.assert_called_once()
+
+
+def test_capabilities_reject_a_stale_schema_revision():
+    expected = expected_schema_revision()
+    assert expected is not None
+    db = MagicMock()
+    db.execute.return_value.scalar.return_value = "000000000000"
+    app = MagicMock()
+    app.get_db_session.return_value = db
+
+    with pytest.raises(HTTPException) as error:
+        get_acp_capabilities(app)
+
+    assert error.value.status_code == 503
+    assert expected in error.value.detail
+    db.close.assert_called_once()
+
+
+def test_expected_schema_revision_honours_the_operator_override(monkeypatch):
+    monkeypatch.setenv("MANAGED_SCHEMA_REQUIRED_REVISION", "  abc123  ")
+
+    assert expected_schema_revision() == "abc123"
+
+
+def test_capabilities_fail_closed_when_no_head_can_be_derived(monkeypatch):
+    import backend.routers.acp as acp
+
+    monkeypatch.delenv("MANAGED_SCHEMA_REQUIRED_REVISION", raising=False)
+    monkeypatch.setattr(acp, "_expected_schema_revision_resolved", False)
+    monkeypatch.setattr(acp, "_expected_schema_revision_cache", None)
+    monkeypatch.setattr(acp, "_derive_expected_schema_revision", lambda: None)
+    db = MagicMock()
+    db.execute.return_value.scalar.return_value = "anything"
+    app = MagicMock()
+    app.get_db_session.return_value = db
+
+    assert acp.expected_schema_revision() is None
+    with pytest.raises(HTTPException) as error:
+        get_acp_capabilities(app)
+
+    assert error.value.status_code == 503
 
 
 def test_readiness_rejects_an_uncertified_assigned_runtime():
@@ -136,6 +181,7 @@ def test_readiness_rejects_an_uncertified_assigned_runtime():
 
 def test_readiness_rejects_missing_server_side_provider_credential(monkeypatch):
     user_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
     profile = SimpleNamespace(
         framework_version="code4me2-agent",
         name="managed-arm",
@@ -145,7 +191,16 @@ def test_readiness_rejects_missing_server_side_provider_credential(monkeypatch):
         max_steps=3,
         max_context_tokens=1000,
         temperature=0.2,
-        api_key_ref="STUDY_PROVIDER_KEY",
+        connection_id=connection_id,
+        funding_owner_user_id=uuid.uuid4(),
+    )
+    connection = SimpleNamespace(
+        connection_id=connection_id,
+        label="study-provider",
+        base_url="https://provider.example/v1",
+        secret_ref="STUDY_PROVIDER_KEY",
+        models_json='["managed-model"]',
+        is_active=True,
     )
     db = MagicMock()
     app = MagicMock()
@@ -154,13 +209,18 @@ def test_readiness_rejects_missing_server_side_provider_credential(monkeypatch):
     monkeypatch.delenv("STUDY_PROVIDER_KEY", raising=False)
 
     with patch("agents.registry.resolve_assignment", return_value=profile), patch(
+        "backend.routers.acp.crud.get_provider_connection", return_value=connection
+    ), patch(
+        "backend.routers.acp.crud.user_has_connection_grant", return_value=True
+    ), patch(
         "backend.routers.acp.crud.get_user_by_id", return_value=None
     ), patch("backend.routers.acp.resolve_store_agent_content_for_acp", return_value=False):
         with pytest.raises(Exception) as error:
             get_participant_readiness(user, app)
 
     assert error.value.status_code == 503
-    assert "STUDY_PROVIDER_KEY" in error.value.detail
+    assert error.value.detail["code"] == "SECRET_MISSING"
+    assert "STUDY_PROVIDER_KEY" in error.value.detail["message"]
     db.close.assert_called_once()
 
 
@@ -231,14 +291,15 @@ def test_plugin_task_response_includes_the_assigned_approval_policy():
 
 
 def test_profile_validation_rejects_tools_from_another_runtime():
-    with pytest.raises(ValueError, match="unsupported by code4me2-agent"):
+    with pytest.raises(ValueError, match="unsupported by codex"):
         AgentProfilePayload(
             name="invalid-arm",
             model="model",
-            framework_version="code4me2-agent",
-            tools_json='["shell"]',
+            framework_version="codex",
+            tools_json='["read_file"]',
             approval_policy="auto",
             max_steps=3,
+            connection_id=uuid.uuid4(),
         )
 
 
@@ -254,7 +315,7 @@ def test_profile_validation_rejects_unknown_approval_policy():
         )
 
 
-def test_profile_validation_rejects_provider_secrets_and_unsafe_urls():
+def test_profile_validation_rejects_retired_provider_fields():
     common = {
         "name": "managed-arm",
         "model": "model",
@@ -262,19 +323,20 @@ def test_profile_validation_rejects_provider_secrets_and_unsafe_urls():
         "tools_json": "[]",
         "approval_policy": "auto",
         "max_steps": 3,
+        "connection_id": uuid.uuid4(),
     }
-    with pytest.raises(ValueError, match="NAME of an environment variable"):
-        AgentProfilePayload(**common, api_key_ref="gsk_actualSecretMaterial123456")
-    with pytest.raises(ValueError, match="base_url"):
-        AgentProfilePayload(**common, base_url="https://user:secret@provider.example/v1")
+    # Researchers cannot name an arbitrary secret env var or backend URL: the
+    # retired fields are rejected outright (extra="forbid").
+    with pytest.raises(ValueError):
+        AgentProfilePayload(**common, api_key_ref="STUDY_PROVIDER_KEY")
+    with pytest.raises(ValueError):
+        AgentProfilePayload(**common, base_url="https://provider.example/v1")
+    with pytest.raises(ValueError):
+        AgentProfilePayload(**common, distribution_mode="PACKAGED")
 
-    valid = AgentProfilePayload(
-        **common,
-        api_key_ref="STUDY_PROVIDER_KEY",
-        base_url="https://provider.example/v1/",
-    )
-    assert valid.api_key_ref == "STUDY_PROVIDER_KEY"
-    assert valid.base_url == "https://provider.example/v1"
+    valid = AgentProfilePayload(**common, release_id="rel-1")
+    assert valid.connection_id is not None
+    assert valid.release_id == "rel-1"
 
 
 def test_managed_run_is_idempotent_only_for_the_same_scope():
@@ -329,8 +391,17 @@ def test_managed_inference_disables_proxy_observation_events():
         },
         agent_profile="managed-profile",
         framework_version="code4me2-agent",
+        profile_id=uuid.uuid4(),
     )
-    profile = SimpleNamespace(base_url="https://provider.example/v1", api_key_ref="KEY")
+    profile = SimpleNamespace(connection_id=uuid.uuid4())
+    connection = SimpleNamespace(
+        connection_id=profile.connection_id,
+        label="study-provider",
+        base_url="https://provider.example/v1",
+        secret_ref="EXAMPLE_PROVIDER_KEY",
+        models_json='["managed-model"]',
+        is_active=True,
+    )
     db = MagicMock()
     app = MagicMock()
     app.get_db_session.return_value = db
@@ -338,7 +409,14 @@ def test_managed_inference_disables_proxy_observation_events():
 
     with patch(
         "backend.routers.acp.crud.get_agent_task_by_external_run_id", return_value=task
-    ), patch("backend.routers.acp.crud.get_agent_profile", return_value=profile), patch(
+    ), patch(
+        "backend.routers.acp.crud.get_agent_profile_by_id", return_value=profile
+    ), patch(
+        "backend.routers.acp.provider_module.resolve_task_connection",
+        return_value=connection,
+    ), patch(
+        "backend.routers.acp.crud.get_user_by_id", return_value=None
+    ), patch(
         "agents.inference.run_inference", new=AsyncMock(return_value=forwarded)
     ) as run_inference:
         result = asyncio.run(
@@ -383,15 +461,23 @@ def test_managed_inference_rejects_tools_outside_snapshot():
         },
         agent_profile="managed-profile",
         framework_version="code4me2-agent",
+        profile_id=uuid.uuid4(),
     )
-    profile = SimpleNamespace(base_url="https://provider.example/v1", api_key_ref="KEY")
+    profile = SimpleNamespace(connection_id=uuid.uuid4())
     db = MagicMock()
     app = MagicMock()
     app.get_db_session.return_value = db
 
     with patch(
         "backend.routers.acp.crud.get_agent_task_by_external_run_id", return_value=task
-    ), patch("backend.routers.acp.crud.get_agent_profile", return_value=profile):
+    ), patch(
+        "backend.routers.acp.crud.get_agent_profile_by_id", return_value=profile
+    ), patch(
+        "backend.routers.acp.provider_module.resolve_task_connection",
+        return_value=SimpleNamespace(),
+    ), patch(
+        "backend.routers.acp.crud.get_user_by_id", return_value=None
+    ):
         with pytest.raises(Exception) as error:
             asyncio.run(
                 run_managed_inference(
@@ -434,15 +520,23 @@ def test_managed_inference_rejects_tool_choice_not_in_request():
         },
         agent_profile="managed-profile",
         framework_version="code4me2-agent",
+        profile_id=uuid.uuid4(),
     )
-    profile = SimpleNamespace(base_url="https://provider.example/v1", api_key_ref="KEY")
+    profile = SimpleNamespace(connection_id=uuid.uuid4())
     db = MagicMock()
     app = MagicMock()
     app.get_db_session.return_value = db
 
     with patch(
         "backend.routers.acp.crud.get_agent_task_by_external_run_id", return_value=task
-    ), patch("backend.routers.acp.crud.get_agent_profile", return_value=profile):
+    ), patch(
+        "backend.routers.acp.crud.get_agent_profile_by_id", return_value=profile
+    ), patch(
+        "backend.routers.acp.provider_module.resolve_task_connection",
+        return_value=SimpleNamespace(),
+    ), patch(
+        "backend.routers.acp.crud.get_user_by_id", return_value=None
+    ):
         with pytest.raises(Exception) as error:
             asyncio.run(
                 run_managed_inference(

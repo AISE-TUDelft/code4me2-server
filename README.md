@@ -567,11 +567,122 @@ EMAIL_PASSWORD=your_app_password
 EMAIL_FROM=noreply@code4me.com
 ```
 
+## 🧪 Research Platform
+
+The research platform (Issue 01+) is mounted under `/api/research` and is
+documented in [`docs/research-platform/`](docs/research-platform/). It is
+admin/operator-facing: compatibility, protocol publication, registry, bootstrap,
+and exports record evidence or define experimental intent and are never exposed
+to participants.
+
+```http
+# ACP host capability receipts + compatibility gate (admin)
+GET/POST /api/research/compatibility/...
+
+# Immutable StudyProtocolV1 authoring + publication (admin)
+GET/POST /api/research/studies/...
+
+# Agent registry, artifacts, and capability snapshots (admin)
+GET/POST /api/research/agents/...
+
+# Participant identity, consent, and withdrawal
+GET/POST /api/research/participants/...
+
+# Bootstrap manifest retrieval/validation
+GET/POST /api/research/bootstrap/...
+
+# Research session lifecycle (session capability auth)
+GET/POST /api/research/sessions/...
+
+# Canonical telemetry batch ingestion
+GET/POST /api/research/telemetry/...
+
+# Researcher read models + pilot operations/release gate (RBAC/admin)
+GET/POST /api/research/operations/...
+```
+
+### Seed a fresh database from the built runtime
+
+A fresh database is made immediately usable by importing the runtime **build
+manifest** (never a hand-typed digest), recording the conformance receipt that
+qualifies its release, pinning `default-code4me2-agent` to it, marking the
+participant-installed profiles (`default-goose`/`default-codex`) as BYOA, and
+publishing one study revision with a working `session_policy`.
+
+```bash
+cd code4me2-server
+scripts/dev/seed_local_dev.sh
+```
+
+`seed_local_dev.sh` is a thin driver: it stages the manifest (and any built
+archives next to it) into the running backend container and then invokes the
+canonical seeder, `scripts/dev/seed_research_study.py --fresh-db`. When an
+archive is present its real `sha256`/size are computed and checked against the
+manifest, so no digest or size is ever typed by hand. Override the manifest with
+`MANIFEST=/path/to/manifest.json`; when an archive is not on disk, supply its
+size explicitly with `--artifact-size-override NAME=SIZE` (never guessed).
+
+The same registration is exposed to CI as an admin JSON endpoint:
+
+```bash
+curl -X POST http://localhost:8008/api/research/agents/releases/import \
+    -H "Content-Type: application/json" -H "Cookie: auth_token=$TOKEN" \
+    -d '{"manifest": <build manifest>, "artifact_root": "/srv/runtime-staging"}'
+```
+
+It is idempotent: re-importing the same manifest returns the existing release
+(`created: false`) instead of a duplicate.
+
+### Seed a synthetic study (participant enrollment)
+
+The participant runbook needs a published study and an ACTIVE enrollment before
+the plugin can join. `scripts/dev/seed_research_study.py` mints that onboarding
+state by calling the real research services (protocol publication, agent
+registry, identity enrollment/consent) — it does not re-implement any domain
+logic. It is a development-only tool and refuses to run unless
+`CODE4ME_DEV_SEED=1` (or `TEST_MODE=true`) is set.
+
+```bash
+cd code4me2-server
+CODE4ME_DEV_SEED=1 PYTHONPATH=src python scripts/dev/seed_research_study.py \
+    --account-email participant@example.com \
+    --account-password 'Password123' --create-account
+```
+
+Common options: `--study-name`, `--agent-id`, `--release-id`,
+`--artifact-digest sha256:<64 hex>`, `--os <os>`, `--arch <arch>`. Without
+`--artifact-digest`/`--os`/`--arch` a deterministic synthetic release for the
+current host is used.
+
+The command prints a copy-pasteable summary. The `enrollment_id` is the opaque
+"enrollment code" the participant pastes into IntelliJ's **Tools → Join Research
+Study...** action:
+
+```text
+  enrollment_id (join code): <uuid>
+  enrollment_status:         ACTIVE
+  study_id:                  <uuid>
+  revision_id:               <uuid>
+  agent_id:                  code4me-synthetic-agent
+  release_id:                code4me-synthetic-agent-synthetic-1
+  artifact_digest:           sha256:<64 hex>
+  login email:               participant@example.com
+  login password:            Password123
+```
+
+The script is deterministic and safe to re-run: the same arguments resolve the
+same account, release, study, published revision and enrollment instead of
+piling up duplicates. A password is only printed when this run created the
+account (`--create-account`); an existing account is left untouched. The release
+is registered `QUALIFIED` and immutable — changing `--artifact-digest` without a
+new `--release-id` is rejected rather than mutating a published release.
+
 ## 📖 Documentation
 
 - **API Documentation**: http://localhost:8008/docs (when running)
 - **Database Schema**: See `src/database/resources/documentation/`
 - **Authentication Workflows**: See `src/backend/resources/documentation/`
+- **Research Platform**: See [`docs/research-platform/`](docs/research-platform/)
 
 ## 🔒 Production Notes
 - Restrict CORS origins and cookies in production.

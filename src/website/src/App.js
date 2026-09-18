@@ -1,11 +1,24 @@
 import React, { useState, useEffect } from "react";
 import Auth from "./components/auth/Auth";
 import Dashboard from "./pages/Dashboard";
+import ThemeToggle from "./components/common/ThemeToggle";
+import ResearchStudies from "./pages/research/ResearchStudies";
+import ResearchStudyEditor from "./pages/research/ResearchStudyEditor";
+import ResearchEnrollment from "./pages/research/ResearchEnrollment";
+import ResearchJoin from "./pages/research/ResearchJoin";
 import "./App.css";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { ThemeProvider } from "./context/ThemeContext";
 import { getCurrentUser, logoutUser } from "./utils/api";
-import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  NavLink,
+  Outlet,
+  useNavigate,
+} from "react-router-dom";
 import Start from "./pages/Start";
 function App() {
   // we manage the state for the uer but setting it to null by default
@@ -81,6 +94,128 @@ function App() {
     return children;
   };
 
+  // Any signed-in account may reach the research authoring shell; the backend
+  // authorizes per study (a role grant for draft/publish) and reserves the
+  // deployment-wide surfaces (role grants, pilot/release operations, the kill
+  // switch) for administrators. The frontend only gates those genuinely
+  // admin-only surfaces; everything else defers to the server's 403.
+  const AdminRoute = ({ children }) => {
+    if (!user) return <Navigate to="/login" replace />;
+    if (!user.is_admin) return <Navigate to="/dashboard" replace />;
+    return children;
+  };
+
+  const ResearchLayout = () => {
+    const navigate = useNavigate();
+    const onLogoutWrapped = async () => {
+      await handleLogout();
+      navigate("/", { replace: true });
+    };
+    const linkClass = ({ isActive }) =>
+      `nav-item research-nav-link${isActive ? " active" : ""}`;
+    return (
+      <div className="dashboard-container">
+        <header className="dashboard-header">
+          <div className="header-content">
+            <div className="header-left">
+              <h1>Research Control Plane</h1>
+              <span className="header-subtitle">
+                {user?.is_admin ? "Researcher" : "Restricted"}
+              </span>
+            </div>
+            <div className="header-right">
+              <ThemeToggle />
+              <span className="user-name">
+                {user ? user.name || user.email : "Loading user..."}
+              </span>
+              <NavLink to="/dashboard" className="logout-button">
+                Dashboard
+              </NavLink>
+              <button onClick={onLogoutWrapped} className="logout-button">
+                Logout
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div className="dashboard-content">
+          <nav className="analytics-navigation" aria-label="Research navigation">
+            <div className="nav-header">
+              <h2>Research</h2>
+              <span className="admin-badge">Admin View</span>
+            </div>
+            <div className="nav-items">
+              <NavLink to="/research/studies" className={linkClass}>
+                <span className="nav-icon" aria-hidden="true">🔬</span>
+                <div className="nav-content">
+                  <span className="nav-label">Study Protocols</span>
+                  <span className="nav-description">
+                    Draft, validate, publish and supersede revisions
+                  </span>
+                </div>
+              </NavLink>
+              {user?.is_admin && (
+                <NavLink to="/research/enrollment" className={linkClass}>
+                  <span className="nav-icon" aria-hidden="true">🎟️</span>
+                  <div className="nav-content">
+                    <span className="nav-label">Enrollment</span>
+                    <span className="nav-description">
+                      Join code, instructions and agent packaging
+                    </span>
+                  </div>
+                </NavLink>
+              )}
+            </div>
+          </nav>
+
+          <main className="analytics-main">
+            <Outlet />
+          </main>
+        </div>
+      </div>
+    );
+  };
+
+  // Participant-facing research shell. Unlike ResearchLayout this is not
+  // admin-gated: any signed-in account can redeem a study join code.
+  const ResearchParticipantLayout = () => {
+    const navigate = useNavigate();
+    const onLogoutWrapped = async () => {
+      await handleLogout();
+      navigate("/", { replace: true });
+    };
+    return (
+      <div className="dashboard-container">
+        <header className="dashboard-header">
+          <div className="header-content">
+            <div className="header-left">
+              <h1>Research Participant</h1>
+              <span className="header-subtitle">Join a study</span>
+            </div>
+            <div className="header-right">
+              <ThemeToggle />
+              <span className="user-name">
+                {user ? user.name || user.email : "Loading user..."}
+              </span>
+              <NavLink to="/dashboard" className="logout-button">
+                Dashboard
+              </NavLink>
+              <button onClick={onLogoutWrapped} className="logout-button">
+                Logout
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div className="dashboard-content">
+          <main className="analytics-main">
+            <Outlet />
+          </main>
+        </div>
+      </div>
+    );
+  };
+
   const AuthPage = ({ mode }) => {
     const navigate = useNavigate();
     const onAuth = (userData) => {
@@ -138,6 +273,41 @@ function App() {
                   </ProtectedRoute>
                 }
               />
+              <Route
+                path="/research"
+                element={
+                  <ProtectedRoute>
+                    <ResearchLayout />
+                  </ProtectedRoute>
+                }
+              >
+                <Route index element={<Navigate to="/research/studies" replace />} />
+                <Route path="studies" element={<ResearchStudies />} />
+                <Route
+                  path="studies/:studyId/editor"
+                  element={<ResearchStudyEditor />}
+                />
+                {/* Enrollment manages the deployment-wide join code and the
+                    study index; both backing endpoints are require_admin. */}
+                <Route
+                  path="enrollment"
+                  element={
+                    <AdminRoute>
+                      <ResearchEnrollment />
+                    </AdminRoute>
+                  }
+                />
+              </Route>
+              <Route
+                path="/research/join"
+                element={
+                  <ProtectedRoute>
+                    <ResearchParticipantLayout />
+                  </ProtectedRoute>
+                }
+              >
+                <Route index element={<ResearchJoin />} />
+              </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>

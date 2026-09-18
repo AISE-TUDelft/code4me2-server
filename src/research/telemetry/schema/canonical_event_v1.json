@@ -1,0 +1,503 @@
+{
+  "$defs": {
+    "CanonicalFidelity": {
+      "description": "How faithfully a canonical field represents its source observation.\n\nLowercase by canonical-spec convention; distinct from the uppercase receipt\nfidelity vocabulary in Issue 01.",
+      "enum": [
+        "exact",
+        "normalized",
+        "inferred"
+      ],
+      "title": "CanonicalFidelity",
+      "type": "string"
+    },
+    "Correlations": {
+      "additionalProperties": false,
+      "description": "Opaque correlation handles that tie related events together.",
+      "properties": {
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "permission_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Permission Id"
+        },
+        "edit_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Edit Id"
+        },
+        "correlation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correlation Id"
+        }
+      },
+      "title": "Correlations",
+      "type": "object"
+    },
+    "Coverage": {
+      "additionalProperties": false,
+      "description": "Coverage of one measured/observed field or capability.",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/CoverageState",
+          "default": "UNKNOWN"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "capability": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capability"
+        }
+      },
+      "title": "Coverage",
+      "type": "object"
+    },
+    "CoverageState": {
+      "description": "Whether a measurement/observation is present, absent, or disputed.\n\n``UNAVAILABLE`` means \"the source does not expose it\" and ``UNKNOWN`` means\n\"not observed\"; neither is zero or false.",
+      "enum": [
+        "AVAILABLE",
+        "UNAVAILABLE",
+        "UNKNOWN",
+        "PARTIAL",
+        "NEEDS_REVIEW"
+      ],
+      "title": "CoverageState",
+      "type": "string"
+    },
+    "EventMetrics": {
+      "additionalProperties": false,
+      "description": "Numeric measurements attached to an event.\n\n``usage_tokens`` is ``Optional`` and paired with ``usage_capability``:\nan observed zero is ``0`` with ``AVAILABLE`` coverage, while an unexposed\ncount is ``None`` with ``UNAVAILABLE`` coverage.",
+      "properties": {
+        "usage_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usage Tokens"
+        },
+        "usage_capability": {
+          "$ref": "#/$defs/Coverage"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Ms"
+        },
+        "counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Counts",
+          "type": "object"
+        }
+      },
+      "title": "EventMetrics",
+      "type": "object"
+    },
+    "PrivacySummary": {
+      "additionalProperties": false,
+      "description": "What the privacy filter did to one event.",
+      "properties": {
+        "policy_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Policy Digest"
+        },
+        "actions": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Actions",
+          "type": "object"
+        },
+        "redacted_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Redacted Fields",
+          "type": "array"
+        },
+        "blocked": {
+          "default": false,
+          "title": "Blocked",
+          "type": "boolean"
+        },
+        "block_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Block Reason"
+        },
+        "field_classes": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Field Classes",
+          "type": "object"
+        }
+      },
+      "title": "PrivacySummary",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Where a canonical event came from and how faithfully it was derived.",
+      "properties": {
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "source_event_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Event Id"
+        },
+        "normalizer_version": {
+          "title": "Normalizer Version",
+          "type": "string"
+        },
+        "adapter_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Adapter Version"
+        },
+        "fidelity": {
+          "$ref": "#/$defs/CanonicalFidelity",
+          "default": "normalized"
+        },
+        "evidence_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Digest"
+        }
+      },
+      "required": [
+        "source",
+        "normalizer_version"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Language-neutral canonical telemetry envelope (schema version 1). Canonical event types are vendor-independent concepts; SECRET fields never appear because the privacy filter removes them before serialization.",
+  "properties": {
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "interaction.started",
+        "interaction.completed",
+        "agent.message.started",
+        "agent.message.completed",
+        "tool.created",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
+        "permission.requested",
+        "permission.decided",
+        "plan.updated",
+        "usage.updated",
+        "ide.document.changed",
+        "ide.file.opened",
+        "ide.file.saved",
+        "ide.file.closed",
+        "ide.run.executed",
+        "system.agent.crashed",
+        "system.proxy.error",
+        "agent.error",
+        "unknown_source_event"
+      ]
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    },
+    "study_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Study Id"
+    },
+    "revision_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Revision Id"
+    },
+    "enrollment_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Enrollment Id"
+    },
+    "research_session_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Research Session Id"
+    },
+    "agent_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Agent Run Id"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "monotonic_ns": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Monotonic Ns"
+    },
+    "emitter_id": {
+      "title": "Emitter Id",
+      "type": "string"
+    },
+    "emitter_sequence": {
+      "title": "Emitter Sequence",
+      "type": "integer"
+    },
+    "correlations": {
+      "$ref": "#/$defs/Correlations"
+    },
+    "lifecycle_state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lifecycle State"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "metrics": {
+      "$ref": "#/$defs/EventMetrics"
+    },
+    "privacy": {
+      "$ref": "#/$defs/PrivacySummary"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "coverage": {
+      "$ref": "#/$defs/Coverage"
+    },
+    "unknown_event_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unknown Event Type"
+    },
+    "unknown_source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unknown Source"
+    },
+    "unknown_lifecycle_state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unknown Lifecycle State"
+    }
+  },
+  "required": [
+    "event_id",
+    "schema_version",
+    "event_type",
+    "source",
+    "occurred_at",
+    "emitter_id",
+    "emitter_sequence",
+    "provenance"
+  ],
+  "title": "CanonicalEventV1",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://code4me.invalid/research/schema/canonical_event_v1.json"
+}

@@ -6,6 +6,8 @@ import "./AgentAnalytics.css";
 const number = (value) => Number(value || 0).toLocaleString();
 const percent = (value) => `${(Number(value || 0) * 100).toFixed(1)}%`;
 const milliseconds = (value) => `${Math.round(Number(value || 0))}ms`;
+// A missing measurement is rendered as unavailable, never as a zero.
+const ifAvailable = (value, render) => (value == null ? "unavailable" : render(value));
 
 const mergeOptions = (previous, values) => [...new Set([...previous, ...values])].sort();
 
@@ -51,14 +53,16 @@ const EventGraph = ({ events }) => {
           const depth = eventDepth(event, spanIndexes, events);
           const isTool = event.event_type.includes("tool");
           const isFailure = event.event_type.includes("failed") || event.upstream_status >= 400;
+          const isObserved = event.source === "acp-proxy";
+          const kind = isObserved ? "observed" : isTool ? "tool" : "model";
           return (
             <div className="agent-graph-row" key={`${event.event_index}-${event.event_type}`} style={{ paddingLeft: `${depth * 28}px` }}>
-              <div className={`agent-graph-rail ${isTool ? "tool" : "model"} ${isFailure ? "failure" : ""}`} />
-              <div className={`agent-graph-node ${isTool ? "tool" : "model"} ${isFailure ? "failure" : ""}`}>
+              <div className={`agent-graph-rail ${kind} ${isFailure ? "failure" : ""}`} />
+              <div className={`agent-graph-node ${kind} ${isFailure ? "failure" : ""}`}>
                 <div className="agent-graph-node-main">
                   <span className="agent-event-index">{event.event_index}</span>
                   <strong>{event.event_type}</strong>
-                  <small>{event.source || "unknown source"}{event.tool_name ? ` · ${event.tool_name}` : event.model ? ` · ${event.model}` : ""}</small>
+                  <small>{event.source || "unknown source"}{event.detail ? ` · ${event.detail}` : ""}{event.tool_name ? ` · ${event.tool_name}` : event.model ? ` · ${event.model}` : ""}</small>
                 </div>
                 <div className="agent-graph-node-stats">
                   {event.latency_ms ? <span>{milliseconds(event.latency_ms)}</span> : null}
@@ -173,17 +177,17 @@ const AgentAnalytics = ({ timeWindow = "7d" }) => {
         <KpiCard label="Model latency" value={milliseconds(summary.avg_model_latency_ms)} detail={`${milliseconds(summary.p95_model_latency_ms)} p95 · ${number(summary.model_calls)} calls`} />
         <KpiCard label="Tool activity" value={number(summary.tool_calls)} detail={`${number(summary.failures)} execution failures`} />
         <KpiCard label="Avg steps" value={Number(summary.avg_steps || 0).toFixed(1)} detail={`${milliseconds(summary.avg_task_duration_ms)} per run`} />
-        <KpiCard label="Edit acceptance" value={percent(summary.edit_acceptance_rate)} detail={`${number(summary.total_edits)} decisions`} />
+        <KpiCard label="Edit acceptance" value={summary.edit_acceptance_rate == null ? "unavailable" : percent(summary.edit_acceptance_rate)} detail={summary.total_edits == null ? "no observed edit decisions" : `${number(summary.total_edits)} decisions`} />
       </div>
 
       <section className="agent-panel agent-token-panel">
         <PanelHeading eyebrow="Token and request accounting" title="What each model call costs" hint="Provider usage is exact where reported; byte-based values are estimates." />
         <div className="agent-token-grid">
-          <div><span>Provider input tokens</span><strong>{number(summary.provider_input_tokens)}</strong><small>reported by model provider</small></div>
-          <div><span>Conversation context</span><strong>~{number(summary.conversation_tokens_estimated)}</strong><small>estimated from message bytes</small></div>
-          <div><span>Tool schema</span><strong>~{number(summary.tool_schema_tokens_estimated)}</strong><small>estimated from schema bytes</small></div>
-          <div><span>Tool results</span><strong>~{number(summary.tool_result_tokens_estimated)}</strong><small>estimated from result bytes</small></div>
-          <div><span>Model output</span><strong>{number(summary.model_output_tokens)}</strong><small>reported completion tokens</small></div>
+          <div><span>Provider input tokens</span><strong>{ifAvailable(summary.provider_input_tokens, number)}</strong><small>reported by model provider</small></div>
+          <div><span>Conversation context</span><strong>{ifAvailable(summary.conversation_tokens_estimated, (v) => `~${number(v)}`)}</strong><small>estimated from message bytes</small></div>
+          <div><span>Tool schema</span><strong>{ifAvailable(summary.tool_schema_tokens_estimated, (v) => `~${number(v)}`)}</strong><small>estimated from schema bytes</small></div>
+          <div><span>Tool results</span><strong>{ifAvailable(summary.tool_result_tokens_estimated, (v) => `~${number(v)}`)}</strong><small>estimated from result bytes</small></div>
+          <div><span>Model output</span><strong>{ifAvailable(summary.model_output_tokens, number)}</strong><small>reported completion tokens</small></div>
           <div><span>Successful calls</span><strong>{number(summary.successful_model_calls)}</strong><small>{number(summary.rate_limit_retries)} rate-limit retries</small></div>
         </div>
       </section>

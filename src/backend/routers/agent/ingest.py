@@ -33,6 +33,7 @@ from backend.acp_authorization import AcpSessionAuthorization  # noqa: TC001 - F
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.agent.acp_auth import require_acp_scope
 from backend.routers.agent.consent import resolve_store_agent_content_for_acp
+from backend.routers.research.access import resolve_research_binding
 from database import crud
 
 router = APIRouter()
@@ -162,7 +163,12 @@ def _resolve_or_create_task(
             detail="No active agent profiles are configured on the server",
         )
     profile = assignment.profile
-    content_included = resolve_store_agent_content_for_acp(db, scope.user_id)
+    content_included = resolve_store_agent_content_for_acp(
+        db, scope.user_id, study_id=assignment.study_id
+    )
+    binding = resolve_research_binding(
+        db, account_id=owner_user_uuid, study_id=assignment.study_id
+    )
 
     task = crud.create_agent_task(
         db,
@@ -174,6 +180,7 @@ def _resolve_or_create_task(
         framework_version=profile.framework_version,
         source="code4me2_agent",
         owner_user_id=owner_user_uuid,
+        funding_owner_user_id=getattr(profile, "funding_owner_user_id", None),
         owner_project_id=owner_project_uuid,
         external_run_id=run.run_id,
         agent_session_id=run.session_id,
@@ -185,6 +192,12 @@ def _resolve_or_create_task(
         study_arm_name=assignment.arm_name,
         study_arm_is_baseline=assignment.is_baseline,
         consent_content_storage=content_included,
+        # Explicit phase-05 attribution: resolved from the authorized account
+        # and the frozen assignment, never guessed. A non-research task keeps
+        # these NULL (an explicit "no research context").
+        research_session_id=binding.research_session_id if binding else None,
+        enrollment_id=binding.enrollment_id if binding else None,
+        study_revision_id=binding.study_revision_id if binding else None,
     )
     logging.info(
         f"[Agent/ingest] created task {task.task_id} for run {run.run_id} "
@@ -227,8 +240,13 @@ def ingest_agent_events(
         task, _created = _resolve_or_create_task(db, run=body.run, scope=scope)
 
         # Consent is resolved from the *server's* record of the user's
-        # preference, not from the `privacy` block in the payload.
-        content_included = resolve_store_agent_content_for_acp(db, scope.user_id)
+        # preference, not from the `privacy` block in the payload. The research
+        # enrollment gate is applied on top, so a non-ACTIVE research
+        # enrollment denies content collection even when the legacy preference
+        # would allow it.
+        content_included = resolve_store_agent_content_for_acp(
+            db, scope.user_id, study_id=task.study_id
+        )
 
         ingested, skipped = ingest_module.ingest_event_batch(
             db,

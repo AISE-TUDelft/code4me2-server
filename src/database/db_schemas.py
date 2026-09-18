@@ -14,6 +14,7 @@ The schema supports:
 """
 
 from datetime import datetime
+from enum import Enum
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -31,6 +32,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -61,6 +64,14 @@ STORE_AGENT_CONTENT_KEY = "store_agent_content"
 # Server-side default applied when a user row predates this preference (i.e. the
 # key is absent from their stored preference JSON).
 STORE_AGENT_CONTENT_DEFAULT = True
+
+
+class ResearchStudyStatus(str, Enum):
+    """Lifecycle states for research studies on the shared ``study`` table."""
+
+    DRAFT = "DRAFT"
+    ACTIVE = "ACTIVE"
+    STUDY_STOPPED = "STUDY_STOPPED"
 
 
 class Config(Base):
@@ -97,6 +108,8 @@ class User(Base):
         Index("idx_user_config_id", "config_id"),
         # Index on admin status for efficient filtering
         Index("idx_user_is_admin", "is_admin"),
+        # Index on researcher enablement for admin/ownership lookups.
+        Index("idx_user_can_research", "can_research"),
         {"schema": "public"},
     )
 
@@ -123,6 +136,13 @@ class User(Base):
     is_admin = Column(
         Boolean, server_default="false", default=False
     )  # Admin status for access control
+    # Researcher enablement (P3): an administrator flips this on to let an
+    # account own private profiles and studies. It is the *only* researcher
+    # authority — there is no per-study role table. Never settable by the
+    # account itself (no self-promotion route).
+    can_research = Column(
+        Boolean, server_default="false", default=False, nullable=False
+    )
 
     # Relationship to configuration data
     config = relationship("Config")
@@ -470,6 +490,8 @@ class MetaQuery(Base):
         Index("idx_meta_query_project_id", "project_id"),
         Index("idx_meta_query_session_id", "session_id"),
         Index("idx_meta_query_type", "query_type"),
+        Index("idx_meta_query_timestamp", "timestamp"),
+        Index("idx_meta_query_timestamp_type", "timestamp", "query_type"),
         {"schema": "public"},
     )
 
@@ -575,6 +597,9 @@ class HadGeneration(Base):
         PrimaryKeyConstraint("meta_query_id", "model_id"),
         # Index for efficient query-model lookups
         Index("idx_had_generation_meta_query_model", "meta_query_id", "model_id"),
+        Index("idx_had_generation_confidence", "confidence"),
+        Index("idx_had_generation_model_id", "model_id"),
+        Index("idx_had_generation_was_accepted", "was_accepted"),
         {"schema": "public"},
     )
 
@@ -649,36 +674,79 @@ class Documentation(Base):
     embedding = Column(
         Vector(384), nullable=True
     )  # 384 dimensions for all-MiniLM-L6-v2
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=datetime.now, server_default=func.now()
+    )
 
 
 class Study(Base):
     """
-    A/B testing and user experiment management.
-    
-    Manages user studies for configuration testing and analysis.
-    Only one study can be active at a time per server instance.
+    Shared study identity for both completion A/B studies and research studies.
+
+    Completion studies (``is_research == False``) keep the completion-specific
+    required ``default_config_id`` — validated in code, not by a NOT NULL column,
+    because a research study must not fabricate a completion config. Research
+    studies set ``is_research`` True and are owner-scoped; their lifecycle and
+    fixed configuration live in the research-only columns below. At most one
+    live (active) research study per owner is enforced by the partial unique index
+    ``uq_study_owner_live_research``. Legacy completion rows leave those research
+    columns nullable and continue using the existing completion fields.
     """
-    
+
     __tablename__ = "study"
     __table_args__ = (
         Index("idx_study_is_active", "is_active"),
         Index("idx_study_created_by", "created_by"),
         Index("idx_study_starts_at", "starts_at"),
         Index("idx_study_ends_at", "ends_at"),
+        Index("idx_study_research_status", "research_status"),
+        # One live research study per owner. Drafts never reserve the slot.
+        Index(
+            "uq_study_owner_live_research",
+            "created_by",
+            unique=True,
+            postgresql_where=text("is_research AND is_active"),
+        ),
+        Index(
+            "uq_study_research_join_code",
+            "join_code",
+            unique=True,
+            postgresql_where=text("is_research AND join_code IS NOT NULL"),
+        ),
         {"schema": "public"},
     )
-    
+
     study_id = Column(UUID(as_uuid=True), primary_key=True)
     name = Column(Text, nullable=False)
     description = Column(Text)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("public.user.user_id"), nullable=False)
+    created_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
     starts_at = Column(DateTime(timezone=True), nullable=False)
     ends_at = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, server_default="false", default=False)
-    default_config_id = Column(BigInteger, ForeignKey("public.config.config_id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
-    
+    # Nullable at the DB level: required for completion studies, absent for
+    # agent research studies (enforced by request validation).
+    default_config_id = Column(
+        BigInteger, ForeignKey("public.config.config_id"), nullable=True
+    )
+    # True for researcher-authored studies; False for legacy completion studies.
+    is_research = Column(Boolean, server_default="false", default=False, nullable=False)
+    # Research-only lifecycle/configuration authority. Legacy completion rows
+    # leave these nullable and continue using their existing fields.
+    research_status = Column(String, nullable=True)
+    research_config_json = Column(JSONB, nullable=True)
+    research_config_digest = Column(String, nullable=True)
+    join_code = Column(String, nullable=True)
+    consent_locked_at = Column(DateTime(timezone=True), nullable=True)
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    stopped_by = Column(String, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=datetime.now, server_default=func.now()
+    )
+
     # Relationships
     creator = relationship("User")
     default_config = relationship("Config")
@@ -700,10 +768,20 @@ class ConfigAssignmentHistory(Base):
         {"schema": "public"},
     )
     
-    user_id = Column(UUID(as_uuid=True), ForeignKey("public.user.user_id"), primary_key=True)
-    study_id = Column(UUID(as_uuid=True), ForeignKey("public.study.study_id"), primary_key=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    study_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.study.study_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
     assigned_config_id = Column(BigInteger, ForeignKey("public.config.config_id"), nullable=False)
-    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    assigned_at = Column(
+        DateTime(timezone=True), nullable=False, default=datetime.now, server_default=func.now()
+    )
     
     # Relationships
     user = relationship("User")
@@ -733,40 +811,82 @@ class ConfigAssignmentHistory(Base):
 # server-side, never taken from a client-supplied flag.
 
 
+class ProviderConnection(Base):
+    """An administrator-maintained upstream provider endpoint.
+
+    A connection owns the provider endpoint (``base_url``) and the *name* of the
+    deployment secret that holds its key (``secret_ref`` — an environment
+    variable name, never the value). ``models_json`` is the JSON array of model
+    names the connection is allowed to serve. Researchers never see
+    ``base_url``/``secret_ref``; they select a granted connection by id and a
+    model from ``models_json``. The secret value is resolved from the
+    environment only at inference time and never persisted or returned.
+    """
+
+    __tablename__ = "provider_connection"
+    __table_args__ = (
+        Index("idx_provider_connection_is_active", "is_active"),
+        {"schema": "public"},
+    )
+
+    connection_id = Column(UUID(as_uuid=True), primary_key=True)
+    label = Column(String, nullable=False, unique=True)
+    base_url = Column(String, nullable=False)
+    # Name of the environment variable holding the upstream key — never the key.
+    secret_ref = Column(String, nullable=False)
+    # JSON array of allowed model names for this connection.
+    models_json = Column(Text, nullable=False)
+    is_active = Column(Boolean, server_default="true", default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+
+
 class AgentProfile(Base):
-    """Named experiment variant — defines runtime, provider, tools and policy.
+    """A researcher-owned, editable agent configuration template.
 
-    ``framework_version`` selects which agent runtime the profile targets
-    (``code4me2-agent``, ``goose``, ``codex``), and therefore which telemetry
-    path a task created from it will use.
-
-    The provider triple (``base_url``, ``api_key_ref``, ``model``) is
-    deliberately generic: any endpoint speaking the OpenAI-compatible
-    chat-completions wire format works, so a local Ollama install, Groq,
-    OpenRouter and OpenAI itself are all a config change rather than a code
-    change. ``base_url`` NULL falls back to the server's configured default
-    (see ``agents.provider.resolve_upstream``).
+    A profile fixes the runtime, the provider connection/model, the tool
+    allowlist, the release artifact pin and the approval policy. It is a
+    *template*: publishing a study freezes a copy into the study revision, so
+    later edits never change historical display or an already-published study's
+    execution. ``connection_id`` names an administrator-managed
+    :class:`ProviderConnection`; the provider endpoint and secret live there,
+    never on the profile.
     """
 
     __tablename__ = "agent_profile"
     __table_args__ = (
         Index("idx_agent_profile_is_active", "is_active"),
+        Index("idx_agent_profile_owner_user_id", "owner_user_id"),
+        # Profile names are unique per researcher, never globally.
+        UniqueConstraint("owner_user_id", "name", name="uq_agent_profile_owner_name"),
         {"schema": "public"},
     )
 
     profile_id = Column(UUID(as_uuid=True), primary_key=True)
-    name = Column(String, unique=True, nullable=False)
+    # The researcher who owns this private profile template.
+    owner_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name = Column(String, nullable=False)
     model = Column(String, nullable=False)
     # Agent runtime this profile targets: code4me2-agent | goose | codex
     framework_version = Column(
         String, nullable=False, server_default="code4me2-agent"
     )
-    # OpenAI-compatible base URL, e.g. http://localhost:11434/v1 (Ollama),
-    # https://api.groq.com/openai/v1, https://api.openai.com/v1. NULL = server default.
-    base_url = Column(String, nullable=True)
-    # Name of the environment variable holding the upstream API key — never the
-    # key itself, so profiles stay safe to dump from the admin UI or the DB.
-    api_key_ref = Column(String, nullable=True)
+    # The exact approved artifact this profile runs (agent_release.release_id).
+    # The release row owns artifact identity; the profile only pins it.
+    release_id = Column(
+        String,
+        ForeignKey("public.agent_release.release_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    # Administrator-managed provider endpoint + secret owner.
+    connection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.provider_connection.connection_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     tools_json = Column(Text, nullable=False)  # JSON array of tool names
     approval_policy = Column(String, nullable=False)  # suggestion_only | per_step | …
     max_steps = Column(Integer, nullable=False)
@@ -776,82 +896,13 @@ class AgentProfile(Base):
     max_context_tokens = Column(
         Integer, nullable=True
     )  # per-turn rolling window; NULL = model max
-    # Only active profiles are candidate arms for new A/B assignments. Inactive
-    # profiles stay in the table (drafts, or arms retired mid-study) and existing
-    # users keep any assignment already pinned to them.
+    # Only active profiles are candidate arms for new assignments. Inactive
+    # profiles stay in the table (drafts, or arms retired mid-study).
     is_active = Column(Boolean, server_default="true", default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
 
-
-class AgentProfileAssignment(Base):
-    """Sticky user→profile mapping for A/B testing.
-
-    Resolution is server-authoritative: on a user's first agent task we draw a
-    random active profile and persist it here, so the user keeps the same arm for
-    the life of the experiment regardless of later changes to the active set.
-    `source` distinguishes randomized assignments ("auto") from admin overrides
-    ("manual"); manual rows are excluded from re-rolls and from A/B analysis.
-    """
-
-    __tablename__ = "agent_profile_assignment"
-    __table_args__ = (
-        Index("idx_agent_profile_assignment_profile_id", "profile_id"),
-        {"schema": "public"},
-    )
-
-    user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("public.user.user_id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    profile_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("public.agent_profile.profile_id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    source = Column(String, nullable=False, server_default="auto")  # auto | manual
-    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
-
-    # Relationships
-    user = relationship("User")
-    profile = relationship("AgentProfile")
-
-
-class AgentStudyAssignment(Base):
-    """User-to-arm assignment within one specific study."""
-
-    __tablename__ = "agent_study_assignment"
-    __table_args__ = (
-        Index("idx_agent_study_assignment_study_id", "study_id"),
-        Index("idx_agent_study_assignment_profile_id", "profile_id"),
-        UniqueConstraint("study_id", "user_id", name="uq_agent_study_assignment"),
-        {"schema": "public"},
-    )
-
-    assignment_id = Column(UUID(as_uuid=True), primary_key=True)
-    study_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("public.study.study_id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("public.user.user_id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    profile_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("public.agent_profile.profile_id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    arm_name = Column(String, nullable=False)
-    is_baseline = Column(Boolean, server_default="false", default=False, nullable=False)
-    source = Column(String, nullable=False, server_default="auto")
-    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
-
-    study = relationship("Study")
-    user = relationship("User")
-    profile = relationship("AgentProfile")
+    owner = relationship("User")
+    connection = relationship("ProviderConnection")
 
 
 class AgentTask(Base):
@@ -873,6 +924,8 @@ class AgentTask(Base):
         Index("idx_agent_task_study_id", "study_id"),
         Index("idx_agent_task_study_assignment_id", "study_assignment_id"),
         Index("idx_agent_task_profile_id", "profile_id"),
+        Index("idx_agent_task_research_session_id", "research_session_id"),
+        Index("idx_agent_task_enrollment_id", "enrollment_id"),
         {"schema": "public"},
     )
 
@@ -889,6 +942,13 @@ class AgentTask(Base):
     owner_user_id = Column(
         UUID(as_uuid=True), ForeignKey("public.user.user_id"), nullable=True
     )
+    # The researcher whose provider connection funds this task's inference.
+    # Distinct from owner_user_id, which is the participant who ran the task.
+    funding_owner_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     owner_project_id = Column(UUID(as_uuid=True), nullable=True)
     # The runtime's *own* identifiers, which are not guaranteed to be UUIDs
     # (code4me2-agent uses uuid4().hex; ACP session ids are opaque strings).
@@ -899,16 +959,19 @@ class AgentTask(Base):
     study_id = Column(UUID(as_uuid=True), ForeignKey("public.study.study_id"), nullable=True)
     study_assignment_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("public.agent_study_assignment.assignment_id", ondelete="SET NULL"),
+        ForeignKey("public.study_assignment.assignment_id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Explicit phase-05 research attribution. Resolved server-side from the
+    # authorized account + frozen assignment; NULL for ordinary non-study use
+    # (an explicit "no research context" state, never a guessed one).
+    research_session_id = Column(UUID(as_uuid=True), nullable=True)
+    enrollment_id = Column(UUID(as_uuid=True), nullable=True)
     profile_id = Column(
         UUID(as_uuid=True),
         ForeignKey("public.agent_profile.profile_id"),
         nullable=True,
     )
-    study_arm_name = Column(String, nullable=True)
-    study_arm_is_baseline = Column(Boolean, nullable=True)
     agent_profile = Column(String, nullable=False)
     model = Column(String, nullable=False)
     # Snapshotted from the assigned profile at task-creation time, like `model`, so
@@ -954,7 +1017,6 @@ class AgentTask(Base):
     task_description = Column(Text, nullable=True)
 
     study = relationship("Study")
-    study_assignment = relationship("AgentStudyAssignment")
     profile = relationship("AgentProfile")
 
 
@@ -1124,41 +1186,6 @@ class AgentMemory(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
 
 
-class StudyAgentProfile(Base):
-    """Links a study to the agent profiles that serve as its experiment arms.
-
-    A study with rows here drives agent-profile A/B assignment: its selected
-    profiles become the candidate pool for new auto-draws (see
-    ``registry.resolve_assignment``). Studies with no rows here are
-    completion-only and behave exactly as before this table existed.
-
-    ``is_baseline`` marks the arm that agent-evaluation uplift is measured
-    against (analogous to ``study.default_config_id`` on the completion side).
-    """
-
-    __tablename__ = "study_agent_profile"
-    __table_args__ = (
-        Index("idx_study_agent_profile_profile_id", "profile_id"),
-        {"schema": "public"},
-    )
-
-    study_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("public.study.study_id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    profile_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("public.agent_profile.profile_id"),
-        primary_key=True,
-    )
-    is_baseline = Column(Boolean, server_default="false", default=False, nullable=False)
-
-    # Relationships
-    study = relationship("Study")
-    profile = relationship("AgentProfile")
-
-
 #
 # class SessionQuery(Base):
 #     __tablename__ = "session_queries"
@@ -1186,3 +1213,11 @@ class StudyAgentProfile(Base):
 #         UniqueConstraint("session_id", "query_id", name="unique_session_query"),
 #         Index("idx_session_queries_query_id", "query_id"),
 #     )
+
+
+# ``AgentProfile.release_id`` references the research ``agent_release`` table by
+# string name. Importing the research namespace here registers its tables on the
+# shared ``Base`` metadata, so ordering/creating the operational metadata works
+# regardless of which namespace an entrypoint imports first. ``research_schemas``
+# never imports ``db_schemas``, so this is not an import cycle.
+from . import research_schemas as _research_schemas  # noqa: E402,F401  (registers research tables on Base)

@@ -3,7 +3,9 @@ import {
   createAgentProfile,
   deleteAgentProfile,
   getAgentAvailableTools,
+  getAgentDistributions,
   getAgentProfiles,
+  getProviderConnections,
   updateAgentProfile,
 } from "../utils/api";
 import "./AgentProfiles.css";
@@ -34,12 +36,15 @@ const APPROVAL_POLICIES = [
   { value: "auto", label: "Auto-approve" },
 ];
 
+// Only the fields the backend accepts. Legacy BYOA/provider fields
+// (base_url/api_key_ref/distribution_mode/agent_package/...) were removed from
+// the contract and are rejected via extra="forbid".
 const EMPTY_FORM = {
   name: "",
   model: "",
   framework_version: "code4me2-agent",
-  base_url: "",
-  api_key_ref: "",
+  connection_id: "",
+  release_id: "",
   tools: [],
   approval_policy: "per_step",
   max_steps: 15,
@@ -60,16 +65,31 @@ const formatTools = (toolsJson) => {
   }
 };
 
+const formatPlatforms = (platforms) => {
+  if (!Array.isArray(platforms) || platforms.length === 0) return "none declared";
+  return platforms
+    .map((platform) => `${platform.os || "?"}/${platform.arch || "?"}`)
+    .join(", ");
+};
+
 const getProfileId = (profile) => profile.profile_id || profile.id || profile.name;
 
-const AgentProfiles = () => {
+// A profile may select one of the connection's allowed models. The backend
+// re-validates this, so the UI constraint is only to avoid an obvious 422.
+const connectionModels = (connection) =>
+  Array.isArray(connection?.models) ? connection.models : [];
+
+const AgentProfiles = ({ user = {} }) => {
   const [profiles, setProfiles] = useState([]);
   const [availableTools, setAvailableTools] = useState([]);
+  const [connections, setConnections] = useState([]);
+  const [distributions, setDistributions] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingProfileId, setEditingProfileId] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState([]);
   const [notice, setNotice] = useState("");
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const toolsDropdownRef = useRef(null);
@@ -82,11 +102,13 @@ const AgentProfiles = () => {
   const loadProfiles = async () => {
     setIsLoading(true);
     setError("");
+    setFieldErrors([]);
     const response = await getAgentProfiles();
     if (response.ok) {
       setProfiles(Array.isArray(response.data) ? response.data : []);
     } else {
       setError(response.error);
+      setFieldErrors(Array.isArray(response.errors) ? response.errors : []);
     }
     setIsLoading(false);
   };
@@ -94,6 +116,61 @@ const AgentProfiles = () => {
   useEffect(() => {
     loadProfiles();
   }, []);
+
+  // Provider connections the caller may use (admin: all; researcher: granted).
+  useEffect(() => {
+    let cancelled = false;
+    getProviderConnections().then((response) => {
+      if (!cancelled && response && response.ok) {
+        setConnections(Array.isArray(response.data) ? response.data : []);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The shared, non-admin-readable release catalogue is derived from the
+  // server's distribution views: each carries the resolved release identity and
+  // the derived `verified` flag, so no admin-only release endpoint is needed.
+  useEffect(() => {
+    let cancelled = false;
+    getAgentDistributions().then((response) => {
+      if (!cancelled && response && response.ok) {
+        setDistributions(Array.isArray(response.data) ? response.data : []);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const releaseCatalogue = useMemo(() => {
+    const byId = new Map();
+    distributions.forEach((distribution) => {
+      const releaseId = distribution.release_id;
+      if (!releaseId) return;
+      const verified = Boolean(distribution.verified);
+      const existing = byId.get(releaseId);
+      if (!existing || (verified && !existing.verified)) {
+        byId.set(releaseId, {
+          release_id: releaseId,
+          release_version: distribution.release_version,
+          verified,
+          // Approval options this release's conformance evidence verifies.
+          // Missing on older servers: treat as unconstrained.
+          verified_approval_options: Array.isArray(
+            distribution.verified_approval_options,
+          )
+            ? distribution.verified_approval_options
+            : null,
+        });
+      }
+    });
+    return Array.from(byId.values()).sort((a, b) =>
+      String(a.release_id).localeCompare(String(b.release_id)),
+    );
+  }, [distributions]);
 
   // The selectable tool set depends on the runtime, so reload it whenever the
   // runtime changes rather than showing tools the agent can't actually call.
@@ -121,36 +198,64 @@ const AgentProfiles = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isToolsOpen]);
 
+  const selectedConnection = connections.find(
+    (connection) => connection.connection_id === form.connection_id,
+  );
+  const selectableModels = connectionModels(selectedConnection);
+  const selectedRelease = releaseCatalogue.find(
+    (release) => release.release_id === form.release_id,
+  );
+  // The approval options the selected release's evidence verifies; null means
+  // an older catalogue with no evidence detail (leave unconstrained).
+  const verifiedApprovals =
+    selectedRelease && Array.isArray(selectedRelease.verified_approval_options)
+      ? new Set(selectedRelease.verified_approval_options)
+      : null;
+
   const validateForm = () => {
     if (!form.name.trim()) return "Profile name is required.";
     if (!/^[a-z0-9_-]+$/.test(form.name.trim())) {
       return "Use lowercase letters, numbers, hyphens, or underscores for the name.";
     }
-    if (!form.model.trim()) return "Model is required.";
+    if (!form.connection_id) {
+      return "Select a provider connection. An administrator grants connections.";
+    }
+    if (!form.model.trim()) return "Select a model.";
+    if (
+      selectedConnection &&
+      selectableModels.length > 0 &&
+      !selectableModels.includes(form.model.trim())
+    ) {
+      return "The selected model is not allowed by this provider connection.";
+    }
+    if (!form.release_id) {
+      return "Select a registered release to pin this profile to an artifact.";
+    }
     if (form.temperature !== "" && form.temperature !== null) {
       const t = Number(form.temperature);
       if (Number.isNaN(t) || t < TEMPERATURE_MIN || t > TEMPERATURE_MAX) {
         return "Temperature must be a number between 0 and 2 (or blank).";
       }
     }
-    if (form.base_url.trim() && !/^https?:\/\//i.test(form.base_url.trim())) {
-      return "Base URL must start with http:// or https://";
+    if (!user?.is_admin && selectedRelease && !selectedRelease.verified) {
+      return "This release is not verified. Only an administrator can pin an unverified release.";
     }
-    // Guard against the obvious mistake of pasting the key itself. The backend
-    // rejects this too; catching it here avoids a round-trip and, more
-    // importantly, avoids sending a real credential over the wire at all.
-    const keyRef = form.api_key_ref.trim();
-    if (keyRef && (keyRef.length > 128 || /[-.\s/:]/.test(keyRef))) {
-      return "API key ref must be the NAME of an environment variable (e.g. OPENAI_API_KEY), not the key itself.";
+    if (verifiedApprovals && !verifiedApprovals.has(form.approval_policy)) {
+      return "The selected approval policy is not verified for this release.";
     }
     return "";
+  };
+
+  const clearMessages = () => {
+    setError("");
+    setFieldErrors([]);
+    setNotice("");
   };
 
   const resetForm = () => {
     setForm(EMPTY_FORM);
     setEditingProfileId(null);
-    setError("");
-    setNotice("");
+    clearMessages();
   };
 
   const handleChange = (event) => {
@@ -159,6 +264,23 @@ const AgentProfiles = () => {
       ...current,
       [name]: type === "checkbox" ? checked : value,
     }));
+  };
+
+  const handleConnectionChange = (event) => {
+    const connectionId = event.target.value;
+    setForm((current) => {
+      const connection = connections.find(
+        (candidate) => candidate.connection_id === connectionId,
+      );
+      const models = connectionModels(connection);
+      // A stale model from the previous connection would fail validation.
+      const keepModel = models.length === 0 || models.includes(current.model);
+      return {
+        ...current,
+        connection_id: connectionId,
+        model: keepModel ? current.model : "",
+      };
+    });
   };
 
   const handleTemperatureChange = (event) => {
@@ -200,21 +322,19 @@ const AgentProfiles = () => {
     const validationError = validateForm();
     if (validationError) {
       setError(validationError);
+      setFieldErrors([]);
       return;
     }
 
     setIsSaving(true);
-    setError("");
-    setNotice("");
+    clearMessages();
 
     const payload = {
       name: form.name.trim(),
       model: form.model.trim(),
       framework_version: form.framework_version,
-      // Blank means "use the server default upstream", which the backend
-      // represents as NULL rather than an empty string.
-      base_url: form.base_url.trim() || null,
-      api_key_ref: form.api_key_ref.trim() || null,
+      connection_id: form.connection_id,
+      release_id: form.release_id.trim() || null,
       // The API takes a JSON string, not an array.
       tools_json: JSON.stringify(form.tools),
       approval_policy: form.approval_policy,
@@ -238,13 +358,15 @@ const AgentProfiles = () => {
       await loadProfiles();
     } else {
       setError(response.error);
+      setFieldErrors(Array.isArray(response.errors) ? response.errors : []);
     }
 
     setIsSaving(false);
   };
 
-  const handleEdit = (profile) => {
-    setEditingProfileId(getProfileId(profile));
+  // Map a stored profile onto the editable form. The response exposes a
+  // `connection` summary plus the resolved release pin and derived flags.
+  const formFromProfile = (profile) => {
     let selectedTools = [];
     try {
       const parsed = JSON.parse(profile.tools_json || "[]");
@@ -252,12 +374,13 @@ const AgentProfiles = () => {
     } catch (_) {
       selectedTools = [];
     }
-    setForm({
+    return {
       name: profile.name || "",
       model: profile.model || "",
       framework_version: profile.framework_version || "code4me2-agent",
-      base_url: profile.base_url || "",
-      api_key_ref: profile.api_key_ref || "",
+      connection_id:
+        profile.connection?.connection_id || profile.connection_id || "",
+      release_id: profile.release_id || "",
       tools: selectedTools,
       approval_policy: profile.approval_policy || "per_step",
       max_steps: profile.max_steps || 15,
@@ -266,14 +389,31 @@ const AgentProfiles = () => {
         profile.max_context_tokens === undefined
           ? ""
           : profile.max_context_tokens,
-      is_active: profile.is_active !== undefined ? Boolean(profile.is_active) : true,
+      is_active:
+        profile.is_active !== undefined ? Boolean(profile.is_active) : true,
       temperature:
         profile.temperature === null || profile.temperature === undefined
           ? ""
           : profile.temperature,
-    });
-    setError("");
-    setNotice("");
+    };
+  };
+
+  const handleEdit = (profile) => {
+    setEditingProfileId(getProfileId(profile));
+    setForm(formFromProfile(profile));
+    clearMessages();
+  };
+
+  // Clone populates the *create* form with an existing profile's configuration
+  // under a new name, so a researcher can express v1 vs v2 as two templates that
+  // differ only in their release.
+  const handleClone = (profile) => {
+    setEditingProfileId(null);
+    setForm({ ...formFromProfile(profile), name: `${profile.name || "profile"}-copy` });
+    clearMessages();
+    setNotice(
+      `Cloning "${profile.name}". Change the release pin and save to create a new profile.`,
+    );
   };
 
   const handleDelete = async (profile) => {
@@ -286,8 +426,7 @@ const AgentProfiles = () => {
     if (!confirmed) return;
 
     setIsSaving(true);
-    setError("");
-    setNotice("");
+    clearMessages();
 
     const response = await deleteAgentProfile(profileId);
     if (response.ok) {
@@ -296,6 +435,7 @@ const AgentProfiles = () => {
       await loadProfiles();
     } else {
       setError(response.error);
+      setFieldErrors(Array.isArray(response.errors) ? response.errors : []);
     }
 
     setIsSaving(false);
@@ -306,6 +446,15 @@ const AgentProfiles = () => {
     (f) => f.value === form.framework_version,
   );
   const toolsIgnored = form.framework_version === "codex";
+  const editingProfile = editingProfileId
+    ? profiles.find((profile) => getProfileId(profile) === editingProfileId) ||
+      null
+    : null;
+
+  const releaseLabel = (release) =>
+    `${release.release_id}${release.release_version ? ` · v${release.release_version}` : ""}${
+      release.verified ? "" : " (unverified)"
+    }`;
 
   return (
     <section className="agent-profiles-page">
@@ -314,9 +463,10 @@ const AgentProfiles = () => {
           <h2>Agent Profiles</h2>
           <p>
             Define the experiment arms for agent runs: which runtime, which
-            OpenAI-compatible provider, which model, tools, approval policy and
-            step limit. A profile's settings are snapshotted onto each task when
-            it starts, so editing a profile never changes tasks already running.
+            authorized provider connection, which model, tools, approval policy
+            and step limit. A profile's settings are snapshotted onto each task
+            when it starts, so editing a profile never changes tasks already
+            running.
           </p>
         </div>
         <button
@@ -330,7 +480,16 @@ const AgentProfiles = () => {
 
       {(error || notice) && (
         <div className={`profile-message ${error ? "error" : "success"}`}>
-          {error || notice}
+          <span>{error || notice}</span>
+          {fieldErrors.length > 0 && (
+            <ul className="profile-field-errors" role="alert">
+              {fieldErrors.map((item, position) => (
+                <li key={`${item.field || "field"}-${position}`}>
+                  {item.field ? <code>{item.field}</code> : null} {item.message}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
@@ -369,46 +528,138 @@ const AgentProfiles = () => {
           )}
 
           <label>
+            Provider connection
+            <select
+              name="connection_id"
+              value={form.connection_id}
+              onChange={handleConnectionChange}
+              disabled={isSaving}
+            >
+              <option value="">Select an authorized connection…</option>
+              {form.connection_id &&
+                !connections.some(
+                  (connection) =>
+                    connection.connection_id === form.connection_id,
+                ) && (
+                  <option value={form.connection_id}>
+                    {form.connection_id} (not granted)
+                  </option>
+                )}
+              {connections.map((connection) => (
+                <option
+                  key={connection.connection_id}
+                  value={connection.connection_id}
+                >
+                  {connection.label}
+                  {connection.ready === false ? " — secret missing" : ""}
+                  {connection.is_active === false ? " (inactive)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="profile-field-hint">
+            Connections are administrator-maintained. The endpoint and secret
+            stay on the server; never enter a URL or API key here.
+          </p>
+          {selectedConnection && (
+            <p className="profile-field-hint">
+              Allowed models:{" "}
+              {connectionModels(selectedConnection).join(", ") || "none declared"}
+              {selectedConnection.ready === false
+                ? " · readiness: secret missing"
+                : ""}
+            </p>
+          )}
+
+          <label>
             Model
-            <input
+            <select
               name="model"
               value={form.model}
               onChange={handleChange}
-              placeholder="qwen2.5-coder:7b"
-              disabled={isSaving}
-            />
+              disabled={isSaving || selectableModels.length === 0}
+            >
+              <option value="">
+                {form.connection_id
+                  ? "Select a model…"
+                  : "Select a connection first…"}
+              </option>
+              {form.model &&
+                !selectableModels.includes(form.model) && (
+                  <option value={form.model}>
+                    {form.model} (not allowed)
+                  </option>
+                )}
+              {selectableModels.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
           </label>
 
           <label>
-            Provider base URL
-            <input
-              name="base_url"
-              value={form.base_url}
+            Registered release
+            <select
+              name="release_id"
+              value={form.release_id}
               onChange={handleChange}
-              placeholder="http://localhost:11434/v1 (blank = server default)"
               disabled={isSaving}
-            />
+            >
+              <option value="">Select a registered release…</option>
+              {form.release_id &&
+                !releaseCatalogue.some(
+                  (release) => release.release_id === form.release_id,
+                ) && (
+                  <option value={form.release_id}>
+                    {form.release_id} (not in catalogue)
+                  </option>
+                )}
+              {releaseCatalogue.map((release) => (
+                <option
+                  key={release.release_id}
+                  value={release.release_id}
+                  disabled={!user?.is_admin && !release.verified}
+                >
+                  {releaseLabel(release)}
+                </option>
+              ))}
+            </select>
           </label>
           <p className="profile-field-hint">
-            Any endpoint speaking the OpenAI-compatible chat-completions format:
-            Ollama, Groq, OpenRouter, vLLM, or OpenAI itself. Leave blank to use
-            the server's configured default.
+            Pins the exact approved artifact. Create a second profile that pins a
+            different release to express a v1 vs v2 arm. Unverified releases may
+            only be pinned by an administrator.
           </p>
 
-          <label>
-            API key env var
-            <input
-              name="api_key_ref"
-              value={form.api_key_ref}
-              onChange={handleChange}
-              placeholder="OPENAI_API_KEY"
-              disabled={isSaving}
-            />
-          </label>
-          <p className="profile-field-hint">
-            The <strong>name</strong> of an environment variable on the server —
-            never the key itself. Keys are never stored in the database.
-          </p>
+          {editingProfile && (
+            <div className="profile-derived">
+              <span
+                className={`profile-badge ${
+                  editingProfile.verified ? "verified" : "unverified"
+                }`}
+              >
+                {editingProfile.verified ? "Verified" : "Unverified"}
+              </span>
+              <dl className="profile-derived-fields">
+                <div>
+                  <dt>Resolved release</dt>
+                  <dd>{editingProfile.release_id || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Release version</dt>
+                  <dd>{editingProfile.release_version || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Supported platforms</dt>
+                  <dd>{formatPlatforms(editingProfile.supported_platforms)}</dd>
+                </div>
+              </dl>
+              <p className="profile-field-hint">
+                Derived server-side from conformance evidence; read-only.
+              </p>
+            </div>
+          )}
 
           <label>
             Approval policy
@@ -419,7 +670,14 @@ const AgentProfiles = () => {
               disabled={isSaving}
             >
               {APPROVAL_POLICIES.map((policy) => (
-                <option key={policy.value} value={policy.value}>
+                <option
+                  key={policy.value}
+                  value={policy.value}
+                  disabled={
+                    Boolean(verifiedApprovals) &&
+                    !verifiedApprovals.has(policy.value)
+                  }
+                >
                   {policy.label}
                 </option>
               ))}
@@ -534,7 +792,7 @@ const AgentProfiles = () => {
               onChange={handleChange}
               disabled={isSaving}
             />
-            Active (eligible for A/B assignment)
+            Active (eligible for assignment)
           </label>
 
           <div className="profile-form-actions">
@@ -559,8 +817,8 @@ const AgentProfiles = () => {
             <div className="profiles-empty">Loading agent profiles...</div>
           ) : sortedProfiles.length === 0 ? (
             <div className="profiles-empty">
-              No agent profiles found. At least one active profile is required
-              before any agent task can be created.
+              No agent profiles found. Create one to define an agent
+              configuration for your studies.
             </div>
           ) : (
             <table className="profiles-table">
@@ -569,7 +827,10 @@ const AgentProfiles = () => {
                   <th>Name</th>
                   <th>Runtime</th>
                   <th>Model</th>
-                  <th>Provider</th>
+                  <th>Connection</th>
+                  <th>Release</th>
+                  <th>Verified</th>
+                  <th>Platforms</th>
                   <th>Approval</th>
                   <th>Tools</th>
                   <th>Steps</th>
@@ -584,7 +845,32 @@ const AgentProfiles = () => {
                     <td>{profile.name}</td>
                     <td>{profile.framework_version || "—"}</td>
                     <td>{profile.model}</td>
-                    <td>{profile.base_url || "server default"}</td>
+                    <td>
+                      {profile.connection?.label ||
+                        profile.connection?.connection_id ||
+                        "unassigned"}
+                      {profile.connection?.ready === false
+                        ? " (secret missing)"
+                        : ""}
+                    </td>
+                    <td>
+                      {profile.release_id || "unresolved"}
+                      <span className="profile-derived-release">
+                        {profile.release_version
+                          ? ` · v${profile.release_version}`
+                          : ""}
+                      </span>
+                    </td>
+                    <td>
+                      <span
+                        className={`profile-badge ${
+                          profile.verified ? "verified" : "unverified"
+                        }`}
+                      >
+                        {profile.verified ? "Verified" : "Unverified"}
+                      </span>
+                    </td>
+                    <td>{formatPlatforms(profile.supported_platforms)}</td>
                     <td>{profile.approval_policy}</td>
                     <td>{formatTools(profile.tools_json) || "none"}</td>
                     <td>{profile.max_steps}</td>
@@ -603,6 +889,13 @@ const AgentProfiles = () => {
                           disabled={isSaving}
                         >
                           Edit
+                        </button>
+                        <button
+                          className="secondary-button"
+                          onClick={() => handleClone(profile)}
+                          disabled={isSaving}
+                        >
+                          Clone
                         </button>
                         <button
                           className="danger-button"

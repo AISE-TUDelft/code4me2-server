@@ -34,12 +34,15 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
 from database import crud
+from research.telemetry.adapters import LegacyFact, record_legacy_facts
+from research.telemetry.enums import CoverageState
+from research.telemetry.models import Correlations, Coverage, EventMetrics
 
 # Source tag written to agent_event.source for rows produced by this path.
 SOURCE_SELF_REPORT = "code4me2_agent"
@@ -290,6 +293,51 @@ def map_event_to_columns(
     }
 
 
+def _fact_from_columns(columns: dict) -> "LegacyFact":
+    """Build the canonical fact for one self-reported event (structural only)."""
+    kind = columns.get("event_type") or "observation"
+    counts: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "message_count", "step_index"):
+        value = columns.get(key)
+        if value is not None:
+            counts[key] = int(value)
+    for key in ("tool_arguments_length", "tool_result_length"):
+        value = columns.get(key)
+        if value is not None:
+            counts[key] = int(value)
+    total = columns.get("total_tokens")
+    payload: dict[str, Any] = {}
+    for key in ("model", "finish_reason", "tool_name", "request_id"):
+        value = columns.get(key)
+        if value is not None:
+            payload[key] = value
+    return LegacyFact(
+        kind=kind,
+        occurred_at=columns.get("occurred_at") or datetime.now(timezone.utc),
+        payload=payload,
+        metrics=EventMetrics(
+            usage_tokens=int(total) if total is not None else None,
+            usage_capability=Coverage(
+                state=(
+                    CoverageState.AVAILABLE
+                    if total is not None
+                    else CoverageState.UNAVAILABLE
+                ),
+                capability="usage",
+            ),
+            latency_ms=columns.get("latency_ms"),
+            counts=counts,
+        ),
+        coverage=Coverage(state=CoverageState.AVAILABLE, capability="self_report"),
+        correlations=Correlations(
+            correlation_id=columns.get("request_id"),
+            tool_call_id=columns.get("tool_call_id"),
+        ),
+        source_event_id=columns.get("span_id"),
+        emitter_id="self-report",
+    )
+
+
 def ingest_event_batch(
     db: Session,
     *,
@@ -343,6 +391,22 @@ def ingest_event_batch(
     first_index = (
         crud.reserve_agent_event_indexes(db, task_id, len(pending)) if pending else 0
     )
+    # The canonical adapter is tried first: a research-bound task's events are
+    # persisted through the one ingestion writer and never also dual-written to
+    # the legacy table. A task with no research binding keeps the legacy path.
+    if pending:
+        task = crud.get_agent_task(db, task_id)
+        facts = []
+        for event, source_event_id in pending:
+            columns = map_event_to_columns(
+                event,
+                content_included=content_included,
+                by_request_id=by_request_id,
+                by_tool_call_id=by_tool_call_id,
+            )
+            facts.append(_fact_from_columns(columns))
+        if task is not None and record_legacy_facts(db, task=task, facts=facts):
+            return len(facts), skipped
     ingested = 0
     for offset, (event, source_event_id) in enumerate(pending):
         columns = map_event_to_columns(

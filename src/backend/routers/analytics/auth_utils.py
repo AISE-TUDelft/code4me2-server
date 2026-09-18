@@ -21,12 +21,22 @@ from backend.redis_manager import RedisManager
 
 class AuthenticatedUser:
     """Container for authenticated user information."""
-    
-    def __init__(self, user_id: uuid.UUID, is_admin: bool, email: str, name: str):
+
+    def __init__(
+        self,
+        user_id: uuid.UUID,
+        is_admin: bool,
+        email: str,
+        name: str,
+        can_research: bool = False,
+    ):
         self.user_id = user_id
         self.is_admin = is_admin
         self.email = email
         self.name = name
+        # Administrator-enabled researcher account (P3). There is no per-study
+        # role table; this single flag is the researcher authority.
+        self.can_research = can_research
 
 
 def get_current_user(
@@ -69,7 +79,8 @@ def get_current_user(
             user_id=user.user_id,
             is_admin=user.is_admin,
             email=user.email,
-            name=user.name
+            name=user.name,
+            can_research=bool(getattr(user, "can_research", False)),
         )
         
     except Exception as e:

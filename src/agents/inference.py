@@ -89,9 +89,8 @@ async def run_inference(
     enrichment: Optional[dict],
     agent_profile: Optional[str],
     model: str,
+    connection=None,
     temperature: Optional[float] = None,
-    base_url: Optional[str] = None,
-    api_key_ref: Optional[str] = None,
     framework_version: Optional[str] = None,
     content_included: bool = False,
     profile_tools_json: Optional[str] = None,
@@ -105,6 +104,11 @@ async def run_inference(
     resolves from the user's stored preference and which is the only thing
     gating whether message text is persisted.
 
+    ``connection`` is the administrator-managed provider connection resolved
+    from the task's frozen profile. Resolving it here (and raising
+    ``ProviderReadinessError`` on a missing/inactive connection or secret) is
+    what makes a revoked grant or rotated/missing secret block inference.
+
     ``enrichment`` carries plugin-supplied IDE context (active file, observed
     framework version).
     """
@@ -117,12 +121,22 @@ async def run_inference(
     # misconfigured profile can't send a body down the wrong normalization path.
     is_responses_api = "input" in openai_body
 
-    upstream = provider_module.resolve_upstream(
-        model=model,
-        base_url=base_url,
-        api_key_ref=api_key_ref,
-        framework_version=framework_version,
-    )
+    try:
+        upstream = provider_module.resolve_upstream(
+            model=model,
+            connection=connection,
+            framework_version=framework_version,
+        )
+    except provider_module.ProviderReadinessError as exc:
+        logging.warning(
+            f"[Agent/inference] provider not ready ({exc.code}) for task={task_uuid}"
+        )
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=503,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
 
     # Codex → OpenAI is a passthrough: the Responses API is OpenAI's own, so
     # when that's where we're sending it, none of the compat rewrites apply and

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import './AnalyticsNavigation.css';
 
 const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
@@ -35,7 +36,7 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
     }
   ];
 
-  // Add admin-only navigation items
+  // Administrator-only navigation items.
   if (user?.is_admin) {
     navigationItems.push({
       id: 'studies',
@@ -51,19 +52,16 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
       description: 'Create and manage server/config modules',
       adminOnly: true
     });
+  }
+
+  // Researcher surfaces: administrators and administrator-enabled researchers.
+  if (user?.is_admin || user?.can_research) {
     navigationItems.push({
       id: 'agent-profiles',
       label: 'Agent Profiles',
       icon: '🛠️',
-      description: 'Agent runtime, provider, tools and policy variants',
-      adminOnly: true
-    });
-    navigationItems.push({
-      id: 'agent-assignments',
-      label: 'Agent Assignments',
-      icon: '🎲',
-      description: 'A/B bucket distribution and manual pins',
-      adminOnly: true
+      description: 'Agent runtime, connection, tools and policy variants',
+      researcherOnly: true
     });
   }
 
@@ -71,9 +69,11 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
     <nav className="analytics-navigation">
       <div className="nav-header">
         <h2>Analytics</h2>
-        {user?.is_admin && (
+        {user?.is_admin ? (
           <span className="admin-badge">Admin View</span>
-        )}
+        ) : user?.can_research ? (
+          <span className="admin-badge">Researcher View</span>
+        ) : null}
       </div>
       
       <div className="nav-items">
@@ -94,6 +94,38 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
             )}
           </button>
         ))}
+
+        {/* Participant entry point into the research platform: any signed-in
+            account can redeem a study join code from here. */}
+        <Link
+          to="/research/join"
+          className="nav-item research-join-link"
+          title="Enter a study join code to enroll"
+        >
+          <span className="nav-icon" aria-hidden="true">🎟️</span>
+          <div className="nav-content">
+            <span className="nav-label">Join a Study</span>
+            <span className="nav-description">Enter a study join code</span>
+          </div>
+        </Link>
+
+        {/* Researcher control plane lives on its own routes (see App.js) so the
+            immutable-revision workflow is not folded into the analytics views. */}
+        {user?.is_admin && (
+          <Link
+            to="/research/studies"
+            className="nav-item research-launch-link"
+            title="Author study protocols, revisions and enrollment"
+          >
+            <span className="nav-icon" aria-hidden="true">🧪</span>
+            <div className="nav-content">
+              <span className="nav-label">Research Control Plane</span>
+              <span className="nav-description">
+                Protocols, immutable revisions and enrollment
+              </span>
+            </div>
+          </Link>
+        )}
       </div>
     </nav>
   );

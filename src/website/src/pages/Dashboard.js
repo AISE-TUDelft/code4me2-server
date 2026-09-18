@@ -10,7 +10,6 @@ import CalibrationAnalytics from "../components/analytics/CalibrationAnalytics";
 import StudyManagement from "../components/analytics/StudyManagement";
 import ConfigManagement from "../components/analytics/ConfigManagement";
 import AgentProfiles from "./AgentProfiles";
-import AgentAssignments from "./AgentAssignments";
 import "./Dashboard.css";
 
 const BASE_VIEWS = new Set(["overview", "usage", "models", "agents", "calibration"]);
@@ -19,8 +18,7 @@ const isValidView = (view, user) => {
   if (BASE_VIEWS.has(view)) return true;
   if (view === "studies") return !!user?.is_admin;
   if (view === "configs") return !!user?.is_admin;
-  if (view === "agent-profiles") return !!user?.is_admin;
-  if (view === "agent-assignments") return !!user?.is_admin;
+  if (view === "agent-profiles") return !!(user?.is_admin || user?.can_research);
   return false;
 };
 
@@ -93,9 +91,7 @@ const Dashboard = ({ user, onLogout }) => {
       case 'configs':
         return <ConfigManagement user={user} />;
       case 'agent-profiles':
-        return <AgentProfiles />;
-      case 'agent-assignments':
-        return <AgentAssignments />;
+        return <AgentProfiles user={user} />;
       default:
         return <OverviewDashboard 
           timeWindow={timeWindow} 

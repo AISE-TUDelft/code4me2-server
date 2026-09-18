@@ -17,6 +17,7 @@ Version: 1.0.0
 """
 
 import logging
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -271,15 +272,23 @@ def main() -> None:
         f"{config.server_host}:{config.server_port}"
     )
 
+    # Multiple uvicorn workers are safe because assignment, session/revocation
+    # and receipt authority live in PostgreSQL/Redis, never process memory.
+    # ``CODE4ME_WEB_WORKERS`` (or ``WEB_CONCURRENCY``) selects the count.
+    workers = int(
+        os.environ.get("CODE4ME_WEB_WORKERS")
+        or os.environ.get("WEB_CONCURRENCY")
+        or "1"
+    )
     uvicorn.run(
         "main:app",
         host=config.server_host,
         port=config.server_port,
         log_level="info",
         access_log=True,
+        workers=workers if workers > 1 else None,
         # loop="uvloop",
         # http="httptools",
-        # workers=4,
     )
 
 

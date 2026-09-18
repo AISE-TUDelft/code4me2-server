@@ -1,14 +1,40 @@
+from __future__ import annotations
+
 import logging
 from typing import Optional, Union
 
-import torch
 import json
 
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-from backend.completion.ChatCompletionModel import ChatCompletionModel
-from backend.completion.TemplateCompletionModel import TemplateCompletionModel
 from Code4meV2Config import Code4meV2Config
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+if torch is not None:
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+# The completion model classes need the local torch/transformers stack. Import
+# them at module level when it is present; otherwise expose placeholders so
+# `backend.completion.<Class>` resolves and fails with a clear message only if
+# something actually tries to use the local model stack in a torch-free image
+# (e.g. the fast dev image, which always uses an external provider).
+if torch is not None:
+    from backend.completion.ChatCompletionModel import ChatCompletionModel
+    from backend.completion.TemplateCompletionModel import TemplateCompletionModel
+else:
+
+    class _TorchRequiredModel:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "This image runs without the local Hugging Face/torch model stack; "
+                "use an external OpenAI-compatible provider instead."
+            )
+
+    ChatCompletionModel = _TorchRequiredModel  # type: ignore[assignment,misc]
+    TemplateCompletionModel = _TorchRequiredModel  # type: ignore[assignment,misc]
 
 
 class CompletionModels:
@@ -65,6 +91,13 @@ class CompletionModels:
             return
 
         try:
+            if torch is None:
+                raise RuntimeError(
+                    "Local model loading requires the optional ML dependencies "
+                    "(torch, transformers, and sentence-transformers)."
+                )
+            from backend.completion.ChatCompletionModel import ChatCompletionModel
+            from backend.completion.TemplateCompletionModel import TemplateCompletionModel
             logging.info(
                 f"Loading model with cache directory: {self.__config.model_cache_dir}"
             )

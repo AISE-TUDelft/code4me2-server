@@ -14,18 +14,126 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Optional
 
 from agents.normalize import snippet
 from agents.telemetry import InferenceRecord
 from database import crud
+from research.telemetry.adapters import LegacyFact, record_legacy_facts
+from research.telemetry.enums import CoverageState
+from research.telemetry.models import Correlations, Coverage, EventMetrics
 
 if TYPE_CHECKING:
     from App import App
 
 # Source tag written to agent_event.source for rows produced by this path.
 SOURCE_PROXY = "proxy"
+
+#: Coverage-capability marker for relay-observed provider usage.
+_USAGE_CAPABILITY = "usage"
+
+
+def _optional_int(value: object) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _model_call_fact(
+    record: InferenceRecord,
+    latency_ms: int,
+    span: Optional[dict],
+    extra: Optional[dict],
+) -> LegacyFact:
+    """Build the canonical fact for one relay-observed model call.
+
+    Structural metadata only: provider-token usage keeps its coverage semantics
+    (missing usage stays UNAVAILABLE/null, never zero) and provider-reported
+    values are distinguishable from byte estimates by their field names.
+    """
+    span = span or {}
+    counts: dict[str, int] = {}
+    for key, value in (
+        ("prompt_tokens", record.prompt_tokens),
+        ("completion_tokens", record.completion_tokens),
+        ("message_count", record.message_count),
+        ("tools_kept", record.tools_kept),
+        ("tools_stripped", record.tools_stripped),
+    ):
+        number = _optional_int(value)
+        if number is not None:
+            counts[key] = number
+    total = _optional_int(record.total_tokens)
+    payload: dict[str, Any] = {
+        "model": record.model,
+        "finish_reason": record.finish_reason,
+        "upstream_status": record.upstream_status,
+        "step_index": span.get("step_index"),
+        "request_id": record.request_id,
+        "agent_profile": record.agent_profile,
+        "streaming": record.streaming,
+    }
+    for key in ("tool_schema_bytes", "context_window_size_bytes"):
+        number = _optional_int(span.get(key))
+        if number is not None:
+            payload[key] = number
+    if isinstance(extra, dict):
+        payload["extra"] = extra
+    return LegacyFact(
+        kind="model_call",
+        occurred_at=datetime.now(timezone.utc),
+        payload={k: v for k, v in payload.items() if v is not None},
+        metrics=EventMetrics(
+            usage_tokens=total,
+            usage_capability=Coverage(
+                state=(
+                    CoverageState.AVAILABLE
+                    if total is not None
+                    else CoverageState.UNAVAILABLE
+                ),
+                capability=_USAGE_CAPABILITY,
+            ),
+            latency_ms=latency_ms,
+            counts=counts,
+        ),
+        coverage=Coverage(state=CoverageState.AVAILABLE, capability="latency"),
+        correlations=Correlations(correlation_id=record.request_id),
+        source_event_id=span.get("span_id") or record.request_id,
+        emitter_id="relay",
+    )
+
+
+def _tool_call_fact(
+    tool_execution: dict,
+    latency_ms: Optional[int],
+    parent_span_id: Optional[str],
+) -> LegacyFact:
+    """Build the canonical fact for one relay-observed tool execution."""
+    name = tool_execution.get("name")
+    succeeded = tool_execution.get("success", True)
+    arguments = tool_execution.get("arguments")
+    result = tool_execution.get("result")
+    payload: dict[str, Any] = {}
+    if name:
+        payload["tool_name"] = name
+    if isinstance(arguments, str):
+        payload["tool_arguments_length"] = len(arguments)
+    if isinstance(result, str):
+        payload["tool_result_length"] = len(result)
+    tool_call_id = tool_execution.get("id") or tool_execution.get("tool_call_id")
+    return LegacyFact(
+        kind="tool_call" if succeeded is not False else "tool_failed",
+        occurred_at=datetime.now(timezone.utc),
+        payload=payload,
+        metrics=EventMetrics(latency_ms=latency_ms),
+        coverage=Coverage(state=CoverageState.AVAILABLE, capability="tool_lifecycle"),
+        correlations=Correlations(tool_call_id=str(tool_call_id) if tool_call_id else None),
+        source_event_id=str(tool_call_id) if tool_call_id else None,
+        emitter_id="relay",
+    )
+
 
 
 def write_model_call_event(
@@ -53,6 +161,15 @@ def write_model_call_event(
     parent_span_id = span.get("parent_span_id")
     db = app.get_db_session()
     try:
+        task = crud.get_agent_task(db, task_uuid)
+        if task is not None and record_legacy_facts(
+            db, task=task, facts=[_model_call_fact(record, latency_ms, span, extra)]
+        ):
+            logging.info(
+                f"[Agent/events] model_call canonicalized — task={task_uuid} "
+                f"latency_ms={latency_ms} tokens={record.total_tokens}"
+            )
+            return
         event_index = crud.reserve_agent_event_indexes(db, task_uuid, 1)
         source_event_id = span.get("span_id") or record.request_id
         crud.append_agent_event(
@@ -150,6 +267,20 @@ def write_tool_call_events(
 
     db = app.get_db_session()
     try:
+        task = crud.get_agent_task(db, task_uuid)
+        if task is not None and record_legacy_facts(
+            db,
+            task=task,
+            facts=[
+                _tool_call_fact(tc, latency_ms, parent_span_id)
+                for tc in tool_executions
+            ],
+        ):
+            logging.info(
+                f"[Agent/events] {len(tool_executions)} tool_call event(s) "
+                f"canonicalized for task={task_uuid}"
+            )
+            return
         event_index = crud.reserve_agent_event_indexes(db, task_uuid, len(tool_executions))
         for offset, tc in enumerate(tool_executions):
             arguments = tc.get("arguments")
