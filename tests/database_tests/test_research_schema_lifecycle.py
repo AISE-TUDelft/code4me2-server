@@ -79,7 +79,7 @@ def _create_study(session, owner_id):
             "VALUES (:study_id, 'schema study', :owner_id, now(), false, true, "
             "'DRAFT', '{}', 'study-digest', :join_code, now())"
         ),
-        {"study_id": study_id, "owner_id": owner_id, "join_code": f"SCHEMA-{study_id}"},
+        {"study_id": study_id, "owner_id": owner_id, "join_code": f"SCHEMA-{study_id}".upper()},
     )
     session.commit()
     return study_id
@@ -238,9 +238,9 @@ def test_web_consent_creates_equal_random_assignment_and_is_idempotent():
         session.commit()
 
         first = open_study_enrollment(
-            session, owner_id, f"SCHEMA-{study_id}", rng=random.Random(7)
+            session, owner_id, f"SCHEMA-{study_id}".upper(), rng=random.Random(7)
         )
-        second = open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
+        second = open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}".upper())
         assert first.created is True
         assert first.reused is False
         assert second.created is False
@@ -288,7 +288,7 @@ def test_historical_run_and_assignment_snapshots_survive_profile_edit():
             },
         )
         session.commit()
-        enrollment = open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
+        enrollment = open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}".upper())
         run_id = uuid.uuid4()
         session.execute(
             text(
@@ -357,7 +357,7 @@ def test_concurrent_first_consent_creates_one_enrollment_and_assignment():
             sessions.append(db)
             try:
                 barrier.wait(timeout=5)
-                results.append(open_study_enrollment(db, owner_id, f"SCHEMA-{study_id}"))
+                results.append(open_study_enrollment(db, owner_id, f"SCHEMA-{study_id}".upper()))
             except Exception as error:  # pragma: no cover - assertion reports the worker error
                 errors.append(error)
                 db.rollback()
@@ -394,7 +394,7 @@ def test_failed_consent_does_not_commit_first_use_participant_mapping():
         owner_id = _create_user(session)
         study_id = _create_study(session, owner_id)
         with pytest.raises(ValueError, match="no selected agent profiles"):
-            open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
+            open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}".upper())
         session.rollback()
         assert session.execute(
             text(
@@ -430,7 +430,7 @@ def test_study_creation_freezes_owned_profiles_and_rejects_foreign_profiles():
                 study_id=uuid.uuid4(),
                 name="Rejected study",
                 created_by=owner_id,
-                join_code=f"REJECT-{uuid.uuid4()}",
+                join_code=f"REJECT-{uuid.uuid4()}".upper(),
                 profile_ids=[foreign_profile_id],
             )
         session.rollback()
@@ -459,7 +459,7 @@ def test_study_creation_freezes_owned_profiles_and_rejects_foreign_profiles():
             study_id=uuid.uuid4(),
             name="Frozen study",
             created_by=owner_id,
-            join_code=f"FROZEN-{uuid.uuid4()}",
+            join_code=f"FROZEN-{uuid.uuid4()}".upper(),
             research_config_json={"telemetry_policy": {"metadata_only": True}},
             profile_ids=[owned_profile_id],
         )
@@ -489,13 +489,22 @@ def test_active_study_locks_profile_edits_until_stop_and_keeps_digest():
     try:
         owner_id = _create_user(session)
         profile_id = uuid.uuid4()
+        release_id = f"release-{uuid.uuid4()}"
+        session.execute(
+            text(
+                "INSERT INTO public.agent_release "
+                "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+                "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', '{}', now())"
+            ),
+            {"release_id": release_id},
+        )
         session.execute(
             text(
                 "INSERT INTO public.agent_profile "
-                "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
-                "VALUES (:profile_id, :owner_id, 'locked', 'model', '[]', 'auto', 1)"
+                "(profile_id, owner_user_id, name, model, release_id, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'locked', 'model', :release_id, '[]', 'auto', 1)"
             ),
-            {"profile_id": profile_id, "owner_id": owner_id},
+            {"profile_id": profile_id, "owner_id": owner_id, "release_id": release_id},
         )
         session.commit()
         study = study_store.create_study(
@@ -503,7 +512,7 @@ def test_active_study_locks_profile_edits_until_stop_and_keeps_digest():
             study_id=uuid.uuid4(),
             name="Lock study",
             created_by=owner_id,
-            join_code=f"LOCK-{uuid.uuid4()}",
+            join_code=f"LOCK-{uuid.uuid4()}".upper(),
             profile_ids=[profile_id],
         )
         open_study_enrollment(session, owner_id, study.join_code)
@@ -875,10 +884,10 @@ def test_revoked_enrollment_cannot_rejoin_same_study():
             {"study_id": study_id, "profile_id": profile_id},
         )
         session.commit()
-        first = open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
+        first = open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}".upper())
         revoke_research_enrollment(session, study_id, first.enrollment_id)
         with pytest.raises(PermissionError, match="cannot rejoin"):
-            open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}")
+            open_study_enrollment(session, owner_id, f"SCHEMA-{study_id}".upper())
     finally:
         session.close()
         engine.dispose()
