@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""Seed a synthetic, publishable research study for local onboarding.
+"""Seed a synthetic research study for local onboarding.
 
-This is the operator tool the participant runbook uses to mint an *enrollment
-code*. It performs no domain logic of its own: every state transition delegates
+This is the operator tool the participant runbook uses to mint a study-owned
+*join code*. It performs no domain logic of its own: every state transition delegates
 to the real research platform services and stores:
 
-* ``research.study.protocol.store`` (``create_study`` / ``create_draft`` /
-  ``persist_revision``) and ``research.study.protocol.publication.publish_revision``;
+* ``research.study.protocol.store`` (``create_study`` / ``get_study`` /
+  ``set_study_active`` / ``get_study_by_join_code``);
+* ``research.study.lifecycle`` (``allocate_join_code`` for the study-owned join
+  code, ``open_study_enrollment`` for the atomic web-consent enrollment);
 * ``research.study.agents.store`` (``upsert_release``) with
   ``research.study.agents.models.AgentReleaseV1`` (qualification is derived from
   conformance evidence, not supplied by the seeder);
-* ``research.participants.identity`` (``enroll`` and the
-  persistence helpers);
-* ``database.crud`` for the login account, bound through a
-  ``research.participants.models.Participant``.
+* ``database.crud`` for the login account.
 
 Everything is digest-pinned and deterministic so the script is safe to re-run:
-the same arguments resolve the same account, release, study, published revision
-and enrollment instead of piling up duplicates. Nothing secret is printed except
+the same arguments resolve the same account, release, study and enrollment
+instead of piling up duplicates. Nothing secret is printed except
 a password the operator explicitly supplied with ``--create-account``.
 
 Usage (from ``code4me2-server/``, development/test only)::
@@ -30,8 +29,8 @@ Usage (from ``code4me2-server/``, development/test only)::
 those guards the script exits before touching a database, so it can never seed a
 production deployment by accident.
 
-The printed ``enrollment_id`` is the opaque "enrollment code" the participant
-pastes into the IntelliJ plugin's *Join Research Study...* action.
+The printed ``join_code`` is the study-owned code the participant redeems
+through web consent; enrollment itself happens there, never in the plugin.
 """
 
 from __future__ import annotations
@@ -45,18 +44,10 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from typing import Any, Optional, Sequence
 from uuid import UUID
 
-if TYPE_CHECKING:
-    from research.study.protocol.validation import ValidationError
-
-from research.participants import identity as identity_store
-from research.participants.enums import EnrollmentStatus
-from research.participants.models import (
-    Participant,
-)
-from research.study.agents.distributions import resolve_distribution_view
+from research.study import lifecycle as study_lifecycle
 from research.study.agents.enums import (
     DistributionMode,
     DistributionSourceType,
@@ -83,41 +74,10 @@ from research.study.packaging.models import (
     PlatformTriple,
 )
 from research.study.protocol import store as protocol_store
-from research.study.protocol.canonical import protocol_digest
-from research.study.protocol.enums import (
-    AssignmentStrategy,
-    CompletionPolicyKind,
-    PublicationOutcome,
-    RetentionAction,
-    RevisionStatus,
-    ScheduleKind,
-    TelemetryFieldClass,
-)
-from research.study.protocol.models import (
-    AssignmentPolicy,
-    CapabilityExpectation,
-    CompletionPolicy,
-    EnrollmentPolicy,
-    EnvironmentRequirements,
-    FixedSchedule,
-    PrivacyPolicy,
-    SessionPolicy,
-    StudyCondition,
-    StudyMetadata,
-    StudyProtocolV1,
-    TelemetryPolicy,
-)
-from research.study.protocol.publication import (
-    StudyRevision,
-    lineage_from_revisions,
-    publish_revision,
-)
-from research.study.protocol.validation import freeze_protocol_distributions
 
 # The fixed window is deliberately deterministic (not "now + N days") so the
-# canonical protocol digest, and therefore the published revision, is identical
-# on every run. ``end_at`` stays far enough in the future to satisfy the
-# fixed-schedule expiry check for this synthetic study.
+# seeded study schedule is identical on every run. ``end_at`` stays far enough
+# in the future for the synthetic study to remain open.
 FIXED_SCHEDULE_START = datetime(2024, 1, 1, tzinfo=timezone.utc)
 FIXED_SCHEDULE_END = datetime(2099, 1, 1, tzinfo=timezone.utc)
 
@@ -140,11 +100,6 @@ DEFAULT_DEV_PASSWORD = "Code4me-dev1"
 BYOA_PROFILE_IDENTITIES = (
     ("default-goose", "goose", "goose"),
     ("default-codex", "codex", "codex"),
-)
-
-CONDITIONS = (
-    ("control", "Control", 0.5),
-    ("treatment", "Treatment", 0.5),
 )
 
 
@@ -196,13 +151,6 @@ class SeedRequest:
         )
 
     @property
-    def draft_id(self) -> UUID:
-        """Deterministic draft identity derived from the study identity."""
-        return uuid.uuid5(
-            uuid.NAMESPACE_URL, f"code4me2://research/draft/{self.study_id}"
-        )
-
-    @property
     def distribution_id(self) -> UUID:
         """Deterministic distribution (AgentProfile) identity.
 
@@ -223,7 +171,7 @@ class SeedSummary:
     enrollment_id: str
     enrollment_status: str
     study_id: str
-    revision_id: str
+    join_code: str
     agent_id: str
     release_id: str
     artifact_digest: str
@@ -242,7 +190,7 @@ class FreshDbRequest:
     It imports the built runtime manifest (never a synthetic digest), records the
     conformance evidence that makes the release QUALIFIED, pins the built-in
     distribution to that release, marks the participant-installed profiles as
-    BYOA, and publishes one study revision with a working session policy.
+    BYOA, and creates one live study with a working session policy.
     """
 
     manifest: dict[str, Any]
@@ -265,13 +213,6 @@ class FreshDbRequest:
             uuid.NAMESPACE_URL, f"code4me2://research/study/{self.study_name}"
         )
 
-    @property
-    def draft_id(self) -> UUID:
-        """Deterministic draft identity derived from the study identity."""
-        return uuid.uuid5(
-            uuid.NAMESPACE_URL, f"code4me2://research/draft/{self.study_id}"
-        )
-
 
 @dataclass(frozen=True)
 class FreshDbSummary:
@@ -285,7 +226,7 @@ class FreshDbSummary:
     distribution_verified: bool
     supported_platforms: list[dict[str, str]]
     study_id: str
-    revision_id: str
+    join_code: str
     session_policy: dict[str, Any]
     skipped_artifacts: list[dict[str, str]]
 
@@ -392,83 +333,27 @@ def build_synthetic_release(request: SeedRequest) -> AgentReleaseV1:
     )
 
 
-def build_study_protocol(
+def build_research_config(
     request: SeedRequest,
-    release: AgentReleaseV1,
     *,
-    distribution_id: Optional[UUID] = None,
-) -> StudyProtocolV1:
-    """The deterministic ``StudyProtocolV1`` this script publishes.
+    profile_id: UUID,
+) -> dict[str, Any]:
+    """The deterministic ``research_config_json`` this script stores on the study.
 
-    The document is a *draft*: conditions name the distribution by opaque id and
-    carry no ``resolved_distribution``. Publication resolves and freezes the pin.
+    Mirrors the ``POST /api/research/studies`` shape: a telemetry policy, a
+    fully populated session policy (so the sessions endpoints can open a
+    session instead of returning ``POLICY_MISSING``), and the selected
+    agent profile ids.
     """
-    distribution = distribution_id or request.agent_profile_id or request.distribution_id
-    return StudyProtocolV1(
-        schema_version="1",
-        study_id=request.study_id,
-        metadata=StudyMetadata(
-            name=request.study_name,
-            description="Synthetic study seeded for local onboarding.",
-            owner="research-ops",
-        ),
-        schedule=FixedSchedule(
-            kind=ScheduleKind.FIXED,
-            start_at=FIXED_SCHEDULE_START,
-            end_at=FIXED_SCHEDULE_END,
-        ),
-        enrollment=EnrollmentPolicy(
-            capacity=50,
-            allow_reentry=False,
-        ),
-        assignment=AssignmentPolicy(
-            unit="ENROLLMENT",
-            strategy=AssignmentStrategy.WEIGHTED_RANDOM.value,
-        ),
-        conditions=[
-            StudyCondition(
-                condition_id=condition_id,
-                name=name,
-                weight=weight,
-                distribution_id=distribution,
-                adapter_version=release.adapter.version if release.adapter else None,
-            )
-            for condition_id, name, weight in CONDITIONS
-        ],
-        session_policy=SessionPolicy(
-            idle_timeout_seconds=900,
-            resume_grace_seconds=300,
-            heartbeat_seconds=30,
-        ),
-        telemetry_policy=TelemetryPolicy(
-            allowed_field_classes=[
-                TelemetryFieldClass.STRUCTURAL,
-                TelemetryFieldClass.METRICS,
-            ]
-        ),
-        privacy_policy=PrivacyPolicy(
-            retention_action=RetentionAction.RETAIN_ANONYMIZED,
-            retention_days=365,
-        ),
-        environment_requirements=EnvironmentRequirements(
-            expected_protocol_version=DEFAULT_EXPECTED_PROTOCOL_VERSION,
-            required_capabilities=(
-                [
-                    CapabilityExpectation(
-                        capability="INITIALIZE", require_state="SUPPORTED"
-                    )
-                ]
-                if request.require_capabilities
-                else []
-            ),
-            host_kind="IntelliJ IDEA",
-        ),
-        completion=CompletionPolicy(policy=CompletionPolicyKind.MANUAL),
-    )
-
-
-def _format_validation_errors(errors: Sequence[ValidationError]) -> str:
-    return "; ".join(f"{error.code.value}:{error.field}" for error in errors) or "unknown"
+    return {
+        "telemetry_policy": {"metadata_only": True},
+        "session_policy": {
+            "idle_timeout_seconds": 900,
+            "resume_grace_seconds": 300,
+            "heartbeat_seconds": 30,
+        },
+        "profile_ids": [str(profile_id)],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +406,7 @@ def resolve_account(
 
 
 # ---------------------------------------------------------------------------
-# Registry / study / publication / enrollment
+# Registry / study / lifecycle / enrollment
 # ---------------------------------------------------------------------------
 
 
@@ -645,175 +530,65 @@ def ensure_release(session: Any, request: SeedRequest) -> AgentReleaseV1:
     return agents_store.row_to_release(row)
 
 
-def ensure_study(session: Any, request: SeedRequest, *, owner_user_id: Any = None) -> Any:
-    """Create the deterministic study identity if it does not exist yet."""
+def ensure_study(
+    session: Any,
+    request: SeedRequest,
+    research_config: dict[str, Any],
+    *,
+    owner_user_id: Any = None,
+    profile_id: UUID,
+) -> Any:
+    """Create the deterministic study identity if it does not exist yet.
+
+    The study owns its join code and selects the seeded agent profile, exactly
+    like ``POST /api/research/studies``. Safe to re-run: an existing study is
+    returned untouched.
+    """
     row = protocol_store.get_study(session, request.study_id)
     if row is None:
         row = protocol_store.create_study(
             session,
             study_id=request.study_id,
             name=request.study_name,
+            description="Synthetic study seeded for local onboarding.",
             created_by=owner_user_id,
+            starts_at=FIXED_SCHEDULE_START,
+            ends_at=FIXED_SCHEDULE_END,
             is_research=True,
+            research_config_json=research_config,
+            join_code=study_lifecycle.allocate_join_code(session),
+            profile_ids=[profile_id],
         )
     return row
 
 
-def ensure_draft(
-    session: Any,
-    request: SeedRequest,
-    protocol: StudyProtocolV1,
-) -> Any:
-    """Create the deterministic draft document if it does not exist yet."""
-    row = protocol_store.get_draft(session, request.draft_id)
+def activate_study(session: Any, study_id: UUID) -> None:
+    """Mark the seeded research study live, as the study routes do.
+
+    Activation reserves the owner's single live-study slot (``is_active``);
+    without it the assignment path refuses the study as not live. Idempotent,
+    so re-running the seed is safe.
+    """
+    row = protocol_store.set_study_active(session, study_id, True)
     if row is None:
-        row = protocol_store.create_draft(
-            session,
-            draft_id=request.draft_id,
-            study_id=request.study_id,
-            name=request.study_name,
-            protocol=protocol,
-        )
-    return row
-
-
-def ensure_published_revision(
-    session: Any,
-    protocol: StudyProtocolV1,
-    *,
-    distribution: "_SeedDistribution",
-    release: AgentReleaseV1,
-    actor: str,
-    platform: tuple[str, str],
-) -> StudyRevision:
-    """Publish ``protocol`` once; return the existing revision on re-runs.
-
-    Publication resolves and FREEZES the distribution pin, so the stored
-    revision always records the exact release/digest it was built from.
-    """
-    revisions = [
-        protocol_store.row_to_revision(row)
-        for row in protocol_store.list_revisions(session, protocol.study_id)
-    ]
-
-    class _SeedDistributionResolver:
-        def resolve(self, distribution_id: UUID):
-            return resolve_distribution_view(
-                distribution,
-                release,
-                distribution_id=distribution_id,
-                platform=platform,
-            )
-
-    resolver = _SeedDistributionResolver()
-    frozen = freeze_protocol_distributions(protocol, resolver)
-    digest = protocol_digest(frozen)
-    for revision in revisions:
-        if (
-            revision.protocol_digest == digest
-            and revision.status == RevisionStatus.PUBLISHED
-        ):
-            return revision
-
-    result = publish_revision(
-        protocol,
-        lineage_from_revisions(protocol.study_id, revisions),
-        distribution_resolver=resolver,
-        actor_is_admin=True,
-        actor=actor,
-    )
-    if result.outcome != PublicationOutcome.PUBLISHED or result.revision is None:
-        raise SeedError(
-            f"protocol publication was not PUBLISHED ({result.outcome.value}): "
-            f"{_format_validation_errors(result.errors)}"
-        )
-    protocol_store.persist_revision(session, result.revision)
-    if result.audit is not None:
-        protocol_store.persist_audit(session, result.audit)
-    _reserve_live_study_slot(session, result.revision.study_id)
-    return result.revision
-
-
-def _reserve_live_study_slot(session: Any, study_id: UUID) -> None:
-    """Mark the published research study live, as the publication route does.
-
-    Publication reserves the owner's single live-study slot (``is_active``);
-    without it the assignment resolver refuses the study as "not live" and task
-    creation returns 503. Kept idempotent so re-running the seed is safe.
-    """
-    from database import db_schemas
-
-    study = session.get(db_schemas.Study, study_id)
-    if study is None:
-        raise SeedError(
-            f"published revision references study {study_id} which has no study row"
-        )
-    if not study.is_active:
-        study.is_active = True
-        session.add(study)
-        session.commit()
+        raise SeedError(f"seeded study {study_id} has no study row")
 
 
 def ensure_enrollment(
     session: Any,
-    request: SeedRequest,
-    revision: StudyRevision,
+    join_code: str,
     *,
     account_id: UUID,
-) -> tuple[Any, Any]:
-    """Create (or reuse) the participant mapping and ACTIVE enrollment."""
-    participant_row = identity_store.get_participant_by_account(session, account_id)
-    if participant_row is None:
-        participant = Participant(
-            participant_id=uuid.uuid4(),
-            account_id=account_id,
-            created_at=datetime.now(timezone.utc),
-        )
-        identity_store.create_participant(session, participant)
-    else:
-        participant = identity_store.row_to_participant(participant_row)
+) -> Any:
+    """Accept web consent for the seeded study (or reuse the live enrollment).
 
-    revision_ref = identity_store.revision_ref_from_study_revision(revision)
-    existing_row = identity_store.get_enrollment_for_participant_revision(
-        session, participant.participant_id, revision.revision_id
-    )
-    existing = (
-        identity_store.row_to_enrollment(existing_row)
-        if existing_row is not None
-        else None
-    )
-    result = identity_store.enroll(
-        participant, revision_ref, existing_enrollment=existing
-    )
-    if not result.accepted or result.enrollment is None:
-        raise SeedError(
-            "enrollment was rejected: "
-            f"{result.issue.message if result.issue else 'unknown'}"
-        )
-    if result.created:
-        identity_store.create_enrollment(session, result.enrollment)
-    enrollment = result.enrollment
-
-
-    return participant, enrollment
-
-
-class _SeedDistribution:
-    """Lightweight stand-in describing the seed's distribution pin.
-
-    The resolver works on attribute access only, so the seed can pin the release
-    it just registered without depending on a persisted profile row's shape.
+    This is the same atomic ``open_study_enrollment`` the join route runs, so a
+    re-run never piles up a duplicate enrollment.
     """
-
-    def __init__(self, distribution_id: UUID, request: SeedRequest, release: AgentReleaseV1) -> None:
-        self.profile_id = distribution_id
-        self.distribution_mode = request.distribution_mode
-        self.release_id = None if request.is_byoa else release.release_id
-        self.agent_package = request.agent_package if request.is_byoa else None
-        self.agent_command = (
-            (request.agent_command or request.agent_package) if request.is_byoa else None
-        )
-        self.agent_command_args = list(request.agent_command_args) if request.is_byoa else []
+    try:
+        return study_lifecycle.open_study_enrollment(session, account_id, join_code)
+    except (ValueError, PermissionError) as error:
+        raise SeedError(f"enrollment was rejected: {error}") from error
 
 
 def ensure_distribution(
@@ -822,12 +597,12 @@ def ensure_distribution(
     release: AgentReleaseV1,
     *,
     owner_user_id: Any = None,
-) -> tuple[UUID, "_SeedDistribution"]:
-    """Ensure a distribution (``AgentProfile``) exists and return its pin view.
+) -> UUID:
+    """Ensure a distribution (``AgentProfile``) exists and return its id.
 
     With ``--profile-id`` the caller pins an existing profile; otherwise the seed
-    mints a deterministic distribution bound to the release it registered, so a
-    condition can name a single ``distribution_id``.
+    mints a deterministic distribution bound to the release it registered, so the
+    study can select a single ``profile_id``.
     """
     from database import db_schemas
 
@@ -856,12 +631,12 @@ def ensure_distribution(
         )
         session.add(row)
         session.commit()
-    return distribution_id, _SeedDistribution(distribution_id, request, release)
+    return distribution_id
 
 
 # ---------------------------------------------------------------------------
 # Fresh-DB seeding: built manifest -> qualified release -> pinned distribution
-# -> published study revision
+# -> live study
 # ---------------------------------------------------------------------------
 
 
@@ -1066,7 +841,7 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
 
     Registers the shipped runtime release, records the conformance evidence that
     qualifies it, pins ``default-code4me2-agent`` to it (Goose/Codex become BYOA),
-    and publishes one study revision whose ``session_policy`` is fully populated
+    and creates one live study whose ``session_policy`` is fully populated
     so the sessions endpoints can open a session instead of returning
     ``POLICY_MISSING``. Safe to re-run: every step resolves the existing row.
     """
@@ -1090,9 +865,6 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
         raise SeedError(f"release {release.release_id!r} vanished")
     release = agents_store.row_to_release(release_row)
 
-    artifact = sorted(release.artifacts, key=lambda item: (item.os, item.arch))[0]
-    platform = (artifact.os, artifact.arch)
-
     seed_request = SeedRequest(
         account_email="",
         account_password=None,
@@ -1103,45 +875,38 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
         agent_id=release.agent_id,
         release_id=release.release_id,
         release_version=release.version,
-        artifact_digest=artifact.sha256,
-        artifact_path=artifact.path,
-        artifact_size=artifact.size,
-        os_name=artifact.os,
-        arch=artifact.arch,
+        artifact_digest="",
+        artifact_path="",
+        artifact_size=0,
+        os_name="",
+        arch="",
         actor=request.actor,
         require_capabilities=request.require_capabilities,
     )
-    protocol = build_study_protocol(
-        seed_request, release, distribution_id=profile.profile_id
-    )
-    ensure_study(session, seed_request, owner_user_id=profile.owner_user_id)
-    ensure_draft(session, seed_request, protocol)
-    revision = ensure_published_revision(
+    research_config = build_research_config(seed_request, profile_id=profile.profile_id)
+    study = ensure_study(
         session,
-        protocol,
-        distribution=profile,
-        release=release,
-        actor=request.actor,
-        platform=platform,
+        seed_request,
+        research_config,
+        owner_user_id=profile.owner_user_id,
+        profile_id=profile.profile_id,
     )
-    # Also covers the idempotent path where the revision already existed.
-    _reserve_live_study_slot(session, revision.study_id)
+    # Also covers the idempotent path where the study already existed.
+    activate_study(session, study.study_id)
 
-    view = resolve_distribution_view(
-        profile, release, distribution_id=profile.profile_id, platform=platform
-    )
-    policy = revision.protocol_json.get("session_policy") or {}
+    live = protocol_store.get_study(session, seed_request.study_id)
+    join_code = live.join_code if live is not None else None
     return FreshDbSummary(
         agent_id=release.agent_id,
         release_id=release.release_id,
         release_version=release.version,
         qualification=release.qualification_status.value,
         distribution_id=str(profile.profile_id),
-        distribution_verified=view.verified,
+        distribution_verified=release.qualification_status == QualificationStatus.QUALIFIED,
         supported_platforms=distribution_supported_platforms(release),
-        study_id=str(revision.study_id),
-        revision_id=str(revision.revision_id),
-        session_policy=dict(policy),
+        study_id=str(seed_request.study_id),
+        join_code=str(join_code or ""),
+        session_policy=dict(research_config["session_policy"]),
         skipped_artifacts=skipped,
     )
 
@@ -1158,7 +923,7 @@ def format_fresh_db_summary(summary: FreshDbSummary) -> str:
         f"  distribution_verified:  {summary.distribution_verified}",
         f"  supported_platforms:    {summary.supported_platforms}",
         f"  study_id:               {summary.study_id}",
-        f"  revision_id:            {summary.revision_id}",
+        f"  join_code:              {summary.join_code}",
         f"  session_policy:         {summary.session_policy}",
         f"  skipped_artifacts:      {summary.skipped_artifacts}",
     ]
@@ -1170,31 +935,30 @@ def run_seed(session: Any, request: SeedRequest) -> SeedSummary:
     user, account_created = resolve_account(session, request)
 
     release = ensure_release(session, request)
-    distribution_id, distribution = ensure_distribution(
+    profile_id = ensure_distribution(
         session, request, release, owner_user_id=user.user_id
     )
-    protocol = build_study_protocol(
-        request, release, distribution_id=distribution_id
-    )
-    ensure_study(session, request, owner_user_id=user.user_id)
-    ensure_draft(session, request, protocol)
-    revision = ensure_published_revision(
+    research_config = build_research_config(request, profile_id=profile_id)
+    study = ensure_study(
         session,
-        protocol,
-        distribution=distribution,
-        release=release,
-        actor=request.actor,
-        platform=(request.os_name, request.arch),
+        request,
+        research_config,
+        owner_user_id=user.user_id,
+        profile_id=profile_id,
     )
-    _participant, enrollment = ensure_enrollment(
-        session, request, revision, account_id=user.user_id
-    )
+    activate_study(session, study.study_id)
+
+    live = protocol_store.get_study(session, request.study_id)
+    join_code = live.join_code if live is not None else None
+    if not join_code:
+        raise SeedError(f"seeded study {request.study_id} has no join code")
+    enrollment = ensure_enrollment(session, join_code, account_id=user.user_id)
 
     return SeedSummary(
         enrollment_id=str(enrollment.enrollment_id),
-        enrollment_status=enrollment.status.value,
-        study_id=str(revision.study_id),
-        revision_id=str(revision.revision_id),
+        enrollment_status="ACTIVE",
+        study_id=str(enrollment.study_id),
+        join_code=str(join_code),
         agent_id=release.agent_id,
         release_id=release.release_id,
         artifact_digest=(
@@ -1205,7 +969,7 @@ def run_seed(session: Any, request: SeedRequest) -> SeedSummary:
             )
         ),
         distribution_mode=release.distribution_mode.value,
-        distribution_id=str(distribution_id),
+        distribution_id=str(profile_id),
         account_email=request.account_email,
         account_password=request.account_password if account_created else None,
         account_created=account_created,
@@ -1223,11 +987,11 @@ def run_seed(session: Any, request: SeedRequest) -> SeedSummary:
 def format_summary(summary: SeedSummary) -> str:
     """Render the copy-pasteable onboarding summary (no hidden secrets)."""
     lines = [
-        "Synthetic research study seeded and published.",
-        f"  enrollment_id (join code): {summary.enrollment_id}",
-        f"  enrollment_status:         {summary.enrollment_status}",
-        f"  study_id:                  {summary.study_id}",
-        f"  revision_id:               {summary.revision_id}",
+        "Synthetic research study seeded and activated.",
+        f"  study join code:         {summary.join_code}",
+        f"  enrollment_id:           {summary.enrollment_id}",
+        f"  enrollment_status:       {summary.enrollment_status}",
+        f"  study_id:                {summary.study_id}",
         f"  agent_id:                  {summary.agent_id}",
         f"  release_id:                {summary.release_id}",
         f"  distribution_mode:         {summary.distribution_mode}",
@@ -1241,7 +1005,7 @@ def format_summary(summary: SeedSummary) -> str:
     else:
         lines.append("  login password:            (existing account, unchanged)")
     lines.append(
-        "  participant step:          IntelliJ > Tools > Join Research Study..."
+        "  participant step:          redeem the study join code through web consent"
     )
     return "\n".join(lines)
 
@@ -1252,7 +1016,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Seed research onboarding state. Two modes: (default) a deterministic "
             "synthetic release + one enrolled participant; --fresh-db imports the "
             "built runtime manifest, qualifies its release, pins the built-in "
-            "distribution and publishes a study revision. Both are safe to re-run; "
+            "distribution and creates a live study. Both are safe to re-run; "
             "no secrets are printed except a password supplied with "
             "--account-password."
         )
@@ -1267,7 +1031,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "import the built runtime manifest and seed a usable distribution + "
-            "published study (no participant account required)"
+            "live study (no participant account required)"
         ),
     )
     parser.add_argument(
@@ -1365,7 +1129,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=UUID,
         default=None,
         help=(
-            "UUID of an existing AgentProfile to pin both conditions to "
+            "UUID of an existing AgentProfile to select for the study "
             "(provider/model/tools/policy catalogue)"
         ),
     )
@@ -1500,9 +1264,10 @@ def require_dev_guard() -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    require_dev_guard()
+    # Parse first so `--help` never requires the dev guard (or the app stack).
     parser = build_parser()
     args = parser.parse_args(argv)
+    require_dev_guard()
 
     from dotenv import load_dotenv
 

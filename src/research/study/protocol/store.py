@@ -305,7 +305,7 @@ def get_study_by_join_code(
     session: Session, join_code: str
 ) -> Optional[Any]:
     """Fetch a study by its study-owned join code."""
-    normalized = str(join_code or "").strip()
+    normalized = str(join_code or "").strip().upper()
     if not normalized:
         return None
     return session.execute(

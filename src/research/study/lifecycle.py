@@ -131,9 +131,10 @@ def open_study_enrollment(
 ) -> StudyEnrollmentSummary:
     """Accept web consent and create enrollment/profile assignment atomically."""
     timestamp = now or datetime.now(timezone.utc)
+    normalized_code = str(join_code or "").strip().upper()
     study = session.execute(
         select(Study)
-        .where(Study.join_code == join_code.strip())
+        .where(Study.join_code == normalized_code)
         .with_for_update()
     ).scalar_one_or_none()
     if study is None or not bool(getattr(study, "is_research", False)):

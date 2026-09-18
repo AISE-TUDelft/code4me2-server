@@ -39,6 +39,9 @@ class AssignmentStrategy(str, Enum):
     WEIGHTED_RANDOM = "WEIGHTED_RANDOM"
     DETERMINISTIC_HASH = "DETERMINISTIC_HASH"
     STRATIFIED = "STRATIFIED"
+    # Equal-probability profile pick for one enrollment (the runtime/table
+    # contract; the only strategy the assignment service allocates).
+    RANDOM_EQUAL = "RANDOM_EQUAL"
 
 
 class RetentionAction(str, Enum):

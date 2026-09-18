@@ -211,7 +211,7 @@ def test_readiness_rejects_missing_server_side_provider_credential(monkeypatch):
     with patch("agents.registry.resolve_assignment", return_value=profile), patch(
         "backend.routers.acp.crud.get_provider_connection", return_value=connection
     ), patch(
-        "backend.routers.acp.crud.user_has_connection_grant", return_value=True
+        "backend.routers.acp.crud.provider_connection_is_available", return_value=True
     ), patch(
         "backend.routers.acp.crud.get_user_by_id", return_value=None
     ), patch("backend.routers.acp.resolve_store_agent_content_for_acp", return_value=False):

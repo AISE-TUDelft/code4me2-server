@@ -70,9 +70,12 @@ def resolve_task_connection(
 ) -> ResolvedConnection:
     """Resolve and authorize the connection a task's profile selects.
 
-    Re-checked at every inference request: the connection must exist, be active,
-    and (unless the task owner is an administrator) be explicitly granted to the
-    owner. A revoked grant therefore blocks a previously created task.
+    Re-checked at every inference request: the connection must exist and be
+    active. Authorization is role-based (the funding owner must be an enabled
+    researcher or an administrator); readiness is connection state
+    (active + allowed model + present secret), not a per-owner grant row.
+    ``owner_user_id`` is retained so callers keep passing the funding owner
+    explicitly, but no per-owner grant is consulted.
     """
     from database import crud  # local import keeps provider.py dependency-light
 
