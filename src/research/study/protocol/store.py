@@ -13,14 +13,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 from database.db_schemas import AgentProfile, Study as StudyRow
 from database import crud as database_crud
-from database.research_schemas import StudyAgentProfile
+from database.research_schemas import (
+    ResearchEnrollment,
+    ResearchSessionV1,
+    StudyAgentProfile,
+    StudyAssignment,
+)
 from research.study.agents.enums import QualificationStatus
 from research.study.agents.store import get_release
 from research.canonical import canonical_hash
@@ -52,6 +57,17 @@ class StudyView:
     stopped_by: Optional[str] = None
     created_at: Optional[datetime] = None
     profile_selections: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class StudyReadMetrics:
+    """Safe researcher-facing counts derived from persisted study rows."""
+
+    enrollment_count: int
+    active_enrollment_count: int
+    assignment_count: int
+    active_assignment_count: int
+    active_session_count: int
 
 
 def _study_row_view(
@@ -202,6 +218,39 @@ def get_study(session: Session, study_id: uuid.UUID) -> Optional[StudyView]:
     """Fetch a study identity row by id, or ``None``."""
     row = session.get(StudyRow, study_id)
     return _study_view(session, row) if row is not None else None
+
+
+def get_study_read_metrics(session: Session, study_id: uuid.UUID) -> StudyReadMetrics:
+    """Return persisted counts without selecting private participant fields."""
+    enrollment_count, active_enrollment_count = session.execute(
+        select(
+            func.count(ResearchEnrollment.enrollment_id),
+            func.count(ResearchEnrollment.enrollment_id).filter(
+                ResearchEnrollment.status == "ACTIVE"
+            ),
+        ).where(ResearchEnrollment.study_id == study_id)
+    ).one()
+    assignment_count, active_assignment_count = session.execute(
+        select(
+            func.count(StudyAssignment.assignment_id),
+            func.count(StudyAssignment.assignment_id).filter(
+                StudyAssignment.status == "ACTIVE"
+            ),
+        ).where(StudyAssignment.study_id == study_id)
+    ).one()
+    active_session_count = session.execute(
+        select(func.count(ResearchSessionV1.session_id)).where(
+            ResearchSessionV1.study_id == study_id,
+            ResearchSessionV1.state.not_in(("ended", "revoked")),
+        )
+    ).scalar_one()
+    return StudyReadMetrics(
+        enrollment_count=int(enrollment_count),
+        active_enrollment_count=int(active_enrollment_count),
+        assignment_count=int(assignment_count),
+        active_assignment_count=int(active_assignment_count),
+        active_session_count=int(active_session_count),
+    )
 
 
 def list_studies(

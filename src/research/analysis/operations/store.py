@@ -330,6 +330,24 @@ def kill_switch_records(session: Session) -> Sequence[KillSwitchRecord]:
     ]
 
 
+def latest_study_kill_switch(
+    session: Session, study_id: uuid.UUID
+) -> Optional[KillSwitchRecord]:
+    """Return the newest persisted study-scoped switch, if one exists."""
+    statement = (
+        select(ResearchRecord)
+        .where(
+            ResearchRecord.kind == RECORD_KIND_KILL_SWITCH,
+            ResearchRecord.scope_type == "STUDY",
+            ResearchRecord.scope_id == study_id,
+        )
+        .order_by(ResearchRecord.occurred_at.desc())
+        .limit(1)
+    )
+    row = session.execute(statement).scalars().first()
+    return row_to_kill_switch(row) if row is not None else None
+
+
 def is_kill_switch_engaged(
     session: Session,
     *,

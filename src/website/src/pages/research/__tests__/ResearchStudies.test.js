@@ -67,6 +67,10 @@ test("creates a Draft study through the lifecycle API", async () => {
   await waitFor(() => expect(api.createResearchStudy).toHaveBeenCalledWith({
     name: "New pilot",
     description: "",
+    startsAt: "",
+    endsAt: "",
+    telemetryPolicy: {},
+    sessionPolicy: {},
     profileIds: ["profile-1"],
   }));
 });
@@ -91,6 +95,10 @@ test("selects agent profiles when creating a study", async () => {
   await waitFor(() => expect(api.createResearchStudy).toHaveBeenCalledWith({
     name: "Agent study",
     description: "",
+    startsAt: "",
+    endsAt: "",
+    telemetryPolicy: {},
+    sessionPolicy: {},
     profileIds: ["profile-1"],
   }));
 });
@@ -116,12 +124,63 @@ test("stops a study and exposes clone for stopped studies", async () => {
 
 test("shows the kill-switch control to admins and calls the operations API", async () => {
   api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: true } });
-  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.listResearchStudies
+    .mockResolvedValueOnce({ ok: true, data: [STUDY] })
+    .mockResolvedValue({ ok: true, data: [STUDY] });
   api.engageResearchKillSwitch.mockResolvedValue({ ok: true, data: { switch_id: "switch-1" } });
+  jest.spyOn(window, "confirm").mockReturnValue(true);
 
   renderPage();
   fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.change(screen.getByLabelText("Kill switch reason"), { target: { value: "Admin maintenance" } });
   fireEvent.click(screen.getByRole("button", { name: "Engage kill switch" }));
 
   await waitFor(() => expect(api.engageResearchKillSwitch).toHaveBeenCalledWith("study-1", "Admin maintenance"));
+  window.confirm.mockRestore();
+});
+
+test("releases a persisted engaged kill switch after refresh", async () => {
+  const engaged = { ...STUDY, kill_switch: { switch_id: "switch-1", status: "ENGAGED", reason: "Maintenance" } };
+  const released = { ...engaged, kill_switch: { switch_id: "switch-1", status: "RELEASED", reason: "Maintenance" } };
+  api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: true } });
+  api.listResearchStudies
+    .mockResolvedValueOnce({ ok: true, data: [engaged] })
+    .mockResolvedValueOnce({ ok: true, data: [released] });
+  api.releaseResearchKillSwitch.mockResolvedValue({ ok: true, data: {} });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(await screen.findByRole("button", { name: "Release kill switch" }));
+
+  await waitFor(() => expect(api.releaseResearchKillSwitch).toHaveBeenCalledWith("switch-1"));
+  expect(await screen.findByRole("button", { name: "Engage kill switch" })).toBeInTheDocument();
+  expect(screen.getByText(/Kill switch: RELEASED/)).toBeInTheDocument();
+});
+
+test("renders safe unavailable counts and hides terminal controls for stopped studies", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [{ ...STUDY, research_status: "STUDY_STOPPED", enrollment_count: null, active_enrollment_count: undefined, assignment_count: undefined, active_session_count: null, collection_status: null }] });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+
+  expect(screen.getByText("Unavailable (Unavailable active)")).toBeInTheDocument();
+  expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: "Stop study" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Clone as new Draft" })).toBeInTheDocument();
+});
+
+test("selects a clone with no profiles after refreshing the study list", async () => {
+  const stopped = { ...STUDY, research_status: "STUDY_STOPPED" };
+  const clone = { ...STUDY, study_id: "study-2", name: "Pilot study clone", profile_selections: [] };
+  api.listResearchStudies
+    .mockResolvedValueOnce({ ok: true, data: [stopped] })
+    .mockResolvedValueOnce({ ok: true, data: [stopped, clone] });
+  api.cloneResearchStudy.mockResolvedValue({ ok: true, data: { study: clone } });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("button", { name: "Clone as new Draft" }));
+
+  expect(await screen.findByRole("heading", { name: "Pilot study clone" })).toBeInTheDocument();
+  expect(screen.getByText("No profiles selected.")).toBeInTheDocument();
 });

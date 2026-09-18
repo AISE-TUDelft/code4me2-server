@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from App import App
 from backend.Responses import JsonResponseWithStatus
@@ -41,12 +41,20 @@ def _now() -> datetime:
 
 
 class KillSwitchEngageRequest(BaseModel):
-    """Engage a kill switch at a study/revision/enrollment scope."""
+    """Engage a kill switch at a study or enrollment scope."""
 
     scope_kind: KillSwitchScopeKind
     scope_id: uuid.UUID
     reason: str
     effective_until: Optional[datetime] = None
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("reason must not be blank")
+        return normalized
 
 
 @operations_router.get("/kill-switch", summary="List kill-switch records")
@@ -80,6 +88,23 @@ def engage_kill_switch(
 ):
     db = app.get_db_session()
     try:
+        if payload.scope_kind == KillSwitchScopeKind.STUDY:
+            from research.study.protocol import store as study_store
+
+            study = study_store.get_study(db, payload.scope_id)
+            if study is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "STUDY_NOT_FOUND", "message": "Study not found"},
+                )
+            if getattr(study, "research_status", None) == "STUDY_STOPPED":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "STUDY_STOPPED",
+                        "message": "The study has stopped and cannot accept a kill switch",
+                    },
+                )
         record = KillSwitchRecord(
             switch_id=uuid.uuid4(),
             scope=KillSwitchScope(

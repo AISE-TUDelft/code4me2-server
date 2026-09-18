@@ -10,7 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from App import App
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.analytics.auth_utils import AuthenticatedUser, get_current_user
-from research.study.lifecycle import open_study_enrollment
+from research.study.lifecycle import (
+    AlreadyEnrolledError,
+    ActiveEnrollmentError,
+    StudyStoppedError,
+    open_study_enrollment,
+)
 from research.study.protocol import store as study_store
 
 router = APIRouter()
@@ -20,6 +25,12 @@ GLOBAL_CONSENT_TEXT = (
     "IDE. Provider credentials are never collected. Your study-local pseudonym "
     "is used in research data; your account identity remains private."
 )
+
+
+def _require_authenticated_user(current_user: AuthenticatedUser) -> AuthenticatedUser:
+    if current_user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return current_user
 
 
 class JoinRequestBody(BaseModel):
@@ -48,6 +59,7 @@ def resolve_join_code(
     current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
+    _require_authenticated_user(current_user)
     db = app.get_db_session()
     try:
         study = _study_from_code(db, join_code)
@@ -76,6 +88,7 @@ def redeem_join_code(
     current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
+    current_user = _require_authenticated_user(current_user)
     if not payload.accept_consent:
         raise HTTPException(
             status_code=409,
@@ -85,15 +98,14 @@ def redeem_join_code(
     try:
         try:
             result = open_study_enrollment(db, current_user.user_id, payload.join_code)
-        except PermissionError as error:
-            message = str(error)
-            code = (
-                "STUDY_STOPPED"
-                if "stopped" in message
-                else "ALREADY_ENROLLED"
-                if "rejoin" in message
-                else "ACTIVE_ENROLLMENT_EXISTS"
-            )
+        except StudyStoppedError as error:
+            code = "STUDY_STOPPED"
+            raise HTTPException(status_code=409, detail={"code": code, "message": str(error)}) from error
+        except ActiveEnrollmentError as error:
+            code = "ACTIVE_ENROLLMENT_EXISTS"
+            raise HTTPException(status_code=409, detail={"code": code, "message": str(error)}) from error
+        except AlreadyEnrolledError as error:
+            code = "ALREADY_ENROLLED"
             raise HTTPException(status_code=409, detail={"code": code, "message": str(error)}) from error
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error

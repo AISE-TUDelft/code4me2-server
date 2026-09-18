@@ -21,31 +21,38 @@ const STATUS_LABELS = {
 
 const ResearchStudies = () => {
   const [studies, setStudies] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isUnavailable, setIsUnavailable] = useState(false);
+  const [isForbidden, setIsForbidden] = useState(false);
   const [selectedStudy, setSelectedStudy] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
-  const [form, setForm] = useState({ name: "", description: "", profileIds: [] });
+  const [form, setForm] = useState({ name: "", description: "", startsAt: "", endsAt: "", telemetryPolicy: {}, sessionPolicy: {}, profileIds: [] });
   const [profiles, setProfiles] = useState([]);
   const [metadata, setMetadata] = useState({ name: "", description: "" });
   const [isBusy, setIsBusy] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [killSwitchId, setKillSwitchId] = useState("");
+  const [killSwitchReason, setKillSwitchReason] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const loadStudies = async () => {
+  const loadStudies = async (preferredStudyId) => {
     setError("");
+    setIsLoading(true);
     const result = await listResearchStudies();
     if (result.ok) {
+      setIsUnavailable(false);
+      setIsForbidden(false);
       const nextStudies = Array.isArray(result.data) ? result.data : [];
       setStudies(nextStudies);
-      if (selectedStudy) {
-        setSelectedStudy(
-          nextStudies.find((study) => study.study_id === selectedStudy.study_id) || null,
-        );
-      }
+      const studyId = preferredStudyId || selectedStudy?.study_id;
+      setSelectedStudy(studyId ? nextStudies.find((study) => study.study_id === studyId) || null : null);
     } else {
+      setIsUnavailable(Boolean(result.missing));
+      setIsForbidden(Boolean(result.forbidden || result.status === 403));
       setError(result.error || "Research studies are unavailable.");
     }
+    setIsLoading(false);
   };
 
   useEffect(() => {
@@ -66,6 +73,12 @@ const ResearchStudies = () => {
     });
   }, []);
 
+  useEffect(() => {
+    const persistedSwitch = selectedStudy?.kill_switch;
+    const isEngaged = persistedSwitch?.switch_id && persistedSwitch.status !== "RELEASED";
+    setKillSwitchId(isEngaged ? persistedSwitch.switch_id : "");
+  }, [selectedStudy]);
+
   const openStudy = (study) => {
     setSelectedStudy(study);
     setMetadata({ name: study.name || "", description: study.description || "" });
@@ -80,7 +93,7 @@ const ResearchStudies = () => {
     setNotice("");
     const result = await createResearchStudy(form);
     if (result.ok) {
-      setForm({ name: "", description: "", profileIds: [] });
+      setForm({ name: "", description: "", startsAt: "", endsAt: "", telemetryPolicy: {}, sessionPolicy: {}, profileIds: [] });
       setIsCreating(false);
       setNotice("Study created in Draft state.");
       await loadStudies();
@@ -101,13 +114,13 @@ const ResearchStudies = () => {
       setNotice("Study metadata updated.");
       await loadStudies();
     } else {
-      setError(result.error || "Study metadata is locked.");
+      setError({ STUDY_METADATA_LOCKED: "Study metadata is locked after consent.", STUDY_STOPPED: "Stopped studies cannot be edited.", PROFILE_LOCKED: "The selected profile is locked.", PROFILE_NOT_ALLOWED: "You are not allowed to use that profile." }[result.code] || result.error || "Study metadata could not be updated.");
     }
     setIsBusy(false);
   };
 
   const handleStop = async () => {
-    if (!selectedStudy || !window.confirm("Stop this study permanently? Research data will be retained.")) {
+    if (!selectedStudy || !window.confirm("Stop this study permanently? This is terminal, closes collection, and retains existing research data without deleting it.")) {
       return;
     }
     setIsBusy(true);
@@ -130,8 +143,10 @@ const ResearchStudies = () => {
     setNotice("");
     const result = await cloneResearchStudy(selectedStudy.study_id);
     if (result.ok) {
-      setNotice("A new Draft study was created without participants or agent profiles.");
-      await loadStudies();
+      const cloned = result.data?.study || result.data;
+      if (cloned?.study_id) openStudy({ ...cloned, profile_selections: cloned.profile_selections || [] });
+      setNotice("Clone created. Participants, consent, assignments, profiles, telemetry, join code, and study ID were not copied.");
+      await loadStudies(cloned?.study_id);
     } else {
       setError(result.error || "Only stopped studies can be cloned.");
     }
@@ -140,14 +155,24 @@ const ResearchStudies = () => {
 
   const handleKillSwitch = async () => {
     if (!selectedStudy) return;
+    if (selectedStudy.research_status === "STUDY_STOPPED") {
+      setError("This study is stopped permanently; releasing a switch cannot reopen it.");
+      return;
+    }
+    const persistedSwitchId = selectedStudy.kill_switch?.switch_id;
+    const persistedSwitchEngaged = persistedSwitchId && selectedStudy.kill_switch?.status !== "RELEASED";
+    const activeSwitchId = persistedSwitchEngaged ? persistedSwitchId : killSwitchId;
+    if (!activeSwitchId && (!killSwitchReason.trim() || !window.confirm(`Engage the kill switch for this study? Reason: ${killSwitchReason.trim()}`))) return;
     setIsBusy(true);
     setError("");
-    const result = killSwitchId
-      ? await releaseResearchKillSwitch(killSwitchId)
-      : await engageResearchKillSwitch(selectedStudy.study_id, "Admin maintenance");
+    const result = activeSwitchId
+      ? await releaseResearchKillSwitch(activeSwitchId)
+      : await engageResearchKillSwitch(selectedStudy.study_id, killSwitchReason.trim());
     if (result.ok) {
-      setKillSwitchId(killSwitchId ? "" : result.data.switch_id || "");
-      setNotice(killSwitchId ? "Kill switch released." : "Kill switch engaged.");
+      setKillSwitchId(activeSwitchId ? "" : result.data.switch_id || "");
+      setKillSwitchReason("");
+      setNotice(activeSwitchId ? "Kill switch released." : "Kill switch engaged.");
+      await loadStudies(selectedStudy.study_id);
     } else {
       setError(result.error || "Kill switch operation failed.");
     }
@@ -171,7 +196,10 @@ const ResearchStudies = () => {
         </button>
       </header>
 
-      {error && <p className="research-error" role="alert">{error}</p>}
+      {isLoading && <p className="research-hint" role="status">Loading research studies...</p>}
+      {isForbidden && <p className="research-error" role="alert">You do not have permission to view research studies.</p>}
+      {isUnavailable && <p className="research-error" role="alert">The research control plane is unavailable on this server.</p>}
+      {error && !isForbidden && !isUnavailable && <p className="research-error" role="alert">{error}</p>}
       {notice && <p className="research-notice" role="status">{notice}</p>}
 
       {isCreating && (
@@ -195,6 +223,10 @@ const ResearchStudies = () => {
               disabled={isBusy}
             />
           </label>
+          <label>Starts at<input type="datetime-local" value={form.startsAt} onChange={(event) => setForm({ ...form, startsAt: event.target.value })} disabled={isBusy} /></label>
+          <label>Ends at<input type="datetime-local" value={form.endsAt} onChange={(event) => setForm({ ...form, endsAt: event.target.value })} disabled={isBusy} /></label>
+          <label>Telemetry policy (JSON)<textarea value={JSON.stringify(form.telemetryPolicy)} onChange={(event) => { try { setForm({ ...form, telemetryPolicy: JSON.parse(event.target.value) }); } catch (_) { /* retain last valid policy */ } }} rows={2} disabled={isBusy} /></label>
+          <label>Session policy (JSON)<textarea value={JSON.stringify(form.sessionPolicy)} onChange={(event) => { try { setForm({ ...form, sessionPolicy: JSON.parse(event.target.value) }); } catch (_) { /* retain last valid policy */ } }} rows={2} disabled={isBusy} /></label>
           <fieldset className="research-profile-selection">
             <legend>Agent profiles</legend>
             {profiles.length === 0 ? (
@@ -238,7 +270,7 @@ const ResearchStudies = () => {
               Refresh
             </button>
           </div>
-          {studies.length === 0 ? (
+          {!isLoading && !isUnavailable && !isForbidden && studies.length === 0 ? (
             <p className="research-hint">No research studies yet.</p>
           ) : (
             <ul className="research-list">
@@ -265,7 +297,10 @@ const ResearchStudies = () => {
             <dl className="research-metrics">
               <div><dt>Status</dt><dd>{STATUS_LABELS[selectedStudy.research_status] || selectedStudy.research_status}</dd></div>
               <div><dt>Join code</dt><dd>{selectedStudy.join_code || "Not available"}</dd></div>
-              <div><dt>Study ID</dt><dd>{selectedStudy.study_id}</dd></div>
+              <div><dt>Enrollments</dt><dd>{selectedStudy.enrollment_count ?? "Unavailable"} ({selectedStudy.active_enrollment_count ?? "Unavailable"} active)</dd></div>
+              <div><dt>Assignments</dt><dd>{selectedStudy.assignment_count ?? "Unavailable"}</dd></div>
+              <div><dt>Sessions</dt><dd>{selectedStudy.active_session_count ?? "Unavailable"} active</dd></div>
+              <div><dt>Collection</dt><dd>{selectedStudy.collection_status || "Unavailable"}</dd></div>
             </dl>
             <div className="research-profile-summary">
               <h4>Selected agent profiles</h4>
@@ -300,10 +335,14 @@ const ResearchStudies = () => {
               </form>
             )}
             {isAdmin && selectedStudy.research_status !== "STUDY_STOPPED" && (
-              <button type="button" className="secondary-button" onClick={handleKillSwitch} disabled={isBusy}>
-                {killSwitchId ? "Release kill switch" : "Engage kill switch"}
-              </button>
+              <div className="research-actions">
+                {!selectedStudy.kill_switch?.switch_id || selectedStudy.kill_switch.status === "RELEASED" ? <input aria-label="Kill switch reason" value={killSwitchReason} onChange={(event) => setKillSwitchReason(event.target.value)} placeholder="Reason required" disabled={isBusy} /> : null}
+                <button type="button" className="secondary-button" onClick={handleKillSwitch} disabled={isBusy || ((!selectedStudy.kill_switch?.switch_id || selectedStudy.kill_switch.status === "RELEASED") && !killSwitchReason.trim())}>
+                  {selectedStudy.kill_switch?.switch_id && selectedStudy.kill_switch.status !== "RELEASED" ? "Release kill switch" : "Engage kill switch"}
+                </button>
+              </div>
             )}
+            {isAdmin && selectedStudy.kill_switch && <p className="research-hint">Kill switch: {selectedStudy.kill_switch.status || "RELEASED"}. Reason: {selectedStudy.kill_switch.reason || "Not provided"}</p>}
             {selectedStudy.research_status === "STUDY_STOPPED" && (
               <button type="button" className="primary-button" onClick={handleClone} disabled={isBusy}>Clone as new Draft</button>
             )}

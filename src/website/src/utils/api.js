@@ -1319,6 +1319,11 @@ const normalizeRequestError = (payload, response) => {
   const errors = normalizeErrorEntries(payload);
   const detailObject =
     detail && typeof detail === "object" && !Array.isArray(detail) ? detail : null;
+  const typedCode =
+    (detailObject && detailObject.code) ||
+    (payload && payload.code) ||
+    errors.find((entry) => entry && entry.code)?.code ||
+    "";
   const detailMessage =
     (typeof detail === "string" && detail) ||
     (detailObject &&
@@ -1332,7 +1337,7 @@ const normalizeRequestError = (payload, response) => {
     (errors.length
       ? summarizeValidationErrors(errors)
       : `${response.status}: ${response.statusText}`);
-  return { error, errors, status: response.status };
+  return { code: typedCode, error, errors, status: response.status };
 };
 
 const agentRequest = async (path, { method = "GET", body, label } = {}) => {
@@ -1355,6 +1360,7 @@ const agentRequest = async (path, { method = "GET", body, label } = {}) => {
     return {
       ok: false,
       error: `Failed to ${label || "complete request"}`,
+      status: null,
       errors: [],
     };
   }
@@ -1489,6 +1495,7 @@ export const researchRequest = async (
     return {
       ok: false,
       error: `Failed to ${label || "complete request"}`,
+      status: null,
       errors: [],
     };
   }
@@ -1510,12 +1517,14 @@ export const researchRequest = async (
  * author it immediately), which removes the "paste a UUID" step from the UI.
  * The identity starts as a DRAFT study with a study-owned join code.
  */
-export const createResearchStudy = async ({ name, description, telemetryPolicy, sessionPolicy, profileIds } = {}) =>
+export const createResearchStudy = async ({ name, description, startsAt, endsAt, telemetryPolicy, sessionPolicy, profileIds } = {}) =>
   researchRequest("/studies", {
     method: "POST",
     body: {
       name,
       description: description ?? null,
+      starts_at: startsAt || null,
+      ends_at: endsAt || null,
       telemetry_policy: telemetryPolicy || {},
       session_policy: sessionPolicy || {},
       profile_ids: profileIds || [],
@@ -1602,12 +1611,6 @@ export const releaseResearchKillSwitch = async (switchId) =>
 
 const RESEARCH_ENDPOINT_MISSING = (status) => status === 404 || status === 405;
 
-// Study-scoped join code: the value a researcher shares with participants. It is
-// bound to the study's latest published revision, not to the researcher's own
-// account, so it replaces the per-account enrollment id as the "share this"
-// value on the enrollment page. The endpoint is newer than the rest of the
-// control plane; a 404/405 is reported as `missing` so the UI can degrade to the
-// per-account enrollment id instead of failing.
 export const getResearchStudyJoinCode = async (studyId) => {
   const result = await researchRequest(
     `/studies/${encodeURIComponent(studyId)}`,
@@ -1632,9 +1635,8 @@ export const getResearchStudyJoinCode = async (studyId) => {
   return result;
 };
 
-// Resolve a participant join code to the study/revision it points at, without
-// redeeming it. Read-only, so a participant can confirm the study before
-// accepting the policy and the join page can compare it with any existing enrollment.
+// Resolve a participant join code without redeeming it so the participant can
+// review the study and consent text before joining.
 export const resolveResearchJoinCode = async (joinCode) => {
   const result = await researchRequest(
     `/join/${encodeURIComponent(joinCode)}`,
@@ -1651,9 +1653,13 @@ export const resolveResearchJoinCode = async (joinCode) => {
         study: {
           studyId: study.study_id || "",
           name: study.name || "",
+          description: study.description || "",
+          researchStatus: study.research_status || study.researchStatus || "",
+          joinability: study.joinability || study.joinability_status || "",
+          status: study.status || "",
         },
-        // The single global policy text the participant accepts once at join.
-        policyText: consent.text || "",
+        policyText: consent.text || consent.consent_text || data.consent_text || "",
+        consentText: consent.text || consent.consent_text || data.consent_text || "",
       },
     };
   }
@@ -1683,7 +1689,12 @@ export const redeemResearchJoinCode = async (joinCode, acceptConsent) => {
       data: {
         enrollment_id: data.enrollment_id || "",
         study_id: data.study_id || "",
+        assignment_id: data.assignment_id || "",
+        agent_profile_id: data.agent_profile_id || "",
         status: data.status || "",
+        created: data.created,
+        reused: data.reused,
+        ...(data.handoff && typeof data.handoff === "object" ? { handoff: data.handoff } : {}),
       },
     };
   }

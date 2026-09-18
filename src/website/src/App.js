@@ -20,6 +20,7 @@ import {
 } from "react-router-dom";
 import Start from "./pages/Start";
 function App() {
+  const RESEARCH_JOIN_INTENT_KEY = "code4me.research.join.intent";
   // we manage the state for the uer but setting it to null by default
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -199,7 +200,8 @@ function App() {
     const navigate = useNavigate();
     const onAuth = (userData) => {
       handleAuthenticated(userData);
-      navigate("/dashboard", { replace: true });
+      const pendingJoin = sessionStorage.getItem(RESEARCH_JOIN_INTENT_KEY);
+      navigate(pendingJoin ? "/research/join" : "/dashboard", { replace: true });
     };
     return <Auth onAuthenticated={onAuth} initialMode={mode} />;
   };
@@ -270,9 +272,7 @@ function App() {
               <Route
                 path="/research/join"
                 element={
-                  <ProtectedRoute>
-                    <ResearchParticipantLayout />
-                  </ProtectedRoute>
+                  <ResearchParticipantLayout />
                 }
               >
                 <Route index element={<ResearchJoin />} />

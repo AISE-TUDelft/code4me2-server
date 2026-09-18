@@ -56,6 +56,18 @@ class StudyEnrollmentSummary:
     reused: bool
 
 
+class StudyStoppedError(PermissionError):
+    """Raised when a terminal study cannot accept a new enrollment."""
+
+
+class ActiveEnrollmentError(PermissionError):
+    """Raised when an account already has an active enrollment elsewhere."""
+
+
+class AlreadyEnrolledError(PermissionError):
+    """Raised when an account attempts to rejoin a terminal enrollment."""
+
+
 def profile_snapshot(profile: Any) -> dict[str, Any]:
     """Return the non-secret profile configuration frozen into a study."""
     return {
@@ -140,7 +152,7 @@ def open_study_enrollment(
     if study is None or not bool(getattr(study, "is_research", False)):
         raise ValueError("join code not found")
     if getattr(study, "research_status", None) == ResearchStudyStatus.STUDY_STOPPED.value:
-        raise PermissionError("study is stopped")
+        raise StudyStoppedError("study is stopped")
 
     participant_row = identity_store.get_or_create_participant_row(
         session, account_id, now=timestamp, commit=False
@@ -149,7 +161,7 @@ def open_study_enrollment(
     active_row = identity_store.get_active_enrollment_for_participant(session, participant_row.participant_id)
     if active_row is not None:
         if active_row.study_id != study.study_id:
-            raise PermissionError("account already has an active enrollment")
+            raise ActiveEnrollmentError("account already has an active enrollment")
         assignment = session.execute(
             select(StudyAssignment).where(StudyAssignment.enrollment_id == active_row.enrollment_id)
         ).scalar_one_or_none()
@@ -170,7 +182,7 @@ def open_study_enrollment(
         session, participant_row.participant_id, study.study_id
     )
     if prior_row is not None:
-        raise PermissionError("account cannot rejoin this study")
+        raise AlreadyEnrolledError("account cannot rejoin this study")
 
     selected_profiles = list(
         session.execute(

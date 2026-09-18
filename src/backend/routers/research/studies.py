@@ -8,7 +8,7 @@ metadata can be edited before consent, and stop is terminal and non-destructive.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,6 +26,7 @@ from research.study.lifecycle import (
     update_research_metadata,
 )
 from research.study.protocol import store
+from research.analysis.operations import store as operations_store
 
 router = APIRouter()
 
@@ -84,10 +85,16 @@ def _authorize_study(
     return study
 
 
-def _study_payload(study: Any) -> dict[str, Any]:
+def _study_payload(study: Any, db: Any) -> dict[str, Any]:
     def iso(value: Any) -> Any:
         return value.isoformat() if isinstance(value, datetime) else value
 
+    metrics = store.get_study_read_metrics(db, study.study_id)
+    stopped = getattr(study, "research_status", None) == "STUDY_STOPPED"
+    switch = operations_store.latest_study_kill_switch(db, study.study_id)
+    switch_status = None
+    if switch is not None:
+        switch_status = "ENGAGED" if switch.is_engaged(datetime.now(timezone.utc)) else "RELEASED"
     return {
         "study_id": str(study.study_id),
         "name": study.name,
@@ -106,6 +113,29 @@ def _study_payload(study: Any) -> dict[str, Any]:
         "starts_at": iso(getattr(study, "starts_at", None)),
         "ends_at": iso(getattr(study, "ends_at", None)),
         "created_at": iso(getattr(study, "created_at", None)),
+        "enrollment_count": metrics.enrollment_count,
+        "active_enrollment_count": metrics.active_enrollment_count,
+        "assignment_count": metrics.assignment_count,
+        "active_assignment_count": metrics.active_assignment_count,
+        "active_session_count": metrics.active_session_count,
+        "collection_status": "STOPPED" if stopped else (
+            "ACTIVE" if metrics.active_session_count else "IDLE"
+        ),
+        "lifecycle_capabilities": {
+            "metadata_editable": not stopped and getattr(study, "consent_locked_at", None) is None,
+            "stoppable": not stopped,
+            "cloneable": stopped,
+            "joinable": not stopped and getattr(study, "research_status", None) in {"DRAFT", "ACTIVE"},
+        },
+        "kill_switch": (
+            {
+                "switch_id": str(switch.switch_id),
+                "status": "ENGAGED" if stopped else switch_status,
+                "reason": switch.reason,
+            }
+            if switch is not None
+            else None
+        ),
     }
 
 
@@ -138,7 +168,7 @@ def create_study(
         )
         return JsonResponseWithStatus(
             status_code=201,
-            content=cast(Any, {"study": _study_payload(study)}),
+            content=cast(Any, {"study": _study_payload(study, db)}),
         )
     except PermissionError as error:
         db.rollback()
@@ -172,7 +202,7 @@ def list_studies(
         studies = store.list_studies(db, owner_id)
         return JsonResponseWithStatus(
             status_code=200,
-            content=cast(Any, {"studies": [_study_payload(study) for study in studies]}),
+            content=cast(Any, {"studies": [_study_payload(study, db) for study in studies]}),
         )
     finally:
         db.close()
@@ -190,7 +220,7 @@ def get_study(
         study = _authorize_study(db, current_user, study_id)
         return JsonResponseWithStatus(
             status_code=200,
-            content=cast(Any, {"study": _study_payload(study)}),
+            content=cast(Any, {"study": _study_payload(study, db)}),
         )
     finally:
         db.close()
@@ -227,7 +257,7 @@ def update_study_metadata(
             raise HTTPException(status_code=404, detail=str(error)) from error
         return JsonResponseWithStatus(
             status_code=200,
-            content=cast(Any, {"study": _study_payload(updated)}),
+            content=cast(Any, {"study": _study_payload(updated, db)}),
         )
     finally:
         db.close()
@@ -249,7 +279,7 @@ def stop_study(
         return JsonResponseWithStatus(
             status_code=200,
             content=cast(Any, {
-                "study": _study_payload(updated) if updated is not None else None,
+                "study": _study_payload(updated, db) if updated is not None else None,
                 "stopped": True,
                 "enrollment_count": summary.enrollment_count,
                 "assignment_count": summary.assignment_count,
@@ -278,7 +308,7 @@ def clone_study(
             raise HTTPException(status_code=404, detail=str(error)) from error
         return JsonResponseWithStatus(
             status_code=201,
-            content=cast(Any, {"study": _study_payload(clone)}),
+            content=cast(Any, {"study": _study_payload(clone, db)}),
         )
     finally:
         db.close()

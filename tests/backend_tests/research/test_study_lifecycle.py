@@ -27,6 +27,7 @@ from backend.routers.research.join import JoinRequestBody, redeem_join_code
 from backend.routers.research.access import FundedAccessRefused, require_live_enrollment
 from research.participants.enums import EnrollmentStatus
 from research.study.lifecycle import EnrollmentRevokeSummary, StudyEnrollmentSummary, StudyStopSummary
+from research.study.protocol.store import StudyReadMetrics
 
 
 def test_study_router_exposes_lifecycle_routes_not_revision_routes():
@@ -89,6 +90,12 @@ def test_stop_study_route_returns_terminal_non_destructive_summary():
     ) as stop, patch(
         "backend.routers.research.studies.store.get_study",
         return_value=updated,
+    ), patch(
+        "backend.routers.research.studies.store.get_study_read_metrics",
+        return_value=StudyReadMetrics(2, 2, 2, 2, 0),
+    ), patch(
+        "backend.routers.research.studies.operations_store.latest_study_kill_switch",
+        return_value=None,
     ):
         response = stop_study(
             study_id,
@@ -142,7 +149,13 @@ def test_create_study_starts_draft_with_study_owned_join_code_and_config():
     ), patch(
         "backend.routers.research.studies.store.create_study",
         return_value=created,
-    ) as create:
+    ) as create, patch(
+        "backend.routers.research.studies.store.get_study_read_metrics",
+        return_value=StudyReadMetrics(0, 0, 0, 0, 0),
+    ), patch(
+        "backend.routers.research.studies.operations_store.latest_study_kill_switch",
+        return_value=None,
+    ):
         response = create_study_endpoint(payload, owner, app)
 
     body = json.loads(response.body)
@@ -189,6 +202,12 @@ def test_study_read_metadata_clone_and_revoke_routes_return_lifecycle_payloads()
     ), patch("backend.routers.research.studies.clone_stopped_research_study", return_value=clone), patch(
         "backend.routers.research.studies.revoke_research_enrollment",
         return_value=EnrollmentRevokeSummary(enrollment_id=enrollment_id, session_count=1),
+    ), patch(
+        "backend.routers.research.studies.store.get_study_read_metrics",
+        return_value=StudyReadMetrics(0, 0, 0, 0, 0),
+    ), patch(
+        "backend.routers.research.studies.operations_store.latest_study_kill_switch",
+        return_value=None,
     ):
         assert json.loads(list_studies(owner, app).body)["studies"][0]["study_id"] == str(study_id)
         assert json.loads(get_study(study_id, owner, app).body)["study"]["research_status"] == "STUDY_STOPPED"

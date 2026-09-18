@@ -94,8 +94,8 @@ def _seed_user(session, email: str, *, can_research: bool = False) -> uuid.UUID:
 def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
     profile_id = uuid.uuid4()
     release_id = f"http-release-{uuid.uuid4()}"
-    artifact_digest = "sha256:" + "a" * 64
-    adapter_digest = "sha256:" + "b" * 64
+    artifact_digest = "sha256:" + uuid.uuid4().hex + uuid.uuid4().hex
+    adapter_digest = "sha256:" + uuid.uuid4().hex + uuid.uuid4().hex
     session.execute(
         text(
             "INSERT INTO public.agent_release "
@@ -265,12 +265,23 @@ def _participant(user_id: uuid.UUID) -> AuthenticatedUser:
     )
 
 
+def _admin(user_id: uuid.UUID) -> AuthenticatedUser:
+    return AuthenticatedUser(
+        user_id=user_id,
+        is_admin=True,
+        email="http-admin@example.com",
+        name="HTTP Admin",
+        can_research=True,
+    )
+
+
 def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
     client, session_factory, current_user = http_runtime
     session = session_factory()
     try:
         owner_id = _seed_user(session, "http-owner@example.com", can_research=True)
         participant_id = _seed_user(session, "http-participant@example.com")
+        admin_id = _seed_user(session, "http-admin@example.com", can_research=True)
         profile_id = _profile(session, owner_id)
     finally:
         session.close()
@@ -297,6 +308,18 @@ def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
     assert study["research_status"] == "DRAFT"
     assert study["research_config_digest"]
     assert study["profile_selections"][0]["profile_id"] == str(profile_id)
+    assert study["enrollment_count"] == 0
+    assert study["active_enrollment_count"] == 0
+    assert study["assignment_count"] == 0
+    assert study["active_assignment_count"] == 0
+    assert study["active_session_count"] == 0
+    assert study["lifecycle_capabilities"] == {
+        "metadata_editable": True,
+        "stoppable": True,
+        "cloneable": False,
+        "joinable": True,
+    }
+    assert study["kill_switch"] is None
 
     listed = client.get("/api/research/studies")
     assert listed.status_code == 200
@@ -317,6 +340,41 @@ def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
     assert joined.json()["assignment_id"]
     assert joined.json()["agent_profile_id"]
 
+    current_user["value"] = _owner(owner_id)
+    populated = client.get(f"/api/research/studies/{study_id}")
+    assert populated.status_code == 200
+    populated_study = populated.json()["study"]
+    assert populated_study["enrollment_count"] == 1
+    assert populated_study["active_enrollment_count"] == 1
+    assert populated_study["assignment_count"] == 1
+    assert populated_study["active_assignment_count"] == 1
+    assert populated_study["lifecycle_capabilities"]["metadata_editable"] is False
+    assert "participant_code" not in json.dumps(populated_study)
+    assert "http-participant@example.com" not in json.dumps(populated_study)
+    assert "TEST_KEY" not in json.dumps(populated_study)
+
+    current_user["value"] = _admin(admin_id)
+    blank_reason = client.post(
+        "/api/research/operations/kill-switch",
+        json={"scope_kind": "STUDY", "scope_id": study_id, "reason": "   "},
+    )
+    assert blank_reason.status_code == 422
+
+    current_user["value"] = _participant(participant_id)
+    unauthorized_switch = client.post(
+        "/api/research/operations/kill-switch",
+        json={"scope_kind": "STUDY", "scope_id": study_id, "reason": "maintenance"},
+    )
+    assert unauthorized_switch.status_code == 403
+
+    current_user["value"] = _admin(admin_id)
+    engaged = client.post(
+        "/api/research/operations/kill-switch",
+        json={"scope_kind": "STUDY", "scope_id": study_id, "reason": "maintenance"},
+    )
+    assert engaged.status_code == 201, engaged.text
+    switch_id = engaged.json()["switch_id"]
+
     signing_secret = "http-contract-secret"
     bootstrap_capability = issue_capability(
         audience="research-runtime",
@@ -331,6 +389,26 @@ def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
     with patch("backend.routers.research.bootstrap.BOOTSTRAP_SIGNING_SECRET", signing_secret), patch(
         "backend.routers.research.sessions.BOOTSTRAP_SIGNING_SECRET", signing_secret
     ), patch("backend.routers.research.telemetry.BOOTSTRAP_SIGNING_SECRET", signing_secret):
+        session_response = client.post(
+            "/api/research/sessions/",
+            json={
+                "capability": bootstrap_capability.model_dump(mode="json"),
+                "enrollment_id": enrollment_id,
+                "study_id": study_id,
+                "manifest_digest": "http-manifest",
+                "context_id": "http-contract-context",
+            },
+        )
+        assert session_response.status_code == 403, session_response.text
+        assert session_response.json()["detail"]["code"] == "KILL_SWITCH_ENGAGED"
+
+        current_user["value"] = _admin(admin_id)
+        released = client.post(
+            f"/api/research/operations/kill-switch/{switch_id}/release"
+        )
+        assert released.status_code == 200, released.text
+
+        current_user["value"] = _participant(participant_id)
         session_response = client.post(
             "/api/research/sessions/",
             json={
@@ -414,6 +492,15 @@ def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
     )
     assert stopped.status_code == 200, stopped.text
     assert stopped.json()["study"]["research_status"] == "STUDY_STOPPED"
+    assert stopped.json()["study"]["kill_switch"]["status"] == "ENGAGED"
+
+    current_user["value"] = _admin(admin_id)
+    stopped_switch = client.post(
+        "/api/research/operations/kill-switch",
+        json={"scope_kind": "STUDY", "scope_id": study_id, "reason": "second switch"},
+    )
+    assert stopped_switch.status_code == 409
+    assert stopped_switch.json()["detail"]["code"] == "STUDY_STOPPED"
 
     current_user["value"] = _participant(participant_id)
     stopped_join = client.get(f"/api/research/join/{join_code}")
@@ -456,15 +543,158 @@ def test_http_revoke_marks_enrollment_and_assignment_terminal(http_runtime):
     finally:
         session.close()
 
-    current_user["value"] = _owner(owner_id)
+
+def test_http_web_join_contract_matrix(http_runtime):
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "matrix-owner@example.com", can_research=True)
+        cross_owner_id = _seed_user(session, "matrix-cross-owner@example.com", can_research=True)
+        stopped_owner_id = _seed_user(session, "matrix-stopped-owner@example.com", can_research=True)
+        participant_one_id = _seed_user(session, "matrix-one@example.com")
+        participant_two_id = _seed_user(session, "matrix-two@example.com")
+        participant_three_id = _seed_user(session, "matrix-three@example.com")
+        profile_id = _profile(session, owner_id)
+        cross_profile_id = _profile(session, cross_owner_id)
+        stopped_profile_id = _profile(session, stopped_owner_id)
+    finally:
+        session.close()
+
+    studies = []
+    for study_owner_id, name, selected_profile_id in (
+        (owner_id, "Matrix active", profile_id),
+        (cross_owner_id, "Matrix cross-study", cross_profile_id),
+        (stopped_owner_id, "Matrix stopped", stopped_profile_id),
+    ):
+        current_user["value"] = _owner(study_owner_id)
+        response = client.post(
+            "/api/research/studies",
+            json={"name": name, "profile_ids": [str(selected_profile_id)]},
+        )
+        assert response.status_code == 201, response.text
+        studies.append(response.json()["study"])
+    active, cross_study, stopped = studies
+
+    def counts():
+        session = session_factory()
+        try:
+            return tuple(
+                session.execute(text(f"SELECT count(*) FROM public.{table}")).scalar_one()
+                for table in (
+                    "research_participant",
+                    "research_enrollment",
+                    "study_assignment",
+                )
+            )
+        finally:
+            session.close()
+
+    current_user["value"] = None
+    assert client.get(f"/api/research/join/{active['join_code']}").status_code == 401
+    assert client.post(
+        "/api/research/join", json={"join_code": active["join_code"], "accept_consent": True}
+    ).status_code == 401
+
+    current_user["value"] = _participant(participant_one_id)
+    resolved = client.get(f"/api/research/join/{active['join_code']}")
+    assert resolved.status_code == 200, resolved.text
+    resolved_body = resolved.json()
+    assert resolved_body["study"] == {
+        "study_id": active["study_id"],
+        "name": active["name"],
+        "description": active["description"],
+        "research_status": "DRAFT",
+    }
+    assert "email" not in json.dumps(resolved_body)
+    assert "participant" not in json.dumps(resolved_body).lower()
+    before = counts()
+    for body in (
+        {"join_code": active["join_code"]},
+        {"join_code": active["join_code"], "accept_consent": False},
+    ):
+        rejected = client.post("/api/research/join", json=body)
+        assert rejected.status_code == 409, rejected.text
+        assert rejected.json()["detail"]["code"] == "CONSENT_REQUIRED"
+        assert counts() == before
+    assert client.post(
+        "/api/research/join",
+        json={"join_code": active["join_code"], "accept_consent": True, "extra": True},
+    ).status_code == 422
+    assert counts() == before
+
+    joined = client.post(
+        "/api/research/join",
+        json={"join_code": active["join_code"], "accept_consent": True},
+    )
+    assert joined.status_code == 201, joined.text
+    first = joined.json()
+    assert {"enrollment_id", "study_id", "assignment_id", "agent_profile_id"} <= first.keys()
+    assert "email" not in json.dumps(first)
+    assert counts() == (1, 1, 1)
+    repeated = client.post(
+        "/api/research/join",
+        json={"join_code": active["join_code"], "accept_consent": True},
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["enrollment_id"] == first["enrollment_id"]
+    assert repeated.json()["assignment_id"] == first["assignment_id"]
+    assert counts() == (1, 1, 1)
+
+    cross_before = counts()
+    cross = client.post(
+        "/api/research/join",
+        json={"join_code": cross_study["join_code"], "accept_consent": True},
+    )
+    assert cross.status_code == 409, cross.text
+    assert cross.json()["detail"]["code"] == "ACTIVE_ENROLLMENT_EXISTS"
+    assert counts() == cross_before
+
+    current_user["value"] = _participant(participant_two_id)
+    second = client.post(
+        "/api/research/join",
+        json={"join_code": cross_study["join_code"], "accept_consent": True},
+    )
+    assert second.status_code == 201, second.text
+    second_id = second.json()["enrollment_id"]
+    current_user["value"] = _owner(cross_owner_id)
+    revoked = client.post(
+        f"/api/research/studies/{cross_study['study_id']}/enrollments/{second_id}/revoke",
+        json={"actor": "matrix-owner"},
+    )
+    assert revoked.status_code == 200, revoked.text
+    current_user["value"] = _participant(participant_two_id)
+    terminal = client.post(
+        "/api/research/join",
+        json={"join_code": cross_study["join_code"], "accept_consent": True},
+    )
+    assert terminal.status_code == 409, terminal.text
+    assert terminal.json()["detail"]["code"] == "ALREADY_ENROLLED"
+    assert counts() == (2, 2, 2)
+
+    current_user["value"] = _owner(stopped_owner_id)
+    stopped_response = client.post(
+        f"/api/research/studies/{stopped['study_id']}/stop", json={"actor": "matrix-owner"}
+    )
+    assert stopped_response.status_code == 200, stopped_response.text
+    current_user["value"] = _participant(participant_three_id)
+    stopped_before = counts()
+    stopped_join = client.post(
+        "/api/research/join",
+        json={"join_code": stopped["join_code"], "accept_consent": True},
+    )
+    assert stopped_join.status_code == 409, stopped_join.text
+    assert stopped_join.json()["detail"]["code"] == "STUDY_STOPPED"
+    assert counts() == stopped_before
+
+    current_user["value"] = _owner(stopped_owner_id)
     created = client.post(
         "/api/research/studies",
-        json={"name": "Revoke study", "profile_ids": [str(profile_id)]},
+        json={"name": "Revoke study", "profile_ids": [str(stopped_profile_id)]},
     )
     assert created.status_code == 201, created.text
     study = created.json()["study"]
 
-    current_user["value"] = _participant(participant_id)
+    current_user["value"] = _participant(participant_three_id)
     joined = client.post(
         "/api/research/join",
         json={"join_code": study["join_code"], "accept_consent": True},
@@ -472,7 +702,7 @@ def test_http_revoke_marks_enrollment_and_assignment_terminal(http_runtime):
     assert joined.status_code == 201, joined.text
     enrollment_id = joined.json()["enrollment_id"]
 
-    current_user["value"] = _owner(owner_id)
+    current_user["value"] = _owner(stopped_owner_id)
     revoked = client.post(
         f"/api/research/studies/{study['study_id']}/enrollments/{enrollment_id}/revoke",
         json={"actor": "http-owner"},
@@ -595,4 +825,21 @@ def test_http_bootstrap_qualified_codex_manifest_is_revision_free(http_runtime):
     assert manifest["agent_release"]["agent_id"] == "codex"
     assert manifest["agent_release"]["distribution_mode"] == "BYOA_EXTERNAL"
     assert "TEST_KEY" not in str(manifest)
+
+    with patch(
+        "backend.routers.research.bootstrap._SIGNER",
+        BootstrapSigningContext(secret=signing_secret),
+    ):
+        repeated = client.post(
+            "/api/research/bootstrap/research-sessions",
+            json={
+                "enrollment_id": enrollment_id,
+                "context_id": "codex-http-context",
+                "environment": {"os": "macos", "arch": "arm64"},
+            },
+        )
+    assert repeated.status_code == 201, repeated.text
+    repeated_manifest = repeated.json()["manifest"]
+    assert repeated_manifest["assignment"] == manifest["assignment"]
+    assert repeated_manifest["research_session"] == manifest["research_session"]
 
