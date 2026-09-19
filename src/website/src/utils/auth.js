@@ -1,4 +1,3 @@
-import CryptoJS from "crypto-js";
 import { jwtDecode } from "jwt-decode";
 /**
  * Initialize Google OAuth and process the credential response

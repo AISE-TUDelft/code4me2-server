@@ -102,16 +102,7 @@ const Signup = ({ onSwitchToLogin, onSignup, onGoogleAuth }) => {
     }
   };
 
-  const handleGoogleSignup = async () => {
-    setIsSubmitting(true);
-    try {
-    } catch (err) {
-      setError("Google signup failed. Please try again.");
-      console.error("Google signup error:", err);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+
 
   return (
     <div className="auth-container">
