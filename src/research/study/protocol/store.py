@@ -26,7 +26,7 @@ from database.research_schemas import (
     StudyAgentProfile,
     StudyAssignment,
 )
-from research.study.agents.enums import QualificationStatus
+from research.study.agents.enums import QualificationStatus, MANAGED_RUNTIME_FRAMEWORK
 from research.study.agents.store import get_release
 from research.canonical import canonical_hash
 
@@ -172,6 +172,12 @@ def create_study(
             raise ValueError("selected agent profile is unavailable")
         if not allow_shared_profiles and profile.owner_user_id != created_by:
             raise PermissionError("selected agent profile is not owned by the researcher")
+        if str(getattr(profile, "framework_version", "") or "") != MANAGED_RUNTIME_FRAMEWORK:
+            raise ValueError(
+                "RUNTIME_NOT_MANAGED: selected profile runtime "
+                f"{getattr(profile, 'framework_version', None)!r} is not managed in this release "
+                f"(supported: {MANAGED_RUNTIME_FRAMEWORK!r})"
+            )
         database_crud.validate_profile_release(session, profile.release_id)
         if not profile.release_id:
             raise ValueError("RELEASE_UNRESOLVED: selected profile has no release")

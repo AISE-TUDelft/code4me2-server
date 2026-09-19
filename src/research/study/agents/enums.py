@@ -20,10 +20,16 @@ __all__ = [
     "DistributionMode",
     "DistributionSourceType",
     "Fidelity",
+    "MANAGED_RUNTIME_FRAMEWORK",
     "QualificationStatus",
     "RegistryReasonCode",
     "SnapshotCapabilityState",
 ]
+
+#: The one agent runtime the managed protocol runs in this release. Goose and
+#: Codex releases exist as BYOA identities but are not participant-ready, so a
+#: study may not bind them until the managed protocol manages them.
+MANAGED_RUNTIME_FRAMEWORK = "code4me2-agent"
 
 
 class DistributionMode(str, Enum):

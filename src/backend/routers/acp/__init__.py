@@ -67,6 +67,7 @@ from backend.routers.analytics.auth_utils import (
 from backend.routers.research import access
 from database import crud
 from research.analysis.operations import store as operations_store
+from research.study.agents.enums import MANAGED_RUNTIME_FRAMEWORK
 from utils import create_uuid
 
 router = APIRouter()
@@ -158,7 +159,7 @@ FALLBACK_MODEL = "qwen2.5-coder:7b"
 FALLBACK_MAX_ITERATIONS = 6
 FALLBACK_MAX_CONTEXT_TOKENS = 16_000
 MANAGED_PROTOCOL_VERSION = "1"
-MANAGED_RUNTIME = "code4me2-agent"
+MANAGED_RUNTIME = MANAGED_RUNTIME_FRAMEWORK
 SUPPORTED_APPROVAL_POLICIES = frozenset({"auto", "per_step", "suggestion_only"})
 
 _BEARER_PREFIX = "Bearer "
