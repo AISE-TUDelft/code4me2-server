@@ -26,8 +26,9 @@ from database.research_schemas import (
     StudyAgentProfile,
     StudyAssignment,
 )
+from research.study.agents.distributions import validate_profile_configuration
 from research.study.agents.enums import QualificationStatus
-from research.study.agents.store import get_release
+from research.study.agents.store import get_release, row_to_release
 from research.canonical import canonical_hash
 
 
@@ -115,6 +116,80 @@ def _study_view(session: Session, row: StudyRow) -> StudyView:
     )
 
 
+def build_profile_selections(
+    session: Session,
+    *,
+    study_id: uuid.UUID,
+    profile_ids: Optional[Sequence[uuid.UUID]],
+    created_by: Optional[uuid.UUID],
+    allow_shared_profiles: bool = False,
+    timestamp: Optional[datetime] = None,
+) -> list[StudyAgentProfile]:
+    """Validate and build the frozen ``StudyAgentProfile`` rows for a study.
+
+    The single implementation of the profile-freeze invariants (owner, active,
+    release-qualified, executable configuration) shared by :func:`create_study`
+    and the stopped-study clone. The returned rows are *not* added to the
+    session: the caller inserts them in its own transaction so study creation
+    and clone stay atomic.
+    """
+    selected_profile_ids = list(profile_ids or [])
+    if len(selected_profile_ids) != len(set(selected_profile_ids)):
+        raise ValueError("study profile selection contains duplicates")
+    created_at = timestamp or _now()
+    selections: list[StudyAgentProfile] = []
+    for selection_order, profile_id in enumerate(selected_profile_ids):
+        profile = session.get(AgentProfile, profile_id)
+        if profile is None or not bool(getattr(profile, "is_active", True)):
+            raise ValueError("selected agent profile is unavailable")
+        if not allow_shared_profiles and profile.owner_user_id != created_by:
+            raise PermissionError("selected agent profile is not owned by the researcher")
+        database_crud.validate_profile_release(session, profile.release_id)
+        if not profile.release_id:
+            raise ValueError("RELEASE_UNRESOLVED: selected profile has no release")
+        release = get_release(session, profile.release_id)
+        if release is None:
+            raise ValueError("RELEASE_UNRESOLVED: selected profile release is missing")
+        release_status = str(release.status or "").upper()
+        if release_status in {
+            QualificationStatus.RETIRED.value,
+            QualificationStatus.BLOCKED.value,
+        }:
+            raise ValueError("RELEASE_WITHDRAWN: selected profile release is withdrawn")
+        if release_status != QualificationStatus.QUALIFIED.value:
+            raise ValueError("RELEASE_NOT_QUALIFIED: selected profile release is not qualified")
+        # Framework, distribution mode/identity, tools and approval evidence must
+        # be executable *together* before the profile is frozen into the study
+        # (ISSUE-03/17). A qualified BYOA release stays a valid choice.
+        validate_profile_configuration(
+            profile, row_to_release(release), release_json=release.release_json
+        )
+        snapshot = {
+            "profile_id": str(profile.profile_id),
+            "name": profile.name,
+            "model": profile.model,
+            "framework_version": profile.framework_version,
+            "release_id": profile.release_id,
+            "connection_id": str(profile.connection_id) if profile.connection_id else None,
+            "tools_json": profile.tools_json,
+            "approval_policy": profile.approval_policy,
+            "max_steps": profile.max_steps,
+            "temperature": profile.temperature,
+            "max_context_tokens": profile.max_context_tokens,
+        }
+        selections.append(
+            StudyAgentProfile(
+                study_id=study_id,
+                profile_id=profile.profile_id,
+                profile_digest=canonical_hash(snapshot),
+                profile_snapshot_json=snapshot,
+                selection_order=selection_order,
+                created_at=created_at,
+            )
+        )
+    return selections
+
+
 def create_study(
     session: Session,
     *,
@@ -164,51 +239,15 @@ def create_study(
         created_at=timestamp,
     )
     session.add(row)
-    if len(selected_profile_ids) != len(set(selected_profile_ids)):
-        raise ValueError("study profile selection contains duplicates")
-    for selection_order, profile_id in enumerate(selected_profile_ids):
-        profile = session.get(AgentProfile, profile_id)
-        if profile is None or not bool(getattr(profile, "is_active", True)):
-            raise ValueError("selected agent profile is unavailable")
-        if not allow_shared_profiles and profile.owner_user_id != created_by:
-            raise PermissionError("selected agent profile is not owned by the researcher")
-        database_crud.validate_profile_release(session, profile.release_id)
-        if not profile.release_id:
-            raise ValueError("RELEASE_UNRESOLVED: selected profile has no release")
-        release = get_release(session, profile.release_id)
-        if release is None:
-            raise ValueError("RELEASE_UNRESOLVED: selected profile release is missing")
-        release_status = str(release.status or "").upper()
-        if release_status in {
-            QualificationStatus.RETIRED.value,
-            QualificationStatus.BLOCKED.value,
-        }:
-            raise ValueError("RELEASE_WITHDRAWN: selected profile release is withdrawn")
-        if release_status != QualificationStatus.QUALIFIED.value:
-            raise ValueError("RELEASE_NOT_QUALIFIED: selected profile release is not qualified")
-        snapshot = {
-            "profile_id": str(profile.profile_id),
-            "name": profile.name,
-            "model": profile.model,
-            "framework_version": profile.framework_version,
-            "release_id": profile.release_id,
-            "connection_id": str(profile.connection_id) if profile.connection_id else None,
-            "tools_json": profile.tools_json,
-            "approval_policy": profile.approval_policy,
-            "max_steps": profile.max_steps,
-            "temperature": profile.temperature,
-            "max_context_tokens": profile.max_context_tokens,
-        }
-        session.add(
-            StudyAgentProfile(
-                study_id=study_id,
-                profile_id=profile.profile_id,
-                profile_digest=canonical_hash(snapshot),
-                profile_snapshot_json=snapshot,
-                selection_order=selection_order,
-                created_at=timestamp,
-            )
-        )
+    for selection in build_profile_selections(
+        session,
+        study_id=study_id,
+        profile_ids=selected_profile_ids,
+        created_by=created_by,
+        allow_shared_profiles=allow_shared_profiles,
+        timestamp=timestamp,
+    ):
+        session.add(selection)
     session.commit()
     session.refresh(row)
     return _study_view(session, row)

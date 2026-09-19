@@ -16,11 +16,12 @@ Two documents are defined:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime  # noqa: TC003 - pydantic resolves model annotations at runtime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID  # noqa: TC003 - pydantic resolves model annotations at runtime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from research.compatibility.enums import Fidelity
 
@@ -31,6 +32,18 @@ from .enums import (
     QualificationStatus,
     SnapshotCapabilityState,
 )
+
+#: Frozen profile fields a BYOA release may declare a translation for. A field
+#: the profile actually sets must be covered by a binding (ISSUE-03 Path A).
+BYOA_CONFIG_FIELDS = (
+    "model",
+    "temperature",
+    "max_steps",
+    "tools",
+    "approval_policy",
+)
+BYOA_CONFIG_TRANSPORTS = ("env", "arg")
+BYOA_CONFIG_FORMATS = ("string", "json", "csv")
 
 _BASE_CONFIG = ConfigDict(extra="forbid")
 _FROZEN_CONFIG = ConfigDict(extra="forbid", frozen=True)
@@ -116,6 +129,64 @@ class AdapterRef(BaseModel):
     supported_release_ranges: list[str] = Field(default_factory=list)
 
 
+class AgentConfigBinding(BaseModel):
+    """One declared translation of a frozen profile field for a BYOA release.
+
+    The release owns the external agent's configuration vocabulary, so it
+    declares how each frozen profile field reaches the process at launch:
+
+    * ``transport="env"`` sets the environment variable ``key``;
+    * ``transport="arg"`` appends ``[key, value]`` to the agent argv.
+
+    ``format`` renders list values (``tools``) as ``csv`` or ``json``;
+    ``value_map`` translates the server-side vocabulary to the agent's (for
+    example ``per_step -> on-request``). A binding whose transport is not
+    executable fails closed at profile/study creation; it is never silently
+    ignored.
+    """
+
+    model_config = _BASE_CONFIG
+
+    field: str
+    transport: Literal["env", "arg"]
+    key: str
+    format: Literal["string", "json", "csv"] = "string"
+    value_map: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("field")
+    @classmethod
+    def _known_field(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in BYOA_CONFIG_FIELDS:
+            raise ValueError("field must be one of " + ", ".join(BYOA_CONFIG_FIELDS))
+        return normalized
+
+    @field_validator("key")
+    @classmethod
+    def _non_blank_key(cls, value: str) -> str:
+        normalized = (value or "").strip()
+        if not normalized:
+            raise ValueError("key must not be blank")
+        if "=" in normalized or any(
+            ord(char) < 32 or ord(char) == 127 for char in normalized
+        ):
+            # ``--agent-env`` is a KEY=VALUE token: a key containing '=' or a
+            # control character would silently mis-bind or corrupt the launch
+            # argv.
+            raise ValueError("key must not contain '=' or control characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def _transport_key_shape(self) -> AgentConfigBinding:
+        if self.transport == "env" and not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*", self.key
+        ):
+            raise ValueError(
+                "an env binding key must be a valid environment variable name"
+            )
+        return self
+
+
 class AgentReleaseV1(BaseModel):
     """An immutable, digest-pinned agent release record (schema version 1).
 
@@ -147,6 +218,10 @@ class AgentReleaseV1(BaseModel):
     # BYOA only: the logical package (``goose``/``codex``/...) used for discovery
     # when no explicit command is pinned.
     agent_package: Optional[str] = None
+    # BYOA only: the declared translation of frozen profile fields into the
+    # external agent's configuration (ISSUE-03 Path A). Empty means the release
+    # cannot honor any profile field, so a profile that sets one is rejected.
+    byoa_config: list[AgentConfigBinding] = Field(default_factory=list)
     adapter: Optional[AdapterRef] = None
     # Negotiated ACP protocol range the release is compatible with.
     min_protocol_version: Optional[str] = None
@@ -156,6 +231,19 @@ class AgentReleaseV1(BaseModel):
     # passing receipt a release is ``UNQUALIFIED``.
     qualification_status: QualificationStatus = QualificationStatus.UNQUALIFIED
     created_at: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def _unique_config_bindings(self) -> AgentReleaseV1:
+        seen: set[str] = set()
+        for binding in self.byoa_config:
+            if binding.field in seen:
+                raise ValueError(
+                    f"duplicate byoa_config binding for {binding.field!r}"
+                )
+            seen.add(binding.field)
+        if self.byoa_config and not self.is_byoa:
+            raise ValueError("byoa_config is only valid for a BYOA_EXTERNAL release")
+        return self
 
     @property
     def digest_identity(self) -> tuple[str, str, str]:

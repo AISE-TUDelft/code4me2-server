@@ -1,6 +1,7 @@
 import json
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from typing import List, Optional, Tuple, Type, Union
 
 from sqlalchemy import func, text
@@ -14,8 +15,10 @@ from database.embedding_service import encode_text
 from utils import hash_password, verify_password
 from research.canonical import canonical_hash
 from database.research_schemas import AgentRelease
+from research.study.agents.distributions import validate_profile_configuration
 from research.study.agents.enums import QualificationStatus
 from research.study.agents.registry import SELECTABLE_STATUSES
+from research.study.agents.store import row_to_release
 
 
 class ProfileReleaseError(ValueError):
@@ -44,6 +47,51 @@ def validate_profile_release(session: Session, release_id: Optional[str]) -> Non
         raise ProfileReleaseError(
             "RELEASE_NOT_QUALIFIED", f"release {release_id!r} is not qualified"
         )
+
+
+def _validate_profile_configuration(
+    db: Session,
+    *,
+    name: str,
+    framework_version: str,
+    release_id: Optional[str],
+    tools_json: str,
+    approval_policy: str,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_steps: Optional[int] = None,
+) -> None:
+    """Enforce the shared profile↔release executable contract (ISSUE-03/17).
+
+    The candidate fields are validated together against the rehydrated release
+    and its stored conformance evidence, so a profile that cannot execute is
+    rejected at create/update time with a typed reason. ``model`` /
+    ``temperature`` / ``max_steps`` participate in the BYOA field-coverage
+    check; omitting them would let an unmapped field through until study
+    creation.
+    """
+    if release_id is None:
+        raise ProfileReleaseError(
+            "RELEASE_UNRESOLVED", "a profile must pin a registered release"
+        )
+    row = db.get(AgentRelease, release_id)
+    if row is None:
+        raise ProfileReleaseError(
+            "RELEASE_UNRESOLVED", f"release {release_id!r} is not registered"
+        )
+    candidate = SimpleNamespace(
+        name=name,
+        framework_version=framework_version,
+        release_id=release_id,
+        tools_json=tools_json,
+        approval_policy=approval_policy,
+        model=model,
+        temperature=temperature,
+        max_steps=max_steps,
+    )
+    validate_profile_configuration(
+        candidate, row_to_release(row), release_json=row.release_json
+    )
 
 
 # User
@@ -1206,6 +1254,17 @@ def create_agent_profile(
     a profile never stores a URL or a secret reference.
     """
     validate_profile_release(db, release_id)
+    _validate_profile_configuration(
+        db,
+        name=name,
+        framework_version=framework_version,
+        release_id=release_id,
+        tools_json=tools_json,
+        approval_policy=approval_policy,
+        model=model,
+        temperature=temperature,
+        max_steps=max_steps,
+    )
     profile = db_schemas.AgentProfile(
         profile_id=uuid.uuid4(),
         owner_user_id=owner_user_id,
@@ -1278,6 +1337,25 @@ def update_agent_profile(
     _assert_agent_profile_editable(db, profile_id)
     if update_release_id:
         validate_profile_release(db, release_id)
+    # Validate the merged result, not just the supplied fields: changing only
+    # the framework (or only the release) must not leave an unexecutable pair.
+    _validate_profile_configuration(
+        db,
+        name=name if name is not None else profile.name,
+        framework_version=(
+            framework_version if framework_version is not None else profile.framework_version
+        ),
+        release_id=release_id if update_release_id else profile.release_id,
+        tools_json=tools_json if tools_json is not None else profile.tools_json,
+        approval_policy=(
+            approval_policy if approval_policy is not None else profile.approval_policy
+        ),
+        model=model if model is not None else profile.model,
+        temperature=(
+            temperature if temperature is not None else profile.temperature
+        ),
+        max_steps=max_steps if max_steps is not None else profile.max_steps,
+    )
     if name is not None:
         profile.name = name
     if model is not None:

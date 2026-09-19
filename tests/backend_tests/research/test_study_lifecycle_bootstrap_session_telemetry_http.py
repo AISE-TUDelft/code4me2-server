@@ -31,6 +31,7 @@ from research.runtime.bootstrap.service import BootstrapSigningContext
 from research.study.agents.enums import DistributionMode, QualificationStatus
 from research.study.agents.models import (
     AdapterRef,
+    AgentConfigBinding,
     AgentReleaseV1,
     DistributionArtifact,
 )
@@ -43,6 +44,8 @@ from research.telemetry.normalization import (
     unregister_adapter,
 )
 from research.telemetry.normalization.generic_acp import GENERIC_ACP_NORMALIZER_VERSION
+
+from ._byoa_contract import BYOA_CONFIG_BINDINGS
 
 load_dotenv()
 TEST_DB_URL = os.getenv(
@@ -188,6 +191,9 @@ def _qualified_codex_byoa_release(session) -> str:
         source_manifest_digest="sha256:" + "2" * 64,
         distribution_mode=DistributionMode.BYOA_EXTERNAL,
         agent_package="codex",
+        byoa_config=[
+            AgentConfigBinding(**item) for item in BYOA_CONFIG_BINDINGS
+        ],
         adapter=AdapterRef(
             adapter_id="acp-adapter",
             version="0.4.0",
@@ -207,6 +213,74 @@ def _qualified_codex_byoa_release(session) -> str:
             "case_results": [
                 {"case_id": "acp.initialize.session", "status": "PASS"}
             ],
+        }
+    ]
+    session.execute(
+        text(
+            "INSERT INTO public.agent_release "
+            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+            "VALUES (:release_id, :agent_id, :manifest, :status, CAST(:release_json AS jsonb), now())"
+        ),
+        {
+            "release_id": release.release_id,
+            "agent_id": release.agent_id,
+            "manifest": release.source_manifest_digest,
+            "status": release.qualification_status.value,
+            "release_json": json.dumps(release_json),
+        },
+    )
+    session.commit()
+    return release.release_id
+
+
+def _partially_qualified_packaged_release(session) -> str:
+    """Insert a packaged release whose PASS receipt covers only macOS.
+
+    The release publishes macOS *and* Linux artifacts, but the receipt binds
+    the macOS digest+platform only, so a Linux bootstrap must be refused even
+    though the release-level status is QUALIFIED (ISSUE-10).
+    """
+    macos_digest = "sha256:" + "c" * 64
+    linux_digest = "sha256:" + "e" * 64
+    adapter_digest = "sha256:" + "d" * 64
+    release = AgentReleaseV1(
+        agent_id="codex-acp",
+        release_id=f"codex-partial-{uuid.uuid4()}",
+        version="1.2.3",
+        source_manifest_digest=macos_digest,
+        distribution_mode=DistributionMode.PACKAGED,
+        artifacts=[
+            DistributionArtifact(
+                os="macos",
+                arch="arm64",
+                path="codex/1.2.3/macos-arm64.tar.gz",
+                sha256=macos_digest,
+                size=1048576,
+            ),
+            DistributionArtifact(
+                os="linux",
+                arch="x64",
+                path="codex/1.2.3/linux-x64.tar.gz",
+                sha256=linux_digest,
+                size=1048576,
+            ),
+        ],
+        adapter=AdapterRef(
+            adapter_id="acp-adapter",
+            version="0.4.0",
+            digest=adapter_digest,
+        ),
+        qualification_status=QualificationStatus.QUALIFIED,
+    )
+    release_json = release.model_dump(mode="json")
+    release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
+    release_json["conformance"] = [
+        {
+            "status": "PASS",
+            "artifact_digest": macos_digest,
+            "adapter_digest": adapter_digest,
+            "host": {"os": "macos", "arch": "arm64"},
+            "case_results": [{"status": "PASS"}],
         }
     ]
     session.execute(
@@ -249,7 +323,13 @@ _CODEX_ACP_OBSERVATION = {
 }
 
 
-def _release_profile(session, owner_id: uuid.UUID, release_id: str) -> tuple[uuid.UUID, uuid.UUID]:
+def _release_profile(
+    session,
+    owner_id: uuid.UUID,
+    release_id: str,
+    *,
+    framework_version: str = "code4me2-agent",
+) -> tuple[uuid.UUID, uuid.UUID]:
     connection_id = uuid.uuid4()
     profile_id = uuid.uuid4()
     session.execute(
@@ -263,14 +343,15 @@ def _release_profile(session, owner_id: uuid.UUID, release_id: str) -> tuple[uui
     session.execute(
         text(
             "INSERT INTO public.agent_profile "
-            "(profile_id, owner_user_id, name, model, release_id, connection_id, tools_json, approval_policy, max_steps) "
-            "VALUES (:profile_id, :owner_id, 'Codex', 'model', :release_id, :connection_id, '[]', 'auto', 1)"
+            "(profile_id, owner_user_id, name, model, framework_version, release_id, connection_id, tools_json, approval_policy, max_steps) "
+            "VALUES (:profile_id, :owner_id, 'Codex', 'model', :framework, :release_id, :connection_id, '[]', 'auto', 1)"
         ),
         {
             "profile_id": profile_id,
             "owner_id": owner_id,
             "release_id": release_id,
             "connection_id": connection_id,
+            "framework": framework_version,
         },
     )
     session.commit()
@@ -868,3 +949,72 @@ def test_http_codex_byoa_adapter_normalization_and_terminal_closure(http_runtime
     assert terminal.status_code == 200, terminal.text
     assert len(terminal.json()["rejected"]) == 1
     assert terminal.json()["rejected"][0]["reason"] == "REVOKED"
+
+
+def test_http_bootstrap_refuses_an_unqualified_platform_artifact(http_runtime):
+    """ISSUE-10: a release-qualified study still cannot bootstrap an artifact
+    whose exact digest+platform+adapter was never covered by conformance."""
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "partial-owner@example.com", can_research=True)
+        participant_id = _seed_user(session, "partial-participant@example.com")
+        release_id = _partially_qualified_packaged_release(session)
+        profile_id, _connection_id = _release_profile(session, owner_id, release_id)
+    finally:
+        session.close()
+
+    current_user["value"] = _owner(owner_id)
+    created = client.post(
+        "/api/research/studies",
+        json={
+            "name": "Partially qualified packaged study",
+            "session_policy": {
+                "idle_timeout_seconds": 600,
+                "resume_grace_seconds": 120,
+                "heartbeat_seconds": 30,
+            },
+            "profile_ids": [str(profile_id)],
+        },
+    )
+    assert created.status_code == 201, created.text
+    study = created.json()["study"]
+
+    current_user["value"] = _participant(participant_id)
+    joined = client.post(
+        "/api/research/join",
+        json={"join_code": study["join_code"], "accept_consent": True},
+    )
+    assert joined.status_code == 201, joined.text
+    enrollment_id = joined.json()["enrollment_id"]
+
+    signing_secret = BOOTSTRAP_SIGNING_SECRET
+    assert signing_secret, "BOOTSTRAP_SIGNING_SECRET must be configured for this suite"
+    with patch(
+        "backend.routers.research.bootstrap._SIGNER",
+        BootstrapSigningContext(secret=signing_secret),
+    ):
+        refused = client.post(
+            "/api/research/bootstrap/research-sessions",
+            json={
+                "enrollment_id": enrollment_id,
+                "context_id": "partial-context",
+                "environment": {"os": "linux", "arch": "x64"},
+            },
+        )
+    assert refused.status_code == 409, refused.text
+    assert "ARTIFACT_NOT_QUALIFIED" in json.dumps(refused.json())
+    assert "manifest" not in refused.json()
+
+    session = session_factory()
+    try:
+        sessions = session.execute(
+            text(
+                "SELECT count(*) FROM public.research_session "
+                "WHERE enrollment_id = :enrollment_id"
+            ),
+            {"enrollment_id": enrollment_id},
+        ).scalar_one()
+    finally:
+        session.close()
+    assert sessions == 0, "a refused bootstrap must not leave a session row"

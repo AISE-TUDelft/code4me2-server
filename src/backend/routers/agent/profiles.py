@@ -47,6 +47,7 @@ from database import crud
 from database.db_schemas import AgentProfile
 from research.study.agents import store as registry_store
 from research.study.agents.distributions import (
+    ProfileConfigurationError,
     distribution_supported_platforms,
     resolve_distribution_view,
 )
@@ -362,7 +363,7 @@ def create_agent_profile(
             status_code=409,
             detail={"code": "PROFILE_LOCKED", "message": str(exc)},
         ) from exc
-    except crud.ProfileReleaseError as exc:
+    except (crud.ProfileReleaseError, ProfileConfigurationError) as exc:
         db.rollback()
         raise HTTPException(
             status_code=422,
@@ -444,7 +445,7 @@ def update_agent_profile(
             status_code=409,
             detail={"code": "PROFILE_LOCKED", "message": str(exc)},
         ) from exc
-    except crud.ProfileReleaseError as exc:
+    except (crud.ProfileReleaseError, ProfileConfigurationError) as exc:
         db.rollback()
         raise HTTPException(
             status_code=422,

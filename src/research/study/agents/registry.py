@@ -13,6 +13,9 @@ Key invariants:
 * Qualification is **derived** from verified conformance evidence (a passing
   receipt recorded by the packaging layer), never supplied by a caller. There is
   no reviewer transition that can mark a release qualified.
+* A receipt binds one *artifact identity*: digest, platform and adapter must all
+  belong to the same declared artifact (see :func:`qualified_artifact_keys`).
+  A digest from one artifact and a platform from another never qualify either.
 * Platform resolution is exact and never falls back to another platform.
 * Declared and observed capabilities are stored in separate maps and unknown or
   unavailable measurements stay visible (``value`` stays ``None``).
@@ -45,12 +48,21 @@ from .models import (
     DistributionArtifact,
     EnvironmentRef,
     SnapshotFailure,
+    normalize_platform,
 )
 
 _BASE_CONFIG = ConfigDict(extra="forbid")
 
 #: Conformance receipt status that backs a derived ``QUALIFIED``.
 _PASSED_CONFORMANCE = "PASS"
+
+#: One qualified artifact identity: ``(os, arch, digest, adapter_digest)``.
+#:
+#: ``os``/``arch`` are normalised by :func:`normalize_platform`; a BYOA identity
+#: may carry empty platform values because a participant-installed agent is not
+#: platform-pinned. ``digest`` is the release artifact digest for a PACKAGED
+#: release and the ``source_manifest_digest`` for a BYOA release.
+ArtifactKey = tuple[str, str, str, str]
 
 
 def _normalize_digest(value: Any) -> Optional[str]:
@@ -176,82 +188,213 @@ def derive_qualification_status(
 
     Artifact identity and conformance receipts are owned by the packaging layer
     and persisted alongside the release in ``agent_release.release_json``. A
-    release is ``QUALIFIED`` only when at least one recorded conformance receipt
-    for it (a) has status ``PASS``, (b) binds to the release's exact artifact
-    identity — artifact digest, adapter digest and OS/architecture — and (c)
-    contains at least one passing case. Anything else (no receipt, a failing
-    receipt, a receipt bound to a different artifact/adapter/platform, a
-    passing receipt with no case results, or a caller-supplied status) is
-    ``UNQUALIFIED``. A synthetic fixture or any unrelated ``PASS`` receipt can
-    therefore never qualify a real runtime.
+    release is ``QUALIFIED`` exactly when :func:`qualified_artifact_keys` finds
+    at least one artifact identity a passing receipt is bound to. Anything else
+    (no receipt, a failing receipt, a receipt bound to a different
+    artifact/adapter/platform combination, a passing receipt with no case
+    results, or a caller-supplied status) is ``UNQUALIFIED``. A synthetic
+    fixture or any unrelated ``PASS`` receipt can therefore never qualify a real
+    runtime.
     """
-    if not isinstance(release_json, Mapping):
-        return QualificationStatus.UNQUALIFIED
+    return (
+        QualificationStatus.QUALIFIED
+        if qualified_artifact_keys(release_json)
+        else QualificationStatus.UNQUALIFIED
+    )
+
+
+def _passing_receipts(release_json: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Conformance receipts that are ``PASS`` and carry a passing case."""
     receipts = release_json.get("conformance") or []
     if not isinstance(receipts, (list, tuple)):
-        return QualificationStatus.UNQUALIFIED
-    for receipt in receipts:
-        if not isinstance(receipt, Mapping):
-            continue
-        if str(receipt.get("status", "")).strip().upper() != _PASSED_CONFORMANCE:
-            continue
-        if not _receipt_binds_to_release(receipt, release_json):
-            continue
-        if not _receipt_has_passing_case(receipt):
-            continue
-        return QualificationStatus.QUALIFIED
-    return QualificationStatus.UNQUALIFIED
-
-
-def _receipt_binds_to_release(
-    receipt: Mapping[str, Any], release_json: Mapping[str, Any]
-) -> bool:
-    """Whether a PASS receipt is bound to this exact artifact/adapter/platform."""
-    artifact_digest = str(receipt.get("artifact_digest") or "").strip().lower()
-    if not artifact_digest:
-        return False
-
-    artifacts = [a for a in (release_json.get("artifacts") or []) if isinstance(a, Mapping)]
-    components = [
-        c
-        for c in ((release_json.get("package_json") or {}).get("components") or [])
-        if isinstance(c, Mapping)
+        return []
+    return [
+        receipt
+        for receipt in receipts
+        if isinstance(receipt, Mapping)
+        and str(receipt.get("status", "")).strip().upper() == _PASSED_CONFORMANCE
+        and _receipt_has_passing_case(receipt)
     ]
-    matches_artifact = any(
-        _same_digest(item.get("sha256"), artifact_digest)
-        for item in (*artifacts, *components)
-    )
-    matches_byoa = not artifacts and _same_digest(
-        release_json.get("source_manifest_digest"), artifact_digest
-    )
-    if not (matches_artifact or matches_byoa):
+
+
+def _declared_identity_components(
+    release_json: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    """The artifact-like identities a packaged release declares.
+
+    Release ``artifacts`` are authoritative; for a legacy/package-only release
+    the package manifest's components carry the same ``(os, arch, sha256)``
+    identity and are used instead. A BYOA release declares none.
+    """
+    artifacts = [
+        item for item in (release_json.get("artifacts") or []) if isinstance(item, Mapping)
+    ]
+    if artifacts:
+        return artifacts
+    manifest = release_json.get("package_json")
+    if not isinstance(manifest, Mapping):
+        return []
+    return [
+        item for item in (manifest.get("components") or []) if isinstance(item, Mapping)
+    ]
+
+
+def _receipt_binds_to_component(
+    receipt: Mapping[str, Any],
+    component: Mapping[str, Any],
+    declared_adapter_digest: Optional[str],
+) -> bool:
+    """Whether a PASS receipt is bound to this exact component identity.
+
+    Digest, platform and adapter all have to belong to the *same* declared
+    component. A host-less receipt binds by digest/adapter; a receipt that names
+    a host must name the component's platform.
+    """
+    if not _same_digest(component.get("sha256"), receipt.get("artifact_digest")):
         return False
-
-    adapter = release_json.get("adapter")
-    if isinstance(adapter, Mapping) and adapter.get("digest"):
-        if not _same_digest(adapter.get("digest"), receipt.get("adapter_digest")):
-            return False
-
+    if declared_adapter_digest is not None and not _same_digest(
+        declared_adapter_digest, receipt.get("adapter_digest")
+    ):
+        return False
     host = receipt.get("host")
     if isinstance(host, Mapping) and host.get("os") and host.get("arch"):
-        platforms = [
-            {"os": a.get("os"), "arch": a.get("arch")}
-            for a in artifacts
-            if a.get("os") and a.get("arch")
-        ]
-        manifest = release_json.get("package_json") or {}
-        platforms += [
-            {"os": p.get("os"), "arch": p.get("arch")}
-            for p in (manifest.get("supported_platforms") or [])
-            if isinstance(p, Mapping) and p.get("os") and p.get("arch")
-        ]
-        if platforms and not any(
-            str(p.get("os")).lower() == str(host.get("os")).lower()
-            and str(p.get("arch")).lower() == str(host.get("arch")).lower()
-            for p in platforms
+        component_os = component.get("os")
+        component_arch = component.get("arch")
+        if not component_os or not component_arch:
+            return False
+        if normalize_platform(str(component_os), str(component_arch)) != normalize_platform(
+            str(host.get("os")), str(host.get("arch"))
         ):
             return False
     return True
+
+
+def _artifact_key(
+    os_name: Any, arch: Any, digest: Any, adapter_digest: Any
+) -> ArtifactKey:
+    canonical_os, canonical_arch = normalize_platform(
+        str(os_name or ""), str(arch or "")
+    )
+    return (
+        canonical_os,
+        canonical_arch,
+        _normalize_digest(digest) or "",
+        _normalize_digest(adapter_digest) or "",
+    )
+
+
+def artifact_key(
+    os_name: Any, arch: Any, digest: Any, adapter_digest: Any = None
+) -> ArtifactKey:
+    """Normalise one artifact identity into its comparison key."""
+    return _artifact_key(os_name, arch, digest, adapter_digest)
+
+
+def qualified_artifact_keys(
+    release_json: Optional[Mapping[str, Any]],
+) -> set[ArtifactKey]:
+    """The exact artifact identities a release's evidence qualifies.
+
+    Every key is ``(os, arch, digest, adapter_digest)`` and is only produced
+    when one ``PASS`` receipt with a passing case binds digest, platform and
+    adapter to the *same* declared component:
+
+    * ``PACKAGED`` releases bind to a declared artifact (or, for a package-only
+      release, a package component) by its own ``sha256`` and ``(os, arch)``.
+    * ``BYOA_EXTERNAL`` releases have no artifact, so the receipt binds to the
+      release's own ``source_manifest_digest``; the host is optional and, when
+      absent, both platform values are empty strings.
+
+    An empty set means no platform/artifact combination is qualified.
+    """
+    if not isinstance(release_json, Mapping):
+        return set()
+    adapter = release_json.get("adapter")
+    declared_adapter_digest = (
+        _normalize_digest(adapter.get("digest")) if isinstance(adapter, Mapping) else None
+    )
+    components = _declared_identity_components(release_json)
+
+    keys: set[ArtifactKey] = set()
+    for receipt in _passing_receipts(release_json):
+        if components:
+            for component in components:
+                if not _receipt_binds_to_component(
+                    receipt, component, declared_adapter_digest
+                ):
+                    continue
+                keys.add(
+                    _artifact_key(
+                        component.get("os"),
+                        component.get("arch"),
+                        component.get("sha256"),
+                        declared_adapter_digest or receipt.get("adapter_digest"),
+                    )
+                )
+            continue
+
+        # BYOA_EXTERNAL: the receipt binds the release's own manifest digest and
+        # adapter; the recorded host is optional and never platform-pins it.
+        if not _same_digest(
+            release_json.get("source_manifest_digest"), receipt.get("artifact_digest")
+        ):
+            continue
+        if declared_adapter_digest is not None and not _same_digest(
+            declared_adapter_digest, receipt.get("adapter_digest")
+        ):
+            continue
+        host = receipt.get("host")
+        host_os = host.get("os") if isinstance(host, Mapping) else None
+        host_arch = host.get("arch") if isinstance(host, Mapping) else None
+        keys.add(
+            _artifact_key(
+                host_os,
+                host_arch,
+                release_json.get("source_manifest_digest"),
+                declared_adapter_digest or receipt.get("adapter_digest"),
+            )
+        )
+    return keys
+
+
+def artifact_qualified(
+    release_json: Optional[Mapping[str, Any]],
+    *,
+    os_name: Any,
+    arch: Any,
+    digest: Any,
+    adapter_digest: Any = None,
+) -> bool:
+    """Whether the exact platform artifact is covered by passing evidence."""
+    return (
+        artifact_key(os_name, arch, digest, adapter_digest)
+        in qualified_artifact_keys(release_json)
+    )
+
+
+def byoa_identity_qualified(release_json: Optional[Mapping[str, Any]]) -> bool:
+    """Whether a BYOA release's manifest digest/adapter is covered by evidence.
+
+    The platform recorded on the receipt is ignored: a participant-installed
+    agent is not platform-pinned, so any qualified key for the release's own
+    digest (and declared adapter, when one is declared) is sufficient.
+    """
+    if not isinstance(release_json, Mapping):
+        return False
+    manifest_digest = _normalize_digest(release_json.get("source_manifest_digest"))
+    if not manifest_digest:
+        return False
+    adapter = release_json.get("adapter")
+    declared_adapter_digest = (
+        _normalize_digest(adapter.get("digest")) if isinstance(adapter, Mapping) else None
+    )
+    for key in qualified_artifact_keys(release_json):
+        if key[2] != manifest_digest:
+            continue
+        if declared_adapter_digest is not None and key[3] != declared_adapter_digest:
+            continue
+        return True
+    return False
 
 
 def _receipt_has_passing_case(receipt: Mapping[str, Any]) -> bool:

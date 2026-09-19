@@ -28,6 +28,41 @@ from research.study.lifecycle import (
 from research.study.protocol import store as study_store
 from research.canonical import canonical_hash
 
+
+def _qualified_release_json(release_id: str, *, agent_id: str) -> str:
+    """A PACKAGED release with real conformance evidence (ISSUE-10/ISSUE-17).
+
+    Minimal seed rows with an empty ``release_json`` can no longer be selected:
+    qualification is derived from evidence bound to the exact artifact.
+    """
+    digest = "a" * 64
+    return json.dumps(
+        {
+            "agent_id": agent_id,
+            "release_id": release_id,
+            "version": "1.0.0",
+            "source_manifest_digest": "sha256:" + digest,
+            "distribution_mode": "PACKAGED",
+            "artifacts": [
+                {
+                    "os": "macos",
+                    "arch": "arm64",
+                    "path": "pkg/macos-arm64.tar.gz",
+                    "sha256": digest,
+                    "size": 1,
+                }
+            ],
+            "conformance": [
+                {
+                    "status": "PASS",
+                    "artifact_digest": digest,
+                    "host": {"os": "macos", "arch": "arm64"},
+                    "case_results": [{"case_id": "install", "status": "PASS"}],
+                }
+            ],
+        }
+    )
+
 load_dotenv()
 
 TEST_DB_URL = os.getenv(
@@ -441,9 +476,15 @@ def test_study_creation_freezes_owned_profiles_and_rejects_foreign_profiles():
             text(
                 "INSERT INTO public.agent_release "
                 "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
-                "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', '{}', now())"
+                "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', "
+                "CAST(:release_json AS jsonb), now())"
             ),
-            {"release_id": release_id},
+            {
+                "release_id": release_id,
+                "release_json": _qualified_release_json(
+                    release_id, agent_id="test-agent"
+                ),
+            },
         )
         session.execute(
             text(
@@ -494,9 +535,15 @@ def test_active_study_locks_profile_edits_until_stop_and_keeps_digest():
             text(
                 "INSERT INTO public.agent_release "
                 "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
-                "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', '{}', now())"
+                "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', "
+                "CAST(:release_json AS jsonb), now())"
             ),
-            {"release_id": release_id},
+            {
+                "release_id": release_id,
+                "release_json": _qualified_release_json(
+                    release_id, agent_id="test-agent"
+                ),
+            },
         )
         session.execute(
             text(
@@ -539,13 +586,28 @@ def test_profile_stays_locked_until_last_active_study_stops():
         owner_id = _create_user(session)
         second_owner_id = _create_user(session)
         profile_id = uuid.uuid4()
+        release_id = f"release-{uuid.uuid4()}"
+        session.execute(
+            text(
+                "INSERT INTO public.agent_release "
+                "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+                "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', "
+                "CAST(:release_json AS jsonb), now())"
+            ),
+            {
+                "release_id": release_id,
+                "release_json": _qualified_release_json(
+                    release_id, agent_id="test-agent"
+                ),
+            },
+        )
         session.execute(
             text(
                 "INSERT INTO public.agent_profile "
-                "(profile_id, owner_user_id, name, model, tools_json, approval_policy, max_steps) "
-                "VALUES (:profile_id, :owner_id, 'shared-lock', 'model', '[]', 'auto', 1)"
+                "(profile_id, owner_user_id, name, model, release_id, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'shared-lock', 'model', :release_id, '[]', 'auto', 1)"
             ),
-            {"profile_id": profile_id, "owner_id": owner_id},
+            {"profile_id": profile_id, "owner_id": owner_id, "release_id": release_id},
         )
         study_ids = [_create_study(session, owner_id), _create_study(session, second_owner_id)]
         for study_id in study_ids:
@@ -832,6 +894,77 @@ def test_metadata_locks_after_consent_and_clone_requires_stop():
         assert clone.research_status == "DRAFT"
         assert clone.join_code
         assert clone.join_code != session.get(type(clone), study_id).join_code
+
+        # The no-selection clone is explicitly profile-less (ISSUE-12): no
+        # selection rows and no profile_ids in the copied configuration.
+        assert session.execute(
+            text(
+                "SELECT count(*) FROM public.study_agent_profile WHERE study_id = :study_id"
+            ),
+            {"study_id": clone.study_id},
+        ).scalar_one() == 0
+        assert "profile_ids" not in (
+            session.execute(
+                text(
+                    "SELECT research_config_json FROM public.study WHERE study_id = :study_id"
+                ),
+                {"study_id": clone.study_id},
+            ).scalar_one()
+            or {}
+        )
+
+        # A clone completed with profiles freezes them with the same create-time
+        # validation and records them in the copied configuration.
+        profile_id = uuid.uuid4()
+        release_id = f"clone-release-{uuid.uuid4()}"
+        session.execute(
+            text(
+                "INSERT INTO public.agent_release "
+                "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+                "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', "
+                "CAST(:release_json AS jsonb), now())"
+            ),
+            {
+                "release_id": release_id,
+                "release_json": _qualified_release_json(
+                    release_id, agent_id="test-agent"
+                ),
+            },
+        )
+        session.execute(
+            text(
+                "INSERT INTO public.agent_profile "
+                "(profile_id, owner_user_id, name, model, release_id, tools_json, approval_policy, max_steps) "
+                "VALUES (:profile_id, :owner_id, 'clone-profile', 'model', :release_id, '[]', 'auto', 1)"
+            ),
+            {
+                "profile_id": profile_id,
+                "owner_id": owner_id,
+                "release_id": release_id,
+            },
+        )
+        session.commit()
+
+        completed = clone_stopped_research_study(
+            session, study_id, actor="owner", profile_ids=[profile_id]
+        )
+        assert completed.study_id != clone.study_id
+        selections = session.execute(
+            text(
+                "SELECT profile_id, selection_order FROM public.study_agent_profile "
+                "WHERE study_id = :study_id"
+            ),
+            {"study_id": completed.study_id},
+        ).all()
+        assert [str(row.profile_id) for row in selections] == [str(profile_id)]
+        assert selections[0].selection_order == 0
+        completed_config = session.execute(
+            text(
+                "SELECT research_config_json FROM public.study WHERE study_id = :study_id"
+            ),
+            {"study_id": completed.study_id},
+        ).scalar_one()
+        assert completed_config["profile_ids"] == [str(profile_id)]
     finally:
         session.close()
         engine.dispose()

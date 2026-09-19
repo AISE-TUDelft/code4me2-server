@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Callable, Mapping, Optional, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from research.compatibility.enums import CompatibilityDecision
 from research.participants.enums import EnrollmentStatus
+from research.study.agents.registry import (
+    artifact_qualified,
+    byoa_identity_qualified,
+)
 from research.telemetry.enums import CoverageState
 from research.canonical import canonical_hash
 
 from .capability import issue_capability
 from .models import (
+    BootstrapAgentConfigBinding,
     BootstrapAgentProfile,
     BootstrapAgentRelease,
     BootstrapAssignment,
@@ -168,6 +174,15 @@ def _profile_projection(snapshot: dict[str, Any]) -> Optional[BootstrapAgentProf
         framework_version=str(snapshot.get("framework_version", "code4me2-agent")),
         model=str(snapshot.get("model", "")),
         temperature=snapshot.get("temperature"),
+        # ISSUE-03 Path A: the frozen executable fields a BYOA release may
+        # translate into the external agent's configuration. Non-secret.
+        tools_json=(
+            snapshot.get("tools_json")
+            if isinstance(snapshot.get("tools_json"), str)
+            else json.dumps(snapshot.get("tools_json") or [], separators=(",", ":"))
+        ),
+        approval_policy=str(snapshot.get("approval_policy", "auto")),
+        max_steps=int(snapshot.get("max_steps", 1) or 1),
     )
 
 
@@ -186,8 +201,16 @@ def compose_bootstrap(
     agent_profile: Optional[BootstrapAgentProfile] = None,
     kill_switch_check: Optional[Callable[[], bool]] = None,
     context_id: str = "",
+    release_evidence_json: Optional[Mapping[str, Any]] = None,
 ) -> BootstrapResult:
-    """Compose a signed, short-lived, secret-free bootstrap manifest."""
+    """Compose a signed, short-lived, secret-free bootstrap manifest.
+
+    ``release_evidence_json`` is the release's stored evidence document
+    (``agent_release.release_json``: artifacts/adapter/conformance). When
+    supplied, the exact artifact selected for ``platform`` must itself be bound
+    to a passing receipt — a release-level ``QUALIFIED`` that only covers a
+    different platform never issues a manifest.
+    """
     timestamp = _now(now)
     if kill_switch_check is not None and kill_switch_check():
         return _blocked(
@@ -289,9 +312,32 @@ def compose_bootstrap(
                 "no artifact is available for this platform",
                 "release.artifacts",
             )
+        # A release-level QUALIFIED is not enough: the *selected* artifact must
+        # itself be covered by a passing receipt bound to its digest, platform
+        # and adapter (ISSUE-10).
+        if release_evidence_json is not None and not artifact_qualified(
+            release_evidence_json,
+            os_name=artifact.os,
+            arch=artifact.arch,
+            digest=artifact.sha256,
+            adapter_digest=getattr(getattr(release, "adapter", None), "digest", None),
+        ):
+            return _blocked(
+                BootstrapReasonCode.ARTIFACT_NOT_QUALIFIED,
+                "the selected artifact is not bound to passing conformance evidence",
+                "release.artifacts",
+            )
         artifact_digest = artifact.sha256
     else:
         artifact_digest = ""
+        if release_evidence_json is not None and not byoa_identity_qualified(
+            release_evidence_json
+        ):
+            return _blocked(
+                BootstrapReasonCode.RELEASE_NOT_QUALIFIED,
+                "the BYOA release identity is not bound to passing conformance evidence",
+                "release_id",
+            )
 
     research_session = session_factory.create_for_enrollment(
         enrollment, study, timestamp, context_id
@@ -333,6 +379,16 @@ def compose_bootstrap(
             agent_command=release.agent_command,
             agent_command_args=list(release.agent_command_args),
             agent_package=release.agent_package,
+            config_bindings=[
+                BootstrapAgentConfigBinding(
+                    field=binding.field,
+                    transport=binding.transport,
+                    key=binding.key,
+                    format=binding.format,
+                    value_map=dict(binding.value_map),
+                )
+                for binding in (getattr(release, "byoa_config", None) or [])
+            ],
         ),
         agent_profile=profile,
         policies=_policies(study),

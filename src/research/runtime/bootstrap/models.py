@@ -46,6 +46,9 @@ class BootstrapReasonCode(str, Enum):
     RELEASE_NOT_FOUND = "RELEASE_NOT_FOUND"
     ARTIFACT_UNAVAILABLE = "ARTIFACT_UNAVAILABLE"
     ARTIFACT_MISMATCH = "ARTIFACT_MISMATCH"
+    # The release is qualified for *some* artifact, but not for the exact
+    # artifact/platform selected for this host (ISSUE-10).
+    ARTIFACT_NOT_QUALIFIED = "ARTIFACT_NOT_QUALIFIED"
     COMPATIBILITY_MISSING = "COMPATIBILITY_MISSING"
     INCOMPATIBLE_ENVIRONMENT = "INCOMPATIBLE_ENVIRONMENT"
     CAPABILITY_INVALID = "CAPABILITY_INVALID"
@@ -128,6 +131,25 @@ class BootstrapAssignment(BaseModel):
     profile_digest: str
 
 
+class BootstrapAgentConfigBinding(BaseModel):
+    """One declared BYOA profile→agent configuration translation (ISSUE-03).
+
+    The release owns how a frozen profile field reaches a participant-installed
+    agent: an environment variable (``env``) or an argv pair (``arg``), with an
+    optional server-vocabulary ``value_map`` and list ``format``. Projected so
+    the plugin can apply the exact contract that profile/study validation
+    enforced.
+    """
+
+    model_config = _FROZEN
+
+    field: str
+    transport: str
+    key: str
+    format: str = "string"
+    value_map: dict[str, str] = Field(default_factory=dict)
+
+
 class BootstrapAgentRelease(BaseModel):
     """The pinned agent release projection embedded in a manifest.
 
@@ -153,6 +175,7 @@ class BootstrapAgentRelease(BaseModel):
     agent_command: Optional[str] = None
     agent_command_args: list[str] = Field(default_factory=list)
     agent_package: Optional[str] = None
+    config_bindings: list[BootstrapAgentConfigBinding] = Field(default_factory=list)
 
 
 class BootstrapAgentProfile(BaseModel):
@@ -173,6 +196,10 @@ class BootstrapAgentProfile(BaseModel):
     model: str
     base_url: Optional[str] = None
     temperature: Optional[float] = None
+    # Frozen executable fields a BYOA release may translate (ISSUE-03 Path A).
+    tools_json: str = "[]"
+    approval_policy: str = "auto"
+    max_steps: int = 1
 
 
 class BootstrapTelemetryPolicy(BaseModel):

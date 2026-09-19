@@ -29,6 +29,15 @@ from backend.routers.research.agents import (
     resolve_artifact,
     upload_snapshot,
 )
+from research.canonical import canonical_hash
+from research.participants.enums import EnrollmentStatus
+from research.runtime.bootstrap import (
+    BootstrapOutcome,
+    BootstrapReasonCode,
+    BootstrapSigningContext,
+    EphemeralSessionFactory,
+    compose_bootstrap,
+)
 from research.study.agents import store as store_module
 from research.study.agents.distributions import resolve_distribution_view
 from research.study.agents.enums import (
@@ -48,10 +57,13 @@ from research.study.agents.models import (
 )
 from research.study.agents.registry import (
     AgentRegistry,
+    artifact_qualified,
     build_capability_snapshot,
+    byoa_identity_qualified,
     capability_coverage,
     coverage_report,
     derive_qualification_status,
+    qualified_artifact_keys,
 )
 from research.study.agents.resolver import RegistryReleaseResolver
 from research.study.packaging import (
@@ -1041,6 +1053,237 @@ def test_qualification_is_derived_from_passing_conformance_evidence():
         derive_qualification_status({**release_json, "conformance": [bound]})
         == QualificationStatus.QUALIFIED
     )
+
+
+def test_cross_artifact_receipt_does_not_qualify_either_artifact():
+    """The review reproduction: digest-A receipt + platform-B must stay UNQUALIFIED.
+
+    The fixture release publishes macOS digest A and Linux digest B. A passing
+    receipt that names digest A but the Linux host belongs to *neither* artifact,
+    so no artifact/platform combination may be promoted (ISSUE-10).
+    """
+    release = agent_registry___release()
+    release_json = release.model_dump(mode="json")
+    macos_artifact, linux_artifact = release.artifacts[0], release.artifacts[1]
+
+    receipt = _bound_passing_receipt(release)
+    receipt["artifact_digest"] = macos_artifact.sha256
+    receipt["host"] = {"os": linux_artifact.os, "arch": linux_artifact.arch}
+    document = {**release_json, "conformance": [receipt]}
+
+    assert derive_qualification_status(document) == QualificationStatus.UNQUALIFIED
+    assert qualified_artifact_keys(document) == set()
+    assert (
+        artifact_qualified(
+            document,
+            os_name=macos_artifact.os,
+            arch=macos_artifact.arch,
+            digest=macos_artifact.sha256,
+            adapter_digest=release.adapter.digest,
+        )
+        is False
+    )
+    assert (
+        artifact_qualified(
+            document,
+            os_name=linux_artifact.os,
+            arch=linux_artifact.arch,
+            digest=linux_artifact.sha256,
+            adapter_digest=release.adapter.digest,
+        )
+        is False
+    )
+
+
+def test_qualified_artifact_keys_bind_only_the_receipts_own_platform():
+    """One artifact receipt qualifies that artifact and not its sibling."""
+    release = agent_registry___release()
+    release_json = release.model_dump(mode="json")
+    macos_artifact, linux_artifact = release.artifacts[0], release.artifacts[1]
+    document = {**release_json, "conformance": [_bound_passing_receipt(release)]}
+
+    assert derive_qualification_status(document) == QualificationStatus.QUALIFIED
+    # Keys are normalised: platform canonicalised, digests without the prefix.
+    assert qualified_artifact_keys(document) == {
+        ("macos", "aarch64", "a" * 64, "d" * 64)
+    }
+    assert (
+        artifact_qualified(
+            document,
+            os_name=macos_artifact.os,
+            arch=macos_artifact.arch,
+            digest=macos_artifact.sha256,
+            adapter_digest=release.adapter.digest,
+        )
+        is True
+    )
+    assert (
+        artifact_qualified(
+            document,
+            os_name=linux_artifact.os,
+            arch=linux_artifact.arch,
+            digest=linux_artifact.sha256,
+            adapter_digest=release.adapter.digest,
+        )
+        is False
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap artifact qualification (ISSUE-10)
+# ---------------------------------------------------------------------------
+
+
+def _bootstrap_document(release: AgentReleaseV1, *, host: dict | None = None) -> dict:
+    """A stored evidence document with one PASS receipt for ``release``."""
+    artifact = release.artifacts[0]
+    receipt: dict = {
+        "receipt_id": str(uuid.uuid4()),
+        "status": "PASS",
+        "artifact_digest": artifact.sha256,
+        "adapter_digest": release.adapter.digest if release.adapter else None,
+        "case_results": [{"case_id": "acp.initialize", "status": "PASS"}],
+    }
+    if host is not None:
+        receipt["host"] = host
+    return {**release.model_dump(mode="json"), "conformance": [receipt]}
+
+
+def _bootstrap_inputs(release: AgentReleaseV1):
+    """Enrollment/study/assignment fakes accepted by ``compose_bootstrap``."""
+    profile_id = uuid.uuid4()
+    enrollment_id = uuid.uuid4()
+    study_id = uuid.uuid4()
+    snapshot = {
+        "profile_id": str(profile_id),
+        "name": "bootstrap-arm",
+        "model": "model",
+        "framework_version": "code4me2-agent",
+        "release_id": release.release_id,
+        "tools_json": "[]",
+        "approval_policy": "auto",
+        "max_steps": 1,
+    }
+    enrollment = SimpleNamespace(
+        enrollment_id=enrollment_id,
+        study_id=study_id,
+        status=EnrollmentStatus.ACTIVE,
+        revocation_epoch=0,
+    )
+    study = SimpleNamespace(
+        study_id=study_id,
+        is_research=True,
+        research_status="ACTIVE",
+        is_active=True,
+        starts_at=None,
+        ends_at=None,
+        research_config_json={},
+        research_config_digest="digest",
+    )
+    assignment = SimpleNamespace(
+        assignment_id=uuid.uuid4(),
+        enrollment_id=enrollment_id,
+        study_id=study_id,
+        agent_profile_id=profile_id,
+        strategy="RANDOMIZED",
+        randomization_epoch=1,
+        profile_snapshot_json=snapshot,
+        profile_digest=canonical_hash(snapshot),
+    )
+    return enrollment, study, assignment
+
+
+def _compose_for(release, document, platform):
+    enrollment, study, assignment = _bootstrap_inputs(release)
+    return compose_bootstrap(
+        enrollment,
+        study,
+        assignment,
+        release.model_copy(update={"qualification_status": QualificationStatus.QUALIFIED}),
+        None,
+        EphemeralSessionFactory(),
+        BootstrapSigningContext(secret="bootstrap-test-secret"),
+        platform=platform,
+        release_evidence_json=document,
+    )
+
+
+def test_bootstrap_selects_only_the_artifact_the_evidence_qualifies():
+    """Two artifacts, one passing receipt: only the covered platform issues."""
+    release = agent_registry___release()
+    macos_artifact, linux_artifact = release.artifacts[0], release.artifacts[1]
+    document = _bootstrap_document(
+        release, host={"os": macos_artifact.os, "arch": macos_artifact.arch}
+    )
+
+    qualified = _compose_for(release, document, (macos_artifact.os, macos_artifact.arch))
+    assert qualified.outcome == BootstrapOutcome.ISSUED
+    assert qualified.manifest is not None
+    assert qualified.manifest.agent_release.artifact_digest == macos_artifact.sha256
+
+    refused = _compose_for(release, document, (linux_artifact.os, linux_artifact.arch))
+    assert refused.outcome == BootstrapOutcome.BLOCKED
+    assert refused.manifest is None
+    assert refused.reason == BootstrapReasonCode.ARTIFACT_NOT_QUALIFIED
+    assert refused.issue is not None
+    assert refused.issue.code == BootstrapReasonCode.ARTIFACT_NOT_QUALIFIED
+
+
+def test_bootstrap_refuses_an_artifact_not_bound_to_the_platform_evidence():
+    """A release-level QUALIFIED never covers a different artifact/platform."""
+    release = agent_registry___release()
+    linux_artifact = release.artifacts[1]
+    # The receipt names digest A but the Linux host: it binds nothing, so even
+    # the release-level model is only QUALIFIED because of another receipt.
+    cross = _bootstrap_document(
+        release, host={"os": linux_artifact.os, "arch": linux_artifact.arch}
+    )
+    cross["conformance"][0]["artifact_digest"] = release.artifacts[0].sha256
+
+    refused = _compose_for(release, cross, (linux_artifact.os, linux_artifact.arch))
+    assert refused.outcome == BootstrapOutcome.BLOCKED
+    assert refused.manifest is None
+    assert refused.reason == BootstrapReasonCode.ARTIFACT_NOT_QUALIFIED
+
+
+def test_bootstrap_qualifies_a_byoa_release_bound_to_its_manifest_digest():
+    """A qualified BYOA release keeps issuing its identity-only manifest."""
+    release = AgentReleaseV1(
+        agent_id="codex",
+        release_id="rel-byoa-bootstrap",
+        version="1.2.3",
+        source_manifest_digest="sha256:" + "2" * 64,
+        distribution_mode=DistributionMode.BYOA_EXTERNAL,
+        agent_package="codex",
+        adapter=AdapterRef(
+            adapter_id="acp-adapter", version="0.4.0", digest="sha256:" + "d" * 64
+        ),
+    )
+    document = release.model_dump(mode="json")
+    document["conformance"] = [
+        {
+            "status": "PASS",
+            "artifact_digest": release.source_manifest_digest,
+            "adapter_digest": release.adapter.digest,
+            "host": {"os": "macos", "arch": "arm64"},
+            "case_results": [{"case_id": "acp.initialize", "status": "PASS"}],
+        }
+    ]
+    assert byoa_identity_qualified(document) is True
+
+    issued = _compose_for(release, document, ("macos", "arm64"))
+    assert issued.outcome == BootstrapOutcome.ISSUED
+    assert issued.manifest is not None
+    assert issued.manifest.agent_release.artifact_digest == ""
+    assert issued.manifest.agent_release.distribution_mode == "BYOA_EXTERNAL"
+    assert issued.manifest.agent_release.agent_package == "codex"
+
+    # A receipt bound to another digest never issues a BYOA manifest.
+    document["conformance"][0]["artifact_digest"] = "sha256:" + "3" * 64
+    assert byoa_identity_qualified(document) is False
+    refused = _compose_for(release, document, ("macos", "arm64"))
+    assert refused.outcome == BootstrapOutcome.BLOCKED
+    assert refused.manifest is None
 
 
 def test_upsert_release_never_trusts_a_caller_supplied_status():

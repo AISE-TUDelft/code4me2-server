@@ -22,7 +22,10 @@ import pytest
 
 from research.study.agents.enums import DistributionMode, QualificationStatus
 from research.study.agents.models import AdapterRef, AgentReleaseV1
-from research.study.agents.registry import derive_qualification_status
+from research.study.agents.registry import (
+    byoa_identity_qualified,
+    derive_qualification_status,
+)
 from research.telemetry.enums import CanonicalEventType, EventSource
 from research.telemetry.normalization import (
     GENERIC_ACP_NORMALIZER_VERSION,
@@ -346,4 +349,30 @@ def test_codex_byoa_fixture_is_unqualified_when_the_receipt_does_not_bind():
     assert (
         derive_qualification_status({**raw, "conformance": [no_cases]})
         == QualificationStatus.UNQUALIFIED
+    )
+
+
+def test_codex_byoa_receipt_host_is_optional_and_never_cross_binds():
+    """A BYOA receipt binds the release manifest digest; the host is optional."""
+    raw = json.loads(
+        (AGENTS_FIXTURE_DIR / "release_codex_byoa_v1.json").read_text()
+    )
+    receipt = dict(raw["conformance"][0])
+
+    hostless = dict(receipt)
+    hostless.pop("host")
+    assert (
+        derive_qualification_status({**raw, "conformance": [hostless]})
+        == QualificationStatus.QUALIFIED
+    )
+    assert byoa_identity_qualified({**raw, "conformance": [hostless]}) is True
+
+    # The same receipt can never qualify a *packaged* release whose artifact
+    # digest differs, even when its platform matches a declared artifact.
+    packaged = json.loads(
+        (AGENTS_FIXTURE_DIR / "release_codex_acp_v1.json").read_text()
+    )
+    packaged["conformance"] = [dict(receipt, host={"os": packaged["artifacts"][0]["os"], "arch": packaged["artifacts"][0]["arch"]})]
+    assert (
+        derive_qualification_status(packaged) == QualificationStatus.UNQUALIFIED
     )

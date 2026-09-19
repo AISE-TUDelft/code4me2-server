@@ -9,6 +9,7 @@ rows) rather than wall-clock scheduling.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import uuid
@@ -27,6 +28,41 @@ from research.study.lifecycle import (
     stop_research_study,
 )
 from research.study.protocol import store as study_store
+
+
+def _qualified_release_json(release_id: str, *, agent_id: str) -> str:
+    """A PACKAGED release with real conformance evidence (ISSUE-10/ISSUE-17).
+
+    Minimal seed rows with an empty ``release_json`` can no longer be selected:
+    qualification is derived from evidence bound to the exact artifact.
+    """
+    digest = "a" * 64
+    return json.dumps(
+        {
+            "agent_id": agent_id,
+            "release_id": release_id,
+            "version": "1.0.0",
+            "source_manifest_digest": "sha256:" + digest,
+            "distribution_mode": "PACKAGED",
+            "artifacts": [
+                {
+                    "os": "macos",
+                    "arch": "arm64",
+                    "path": "pkg/macos-arm64.tar.gz",
+                    "sha256": digest,
+                    "size": 1,
+                }
+            ],
+            "conformance": [
+                {
+                    "status": "PASS",
+                    "artifact_digest": digest,
+                    "host": {"os": "macos", "arch": "arm64"},
+                    "case_results": [{"case_id": "install", "status": "PASS"}],
+                }
+            ],
+        }
+    )
 
 load_dotenv()
 
@@ -78,9 +114,15 @@ def _create_study_with_profile(session, owner_id: uuid.UUID):
         text(
             "INSERT INTO public.agent_release "
             "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
-            "VALUES (:release_id, 'phase07-agent', 'manifest-digest', 'QUALIFIED', '{}', now())"
+            "VALUES (:release_id, 'phase07-agent', 'manifest-digest', 'QUALIFIED', "
+            "CAST(:release_json AS jsonb), now())"
         ),
-        {"release_id": release_id},
+        {
+            "release_id": release_id,
+            "release_json": _qualified_release_json(
+                release_id, agent_id="phase07-agent"
+            ),
+        },
     )
     session.execute(
         text(

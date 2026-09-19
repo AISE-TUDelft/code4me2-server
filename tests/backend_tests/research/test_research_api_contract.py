@@ -22,11 +22,19 @@ from main import app
 from research.runtime.bootstrap.capability import issue_capability
 from research.runtime.bootstrap.service import BootstrapSigningContext
 from research.study.agents.enums import DistributionMode, QualificationStatus
-from research.study.agents.models import AgentReleaseV1
+from research.study.agents.models import AgentConfigBinding, AgentReleaseV1
 from research.telemetry.ingestion.models import IngestionContext
 from research.telemetry.ingestion.service import _record_from_event, compute_event_digest
 from research.telemetry.ingestion.store import SqlAlchemyIngestionStore
 from research.telemetry.models import CanonicalEventV1, Coverage, Provenance
+
+from ._byoa_contract import BYOA_CONFIG_BINDINGS
+
+VALID_SESSION_POLICY = {
+    "idle_timeout_seconds": 600,
+    "resume_grace_seconds": 120,
+    "heartbeat_seconds": 30,
+}
 
 load_dotenv()
 TEST_DB_URL = os.getenv(
@@ -118,6 +126,7 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
                 "distribution_mode": "BYOA_EXTERNAL",
                 "agent_command": "http-agent",
                 "agent_package": "http-agent",
+                "byoa_config": list(BYOA_CONFIG_BINDINGS),
                 "artifacts": [],
                 "adapter": {
                     "adapter_id": "http-adapter",
@@ -138,8 +147,8 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
     session.execute(
         text(
             "INSERT INTO public.agent_profile "
-            "(profile_id, owner_user_id, name, model, release_id, tools_json, approval_policy, max_steps) "
-            "VALUES (:profile_id, :owner_id, :name, 'model', :release_id, '[]', 'auto', 1)"
+            "(profile_id, owner_user_id, name, model, framework_version, release_id, tools_json, approval_policy, max_steps) "
+            "VALUES (:profile_id, :owner_id, :name, 'model', :framework, :release_id, '[]', 'auto', 1)"
         ),
         {
             "profile_id": profile_id,
@@ -147,6 +156,9 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
             "release_id": release_id,
             # Profiles are unique per (owner, name); each fixture gets its own.
             "name": f"http-profile-{profile_id.hex[:8]}",
+            # The fixture release is BYOA; the matching framework is a
+            # participant-installed one (ISSUE-03 executable contract).
+            "framework": "codex",
         },
     )
     session.commit()
@@ -176,8 +188,8 @@ def _connected_profile(session, owner_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UU
     session.execute(
         text(
             "INSERT INTO public.agent_profile "
-            "(profile_id, owner_user_id, name, model, release_id, connection_id, tools_json, approval_policy, max_steps) "
-            "VALUES (:profile_id, :owner_id, 'http-locked', 'model', :release_id, :connection_id, '[]', 'auto', 1)"
+            "(profile_id, owner_user_id, name, model, framework_version, release_id, connection_id, tools_json, approval_policy, max_steps) "
+            "VALUES (:profile_id, :owner_id, 'http-locked', 'model', 'codex', :release_id, :connection_id, '[]', 'auto', 1)"
         ),
         {
             "profile_id": profile_id,
@@ -198,6 +210,9 @@ def _qualified_byoa_release(session) -> str:
         source_manifest_digest="sha256:" + "a" * 64,
         distribution_mode=DistributionMode.BYOA_EXTERNAL,
         agent_package="codex",
+        byoa_config=[
+            AgentConfigBinding(**item) for item in BYOA_CONFIG_BINDINGS
+        ],
         qualification_status=QualificationStatus.QUALIFIED,
     )
     release_json = release.model_dump(mode="json")
@@ -228,7 +243,13 @@ def _qualified_byoa_release(session) -> str:
     return release.release_id
 
 
-def _release_profile(session, owner_id: uuid.UUID, release_id: str) -> tuple[uuid.UUID, uuid.UUID]:
+def _release_profile(
+    session,
+    owner_id: uuid.UUID,
+    release_id: str,
+    *,
+    framework_version: str = "code4me2-agent",
+) -> tuple[uuid.UUID, uuid.UUID]:
     connection_id = uuid.uuid4()
     profile_id = uuid.uuid4()
     session.execute(
@@ -242,14 +263,15 @@ def _release_profile(session, owner_id: uuid.UUID, release_id: str) -> tuple[uui
     session.execute(
         text(
             "INSERT INTO public.agent_profile "
-            "(profile_id, owner_user_id, name, model, release_id, connection_id, tools_json, approval_policy, max_steps) "
-            "VALUES (:profile_id, :owner_id, 'Codex', 'model', :release_id, :connection_id, '[]', 'auto', 1)"
+            "(profile_id, owner_user_id, name, model, framework_version, release_id, connection_id, tools_json, approval_policy, max_steps) "
+            "VALUES (:profile_id, :owner_id, 'Codex', 'model', :framework, :release_id, :connection_id, '[]', 'auto', 1)"
         ),
         {
             "profile_id": profile_id,
             "owner_id": owner_id,
             "release_id": release_id,
             "connection_id": connection_id,
+            "framework": framework_version,
         },
     )
     session.commit()
@@ -785,7 +807,9 @@ def test_http_bootstrap_qualified_codex_manifest_is_revision_free(http_runtime):
         owner_id = _seed_user(session, "codex-owner@example.com", can_research=True)
         participant_id = _seed_user(session, "codex-participant@example.com")
         release_id = _qualified_byoa_release(session)
-        profile_id, _connection_id = _release_profile(session, owner_id, release_id)
+        profile_id, _connection_id = _release_profile(
+            session, owner_id, release_id, framework_version="codex"
+        )
     finally:
         session.close()
 
