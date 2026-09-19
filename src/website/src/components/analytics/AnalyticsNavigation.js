@@ -40,9 +40,9 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
   if (user?.is_admin) {
     navigationItems.push({
       id: 'studies',
-      label: 'A/B Testing',
+      label: 'Completion A/B (legacy)',
       icon: '🔬',
-      description: 'Experiment management and evaluation',
+      description: 'Legacy completion study management',
       adminOnly: true
     });
     navigationItems.push({

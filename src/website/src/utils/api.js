@@ -1268,9 +1268,10 @@ export const validateHuggingFaceModel = async (name) => {
 
 // ── Agent subsystem ─────────────────────────────────────────────────────────
 //
-// Backs the three admin pages: AgentProfiles (define experiment arms),
-// AgentAssignments (inspect / pin the A/B buckets), and AgentResults
-// (compare arms). All endpoints are admin-only server-side.
+// Backs the admin pages: AgentProfiles (define experiment arms) and
+// AgentResults (compare arms). All endpoints are admin-only server-side.
+// Assignments are owned by enrollment/study membership; there is no manual
+// assignment authoring endpoint (ISSUE-16).
 
 const AGENT_BASE = () =>
   `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/agent`;
@@ -1410,43 +1411,6 @@ export const getAgentAvailableTools = async (frameworkVersion) => {
       }
     : result;
 };
-
-export const getAgentAssignments = async () => {
-  const result = await agentRequest("/assignments", {
-    label: "load agent assignments",
-  });
-  return result.ok
-    ? { ok: true, data: result.data.assignments || [] }
-    : result;
-};
-
-export const getAgentAssignmentOptions = async () => {
-  const result = await agentRequest("/assignment-options", {
-    label: "load assignment options",
-  });
-  return result.ok ? { ok: true, data: result.data } : result;
-};
-
-// Add a manual assignment to a study arm.
-export const setAgentAssignment = async (userId, profileId, studyId) =>
-  agentRequest(`/assignments/${userId}`, {
-    method: "PUT",
-    body: {
-      profile_id: profileId,
-      ...(studyId ? { study_id: studyId } : {}),
-    },
-    label: "set agent assignment",
-  });
-
-// Clear an assignment so the user is re-drawn on their next agent task.
-export const deleteAgentAssignment = async (userId, studyId) =>
-  agentRequest(
-    `/assignments/${userId}${studyId ? `?study_id=${encodeURIComponent(studyId)}` : ""}`,
-    {
-      method: "DELETE",
-      label: "clear agent assignment",
-    },
-  );
 
 // ── Research control plane ──────────────────────────────────────────────────
 //

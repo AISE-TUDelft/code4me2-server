@@ -171,8 +171,11 @@ const StudyManagement = ({ user }) => {
   return (
     <div className="study-management">
       <div className="analytics-header">
-        <h2>A/B Testing & Study Management</h2>
-        <p>Create, manage, and evaluate user studies for configuration testing</p>
+        <h2>Legacy completion study management</h2>
+        <p>
+          Legacy completion-based A/B studies for configuration testing. Agent
+          research studies are managed separately in the Research Control Plane.
+        </p>
       </div>
 
       <div className="study-controls">
