@@ -42,10 +42,10 @@ router.include_router(ws_routers, prefix="/ws", tags=["WebSocket"])
 router.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
 
 # Agent subsystem. Both routers share the /agent prefix but authenticate
-# differently: `agent_router` covers profiles + A/B assignments (admin auth) and
-# self-report ingestion + memory (ACP bearer auth from the locally launched
-# agent process), while `agent_tasks_router` covers task lifecycle and the
-# inference relay (plugin session cookie).
+# differently: `agent_router` covers profile CRUD plus the readiness registry
+# (admin/authenticated-user auth) and self-report ingestion + memory (ACP bearer
+# auth from the locally launched agent process), while `agent_tasks_router`
+# covers task lifecycle and the inference relay (plugin session cookie).
 router.include_router(agent_router, prefix="/agent", tags=["Agent"])
 router.include_router(agent_tasks_router, prefix="/agent", tags=["Agent"])
 

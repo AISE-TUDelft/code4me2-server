@@ -1,4 +1,4 @@
-"""Agent sub-router: profiles, A/B assignments, telemetry ingestion, memory.
+"""Agent sub-router: profiles/readiness, telemetry ingestion, memory.
 
 Mounted at ``/api/agent`` alongside ``backend.routers.agents`` (task lifecycle
 and the inference relay), which shares the same prefix. The split is by
