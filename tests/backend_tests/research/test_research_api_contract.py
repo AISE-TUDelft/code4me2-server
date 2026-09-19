@@ -471,6 +471,15 @@ def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
             },
         )
         assert heartbeat.status_code == 200, heartbeat.text
+        activity = client.post(
+            "/api/research/sessions/activity",
+            json={
+                "capability": session_capability.model_dump(mode="json"),
+                "research_session_id": research_session_id,
+            },
+        )
+        assert activity.status_code == 200, activity.text
+        assert activity.json()["session"]["state"] == "running"
         event_id = str(uuid.uuid4())
         batch = client.post(
             "/api/research/telemetry/batches",
@@ -540,12 +549,18 @@ def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
     assert stopped_join.json()["detail"]["code"] == "STUDY_STOPPED"
 
     current_user["value"] = _owner(owner_id)
-    cloned = client.post(f"/api/research/studies/{study_id}/clone")
+    cloned = client.post(
+        f"/api/research/studies/{study_id}/clone",
+        json={"profile_ids": [str(profile_id)]},
+    )
     assert cloned.status_code == 201, cloned.text
     clone = cloned.json()["study"]
     assert clone["study_id"] != study_id
     assert clone["research_status"] == "DRAFT"
     assert clone["join_code"] != join_code
+    assert [item["profile_id"] for item in clone["profile_selections"]] == [
+        str(profile_id)
+    ]
 
     session = session_factory()
     try:
@@ -557,10 +572,13 @@ def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
             text("SELECT count(*) FROM public.study_assignment WHERE enrollment_id = :id"),
             {"id": enrollment_id},
         ).scalar_one() == 1
-        assert session.execute(
-            text("SELECT count(*) FROM public.study_agent_profile WHERE study_id = :id"),
+        clone_selections = session.execute(
+            text(
+                "SELECT profile_id FROM public.study_agent_profile WHERE study_id = :id"
+            ),
             {"id": clone["study_id"]},
-        ).scalar_one() == 0
+        ).scalars().all()
+        assert [str(row) for row in clone_selections] == [str(profile_id)]
     finally:
         session.close()
 
@@ -893,6 +911,7 @@ def test_http_create_study_orders_multiple_profile_selections(http_runtime):
         "/api/research/studies",
         json={
             "name": "Multi-profile study",
+            "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(second_profile), str(first_profile)],
         },
     )

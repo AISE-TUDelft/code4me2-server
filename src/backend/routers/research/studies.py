@@ -12,13 +12,16 @@ from datetime import datetime, timezone
 from typing import Any, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from App import App
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.analytics.auth_utils import AuthenticatedUser, get_current_user
 from backend.routers.research.access import require_researcher, require_study_owner
+from research.runtime.sessions.models import SessionPolicyV1
 from research.study.lifecycle import (
+    CloneNotAllowedError,
+    ResearchStudyNotFoundError,
     allocate_join_code,
     clone_stopped_research_study,
     revoke_research_enrollment,
@@ -41,7 +44,8 @@ class StudyCreateRequest(BaseModel):
     telemetry_policy: dict[str, Any] = Field(default_factory=dict)
     session_policy: dict[str, Any] = Field(default_factory=dict)
     # Required and non-empty: a research study is created with its fixed profile
-    # selection (the clone flow creates its own profile-less draft separately).
+    # selection. The clone route re-validates any selection it carries through
+    # the same freeze; a clone body may omit profiles and stay profile-less.
     profile_ids: list[uuid.UUID] = Field(..., min_length=1)
 
     @field_validator("name")
@@ -51,6 +55,18 @@ class StudyCreateRequest(BaseModel):
         if not normalized:
             raise ValueError("name must not be blank")
         return normalized
+
+
+class StudyCloneRequest(BaseModel):
+    """Optional profile selection completing a stopped-study clone.
+
+    Supplying ``profile_ids`` runs the same validation/freeze as create, so the
+    clone is joinable. Omitting the body keeps the clone profile-less; such a
+    clone is explicitly unusable and join refuses it until a profile-bearing
+    clone is requested (ISSUE-12).
+    """
+
+    profile_ids: Optional[list[uuid.UUID]] = Field(default=None, min_length=1)
 
 
 class StudyMetadataUpdateRequest(BaseModel):
@@ -297,20 +313,50 @@ def clone_study(
     study_id: uuid.UUID,
     current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
+    payload: Optional[StudyCloneRequest] = None,
 ):
+    """Clone a stopped study, optionally completing it with profile selections.
+
+    No body keeps the historical profile-less draft. A body carrying
+    ``profile_ids`` freezes those profiles with the create-time invariants and
+    inserts the selection rows atomically, so the clone is joinable (ISSUE-12).
+    """
     require_researcher(current_user)
     db = app.get_db_session()
     try:
         _authorize_study(db, current_user, study_id)
         try:
-            clone = clone_stopped_research_study(db, study_id, actor=current_user.email)
-        except PermissionError as error:
+            clone = clone_stopped_research_study(
+                db,
+                study_id,
+                actor=current_user.email,
+                profile_ids=payload.profile_ids if payload is not None else None,
+                allow_shared_profiles=current_user.is_admin,
+            )
+        except CloneNotAllowedError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
-        except ValueError as error:
+        except PermissionError as error:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "PROFILE_NOT_ALLOWED", "message": str(error)},
+            ) from error
+        except ResearchStudyNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            message = str(error)
+            code = getattr(error, "code", None) or (
+                message.split(":", 1)[0] if ":" in message else "PROFILE_NOT_ALLOWED"
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={"code": code, "message": message},
+            ) from error
+        # Re-read through the store view so the response carries the frozen
+        # profile selections this clone just inserted, not the bare ORM row.
+        clone_view = store.get_study(db, clone.study_id) or clone
         return JsonResponseWithStatus(
             status_code=201,
-            content=cast(Any, {"study": _study_payload(clone, db)}),
+            content=cast(Any, {"study": _study_payload(clone_view, db)}),
         )
     finally:
         db.close()

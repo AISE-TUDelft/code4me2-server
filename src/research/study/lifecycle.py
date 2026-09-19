@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 import uuid
 import secrets
 
@@ -24,6 +23,7 @@ from database.research_schemas import (
 from research.participants import identity as identity_store
 from research.participants.enums import EnrollmentStatus
 from research.participants.models import ResearchEligibility
+from research.study.protocol.store import build_profile_selections
 
 
 @dataclass(frozen=True)
@@ -66,6 +66,14 @@ class ActiveEnrollmentError(PermissionError):
 
 class AlreadyEnrolledError(PermissionError):
     """Raised when an account attempts to rejoin a terminal enrollment."""
+
+
+class ResearchStudyNotFoundError(ValueError):
+    """Raised when a lifecycle operation resolves no research study row."""
+
+
+class CloneNotAllowedError(PermissionError):
+    """Raised when a study that is not stopped is asked to clone."""
 
 
 def profile_snapshot(profile: Any) -> dict[str, Any]:
@@ -242,22 +250,46 @@ def clone_stopped_research_study(
     study_id: uuid.UUID,
     *,
     actor: str,
+    profile_ids: Optional[Sequence[uuid.UUID]] = None,
+    allow_shared_profiles: bool = False,
 ) -> Study:
-    """Create a fresh DRAFT from stopped metadata without copying participants."""
+    """Create a fresh DRAFT from stopped metadata without copying participants.
+
+    When ``profile_ids`` is supplied they are validated with the same
+    owner/active/release-qualified and executable-contract rules as
+    ``create_study`` and their ``StudyAgentProfile`` rows are inserted in the
+    clone transaction, so the clone is reachable to a runnable state (ISSUE-12
+    Option B). When it is omitted the clone stays profile-less by design; join
+    then refuses it with "study has no selected agent profiles".
+    """
     source = session.execute(
         select(Study).where(Study.study_id == study_id).with_for_update()
     ).scalar_one_or_none()
     if source is None or not bool(getattr(source, "is_research", False)):
-        raise ValueError("research study not found")
+        raise ResearchStudyNotFoundError("research study not found")
     if getattr(source, "research_status", None) != ResearchStudyStatus.STUDY_STOPPED.value:
-        raise PermissionError("only stopped studies can be cloned")
+        raise CloneNotAllowedError("only stopped studies can be cloned")
 
     source_config = dict(getattr(source, "research_config_json", None) or {})
-    source_config.pop("profile_ids", None)
     source_config.pop("agent_profile_ids", None)
     timestamp = datetime.now(timezone.utc)
+    selected_profile_ids = list(profile_ids or [])
+    clone_id = uuid.uuid4()
+    selections: list[StudyAgentProfile] = []
+    if selected_profile_ids:
+        selections = build_profile_selections(
+            session,
+            study_id=clone_id,
+            profile_ids=selected_profile_ids,
+            created_by=source.created_by,
+            allow_shared_profiles=allow_shared_profiles,
+            timestamp=timestamp,
+        )
+        source_config["profile_ids"] = [str(profile_id) for profile_id in selected_profile_ids]
+    else:
+        source_config.pop("profile_ids", None)
     clone = Study(
-        study_id=uuid.uuid4(),
+        study_id=clone_id,
         name=f"{source.name} (copy)",
         description=source.description,
         created_by=source.created_by,
@@ -273,6 +305,8 @@ def clone_stopped_research_study(
         created_at=timestamp,
     )
     session.add(clone)
+    for selection in selections:
+        session.add(selection)
     session.commit()
     session.refresh(clone)
     return clone
