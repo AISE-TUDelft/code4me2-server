@@ -1,9 +1,12 @@
-"""Admin API for the agent registry and capability contract.
+"""Admin and researcher API for the agent registry and capability contract.
 
-Mounted under ``/api/research/agents``. Every endpoint is admin-only. The
-handlers are intentionally thin: registration, transitions, platform selection
-and coverage live in :mod:`research.study.agents.registry`, and the SQLAlchemy session
-is supplied by ``App.get_db_session`` and passed to the store helpers.
+Mounted under ``/api/research/agents``. Release registration, import,
+qualification/evidence and operator views are admin-only; the release catalogue
+and the distribution views are read-only, non-secret and researcher-readable.
+The handlers are intentionally thin: registration, transitions, platform
+selection and coverage live in :mod:`research.study.agents.registry`, and the
+SQLAlchemy session is supplied by ``App.get_db_session`` and passed to the store
+helpers.
 
 Release records are digest-pinned and immutable. Editing a release's bytes
 requires a new ``release_id``; retirement preserves historical references.
@@ -25,6 +28,7 @@ from backend.routers.analytics.auth_utils import (
     get_current_user,
     require_admin,
 )
+from backend.routers.research.access import require_researcher
 from database import crud
 from research.study.agents import store
 from research.study.agents.distributions import (
@@ -161,6 +165,26 @@ def _distribution_payload(db: Any, profile: Any) -> dict[str, Any]:
                 else None
             ),
         },
+    }
+
+
+def _release_catalogue_entry(row: Any) -> dict[str, Any]:
+    """One registered release as a non-secret catalogue entry.
+
+    Derived, read-only fields only: no artifact bytes, command line, endpoint or
+    credential material. ``qualification_status`` is recomputed from the stored
+    conformance evidence so legacy rows stay truthful (ISSUE-11).
+    """
+    release = store.row_to_release(row)
+    return {
+        "release_id": release.release_id,
+        "version": release.version,
+        "agent_id": release.agent_id,
+        "distribution_mode": release.distribution_mode.value,
+        "qualification_status": release.qualification_status.value,
+        "supported_platforms": distribution_supported_platforms(release),
+        "verified_approval_options": verified_approval_options(row.release_json),
+        "is_byoa": release.is_byoa,
     }
 
 
@@ -352,6 +376,33 @@ def get_distribution(
             raise HTTPException(status_code=404, detail="Distribution not found")
         return JsonResponseWithStatus(
             status_code=200, content={"distribution": _distribution_payload(db, profile)}
+        )
+    finally:
+        db.close()
+
+
+@router.get(
+    "/release-catalogue",
+    summary="List releases for researcher profile authoring",
+)
+def list_release_catalogue(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    app: App = Depends(App.get_instance),
+):
+    """The profile-independent release catalogue, readable by any researcher.
+
+    A fresh installation must be able to author its first ``AgentProfile``
+    before any profile row exists, so this view is derived only from registered
+    releases (ISSUE-11). It is read-only and exposes no secret; importing and
+    qualifying releases remains administrator-only under ``/releases``.
+    """
+    require_researcher(current_user)
+    db = app.get_db_session()
+    try:
+        rows = store.list_releases(db)
+        return JsonResponseWithStatus(
+            status_code=200,
+            content={"releases": [_release_catalogue_entry(row) for row in rows]},
         )
     finally:
         db.close()
