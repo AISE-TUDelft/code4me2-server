@@ -31,7 +31,7 @@ detect_secrets~=1.5.0
 starlette~=0.46.0
 celery~=5.5.0
 httpx~=0.25.0
-pydantic~=2.11.3
+pydantic>=2.11,<3
 pydantic_settings~=2.9.1
 polyfactory~=2.21.0
 fastapi-limiter~=0.1.6
@@ -68,7 +68,7 @@ langchain-community~=0.3.24
 langchain-huggingface~=0.2.0
 transformers~=4.50.0
 accelerate~=1.7.0
-torch~=2.7.0           # Uncomment if using PyTorch
+torch>=2.7,<3          # required by sentence-transformers (CPU/MPS wheels)
 # vllm~=0.5.0            # Uncomment if using vLLM
 huggingface_hub[cli]
 
