@@ -170,7 +170,10 @@ def test_readiness_rejects_an_uncertified_assigned_runtime():
     app.get_db_session.return_value = db
     user = AuthenticatedUser(user_id=user_id, is_admin=False, email="p@example.com", name="P")
 
-    with patch("agents.registry.resolve_assignment", return_value=profile):
+    with patch(
+        "agents.registry.resolve_assignment_context",
+        return_value=SimpleNamespace(profile=profile, study_id=uuid.uuid4()),
+    ):
         with pytest.raises(Exception) as error:
             get_participant_readiness(user, app)
 
@@ -208,7 +211,10 @@ def test_readiness_rejects_missing_server_side_provider_credential(monkeypatch):
     user = AuthenticatedUser(user_id=user_id, is_admin=False, email="p@example.com", name="P")
     monkeypatch.delenv("STUDY_PROVIDER_KEY", raising=False)
 
-    with patch("agents.registry.resolve_assignment", return_value=profile), patch(
+    with patch(
+        "agents.registry.resolve_assignment_context",
+        return_value=SimpleNamespace(profile=profile, study_id=uuid.uuid4()),
+    ), patch(
         "backend.routers.acp.crud.get_provider_connection", return_value=connection
     ), patch(
         "backend.routers.acp.crud.provider_connection_is_available", return_value=True
@@ -261,7 +267,10 @@ def test_readiness_accepts_admin_managed_connection_without_a_per_user_grant(mon
     user = AuthenticatedUser(user_id=user_id, is_admin=False, email="p@example.com", name="P")
     monkeypatch.setenv("STUDY_PROVIDER_KEY", "test-provider-secret")
 
-    with patch("agents.registry.resolve_assignment", return_value=profile), patch(
+    with patch(
+        "agents.registry.resolve_assignment_context",
+        return_value=SimpleNamespace(profile=profile, study_id=uuid.uuid4()),
+    ), patch(
         "backend.routers.acp.crud.get_provider_connection", return_value=connection
     ), patch(
         "backend.routers.acp.crud.provider_connection_is_available", return_value=True
@@ -701,3 +710,147 @@ def test_run_readback_is_scoped_to_project_and_acp_session():
         with pytest.raises(Exception) as error:
             get_agent_run("run-1", "another-session", app, right_project_scope)
     assert error.value.status_code == 409
+
+
+def _managed_assignment(study_id):
+    profile = SimpleNamespace(
+        name="managed-arm",
+        model="managed-model",
+        approval_policy="auto",
+        tools_json="[]",
+        temperature=None,
+        framework_version="code4me2-agent",
+        profile_id=uuid.uuid4(),
+        funding_owner_user_id=None,
+        max_steps=3,
+        max_context_tokens=1000,
+    )
+    return SimpleNamespace(
+        profile=profile,
+        study_id=study_id,
+        assignment_id=uuid.uuid4(),
+    )
+
+
+def _created_task():
+    return SimpleNamespace(
+        task_id=uuid.uuid4(),
+        external_run_id="run-1",
+        policy_snapshot={"version": "1"},
+    )
+
+
+def test_managed_run_persists_explicit_research_attribution():
+    """ISSUE-02: POST /api/acp/runs persists the validated canonical context."""
+    scope = _scope()
+    study_id = uuid.uuid4()
+    enrollment_id = uuid.uuid4()
+    research_session_id = uuid.uuid4()
+    assignment = _managed_assignment(study_id)
+    db = MagicMock()
+    app = MagicMock()
+    app.get_db_session.return_value = db
+
+    with patch(
+        "backend.routers.acp.crud.get_agent_task_by_external_run_id", return_value=None
+    ), patch(
+        "agents.registry.resolve_assignment_context", return_value=assignment
+    ), patch("backend.routers.acp._require_funded_access"), patch(
+        "backend.routers.acp.access.resolve_research_binding",
+        return_value=SimpleNamespace(
+            enrollment_id=enrollment_id,
+            study_id=study_id,
+            research_session_id=research_session_id,
+        ),
+    ), patch(
+        "backend.routers.acp.session_store.get_session",
+        return_value=SimpleNamespace(enrollment_id=enrollment_id, state="running"),
+    ), patch(
+        "backend.routers.acp._managed_policy",
+        return_value={"version": "1", "store_agent_content": False},
+    ), patch(
+        "backend.routers.acp.crud.create_agent_task", return_value=_created_task()
+    ) as create:
+        response = create_managed_run(
+            ManagedRunRequest(
+                run_id="run-1",
+                session_id="acp-session-1",
+                enrollment_id=enrollment_id,
+                research_session_id=research_session_id,
+            ),
+            app,
+            scope,
+        )
+
+    assert response.status_code == 201, response.body
+    assert create.call_args.kwargs["enrollment_id"] == enrollment_id
+    assert create.call_args.kwargs["research_session_id"] == research_session_id
+    assert create.call_args.kwargs["study_id"] == study_id
+
+
+def test_managed_run_refuses_an_ambiguous_research_context():
+    """ISSUE-02: zero/ambiguous active sessions must be a typed refusal."""
+    scope = _scope()
+    study_id = uuid.uuid4()
+    assignment = _managed_assignment(study_id)
+    db = MagicMock()
+    app = MagicMock()
+    app.get_db_session.return_value = db
+
+    with patch(
+        "backend.routers.acp.crud.get_agent_task_by_external_run_id", return_value=None
+    ), patch(
+        "agents.registry.resolve_assignment_context", return_value=assignment
+    ), patch("backend.routers.acp._require_funded_access"), patch(
+        "backend.routers.acp.access.resolve_research_binding",
+        return_value=SimpleNamespace(
+            enrollment_id=uuid.uuid4(),
+            study_id=study_id,
+            research_session_id=None,
+        ),
+    ):
+        with pytest.raises(HTTPException) as error:
+            create_managed_run(
+                ManagedRunRequest(run_id="run-1", session_id="acp-session-1"),
+                app,
+                scope,
+            )
+
+    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "RESEARCH_CONTEXT_AMBIGUOUS"
+
+
+def test_managed_run_refuses_a_mismatched_enrollment():
+    scope = _scope()
+    study_id = uuid.uuid4()
+    assignment = _managed_assignment(study_id)
+    db = MagicMock()
+    app = MagicMock()
+    app.get_db_session.return_value = db
+
+    with patch(
+        "backend.routers.acp.crud.get_agent_task_by_external_run_id", return_value=None
+    ), patch(
+        "agents.registry.resolve_assignment_context", return_value=assignment
+    ), patch("backend.routers.acp._require_funded_access"), patch(
+        "backend.routers.acp.access.resolve_research_binding",
+        return_value=SimpleNamespace(
+            enrollment_id=uuid.uuid4(),
+            study_id=study_id,
+            research_session_id=uuid.uuid4(),
+        ),
+    ):
+        with pytest.raises(HTTPException) as error:
+            create_managed_run(
+                ManagedRunRequest(
+                    run_id="run-1",
+                    session_id="acp-session-1",
+                    enrollment_id=uuid.uuid4(),
+                    research_session_id=uuid.uuid4(),
+                ),
+                app,
+                scope,
+            )
+
+    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "RESEARCH_CONTEXT_MISMATCH"

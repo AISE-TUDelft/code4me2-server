@@ -67,6 +67,7 @@ from backend.routers.analytics.auth_utils import (
 from backend.routers.research import access
 from database import crud
 from research.analysis.operations import store as operations_store
+from research.runtime.sessions import store as session_store
 from research.study.agents.enums import MANAGED_RUNTIME_FRAMEWORK
 from utils import create_uuid
 
@@ -240,6 +241,12 @@ async def acp_chat_completions(
 class ManagedRunRequest(BaseModel):
     run_id: str = Field(min_length=1, max_length=200)
     session_id: str = Field(min_length=1, max_length=500)
+    # Explicit canonical research attribution (ISSUE-02). The runtime sends the
+    # ids it received through the research handoff; the server validates them
+    # against the authorized account's active enrollment/session and never
+    # trusts them directly.
+    enrollment_id: Optional[uuid.UUID] = None
+    research_session_id: Optional[uuid.UUID] = None
 
 
 class ManagedInferenceRequest(ManagedRunRequest):
@@ -889,7 +896,85 @@ def create_managed_run(
                 status_code=503, detail="No active study agent profile is assigned to this user"
             )
         profile = assignment.profile
-        policy = _managed_policy(db, user_id, profile)
+        if assignment.study_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "RESEARCH_CONTEXT_REQUIRED",
+                    "message": "a managed run requires an active research enrollment",
+                },
+            )
+        # A newly created run must satisfy the live funded gate too, not only a
+        # replay: a stopped study, revoked enrollment or engaged kill switch is
+        # refused before a task exists (ISSUE-01/ISSUE-02).
+        _require_funded_access(db, account_id=user_id, study_id=assignment.study_id)
+        binding = access.resolve_research_binding(
+            db, account_id=user_id, study_id=assignment.study_id
+        )
+        if binding is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "RESEARCH_CONTEXT_REQUIRED",
+                    "message": "no active enrollment for the assigned study",
+                },
+            )
+        if (
+            body.enrollment_id is not None
+            and body.enrollment_id != binding.enrollment_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "RESEARCH_CONTEXT_MISMATCH",
+                    "message": "the supplied enrollment does not match the active context",
+                },
+            )
+        research_session_id = body.research_session_id
+        if research_session_id is not None:
+            if (
+                binding.research_session_id is not None
+                and binding.research_session_id != research_session_id
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "RESEARCH_CONTEXT_MISMATCH",
+                        "message": "the supplied research session is not the active context",
+                    },
+                )
+            session_row = session_store.get_session(db, research_session_id)
+            terminal_states = {"ended", "revoked"}
+            if (
+                session_row is None
+                or session_row.enrollment_id != binding.enrollment_id
+                or str(getattr(session_row, "state", "")) in terminal_states
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "RESEARCH_CONTEXT_MISMATCH",
+                        "message": "the supplied research session is not active for this enrollment",
+                    },
+                )
+        else:
+            research_session_id = binding.research_session_id
+        if research_session_id is None:
+            # Explicit context is required: zero or more than one active session
+            # must never be guessed from account-wide state.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "RESEARCH_CONTEXT_AMBIGUOUS",
+                    "message": (
+                        "the account has no single active research session; "
+                        "supply research_session_id"
+                    ),
+                },
+            )
+        policy = _managed_policy(
+            db, user_id, profile, study_id=assignment.study_id
+        )
         task = crud.create_agent_task(
             db,
             agent_profile=profile.name,
@@ -912,6 +997,8 @@ def create_managed_run(
             study_assignment_id=assignment.assignment_id,
             profile_id=profile.profile_id,
             consent_content_storage=policy["store_agent_content"],
+            research_session_id=research_session_id,
+            enrollment_id=binding.enrollment_id,
         )
         return JSONResponse(
             {"task_id": str(task.task_id), "run_id": body.run_id, "policy": policy},

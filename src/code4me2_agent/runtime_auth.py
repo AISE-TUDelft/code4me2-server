@@ -375,9 +375,18 @@ class AcpBackendAuthorization:
             ) from None
 
     def create_managed_run(self, *, run_id: str, session_id: str) -> dict:
-        return self.authorized_json_request(
-            "POST", "/api/acp/runs", {"run_id": run_id, "session_id": session_id}
-        )
+        payload: dict[str, str] = {"run_id": run_id, "session_id": session_id}
+        # Canonical research attribution (ISSUE-02): the plugin passes the
+        # frozen execution context through the proxy environment when the
+        # runtime runs under a study; the server validates the ids against the
+        # authorized account before persisting them.
+        enrollment_id = os.environ.get("CODE4ME_RESEARCH_ENROLLMENT_ID")
+        research_session_id = os.environ.get("CODE4ME_RESEARCH_SESSION_ID")
+        if enrollment_id:
+            payload["enrollment_id"] = enrollment_id
+        if research_session_id:
+            payload["research_session_id"] = research_session_id
+        return self.authorized_json_request("POST", "/api/acp/runs", payload)
 
     def managed_inference(
         self, *, run_id: str, session_id: str, model_request: dict
