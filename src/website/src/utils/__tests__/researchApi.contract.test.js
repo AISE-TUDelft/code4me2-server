@@ -100,6 +100,43 @@ test("createResearchStudy sends the complete lifecycle payload and null dates", 
   );
 });
 
+test("cloneResearchStudy sends profile_ids so the clone is runnable", async () => {
+  global.fetch.mockResolvedValue(jsonResponse({ study: { study_id: "s-2" } }, 201));
+
+  await api.cloneResearchStudy("s-1", { profileIds: ["p-1", "p-2"] });
+
+  expect(global.fetch).toHaveBeenCalledWith(
+    expect.stringContaining("/api/research/studies/s-1/clone"),
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ profile_ids: ["p-1", "p-2"] }),
+    }),
+  );
+});
+
+test("getReleaseCatalogue reads the researcher-readable releases envelope", async () => {
+  global.fetch.mockResolvedValue(
+    jsonResponse({
+      releases: [
+        {
+          release_id: "rel-1",
+          version: "1.2.0",
+          qualification_status: "QUALIFIED",
+          distribution_mode: "PACKAGED",
+        },
+      ],
+    }),
+  );
+
+  const result = await api.getReleaseCatalogue();
+
+  expect(result.ok).toBe(true);
+  expect(result.data[0]).toMatchObject({
+    release_id: "rel-1",
+    qualification_status: "QUALIFIED",
+  });
+});
+
 test("researchRequest preserves typed study-stopped errors", async () => {
   global.fetch.mockResolvedValue(
     jsonResponse({ detail: { code: "STUDY_STOPPED", message: "Study has stopped" } }, 409),

@@ -57,16 +57,19 @@ beforeEach(() => {
         jsonResponse(200, { connections: [PROFILE.connection] }),
       );
     }
-    if (target.includes("/api/research/agents/distributions")) {
+    if (target.includes("/api/research/agents/release-catalogue")) {
       return Promise.resolve(
         jsonResponse(200, {
-          distributions: [
+          releases: [
             {
-              distribution_id: "d1",
-              name: "arm-a",
               release_id: "rel-1",
-              release_version: "1.2.0",
-              verified: true,
+              version: "1.2.0",
+              agent_id: "code4me2-agent",
+              distribution_mode: "PACKAGED",
+              qualification_status: "QUALIFIED",
+              supported_platforms: [{ os: "linux", arch: "x64" }],
+              verified_approval_options: null,
+              is_byoa: false,
             },
           ],
         }),

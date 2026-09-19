@@ -3,9 +3,9 @@ import {
   createAgentProfile,
   deleteAgentProfile,
   getAgentAvailableTools,
-  getAgentDistributions,
   getAgentProfiles,
   getProviderConnections,
+  getReleaseCatalogue,
   updateAgentProfile,
 } from "../utils/api";
 import "./AgentProfiles.css";
@@ -83,7 +83,7 @@ const AgentProfiles = ({ user = {} }) => {
   const [profiles, setProfiles] = useState([]);
   const [availableTools, setAvailableTools] = useState([]);
   const [connections, setConnections] = useState([]);
-  const [distributions, setDistributions] = useState([]);
+  const [catalogue, setCatalogue] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingProfileId, setEditingProfileId] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -130,14 +130,15 @@ const AgentProfiles = ({ user = {} }) => {
     };
   }, []);
 
-  // The shared, non-admin-readable release catalogue is derived from the
-  // server's distribution views: each carries the resolved release identity and
-  // the derived `verified` flag, so no admin-only release endpoint is needed.
+  // The release catalogue is independent of existing profiles, so a fresh
+  // install with zero profiles can still author its first profile (ISSUE-11).
+  // It is researcher-readable, read-only and non-secret; each entry carries the
+  // derived qualification status, distribution mode and supported platforms.
   useEffect(() => {
     let cancelled = false;
-    getAgentDistributions().then((response) => {
+    getReleaseCatalogue().then((response) => {
       if (!cancelled && response && response.ok) {
-        setDistributions(Array.isArray(response.data) ? response.data : []);
+        setCatalogue(Array.isArray(response.data) ? response.data : []);
       }
     });
     return () => {
@@ -145,32 +146,34 @@ const AgentProfiles = ({ user = {} }) => {
     };
   }, []);
 
-  const releaseCatalogue = useMemo(() => {
-    const byId = new Map();
-    distributions.forEach((distribution) => {
-      const releaseId = distribution.release_id;
-      if (!releaseId) return;
-      const verified = Boolean(distribution.verified);
-      const existing = byId.get(releaseId);
-      if (!existing || (verified && !existing.verified)) {
-        byId.set(releaseId, {
-          release_id: releaseId,
-          release_version: distribution.release_version,
-          verified,
+  const releaseCatalogue = useMemo(
+    () =>
+      catalogue
+        .filter((release) => release && release.release_id)
+        .map((release) => ({
+          release_id: release.release_id,
+          release_version: release.version || "",
+          qualification_status: release.qualification_status || "UNQUALIFIED",
+          // A release is only selectable for a non-admin when it is qualified.
+          verified: release.qualification_status === "QUALIFIED",
+          distribution_mode: release.distribution_mode || "PACKAGED",
+          is_byoa: release.is_byoa === true,
+          supported_platforms: Array.isArray(release.supported_platforms)
+            ? release.supported_platforms
+            : [],
           // Approval options this release's conformance evidence verifies.
           // Missing on older servers: treat as unconstrained.
           verified_approval_options: Array.isArray(
-            distribution.verified_approval_options,
+            release.verified_approval_options,
           )
-            ? distribution.verified_approval_options
+            ? release.verified_approval_options
             : null,
-        });
-      }
-    });
-    return Array.from(byId.values()).sort((a, b) =>
-      String(a.release_id).localeCompare(String(b.release_id)),
-    );
-  }, [distributions]);
+        }))
+        .sort((a, b) =>
+          String(a.release_id).localeCompare(String(b.release_id)),
+        ),
+    [catalogue],
+  );
 
   // The selectable tool set depends on the runtime, so reload it whenever the
   // runtime changes rather than showing tools the agent can't actually call.
@@ -451,10 +454,21 @@ const AgentProfiles = ({ user = {} }) => {
       null
     : null;
 
-  const releaseLabel = (release) =>
-    `${release.release_id}${release.release_version ? ` · v${release.release_version}` : ""}${
-      release.verified ? "" : " (unverified)"
-    }`;
+  const releaseLabel = (release) => {
+    const platforms = (release.supported_platforms || [])
+      .map((platform) => `${platform.os || "?"}/${platform.arch || "?"}`)
+      .join(", ");
+    return [
+      release.release_id,
+      release.release_version ? `v${release.release_version}` : "",
+      release.qualification_status,
+      release.distribution_mode,
+      release.is_byoa ? "BYOA" : "",
+      platforms,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  };
 
   return (
     <section className="agent-profiles-page">
@@ -626,6 +640,14 @@ const AgentProfiles = ({ user = {} }) => {
               ))}
             </select>
           </label>
+          {selectedRelease && (
+            <p className="profile-field-hint">
+              Qualification: {selectedRelease.qualification_status} · mode:{" "}
+              {selectedRelease.distribution_mode}
+              {selectedRelease.is_byoa ? " (BYOA)" : ""} · platforms:{" "}
+              {formatPlatforms(selectedRelease.supported_platforms)}
+            </p>
+          )}
           <p className="profile-field-hint">
             Pins the exact approved artifact. Create a second profile that pins a
             different release to express a v1 vs v2 arm. Unverified releases may

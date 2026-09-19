@@ -19,6 +19,36 @@ const STATUS_LABELS = {
   STUDY_STOPPED: "Stopped",
 };
 
+// The server validates and freezes a complete session policy on create
+// (SESSION_POLICY_INVALID otherwise), so the form must never default to an
+// empty object (ISSUE-05).
+const DEFAULT_SESSION_POLICY = {
+  idle_timeout_seconds: 600,
+  resume_grace_seconds: 120,
+  heartbeat_seconds: 30,
+};
+
+const parsePolicyDraft = (text) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (_) {
+    return {
+      ok: false,
+      error: "Invalid JSON. Create stays disabled until it parses.",
+    };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, error: "The policy must be a JSON object." };
+  }
+  return { ok: true, value: parsed };
+};
+
+const asPolicyObject = (policy) =>
+  policy && typeof policy === "object" && !Array.isArray(policy)
+    ? policy
+    : {};
+
 const ResearchStudies = () => {
   const [studies, setStudies] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -26,7 +56,25 @@ const ResearchStudies = () => {
   const [isForbidden, setIsForbidden] = useState(false);
   const [selectedStudy, setSelectedStudy] = useState(null);
   const [isCreating, setIsCreating] = useState(false);
-  const [form, setForm] = useState({ name: "", description: "", startsAt: "", endsAt: "", telemetryPolicy: {}, sessionPolicy: {}, profileIds: [] });
+  const [form, setForm] = useState({
+    name: "",
+    description: "",
+    startsAt: "",
+    endsAt: "",
+    telemetryPolicy: {},
+    sessionPolicy: { ...DEFAULT_SESSION_POLICY },
+    profileIds: [],
+  });
+  // Raw draft text for the JSON editors: invalid input stays visible and the
+  // parsed policy is only replaced once the draft parses (ISSUE-05).
+  const [telemetryPolicyText, setTelemetryPolicyText] = useState(JSON.stringify({}));
+  const [sessionPolicyText, setSessionPolicyText] = useState(
+    JSON.stringify(DEFAULT_SESSION_POLICY),
+  );
+  const [telemetryPolicyError, setTelemetryPolicyError] = useState("");
+  const [sessionPolicyError, setSessionPolicyError] = useState("");
+  // Non-null while the create form is acting as the clone submission step.
+  const [cloneSource, setCloneSource] = useState(null);
   const [profiles, setProfiles] = useState([]);
   const [metadata, setMetadata] = useState({ name: "", description: "" });
   const [isBusy, setIsBusy] = useState(false);
@@ -86,19 +134,99 @@ const ResearchStudies = () => {
     setError("");
   };
 
+  const resetStudyForm = () => {
+    setForm({
+      name: "",
+      description: "",
+      startsAt: "",
+      endsAt: "",
+      telemetryPolicy: {},
+      sessionPolicy: { ...DEFAULT_SESSION_POLICY },
+      profileIds: [],
+    });
+    setTelemetryPolicyText(JSON.stringify({}));
+    setSessionPolicyText(JSON.stringify(DEFAULT_SESSION_POLICY));
+    setTelemetryPolicyError("");
+    setSessionPolicyError("");
+    setCloneSource(null);
+  };
+
+  const toggleCreateForm = () => {
+    resetStudyForm();
+    setIsCreating((value) => !value);
+  };
+
+  // Opens the create form prefilled from the stopped source. The clone endpoint
+  // copies the stored configuration and accepts only new profile selections, so
+  // these fields are shown for reference and the profile list is the input.
+  const openCloneForm = () => {
+    if (!selectedStudy) return;
+    const telemetryPolicy = asPolicyObject(selectedStudy.telemetry_policy);
+    const sessionPolicy = asPolicyObject(selectedStudy.session_policy);
+    setForm({
+      name: `${selectedStudy.name} (copy)`,
+      description: selectedStudy.description || "",
+      startsAt: "",
+      endsAt: "",
+      telemetryPolicy,
+      sessionPolicy,
+      profileIds: [],
+    });
+    setTelemetryPolicyText(JSON.stringify(telemetryPolicy));
+    setSessionPolicyText(JSON.stringify(sessionPolicy));
+    setTelemetryPolicyError("");
+    setSessionPolicyError("");
+    setCloneSource(selectedStudy);
+    setIsCreating(true);
+    setError("");
+    setNotice("");
+  };
+
+  const applyPolicyDraft = (field, setText, setDraftError) => (event) => {
+    const text = event.target.value;
+    setText(text);
+    const parsed = parsePolicyDraft(text);
+    if (!parsed.ok) {
+      setDraftError(parsed.error);
+      return;
+    }
+    setDraftError("");
+    setForm((current) => ({ ...current, [field]: parsed.value }));
+  };
+
   const handleCreate = async (event) => {
     event.preventDefault();
+    if (telemetryPolicyError || sessionPolicyError) return;
+    if (cloneSource && form.profileIds.length === 0) {
+      setError(
+        "Select at least one agent profile; a clone without profile selections cannot be joined.",
+      );
+      return;
+    }
+    const source = cloneSource;
     setIsBusy(true);
     setError("");
     setNotice("");
-    const result = await createResearchStudy(form);
+    const result = source
+      ? await cloneResearchStudy(source.study_id, { profileIds: form.profileIds })
+      : await createResearchStudy(form);
     if (result.ok) {
-      setForm({ name: "", description: "", startsAt: "", endsAt: "", telemetryPolicy: {}, sessionPolicy: {}, profileIds: [] });
+      resetStudyForm();
       setIsCreating(false);
-      setNotice("Study created in Draft state.");
-      await loadStudies();
+      if (source) {
+        const cloned = result.data?.study || result.data;
+        setNotice(
+          "Clone created in Draft state with the selected agent profiles. Name, description, schedule, telemetry policy, and session policy were copied; participants, consent, assignments, telemetry data, join code, and study ID were not.",
+        );
+        await loadStudies(cloned?.study_id);
+      } else {
+        setNotice("Study created in Draft state.");
+        await loadStudies();
+      }
+    } else if (result.code === "SESSION_POLICY_INVALID" || result.code === "TELEMETRY_POLICY_INVALID") {
+      setError(`${result.code}: ${result.error || "invalid policy"}`);
     } else {
-      setError(result.error || "Study could not be created.");
+      setError(result.error || (source ? "Study could not be cloned." : "Study could not be created."));
     }
     setIsBusy(false);
   };
@@ -132,23 +260,6 @@ const ResearchStudies = () => {
       await loadStudies();
     } else {
       setError(result.error || "Study could not be stopped.");
-    }
-    setIsBusy(false);
-  };
-
-  const handleClone = async () => {
-    if (!selectedStudy) return;
-    setIsBusy(true);
-    setError("");
-    setNotice("");
-    const result = await cloneResearchStudy(selectedStudy.study_id);
-    if (result.ok) {
-      const cloned = result.data?.study || result.data;
-      if (cloned?.study_id) openStudy({ ...cloned, profile_selections: cloned.profile_selections || [] });
-      setNotice("Clone created. Participants, consent, assignments, profiles, telemetry, join code, and study ID were not copied.");
-      await loadStudies(cloned?.study_id);
-    } else {
-      setError(result.error || "Only stopped studies can be cloned.");
     }
     setIsBusy(false);
   };
@@ -189,7 +300,7 @@ const ResearchStudies = () => {
         <button
           type="button"
           className="primary-button"
-          onClick={() => setIsCreating((value) => !value)}
+          onClick={toggleCreateForm}
           disabled={isBusy}
         >
           {isCreating ? "Close" : "New study"}
@@ -204,29 +315,71 @@ const ResearchStudies = () => {
 
       {isCreating && (
         <form className="research-card" onSubmit={handleCreate}>
-          <h3>New study</h3>
-          <label>
-            Name
-            <input
-              value={form.name}
-              onChange={(event) => setForm({ ...form, name: event.target.value })}
-              required
-              disabled={isBusy}
-            />
-          </label>
-          <label>
-            Description
-            <textarea
-              value={form.description}
-              onChange={(event) => setForm({ ...form, description: event.target.value })}
-              rows={3}
-              disabled={isBusy}
-            />
-          </label>
-          <label>Starts at<input type="datetime-local" value={form.startsAt} onChange={(event) => setForm({ ...form, startsAt: event.target.value })} disabled={isBusy} /></label>
-          <label>Ends at<input type="datetime-local" value={form.endsAt} onChange={(event) => setForm({ ...form, endsAt: event.target.value })} disabled={isBusy} /></label>
-          <label>Telemetry policy (JSON)<textarea value={JSON.stringify(form.telemetryPolicy)} onChange={(event) => { try { setForm({ ...form, telemetryPolicy: JSON.parse(event.target.value) }); } catch (_) { /* retain last valid policy */ } }} rows={2} disabled={isBusy} /></label>
-          <label>Session policy (JSON)<textarea value={JSON.stringify(form.sessionPolicy)} onChange={(event) => { try { setForm({ ...form, sessionPolicy: JSON.parse(event.target.value) }); } catch (_) { /* retain last valid policy */ } }} rows={2} disabled={isBusy} /></label>
+          <h3>{cloneSource ? "Clone study" : "New study"}</h3>
+          {cloneSource ? (
+            <>
+              <p className="research-hint">
+                Copies the name, description, schedule, telemetry policy, and
+                session policy from “{cloneSource.name}”. Participants, consent,
+                assignments, telemetry data, join code, and study ID are not
+                copied. Agent profiles are not copied either: select them below,
+                and without a selection the clone cannot be joined.
+              </p>
+              <dl className="research-metrics">
+                <div><dt>Name</dt><dd>{form.name}</dd></div>
+                <div><dt>Description</dt><dd>{form.description || "No description"}</dd></div>
+                <div><dt>Telemetry policy</dt><dd><code>{telemetryPolicyText}</code></dd></div>
+                <div><dt>Session policy</dt><dd><code>{sessionPolicyText}</code></dd></div>
+              </dl>
+            </>
+          ) : (
+            <>
+              <label>
+                Name
+                <input
+                  value={form.name}
+                  onChange={(event) => setForm({ ...form, name: event.target.value })}
+                  required
+                  disabled={isBusy}
+                />
+              </label>
+              <label>
+                Description
+                <textarea
+                  value={form.description}
+                  onChange={(event) => setForm({ ...form, description: event.target.value })}
+                  rows={3}
+                  disabled={isBusy}
+                />
+              </label>
+              <label>Starts at<input type="datetime-local" value={form.startsAt} onChange={(event) => setForm({ ...form, startsAt: event.target.value })} disabled={isBusy} /></label>
+              <label>Ends at<input type="datetime-local" value={form.endsAt} onChange={(event) => setForm({ ...form, endsAt: event.target.value })} disabled={isBusy} /></label>
+              <label>
+                Telemetry policy (JSON)
+                <textarea
+                  value={telemetryPolicyText}
+                  onChange={applyPolicyDraft("telemetryPolicy", setTelemetryPolicyText, setTelemetryPolicyError)}
+                  rows={2}
+                  disabled={isBusy}
+                  aria-invalid={Boolean(telemetryPolicyError)}
+                  aria-describedby={telemetryPolicyError ? "telemetry-policy-error" : undefined}
+                />
+              </label>
+              {telemetryPolicyError && <p id="telemetry-policy-error" className="research-error" role="alert">{telemetryPolicyError}</p>}
+              <label>
+                Session policy (JSON)
+                <textarea
+                  value={sessionPolicyText}
+                  onChange={applyPolicyDraft("sessionPolicy", setSessionPolicyText, setSessionPolicyError)}
+                  rows={2}
+                  disabled={isBusy}
+                  aria-invalid={Boolean(sessionPolicyError)}
+                  aria-describedby={sessionPolicyError ? "session-policy-error" : undefined}
+                />
+              </label>
+              {sessionPolicyError && <p id="session-policy-error" className="research-error" role="alert">{sessionPolicyError}</p>}
+            </>
+          )}
           <fieldset className="research-profile-selection">
             <legend>Agent profiles</legend>
             {profiles.length === 0 ? (
@@ -255,9 +408,9 @@ const ResearchStudies = () => {
           <button
             type="submit"
             className="primary-button"
-            disabled={isBusy || !form.name.trim() || form.profileIds.length === 0}
+            disabled={isBusy || !form.name.trim() || form.profileIds.length === 0 || Boolean(telemetryPolicyError) || Boolean(sessionPolicyError)}
           >
-            Create Draft study
+            {cloneSource ? "Clone Draft study" : "Create Draft study"}
           </button>
         </form>
       )}
@@ -344,7 +497,7 @@ const ResearchStudies = () => {
             )}
             {isAdmin && selectedStudy.kill_switch && <p className="research-hint">Kill switch: {selectedStudy.kill_switch.status || "RELEASED"}. Reason: {selectedStudy.kill_switch.reason || "Not provided"}</p>}
             {selectedStudy.research_status === "STUDY_STOPPED" && (
-              <button type="button" className="primary-button" onClick={handleClone} disabled={isBusy}>Clone as new Draft</button>
+              <button type="button" className="primary-button" onClick={openCloneForm} disabled={isBusy}>Clone as new Draft</button>
             )}
           </section>
         )}

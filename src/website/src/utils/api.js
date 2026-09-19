@@ -1579,9 +1579,15 @@ export const stopResearchStudy = async (studyId, actor) =>
     label: "stop research study",
   });
 
-export const cloneResearchStudy = async (studyId) =>
+// Clone a stopped study. Supplying profile ids completes the clone through the
+// same validated profile freeze as create, so the clone is joinable; omitting
+// them leaves an explicitly non-runnable draft (ISSUE-12).
+export const cloneResearchStudy = async (studyId, { profileIds } = {}) =>
   researchRequest(`/studies/${encodeURIComponent(studyId)}/clone`, {
     method: "POST",
+    ...(Array.isArray(profileIds) && profileIds.length > 0
+      ? { body: { profile_ids: profileIds } }
+      : {}),
     label: "clone research study",
   });
 
@@ -1731,11 +1737,52 @@ export const getMyResearchEnrollments = async () => {
   return result;
 };
 
-// Registered agent releases (admin-only; digest-pinned artifacts). Used by the
-// editor/enrollment views to distinguish packaged agents from BYOA setups.
-export const getAgentReleases = async () => {
-  const result = await researchRequest("/agents/releases", {
-    label: "load agent releases",
+// Study-owner-scoped participant coverage (ISSUE-13): study-local participant
+// codes, frozen assignments and session/event counts only; no personal
+// timelines. The endpoint is owner/admin-only, so a 403 is reported as
+// `forbidden` for the UI to show a permission notice.
+export const getStudyParticipantCoverage = async (studyId) => {
+  const result = await researchRequest(
+    `/operations/participants/coverage?study_id=${encodeURIComponent(studyId)}`,
+    { label: "load study participant coverage" },
+  );
+  if (result.ok) {
+    const data = result.data || {};
+    return {
+      ok: true,
+      data: {
+        ...data,
+        participants: Array.isArray(data.participants) ? data.participants : [],
+      },
+    };
+  }
+  if (result.status === 403) {
+    return {
+      ok: false,
+      forbidden: true,
+      code: result.code || "FORBIDDEN",
+      status: 403,
+      error:
+        "Only the study owner or an administrator can view study participant coverage.",
+    };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    return {
+      ok: false,
+      missing: true,
+      error: "Study participant coverage is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+// The researcher-readable release catalogue (ISSUE-11): registered releases
+// independent of existing profiles, so a fresh install can author its first
+// profile. Read-only and non-secret; importing and qualifying releases remains
+// admin-only under /agents/releases.
+export const getReleaseCatalogue = async () => {
+  const result = await researchRequest("/agents/release-catalogue", {
+    label: "load release catalogue",
   });
   return result.ok ? { ok: true, data: result.data.releases || [] } : result;
 };

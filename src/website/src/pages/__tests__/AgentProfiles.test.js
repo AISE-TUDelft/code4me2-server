@@ -31,20 +31,26 @@ const PROFILE = {
   supported_platforms: [{ os: "linux", arch: "x64" }],
 };
 
-const DISTRIBUTIONS = [
+const CATALOGUE = [
   {
-    distribution_id: "d1",
-    name: "arm-a",
     release_id: "rel-1",
-    release_version: "1.2.0",
-    verified: true,
+    version: "1.2.0",
+    agent_id: "code4me2-agent",
+    distribution_mode: "PACKAGED",
+    qualification_status: "QUALIFIED",
+    supported_platforms: [{ os: "linux", arch: "x64" }],
+    verified_approval_options: null,
+    is_byoa: false,
   },
   {
-    distribution_id: "d2",
-    name: "arm-b",
     release_id: "rel-2",
-    release_version: "2.0.0",
-    verified: true,
+    version: "2.0.0",
+    agent_id: "code4me2-agent",
+    distribution_mode: "PACKAGED",
+    qualification_status: "QUALIFIED",
+    supported_platforms: [{ os: "linux", arch: "x64" }],
+    verified_approval_options: null,
+    is_byoa: false,
   },
 ];
 
@@ -55,7 +61,7 @@ beforeEach(() => {
     ok: true,
     data: { tools: [], frameworks: [] },
   });
-  api.getAgentDistributions.mockResolvedValue({ ok: true, data: DISTRIBUTIONS });
+  api.getReleaseCatalogue.mockResolvedValue({ ok: true, data: CATALOGUE });
   api.getProviderConnections.mockResolvedValue({ ok: true, data: [CONNECTION] });
   api.updateAgentProfile.mockResolvedValue({ ok: true, data: {} });
   api.createAgentProfile.mockResolvedValue({ ok: true, data: {} });
@@ -114,6 +120,40 @@ test("clones a profile with a different release as a create", async () => {
   expect(api.updateAgentProfile).not.toHaveBeenCalled();
 });
 
+test("creates the first profile from an empty-profile release catalogue", async () => {
+  api.getAgentProfiles.mockResolvedValue({ ok: true, data: [] });
+
+  render(<AgentProfiles user={{ can_research: true }} />);
+
+  await screen.findByText(/No agent profiles found/i);
+  await screen.findByRole("option", { name: /primary-provider/ });
+  await screen.findByRole("option", { name: /rel-1/ });
+
+  const releaseOption = screen.getByRole("option", {
+    name: /rel-1.*QUALIFIED.*PACKAGED.*linux\/x64/,
+  });
+  expect(releaseOption).not.toBeDisabled();
+
+  fireEvent.change(screen.getByLabelText(/Profile name/i), {
+    target: { value: "first-arm" },
+  });
+  fireEvent.change(screen.getByLabelText(/Provider connection/i), {
+    target: { value: "c1" },
+  });
+  fireEvent.change(screen.getByLabelText(/^Model$/i), {
+    target: { value: "model-a" },
+  });
+  fireEvent.change(screen.getByLabelText(/Registered release/i), {
+    target: { value: "rel-1" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /create profile/i }));
+
+  await waitFor(() => expect(api.createAgentProfile).toHaveBeenCalled());
+  const payload = api.createAgentProfile.mock.calls[0][0];
+  expect(payload.release_id).toBe("rel-1");
+  expect(payload.connection_id).toBe("c1");
+});
+
 test("the model select is constrained to the connection's allowed models", async () => {
   await renderPage();
   fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
@@ -150,16 +190,19 @@ test("switching connection resets a now-disallowed model", async () => {
 });
 
 test("a non-admin cannot select an unverified release", async () => {
-  api.getAgentDistributions.mockResolvedValue({
+  api.getReleaseCatalogue.mockResolvedValue({
     ok: true,
     data: [
-      ...DISTRIBUTIONS,
+      ...CATALOGUE,
       {
-        distribution_id: "d3",
-        name: "arm-c",
         release_id: "rel-unverified",
-        release_version: "0.1.0",
-        verified: false,
+        version: "0.1.0",
+        agent_id: "codex",
+        distribution_mode: "BYOA_EXTERNAL",
+        qualification_status: "UNQUALIFIED",
+        supported_platforms: [],
+        verified_approval_options: null,
+        is_byoa: true,
       },
     ],
   });
@@ -171,16 +214,19 @@ test("a non-admin cannot select an unverified release", async () => {
 });
 
 test("an administrator may select an unverified release", async () => {
-  api.getAgentDistributions.mockResolvedValue({
+  api.getReleaseCatalogue.mockResolvedValue({
     ok: true,
     data: [
-      ...DISTRIBUTIONS,
+      ...CATALOGUE,
       {
-        distribution_id: "d3",
-        name: "arm-c",
         release_id: "rel-unverified",
-        release_version: "0.1.0",
-        verified: false,
+        version: "0.1.0",
+        agent_id: "codex",
+        distribution_mode: "BYOA_EXTERNAL",
+        qualification_status: "UNQUALIFIED",
+        supported_platforms: [],
+        verified_approval_options: null,
+        is_byoa: true,
       },
     ],
   });
@@ -192,15 +238,11 @@ test("an administrator may select an unverified release", async () => {
 });
 
 test("approval options not verified for the release are disabled", async () => {
-  api.getAgentDistributions.mockResolvedValue({
+  api.getReleaseCatalogue.mockResolvedValue({
     ok: true,
     data: [
       {
-        distribution_id: "d1",
-        name: "arm-a",
-        release_id: "rel-1",
-        release_version: "1.2.0",
-        verified: true,
+        ...CATALOGUE[0],
         verified_approval_options: ["auto"],
       },
     ],
