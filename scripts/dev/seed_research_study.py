@@ -101,6 +101,17 @@ BYOA_PROFILE_IDENTITIES = (
     ("default-goose", "goose", "goose"),
     ("default-codex", "codex", "codex"),
 )
+#: Development-only provider connection created by ``--fresh-db`` seeding.
+#: The research UI only lists admin-created connections, so without this a fresh
+#: database can never author a profile from the UI. Only the secret's env-var
+#: name is stored; the value is resolved from the environment at inference time.
+DEFAULT_DEV_CONNECTION_LABEL = "local-dev-openrouter"
+DEFAULT_DEV_CONNECTION_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_DEV_CONNECTION_SECRET_REF = "OPENROUTER_API_KEY"
+DEFAULT_DEV_CONNECTION_MODELS: tuple[str, ...] = (
+    "cohere/north-mini-code:free",
+    "openai/gpt-4o-mini",
+)
 
 
 class SeedError(RuntimeError):
@@ -205,6 +216,12 @@ class FreshDbRequest:
     owner_email: str = DEFAULT_DEV_OWNER_EMAIL
     owner_password: str = DEFAULT_DEV_PASSWORD
     owner_name: str = "Research Owner"
+    # Development provider connection the built-in profile is wired to.
+    connection_label: str = DEFAULT_DEV_CONNECTION_LABEL
+    connection_base_url: str = DEFAULT_DEV_CONNECTION_BASE_URL
+    connection_secret_ref: str = DEFAULT_DEV_CONNECTION_SECRET_REF
+    connection_models: tuple[str, ...] = DEFAULT_DEV_CONNECTION_MODELS
+    profile_model: str = DEFAULT_DEV_CONNECTION_MODELS[0]
 
     @property
     def study_id(self) -> UUID:
@@ -229,6 +246,9 @@ class FreshDbSummary:
     join_code: str
     session_policy: dict[str, Any]
     skipped_artifacts: list[dict[str, str]]
+    provider_connection_label: str = ""
+    provider_connection_models: tuple[str, ...] = ()
+    profile_model: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +579,40 @@ def ensure_study(
             join_code=study_lifecycle.allocate_join_code(session),
             profile_ids=[profile_id],
         )
-    return row
+        return row
+    if getattr(row, "research_status", None) != "STUDY_STOPPED":
+        return row
+    # A stopped study is terminal (``set_study_active`` refuses it), but a
+    # re-seed must still yield a live study. Reuse an earlier replacement when it
+    # is still open, otherwise create one, so re-running stays idempotent.
+    replacement_name = f"{request.study_name} (reseeded)"
+    existing = _study_by_name(session, replacement_name)
+    if existing is not None and getattr(existing, "research_status", None) != "STUDY_STOPPED":
+        view = protocol_store.get_study(session, existing.study_id)
+        if view is not None:
+            return view
+    return protocol_store.create_study(
+        session,
+        study_id=uuid.uuid4(),
+        name=replacement_name,
+        description="Synthetic study seeded for local onboarding (replaces a stopped study).",
+        created_by=owner_user_id,
+        starts_at=FIXED_SCHEDULE_START,
+        ends_at=FIXED_SCHEDULE_END,
+        is_research=True,
+        research_config_json=research_config,
+        join_code=study_lifecycle.allocate_join_code(session),
+        profile_ids=[profile_id],
+    )
+
+
+def _study_by_name(session: Any, name: str) -> Any:
+    """Return the study row with ``name``, or ``None`` (seed helper)."""
+    from sqlalchemy import select
+
+    from database.db_schemas import Study as StudyRow
+
+    return session.execute(select(StudyRow).where(StudyRow.name == name)).scalars().first()
 
 
 def activate_study(session: Any, study_id: UUID) -> None:
@@ -688,6 +741,34 @@ def import_manifest_release(
     return agents_store.row_to_release(row), skipped
 
 
+def _recorded_passing_case_ids(session: Any, release_id: str) -> set[str]:
+    """Passing conformance case ids already recorded on a release."""
+    from sqlalchemy import select
+
+    from database.research_schemas import AgentRelease as AgentReleaseRow
+
+    row = (
+        session.execute(
+            select(AgentReleaseRow).where(AgentReleaseRow.release_id == release_id)
+        )
+        .scalars()
+        .first()
+    )
+    if row is None:
+        return set()
+    passed: set[str] = set()
+    for receipt in (row.release_json or {}).get("conformance") or []:
+        if str(receipt.get("status", "")).strip().upper() != "PASS":
+            continue
+        for case in receipt.get("case_results") or []:
+            if str(case.get("status", "")).strip().upper() != "PASS":
+                continue
+            case_id = str(case.get("case_id", "")).strip()
+            if case_id:
+                passed.add(case_id)
+    return passed
+
+
 def ensure_manifest_conformance(
     session: Any,
     release: AgentReleaseV1,
@@ -701,8 +782,24 @@ def ensure_manifest_conformance(
     :class:`ConformanceReceiptV1` through the packaging store -- it never writes
     a qualification flag. The receipt is produced by the real
     :class:`ConformanceRunner` against the release's exact artifact/adapter/host.
+
+    The development seed records *synthetic* evidence: the observer passes
+    without driving a real agent. The case ids name the host behaviours each one
+    stands for, so the derived ``verified_approval_options`` offers the same
+    policies a real conformance run would: ``builtin.manifest.smoke`` (install),
+    ``builtin.permission.request`` (per-step), ``builtin.edit.suggestion``
+    (suggestion-only). A production release gets real cases from CI instead.
+    Re-running also *repairs* a release qualified before those cases existed, by
+    recording the missing evidence instead of skipping an already-QUALIFIED one.
     """
-    if release.qualification_status == QualificationStatus.QUALIFIED:
+    required_cases = (
+        ConformanceCaseV1(case_id="builtin.manifest.smoke"),
+        ConformanceCaseV1(case_id="builtin.permission.request"),
+        ConformanceCaseV1(case_id="builtin.edit.suggestion"),
+    )
+    required_ids = {case.case_id for case in required_cases}
+    already = _recorded_passing_case_ids(session, release.release_id)
+    if release.qualification_status == QualificationStatus.QUALIFIED and required_ids <= already:
         return
     if not release.artifacts:
         raise SeedError(f"release {release.release_id!r} declares no artifact")
@@ -710,7 +807,6 @@ def ensure_manifest_conformance(
         raise SeedError(f"release {release.release_id!r} declares no adapter digest")
 
     artifact = sorted(release.artifacts, key=lambda item: (item.os, item.arch))[0]
-    case = ConformanceCaseV1(case_id="builtin.manifest.smoke")
 
     class _PassingSmokeObserver:
         def observe(self, observed_case: ConformanceCaseV1) -> CaseObservation:
@@ -722,7 +818,7 @@ def ensure_manifest_conformance(
             )
 
     receipt = ConformanceRunner(_PassingSmokeObserver()).run(
-        [case],
+        list(required_cases),
         {},
         artifact_digest=artifact.sha256,
         adapter_digest=release.adapter.digest or "",
@@ -732,6 +828,38 @@ def ensure_manifest_conformance(
         now=datetime.now(timezone.utc),
     )
     packaging_store.insert_receipt(session, receipt)
+
+
+def ensure_dev_provider_connection(
+    session: Any,
+    *,
+    label: str = DEFAULT_DEV_CONNECTION_LABEL,
+    base_url: str = DEFAULT_DEV_CONNECTION_BASE_URL,
+    secret_ref: str = DEFAULT_DEV_CONNECTION_SECRET_REF,
+    models: tuple[str, ...] = DEFAULT_DEV_CONNECTION_MODELS,
+) -> Any:
+    """Return the development provider connection, creating it when missing.
+
+    A fresh database has none, and the research UI only lists admin-created
+    connections, so a seeded profile could never be authored from the UI. The
+    row stores the secret's environment-variable name only; the value is resolved
+    from the environment at inference time and is never persisted here.
+    """
+    from database import crud
+
+    if not models:
+        raise SeedError("a development provider connection needs at least one model")
+    existing = crud.get_provider_connection_by_label(session, label)
+    if existing is not None:
+        return existing
+    return crud.create_provider_connection(
+        session,
+        label=label,
+        base_url=base_url,
+        secret_ref=secret_ref,
+        models_json=json.dumps(list(models)),
+        is_active=True,
+    )
 
 
 def ensure_dev_owner(
@@ -784,13 +912,16 @@ def pin_builtin_distribution(
     *,
     name: str = BUILTIN_DISTRIBUTION_NAME,
     owner_user_id: Any = None,
+    connection_id: Any = None,
+    model: str = DEFAULT_DEV_CONNECTION_MODELS[0],
 ) -> Any:
     """Pin the built-in Code4Me profile to ``release`` (idempotently).
 
     Profiles are now researcher-owned and are never seeded by a migration, so a
     fresh database has no built-in profile. This creates one owned by the
     development owner account when it is missing; a profile that already exists
-    only gets its release pin updated.
+    only gets its release pin updated (and its provider wiring repaired when it
+    still carries the old placeholder model/connection).
     """
     from sqlalchemy import select
 
@@ -816,20 +947,27 @@ def pin_builtin_distribution(
             profile_id=uuid.uuid4(),
             owner_user_id=owner_user_id,
             name=name,
-            model="seed-model",
+            model=model,
             framework_version="code4me2-agent",
             tools_json="[]",
+            # Verified by the synthetic permission/edit cases the dev seed records.
             approval_policy="suggestion_only",
             max_steps=1,
             is_active=True,
             release_id=release.release_id,
-            connection_id=None,
+            connection_id=connection_id,
         )
         session.add(row)
         session.commit()
         session.refresh(row)
         return row
     row.release_id = release.release_id
+    # Repair a profile seeded before connections existed (placeholder model and
+    # no connection), so an existing dev database becomes usable on a re-run.
+    if row.connection_id is None and connection_id is not None:
+        row.connection_id = connection_id
+    if (row.model or "").strip() in ("", "seed-model") and model:
+        row.model = model
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -853,8 +991,19 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
     ensure_manifest_conformance(session, release)
 
     owner = ensure_dev_owner(session, request.owner_email)
+    connection = ensure_dev_provider_connection(
+        session,
+        label=request.connection_label,
+        base_url=request.connection_base_url,
+        secret_ref=request.connection_secret_ref,
+        models=tuple(request.connection_models),
+    )
     profile = pin_builtin_distribution(
-        session, release, owner_user_id=owner.user_id
+        session,
+        release,
+        owner_user_id=owner.user_id,
+        connection_id=connection.connection_id,
+        model=request.profile_model or request.connection_models[0],
     )
 
     # Re-read so the derived qualification reflects the recorded receipt.
@@ -894,7 +1043,7 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
     # Also covers the idempotent path where the study already existed.
     activate_study(session, study.study_id)
 
-    live = protocol_store.get_study(session, seed_request.study_id)
+    live = protocol_store.get_study(session, study.study_id)
     join_code = live.join_code if live is not None else None
     return FreshDbSummary(
         agent_id=release.agent_id,
@@ -904,10 +1053,13 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
         distribution_id=str(profile.profile_id),
         distribution_verified=release.qualification_status == QualificationStatus.QUALIFIED,
         supported_platforms=distribution_supported_platforms(release),
-        study_id=str(seed_request.study_id),
+        study_id=str(study.study_id),
         join_code=str(join_code or ""),
         session_policy=dict(research_config["session_policy"]),
         skipped_artifacts=skipped,
+        provider_connection_label=connection.label,
+        provider_connection_models=tuple(json.loads(connection.models_json or "[]")),
+        profile_model=profile.model,
     )
 
 
@@ -925,6 +1077,8 @@ def format_fresh_db_summary(summary: FreshDbSummary) -> str:
         f"  study_id:               {summary.study_id}",
         f"  join_code:              {summary.join_code}",
         f"  session_policy:         {summary.session_policy}",
+        f"  provider_connection:    {summary.provider_connection_label} {list(summary.provider_connection_models)}",
+        f"  profile_model:          {summary.profile_model}",
         f"  skipped_artifacts:      {summary.skipped_artifacts}",
     ]
     return "\n".join(lines)
@@ -1140,6 +1294,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="study name used by --fresh-db",
     )
     parser.add_argument(
+        "--connection-label",
+        default=DEFAULT_DEV_CONNECTION_LABEL,
+        help="--fresh-db: label of the development provider connection",
+    )
+    parser.add_argument(
+        "--connection-base-url",
+        default=DEFAULT_DEV_CONNECTION_BASE_URL,
+        help="--fresh-db: upstream base URL for the development provider connection",
+    )
+    parser.add_argument(
+        "--connection-secret-ref",
+        default=DEFAULT_DEV_CONNECTION_SECRET_REF,
+        help="--fresh-db: name of the deployment env var holding the provider key",
+    )
+    parser.add_argument(
+        "--connection-model",
+        action="append",
+        default=[],
+        metavar="MODEL",
+        help=(
+            "--fresh-db: allowed model on the development provider connection "
+            "(repeatable; defaults to the built-in OpenRouter models)"
+        ),
+    )
+    parser.add_argument(
+        "--profile-model",
+        default=None,
+        help="--fresh-db: model the built-in profile selects (default: first connection model)",
+    )
+    parser.add_argument(
         "--capability-requirements",
         dest="require_capabilities",
         action="store_true",
@@ -1242,6 +1426,12 @@ def fresh_db_request_from_args(args: argparse.Namespace) -> FreshDbRequest:
         study_name=args.builtin_study_name,
         actor=args.actor,
         require_capabilities=args.require_capabilities,
+        connection_label=args.connection_label,
+        connection_base_url=args.connection_base_url,
+        connection_secret_ref=args.connection_secret_ref,
+        connection_models=tuple(args.connection_model) or DEFAULT_DEV_CONNECTION_MODELS,
+        profile_model=args.profile_model
+        or (tuple(args.connection_model) or DEFAULT_DEV_CONNECTION_MODELS)[0],
     )
 
 
