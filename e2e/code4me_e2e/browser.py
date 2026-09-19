@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import asdict
 
 from . import process, report, workflow
-from .paths import BROWSER_DIR, SERVER_DIR, WORKSPACE_ROOT
+from .paths import BROWSER_DIR, require_workspace
 from .steps import STEP_ORDER, StepResult
 
 
@@ -39,8 +39,8 @@ def run(scenario, run_path) -> int:
             raise RuntimeError("Browser setup failed; see report.json")
         state = report.read_state(run_path)
         workflow.restore_accounts(scenario, state)
-        root = WORKSPACE_ROOT
-        website = SERVER_DIR / "src/website"
+        root = require_workspace()
+        website = root / "code4me2-server" / "src/website"
         if not (website / "node_modules").is_dir():
             if process.run([npm, "ci"], cwd=website, log_path=run_path / "browser-install.log"):
                 raise RuntimeError("Website dependency installation failed; see browser-install.log")

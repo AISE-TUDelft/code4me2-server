@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import Scenario
-from .paths import E2E_DIR, SERVER_DIR
+from .paths import E2E_DIR
 
 COMPOSE_FILE = E2E_DIR / "docker-compose.e2e.yml"
 

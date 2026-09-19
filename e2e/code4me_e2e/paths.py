@@ -21,7 +21,7 @@ from pathlib import Path
 E2E_DIR: Path = Path(__file__).resolve().parent.parent
 
 
-def _find_workspace_root() -> Path:
+def _find_workspace_root() -> Path | None:
     override = os.environ.get("CODE4ME_E2E_WORKSPACE")
     if override:
         root = Path(override).expanduser().resolve()
@@ -33,15 +33,22 @@ def _find_workspace_root() -> Path:
     for candidate in (E2E_DIR.parent, *E2E_DIR.parents):
         if (candidate / "code4me2").is_dir() and (candidate / "code4me2-server").is_dir():
             return candidate
-    raise RuntimeError(
-        "Could not locate the workspace root (a directory containing code4me2/ and "
-        "code4me2-server/). Set CODE4ME_E2E_WORKSPACE to override the lookup."
-    )
+    # Not fatal at import: the harness unit tests need no application checkout,
+    # so resolution is deferred to require_workspace() for the layers that do.
+    return None
 
 
-WORKSPACE_ROOT: Path = _find_workspace_root()
-SERVER_DIR: Path = WORKSPACE_ROOT / "code4me2-server"
-PLUGIN_DIR: Path = WORKSPACE_ROOT / "code4me2"
+WORKSPACE_ROOT: Path | None = _find_workspace_root()
+
+
+def require_workspace() -> Path:
+    """The workspace root, or a clear error when the checkouts are missing."""
+    if WORKSPACE_ROOT is None:
+        raise RuntimeError(
+            "Could not locate the workspace root (a directory containing code4me2/ and "
+            "code4me2-server/). Set CODE4ME_E2E_WORKSPACE to override the lookup."
+        )
+    return WORKSPACE_ROOT
 
 
 def _browser_dir() -> Path:
@@ -49,7 +56,8 @@ def _browser_dir() -> Path:
     vendored = E2E_DIR / "browser"
     if (vendored / "scenarios.py").is_file():
         return vendored
-    legacy = WORKSPACE_ROOT / "task07-browser"
+    # Legacy developer checkout: <workspace>/task07-browser next to <workspace>/e2e.
+    legacy = E2E_DIR.parent / "task07-browser"
     if (legacy / "scenarios.py").is_file():
         return legacy
     return vendored

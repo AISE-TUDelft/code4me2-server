@@ -1,0 +1,37 @@
+name: OpenAPI contract
+
+# The tracked openapi.json is the curated plugin-facing snapshot. It must be
+# reproducible from the live routers, so this gate fails when the snapshot and
+# the exporter's output diverge (a route/response changed without a refresh).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - openapi.json
+      - scripts/dev/export_openapi.py
+      - src/backend/**
+      - src/main.py
+  pull_request:
+    paths:
+      - openapi.json
+      - scripts/dev/export_openapi.py
+      - src/backend/**
+      - src/main.py
+
+jobs:
+  snapshot:
+    name: Curated snapshot is reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install server dependencies
+        run: pip install -r requirements.txt
+      - name: Check the snapshot
+        env:
+          TEST_MODE: "true"
+        run: python scripts/dev/export_openapi.py --check

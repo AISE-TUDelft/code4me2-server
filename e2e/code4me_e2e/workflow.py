@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from . import report, stack
 from .config import Scenario
 from .http import HttpError
-from .paths import E2E_DIR, PLUGIN_DIR
+from .paths import E2E_DIR, require_workspace
 from .steps import STEP_ORDER, STEPS, Ctx, StepBlocked, StepFailure, StepResult
 
 #: Steps that leave an ACTIVE enrollment the plugin test can bootstrap.
@@ -395,7 +395,7 @@ def run_plugin_test(scenario: Scenario, *, run_dir: Optional[str] = None,
                     keep_stack: bool = False, as_json: bool = False) -> int:
     from . import process
     from .ui import parse_gradle_xml, require_test_evidence
-    plugin = PLUGIN_DIR
+    plugin = require_workspace() / "code4me2"
     run_path = Path(run_dir).resolve() if run_dir else report.new_run_dir(E2E_DIR)
     run_path.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()

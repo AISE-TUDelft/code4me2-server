@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import acp, process, report, runtime, stack
 from .config import Scenario
-from .paths import BROWSER_DIR, E2E_DIR, PLUGIN_DIR, SERVER_DIR, WORKSPACE_ROOT
+from .paths import E2E_DIR, require_workspace
 from .steps import Ctx, StepResult
 from .workflow import PLUGIN_PREFIX_STEPS, _plugin_state_usable, _state_still_live, restore_accounts, run_workflow
 
@@ -143,7 +143,7 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
                 as_json: bool = False) -> int:
     run_path = Path(run_dir).resolve() if run_dir else report.new_run_dir(E2E_DIR)
     run_path.mkdir(parents=True, exist_ok=True)
-    plugin = PLUGIN_DIR
+    plugin = require_workspace() / "code4me2"
     home = run_path / "ide-home"
     # A fresh isolated home each time; keep previous diagnostics when resuming.
     if home.exists():

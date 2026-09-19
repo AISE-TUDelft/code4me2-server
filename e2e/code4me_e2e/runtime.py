@@ -8,24 +8,23 @@ import platform
 from pathlib import Path
 
 from . import process
-from .paths import E2E_DIR, PLUGIN_DIR, SERVER_DIR, WORKSPACE_ROOT
-
-ROOT = WORKSPACE_ROOT
+from .paths import E2E_DIR, require_workspace
 
 
-def _fingerprint(paths: list[Path]) -> str:
+def _fingerprint(paths: list[Path], root: Path) -> str:
     digest = hashlib.sha256()
-    for root in paths:
-        for path in sorted(root.rglob("*.py") if root.is_dir() else [root]):
+    for base in paths:
+        for path in sorted(base.rglob("*.py") if base.is_dir() else [base]):
             if "__pycache__" not in path.parts:
-                digest.update(str(path.relative_to(ROOT)).encode())
+                digest.update(str(path.relative_to(root)).encode())
                 digest.update(path.read_bytes())
     return digest.hexdigest()
 
 
 def prepare(run_path: Path) -> list[str]:
     """Cache native builds by source content, then supply Gradle staging inputs."""
-    server, plugin = SERVER_DIR, PLUGIN_DIR
+    root = require_workspace()
+    server, plugin = root / "code4me2-server", root / "code4me2"
     python = os.environ.get("CODE4ME_E2E_PYTHON") or str(server / ".venv/bin/python")
     if not Path(python).is_file():
         raise RuntimeError("Set CODE4ME_E2E_PYTHON to Python with the server runtime and PyInstaller installed.")
@@ -35,7 +34,7 @@ def prepare(run_path: Path) -> list[str]:
     fingerprint = _fingerprint([server / "src/code4me2_agent", server / "src/research",
                                server / "packaging/code4me2-agent.spec",
                                server / "packaging/requirements-runtime.lock", server / "pyproject.toml",
-                               server / "packaging/archive_runtime.py"])
+                               server / "packaging/archive_runtime.py"], root)
     stamp = cache / "source.sha256"
     if not binary.is_file() or not stamp.is_file() or stamp.read_text() != fingerprint:
         rc = process.run([python, "-m", "PyInstaller", "--noconfirm",
@@ -51,7 +50,7 @@ def prepare(run_path: Path) -> list[str]:
     proxy_fingerprint = _fingerprint([plugin / "telemetry-acp-proxy/telemetry_acp_proxy",
                                       plugin / "telemetry-acp-proxy/packaging/pyinstaller_entry.py",
                                       plugin / "telemetry-acp-proxy/pyproject.toml",
-                                      plugin / "build.gradle.kts", server / "src/research"])
+                                      plugin / "build.gradle.kts", server / "src/research"], root)
     if not proxy_stamp.is_file() or proxy_stamp.read_text() != proxy_fingerprint or not (plugin / "telemetry-acp-proxy/dist").is_dir():
         rc = process.run([str(plugin / "gradlew"), "buildResearchProxyBundle",
                           f"-PresearchProxyPython={python}", "--console=plain"], cwd=plugin,
