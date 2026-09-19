@@ -57,6 +57,10 @@ class ResearchSessionV1(BaseModel):
     context_id: str = ""
     state: SessionState = SessionState.NOT_STARTED
     opened_at: datetime | None = None
+    # Liveness (heartbeat) and qualifying activity are deliberately distinct:
+    # heartbeats prove the process is alive but must never manufacture activity
+    # (ISSUE-06).
+    last_heartbeat_at: datetime | None = None
     last_activity_at: datetime | None = None
     closed_at: datetime | None = None
     close_reason: CloseReason | None = None

@@ -310,6 +310,8 @@ class ResearchSessionV1(Base):
     context_id = Column(String, nullable=False)
     state = Column(String, nullable=False)
     opened_at = Column(DateTime(timezone=True), nullable=True)
+    # Liveness marker from heartbeats; never used to refresh activity/expiry.
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
     last_activity_at = Column(DateTime(timezone=True), nullable=True)
     closed_at = Column(DateTime(timezone=True), nullable=True)
     close_reason = Column(String, nullable=True)

@@ -563,6 +563,18 @@ def test_http_packaged_bootstrap_session_telemetry_lifecycle(http_runtime):
     assert reused.json()["created"] is False
     assert reused.json()["session"]["research_session_id"] == research_session_id
 
+    activity = client.post(
+        "/api/research/sessions/activity",
+        json={
+            "capability": capability,
+            "research_session_id": research_session_id,
+        },
+    )
+    assert activity.status_code == 200, activity.text
+    assert activity.json()["session"]["state"] == "running"
+    activity_at = activity.json()["session"]["last_activity_at"]
+    assert activity_at
+
     heartbeat = client.post(
         "/api/research/sessions/heartbeat",
         json={
@@ -573,9 +585,23 @@ def test_http_packaged_bootstrap_session_telemetry_lifecycle(http_runtime):
     assert heartbeat.status_code == 200, heartbeat.text
     assert heartbeat.json()["session"]["research_session_id"] == research_session_id
     assert heartbeat.json()["heartbeat_seconds"]
+    # Liveness must never manufacture qualifying activity (ISSUE-06).
+    assert heartbeat.json()["session"]["last_heartbeat_at"]
+    assert heartbeat.json()["session"]["last_activity_at"] == activity_at
 
     event_id = str(uuid.uuid4())
     batch_id = str(uuid.uuid4())
+    empty_batch = client.post(
+        "/api/research/telemetry/batches",
+        json={
+            "batch_id": str(uuid.uuid4()),
+            "session_capability": capability,
+            "client_instance_id": "lifecycle-client",
+            "events": [],
+        },
+    )
+    assert empty_batch.status_code == 422, empty_batch.text
+    assert empty_batch.json()["detail"]["code"] == "EMPTY_BATCH"
     batch = client.post(
         "/api/research/telemetry/batches",
         json={
@@ -597,6 +623,33 @@ def test_http_packaged_bootstrap_session_telemetry_lifecycle(http_runtime):
     assert batch.json()["accepted"][0]["event_id"] == event_id
     assert batch.json()["accepted"][0]["disposition"] == "ACCEPTED"
     receipt_id = batch.json()["receipt_id"]
+
+    tampered_receipt_attempt = dict(capability)
+    tampered_receipt_attempt["signature"] = "0" * 64
+    refused_receipt = client.post(
+        "/api/research/telemetry/batches",
+        json={
+            "batch_id": batch_id,
+            "session_capability": tampered_receipt_attempt,
+            "client_instance_id": "lifecycle-client",
+            "events": [
+                _telemetry_event(
+                    study_id=study_id,
+                    enrollment_id=enrollment_id,
+                    research_session_id=research_session_id,
+                    event_id=event_id,
+                )
+            ],
+        },
+    )
+    assert refused_receipt.status_code == 200, refused_receipt.text
+    # Knowing a batch id is not enough: an invalid capability leaks no ACK.
+    assert refused_receipt.json()["accepted"] == []
+    assert refused_receipt.json()["duplicate"] == []
+    assert refused_receipt.json()["rejected"] == []
+    assert [entry["reason"] for entry in refused_receipt.json()["retryable"]] == [
+        "CAPABILITY_INVALID"
+    ]
 
     duplicate = client.post(
         "/api/research/telemetry/batches",
@@ -736,7 +789,9 @@ def test_http_codex_byoa_adapter_normalization_and_terminal_closure(http_runtime
         owner_id = _seed_user(session, "codex-byoa-owner@example.com", can_research=True)
         participant_id = _seed_user(session, "codex-byoa-participant@example.com")
         release_id = _qualified_codex_byoa_release(session)
-        profile_id, _connection_id = _release_profile(session, owner_id, release_id)
+        profile_id, _connection_id = _release_profile(
+            session, owner_id, release_id, framework_version="codex"
+        )
     finally:
         session.close()
 
@@ -848,8 +903,19 @@ def test_http_codex_byoa_adapter_normalization_and_terminal_closure(http_runtime
     assert opened.status_code == 200, opened.text
     assert opened.json()["session"]["research_session_id"] == research_session_id
 
-    # The server opens the session in NOT_STARTED; a heartbeat is the documented
-    # transition to RUNNING (and makes the later terminal close legal).
+    # The server opens the session in NOT_STARTED; an explicit qualifying
+    # activity report is the documented transition to RUNNING (and makes the
+    # later terminal close legal). Heartbeats are liveness only (ISSUE-06).
+    activity = client.post(
+        "/api/research/sessions/activity",
+        json={
+            "capability": capability,
+            "research_session_id": research_session_id,
+        },
+    )
+    assert activity.status_code == 200, activity.text
+    assert activity.json()["session"]["state"] == "running"
+
     heartbeat = client.post(
         "/api/research/sessions/heartbeat",
         json={
@@ -858,6 +924,7 @@ def test_http_codex_byoa_adapter_normalization_and_terminal_closure(http_runtime
         },
     )
     assert heartbeat.status_code == 200, heartbeat.text
+    assert heartbeat.json()["session"]["last_heartbeat_at"]
 
     event = materialize_candidate(
         EventBuilder(SequenceAllocator()),

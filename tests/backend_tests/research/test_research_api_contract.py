@@ -619,7 +619,11 @@ def test_http_web_join_contract_matrix(http_runtime):
         current_user["value"] = _owner(study_owner_id)
         response = client.post(
             "/api/research/studies",
-            json={"name": name, "profile_ids": [str(selected_profile_id)]},
+            json={
+                "name": name,
+                "session_policy": VALID_SESSION_POLICY,
+                "profile_ids": [str(selected_profile_id)],
+            },
         )
         assert response.status_code == 201, response.text
         studies.append(response.json()["study"])
@@ -739,7 +743,11 @@ def test_http_web_join_contract_matrix(http_runtime):
     current_user["value"] = _owner(stopped_owner_id)
     created = client.post(
         "/api/research/studies",
-        json={"name": "Revoke study", "profile_ids": [str(stopped_profile_id)]},
+        json={
+            "name": "Revoke study",
+            "session_policy": VALID_SESSION_POLICY,
+            "profile_ids": [str(stopped_profile_id)],
+        },
     )
     assert created.status_code == 201, created.text
     study = created.json()["study"]
@@ -787,7 +795,11 @@ def test_http_profile_update_returns_typed_lock_after_study_consent(http_runtime
     current_user["value"] = _owner(owner_id)
     created = client.post(
         "/api/research/studies",
-        json={"name": "HTTP lock study", "profile_ids": [str(profile_id)]},
+        json={
+            "name": "HTTP lock study",
+            "session_policy": VALID_SESSION_POLICY,
+            "profile_ids": [str(profile_id)],
+        },
     )
     assert created.status_code == 201, created.text
     study = created.json()["study"]
@@ -981,7 +993,11 @@ def test_http_configuration_is_frozen_after_create_and_only_metadata_is_writable
         session.close()
 
     telemetry_policy = {"metadata_only": True}
-    session_policy = {"heartbeat_seconds": 10, "idle_timeout_seconds": 60}
+    session_policy = {
+        "heartbeat_seconds": 10,
+        "idle_timeout_seconds": 60,
+        "resume_grace_seconds": 30,
+    }
     current_user["value"] = _owner(owner_id)
     created = client.post(
         "/api/research/studies",
@@ -1058,7 +1074,11 @@ def test_http_stopped_study_cannot_be_reactivated_or_reconfigured(http_runtime):
     current_user["value"] = _owner(owner_id)
     created = client.post(
         "/api/research/studies",
-        json={"name": "Terminal study", "profile_ids": [str(profile_id)]},
+        json={
+            "name": "Terminal study",
+            "session_policy": VALID_SESSION_POLICY,
+            "profile_ids": [str(profile_id)],
+        },
     )
     assert created.status_code == 201, created.text
     study_id = created.json()["study"]["study_id"]
@@ -1105,7 +1125,11 @@ def test_http_participant_cannot_revoke_and_no_leave_route_exists(http_runtime):
     current_user["value"] = _owner(owner_id)
     created = client.post(
         "/api/research/studies",
-        json={"name": "No-leave study", "profile_ids": [str(profile_id)]},
+        json={
+            "name": "No-leave study",
+            "session_policy": VALID_SESSION_POLICY,
+            "profile_ids": [str(profile_id)],
+        },
     )
     assert created.status_code == 201, created.text
     study = created.json()["study"]
@@ -1210,7 +1234,11 @@ def test_http_researcher_read_models_keep_retained_rows_after_stop(http_runtime)
     current_user["value"] = _owner(owner_id)
     created = client.post(
         "/api/research/studies",
-        json={"name": "Retained study", "profile_ids": [str(profile_id)]},
+        json={
+            "name": "Retained study",
+            "session_policy": VALID_SESSION_POLICY,
+            "profile_ids": [str(profile_id)],
+        },
     )
     assert created.status_code == 201, created.text
     study = created.json()["study"]

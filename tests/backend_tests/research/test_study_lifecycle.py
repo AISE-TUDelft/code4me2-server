@@ -140,6 +140,11 @@ def test_create_study_starts_draft_with_study_owned_join_code_and_config():
         name="New study",
         description="Description",
         telemetry_policy={"metadata_only": True},
+        session_policy={
+            "idle_timeout_seconds": 600,
+            "resume_grace_seconds": 120,
+            "heartbeat_seconds": 30,
+        },
         profile_ids=[profile_id := uuid.uuid4()],
     )
 
@@ -164,7 +169,11 @@ def test_create_study_starts_draft_with_study_owned_join_code_and_config():
     assert body["study"]["join_code"] == "ABCD1234"
     assert create.call_args.kwargs["research_config_json"] == {
         "telemetry_policy": {"metadata_only": True},
-        "session_policy": {},
+        "session_policy": {
+            "idle_timeout_seconds": 600,
+            "resume_grace_seconds": 120,
+            "heartbeat_seconds": 30,
+        },
         "profile_ids": [str(profile_id)],
     }
     assert create.call_args.kwargs["join_code"] == "ABCD1234"
@@ -197,7 +206,9 @@ def test_study_read_metadata_clone_and_revoke_routes_return_lifecycle_payloads()
 
     with patch("backend.routers.research.studies.store.list_studies", return_value=[study]), patch(
         "backend.routers.research.studies._authorize_study", return_value=study
-    ), patch("backend.routers.research.studies.store.get_study", return_value=study), patch(
+    ), patch(
+        "backend.routers.research.studies.store.get_study", return_value=clone
+    ), patch(
         "backend.routers.research.studies.update_research_metadata", return_value=study
     ), patch("backend.routers.research.studies.clone_stopped_research_study", return_value=clone), patch(
         "backend.routers.research.studies.revoke_research_enrollment",

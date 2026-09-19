@@ -26,6 +26,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Optional
 
+from pydantic import ValidationError
+
 from .enums import (
     AgentRunOutcome,
     CloseReason,
@@ -114,7 +116,8 @@ def session_policy_from_study(study: Any) -> Optional[SessionPolicyV1]:
 
     ``None`` means the study does not declare both the idle timeout and the
     resume grace, so no timing decision can be made. The server never falls back
-    to a compiled default.
+    to a compiled default. A policy that fails validation is also ``None``: the
+    endpoints surface the typed ``POLICY_MISSING`` refusal instead of a 500.
     """
     session_policy = (getattr(study, "research_config_json", None) or {}).get(
         "session_policy", {}
@@ -124,11 +127,14 @@ def session_policy_from_study(study: Any) -> Optional[SessionPolicyV1]:
         or session_policy.get("resume_grace_seconds") is None
     ):
         return None
-    return SessionPolicyV1(
-        idle_timeout_seconds=session_policy["idle_timeout_seconds"],
-        resume_grace_seconds=session_policy["resume_grace_seconds"],
-        heartbeat_seconds=session_policy.get("heartbeat_seconds"),
-    )
+    try:
+        return SessionPolicyV1(
+            idle_timeout_seconds=session_policy["idle_timeout_seconds"],
+            resume_grace_seconds=session_policy["resume_grace_seconds"],
+            heartbeat_seconds=session_policy.get("heartbeat_seconds"),
+        )
+    except ValidationError:
+        return None
 
 
 def open_session(
@@ -220,6 +226,35 @@ def record_activity(
     return SessionResult(
         accepted=True,
         session=session.model_copy(update={"last_activity_at": timestamp}),
+        reason=SessionReasonCode.OK,
+    )
+
+
+def record_liveness(
+    session: ResearchSessionV1, now: Optional[datetime] = None
+) -> SessionResult:
+    """Record a heartbeat as liveness only (ISSUE-06).
+
+    A heartbeat proves the process is alive; it must never refresh
+    ``last_activity_at`` (that timestamp is the expiry/engagement authority)
+    or start a not-started session. Qualifying activity goes through
+    :func:`on_qualifying_activity` instead.
+    """
+    timestamp = _now(now)
+    if session.state.is_terminal:
+        return SessionResult(
+            accepted=False,
+            session=session,
+            reason=SessionReasonCode.SESSION_TERMINAL,
+            issue=_issue(
+                SessionReasonCode.SESSION_TERMINAL,
+                "a terminal session cannot record liveness",
+                "state",
+            ),
+        )
+    return SessionResult(
+        accepted=True,
+        session=session.model_copy(update={"last_heartbeat_at": timestamp}),
         reason=SessionReasonCode.OK,
     )
 

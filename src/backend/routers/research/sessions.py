@@ -39,6 +39,7 @@ from research.runtime.sessions.service import (
     expire_if_idle,
     on_qualifying_activity,
     open_session,
+    record_liveness,
     session_policy_from_study,
 )
 
@@ -67,7 +68,23 @@ class CreateSessionRequest(BaseModel):
 
 
 class HeartbeatRequest(BaseModel):
-    """Heartbeat/report-activity for an existing session."""
+    """Liveness heartbeat for an existing session.
+
+    Carries no activity claim: heartbeats never update qualifying activity
+    (ISSUE-06). Explicit activity is reported through :class:`ActivityRequest`.
+    """
+
+    capability: SessionCapability
+    research_session_id: uuid.UUID
+
+
+class ActivityRequest(BaseModel):
+    """One qualifying-activity report for an existing session.
+
+    Qualifying activity is an IDE interaction / agent turn / user action that
+    the client observed; it is the only signal that refreshes
+    ``last_activity_at`` and starts a not-started session.
+    """
 
     capability: SessionCapability
     research_session_id: uuid.UUID
@@ -376,6 +393,106 @@ def heartbeat(
                 },
             )
 
+        liveness = record_liveness(idle_result.session, now)
+        if not liveness.accepted:
+            raise HTTPException(
+                status_code=409,
+                detail=_detail(
+                    liveness.reason.value,
+                    (
+                        liveness.issue.message
+                        if liveness.issue is not None
+                        else "heartbeat rejected"
+                    ),
+                ),
+            )
+        _persist_result(db, liveness)
+
+        row = session_store.get_session(db, session.research_session_id)
+        updated = session_store.row_to_session(row)
+        return JsonResponseWithStatus(
+            status_code=200,
+            content={
+                "session": session_store.session_summary(row),
+                "next_actions": _next_actions(updated, policy, now),
+                "heartbeat_seconds": policy.heartbeat_seconds,
+            },
+        )
+    finally:
+        db.close()
+
+
+@router.post("/activity", summary="Report qualifying session activity")
+def report_activity(
+    payload: ActivityRequest,
+    app: App = Depends(App.get_instance),
+):
+    """Refresh qualifying activity (and start a not-started session).
+
+    This is the only client-signalled path that updates ``last_activity_at``;
+    heartbeats are liveness only (ISSUE-06).
+    """
+    now = _now()
+    db = app.get_db_session()
+    try:
+        session = _load_session(db, payload.research_session_id)
+        enrollment = _load_enrollment(db, session.enrollment_id)
+        _authorize(
+            payload.capability,
+            enrollment,
+            scope=_SCOPE_HEARTBEAT,
+            now=now,
+            research_session_id=session.research_session_id,
+            study_id=session.study_id,
+        )
+
+        if session.state.is_terminal:
+            raise HTTPException(
+                status_code=409,
+                detail=_detail(
+                    SessionReasonCode.SESSION_TERMINAL.value,
+                    f"session is {session.state.value}",
+                ),
+            )
+
+        policy = _load_policy(db, session)
+        if policy is None:
+            raise HTTPException(
+                status_code=409,
+                detail=_detail(
+                    SessionReasonCode.POLICY_MISSING.value,
+                    "study does not declare idle/resume session policy",
+                ),
+            )
+
+        kill_switch_check = _kill_switch_for_session(db, session)
+        idle_result = expire_if_idle(
+            session, now, policy=policy, kill_switch_check=kill_switch_check
+        )
+        if not idle_result.accepted:
+            raise HTTPException(
+                status_code=409,
+                detail=_detail(
+                    idle_result.reason.value,
+                    (
+                        idle_result.issue.message
+                        if idle_result.issue is not None
+                        else "activity rejected"
+                    ),
+                ),
+            )
+        if idle_result.transition is not None:
+            _persist_result(db, idle_result)
+            row = session_store.get_session(db, session.research_session_id)
+            return JsonResponseWithStatus(
+                status_code=200,
+                content={
+                    "session": session_store.session_summary(row),
+                    "next_actions": [],
+                    "heartbeat_seconds": policy.heartbeat_seconds,
+                },
+            )
+
         activity = on_qualifying_activity(
             idle_result.session, now, kill_switch_check=kill_switch_check
         )
@@ -387,7 +504,7 @@ def heartbeat(
                     (
                         activity.issue.message
                         if activity.issue is not None
-                        else "heartbeat rejected"
+                        else "activity rejected"
                     ),
                 ),
             )

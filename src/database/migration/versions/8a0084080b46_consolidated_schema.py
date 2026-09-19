@@ -187,6 +187,7 @@ def upgrade() -> None:
     sa.Column('context_id', sa.String(), nullable=False),
     sa.Column('state', sa.String(), nullable=False),
     sa.Column('opened_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('last_heartbeat_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_activity_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('closed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('close_reason', sa.String(), nullable=True),

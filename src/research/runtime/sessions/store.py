@@ -44,6 +44,7 @@ def _session_row(research_session: ResearchSessionV1) -> ResearchSessionRow:
         context_id=research_session.context_id or str(research_session.research_session_id),
         state=research_session.state.value,
         opened_at=research_session.opened_at,
+        last_heartbeat_at=research_session.last_heartbeat_at,
         last_activity_at=research_session.last_activity_at,
         closed_at=research_session.closed_at,
         close_reason=(
@@ -169,6 +170,7 @@ def update_session(
         return None
     row.state = research_session.state.value
     row.opened_at = research_session.opened_at
+    row.last_heartbeat_at = research_session.last_heartbeat_at
     row.last_activity_at = research_session.last_activity_at
     row.closed_at = research_session.closed_at
     row.close_reason = (
@@ -258,6 +260,7 @@ def row_to_session(row: ResearchSessionRow) -> ResearchSessionV1:
         context_id=row.context_id or "",
         state=state if isinstance(state, SessionState) else SessionState(state),
         opened_at=row.opened_at,
+        last_heartbeat_at=row.last_heartbeat_at,
         last_activity_at=row.last_activity_at,
         closed_at=row.closed_at,
         close_reason=(
@@ -311,6 +314,8 @@ def session_summary(row: ResearchSessionRow) -> dict[str, Any]:
         "context_id": row.context_id,
         "state": row.state,
         "opened_at": _iso(row.opened_at),
+        # Liveness and qualifying activity are separate facts (ISSUE-06).
+        "last_heartbeat_at": _iso(row.last_heartbeat_at),
         "last_activity_at": _iso(row.last_activity_at),
         "closed_at": _iso(row.closed_at),
         "close_reason": row.close_reason,

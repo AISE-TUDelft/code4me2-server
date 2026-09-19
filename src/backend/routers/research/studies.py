@@ -103,12 +103,87 @@ def _authorize_study(
     return study
 
 
+def _validated_session_policy(session_policy: dict[str, Any]) -> dict[str, Any]:
+    """Validate and freeze the study's complete typed session policy.
+
+    A study whose policy the session endpoints would reject must never be
+    stored: creation fails with a typed 4xx instead of producing a study that
+    can be joined but can never open an authoritative session (ISSUE-05).
+    """
+    try:
+        parsed = SessionPolicyV1.model_validate(session_policy)
+    except ValidationError as error:
+        first = error.errors()[0]
+        location = ".".join(str(part) for part in first.get("loc", ()))
+        message = first.get("msg", "invalid session policy")
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SESSION_POLICY_INVALID",
+                "message": f"{location}: {message}" if location else message,
+            },
+        ) from error
+    return parsed.model_dump(mode="json")
+
+
+def _validated_telemetry_policy(telemetry_policy: dict[str, Any]) -> dict[str, Any]:
+    """Reject a malformed telemetry policy at creation (ISSUE-01/ISSUE-05).
+
+    Content capture is only ever declared, never inferred: ``content_capture``
+    must be a boolean and the field-class allowlist must contain only the
+    known policy vocabulary.
+    """
+    from research.telemetry.enums import FieldClass
+
+    if not isinstance(telemetry_policy, dict):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TELEMETRY_POLICY_INVALID",
+                "message": "telemetry_policy must be an object",
+            },
+        )
+    content_capture = telemetry_policy.get("content_capture")
+    if content_capture is not None and not isinstance(content_capture, bool):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "TELEMETRY_POLICY_INVALID",
+                "message": "content_capture must be a boolean",
+            },
+        )
+    allowed = telemetry_policy.get("allowed_field_classes")
+    if allowed is not None:
+        if not isinstance(allowed, list) or not all(
+            isinstance(item, str) for item in allowed
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "TELEMETRY_POLICY_INVALID",
+                    "message": "allowed_field_classes must be a list of field-class names",
+                },
+            )
+        known = {field_class.value for field_class in FieldClass}
+        unknown = sorted(set(allowed) - known)
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "TELEMETRY_POLICY_INVALID",
+                    "message": f"unknown field classes: {', '.join(unknown)}",
+                },
+            )
+    return telemetry_policy
+
+
 def _study_payload(study: Any, db: Any) -> dict[str, Any]:
     def iso(value: Any) -> Any:
         return value.isoformat() if isinstance(value, datetime) else value
 
     metrics = store.get_study_read_metrics(db, study.study_id)
     stopped = getattr(study, "research_status", None) == "STUDY_STOPPED"
+    config = getattr(study, "research_config_json", None) or {}
     switch = operations_store.latest_study_kill_switch(db, study.study_id)
     switch_status = None
     if switch is not None:
@@ -128,6 +203,10 @@ def _study_payload(study: Any, db: Any) -> dict[str, Any]:
         "stopped_at": iso(getattr(study, "stopped_at", None)),
         "stopped_by": getattr(study, "stopped_by", None),
         "profile_selections": list(getattr(study, "profile_selections", []) or []),
+        # The frozen policies are echoed so the UI can display/edit the actual
+        # authority; metadata PATCH never changes them.
+        "telemetry_policy": config.get("telemetry_policy") or {},
+        "session_policy": config.get("session_policy") or {},
         "starts_at": iso(getattr(study, "starts_at", None)),
         "ends_at": iso(getattr(study, "ends_at", None)),
         "created_at": iso(getattr(study, "created_at", None)),
@@ -166,6 +245,8 @@ def create_study(
     require_researcher(current_user)
     db = app.get_db_session()
     try:
+        session_policy = _validated_session_policy(payload.session_policy)
+        telemetry_policy = _validated_telemetry_policy(payload.telemetry_policy)
         study = store.create_study(
             db,
             study_id=uuid.uuid4(),
@@ -176,8 +257,8 @@ def create_study(
             ends_at=payload.ends_at,
             is_research=True,
             research_config_json={
-                "telemetry_policy": payload.telemetry_policy,
-                "session_policy": payload.session_policy,
+                "telemetry_policy": telemetry_policy,
+                "session_policy": session_policy,
                 "profile_ids": [str(profile_id) for profile_id in payload.profile_ids],
             },
             join_code=allocate_join_code(db),
