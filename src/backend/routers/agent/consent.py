@@ -4,15 +4,19 @@ Merge decision 3: the mechanism is group-21's server-enforced double gate, with
 the default flipped to ON.
 
 * **Server-enforced.** Whether message text, tool arguments/results, diffs and
-  raw payloads get written is decided here, from the user's stored preference —
-  never from a flag in the request body. A compromised or stale client cannot
-  turn content capture on, and cannot turn it off either (which matters for
-  research integrity as much as for privacy).
-* **Default ON.** When a user row predates this preference the key is absent,
-  and it resolves to ``True``. This is a research platform where participants
-  give informed consent through a separate process before using it, so opt-out
-  is the right default for data collection — while the enforcement path stays
-  strict.
+  raw payloads get written is decided here from server state — never from a flag
+  in the request body. A compromised or stale client cannot turn content capture
+  on, and cannot turn it off either (which matters for research integrity as
+  much as for privacy).
+* **Study policy first (ISSUE-01).** For a research-bound context (an explicit
+  ``study_id``), permission comes from the active enrollment plus the study's
+  frozen telemetry policy, resolved by
+  :mod:`research.telemetry.content_policy`. The legacy account preference is
+  *not* study consent and is only consulted for genuinely non-research contexts
+  (no study binding), where there is no study policy to enforce.
+* **Default ON for non-research rows.** When a user row predates the preference
+  key it is absent, and the non-research default is ``True``. Missing or
+  malformed *study* policy never defaults to True: it denies.
 
 Structural telemetry (token counts, latency, span tree, tool *names*, content
 *lengths*) is never gated: it carries no user or code text, and it's what the
@@ -36,6 +40,12 @@ from database import crud
 from database.db_schemas import (
     STORE_AGENT_CONTENT_DEFAULT,
     STORE_AGENT_CONTENT_KEY,
+)
+from research.telemetry.content_policy import (
+    DENY_NO_PARTICIPANT,
+    LEGACY_PREFERENCE,
+    ContentPolicyDecision,
+    resolve_study_content_policy,
 )
 
 
@@ -62,30 +72,60 @@ def _preference_allows_content(preference: Optional[str]) -> bool:
     return bool(parsed.get(STORE_AGENT_CONTENT_KEY, STORE_AGENT_CONTENT_DEFAULT))
 
 
+def _legacy_preference_decision(
+    db: Session, user_id: Optional[uuid.UUID]
+) -> ContentPolicyDecision:
+    """The non-research decision: the account's own stored preference."""
+    if user_id is None:
+        return ContentPolicyDecision(allowed=False, reason=DENY_NO_PARTICIPANT)
+    try:
+        user = crud.get_user_by_id(db, user_id)
+    except Exception as e:
+        logging.warning(f"[Agent/consent] user lookup failed for {user_id} — {e}")
+        return ContentPolicyDecision(allowed=False, reason=DENY_NO_PARTICIPANT)
+    if user is None:
+        return ContentPolicyDecision(allowed=False, reason=DENY_NO_PARTICIPANT)
+    return ContentPolicyDecision(
+        allowed=_preference_allows_content(user.preference),
+        reason=LEGACY_PREFERENCE,
+    )
+
+
+def resolve_content_policy_for_user(
+    db: Session,
+    user_id: Optional[uuid.UUID],
+    *,
+    study_id: Optional[uuid.UUID] = None,
+    enrollment_id: Optional[uuid.UUID] = None,
+) -> ContentPolicyDecision:
+    """Resolve the content-storage decision for a known user id.
+
+    With a ``study_id`` the study's frozen policy is authoritative (and a
+    missing/malformed policy denies). Without one, the legacy account
+    preference applies: an unattributable request gets the conservative answer,
+    while a real non-research account keeps its documented default.
+    """
+    if study_id is not None:
+        return resolve_study_content_policy(
+            db,
+            account_id=user_id,
+            study_id=study_id,
+            enrollment_id=enrollment_id,
+        )
+    return _legacy_preference_decision(db, user_id)
+
+
 def resolve_store_agent_content_for_user(
     db: Session,
     user_id: Optional[uuid.UUID],
     *,
     study_id: Optional[uuid.UUID] = None,
+    enrollment_id: Optional[uuid.UUID] = None,
 ) -> bool:
-    """Resolve the preference for a known user id.
-
-    Returns False when the user can't be resolved at all: an unattributable
-    request has nobody's consent to rely on, so it gets the conservative answer
-    even though the default for a real user is True. What is actually collected
-    follows the study's published telemetry policy, which is delivered to the
-    client and enforced by the privacy filter.
-    """
-    if user_id is None:
-        return False
-    try:
-        user = crud.get_user_by_id(db, user_id)
-    except Exception as e:
-        logging.warning(f"[Agent/consent] user lookup failed for {user_id} — {e}")
-        return False
-    if user is None:
-        return False
-    return _preference_allows_content(user.preference)
+    """Boolean form of :func:`resolve_content_policy_for_user`."""
+    return resolve_content_policy_for_user(
+        db, user_id, study_id=study_id, enrollment_id=enrollment_id
+    ).allowed
 
 
 def resolve_store_agent_content(
@@ -93,6 +133,7 @@ def resolve_store_agent_content(
     session_id: uuid.UUID,
     *,
     study_id: Optional[uuid.UUID] = None,
+    enrollment_id: Optional[uuid.UUID] = None,
 ) -> bool:
     """Resolve the preference for the user owning ``session_id``.
 
@@ -107,7 +148,7 @@ def resolve_store_agent_content(
     if session is None or session.user_id is None:
         return False
     return resolve_store_agent_content_for_user(
-        db, session.user_id, study_id=study_id
+        db, session.user_id, study_id=study_id, enrollment_id=enrollment_id
     )
 
 
@@ -116,6 +157,7 @@ def resolve_store_agent_content_for_acp(
     raw_user_id: str,
     *,
     study_id: Optional[uuid.UUID] = None,
+    enrollment_id: Optional[uuid.UUID] = None,
 ) -> bool:
     """Resolve the preference for an ACP-authorized agent process.
 
@@ -128,4 +170,6 @@ def resolve_store_agent_content_for_acp(
     except (ValueError, TypeError, AttributeError):
         logging.warning(f"[Agent/consent] ACP scope user_id is not a UUID: {raw_user_id!r}")
         return False
-    return resolve_store_agent_content_for_user(db, user_uuid, study_id=study_id)
+    return resolve_store_agent_content_for_user(
+        db, user_uuid, study_id=study_id, enrollment_id=enrollment_id
+    )

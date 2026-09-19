@@ -178,14 +178,14 @@ def create_agent_task(
         # task_description is the user's own words — content, so honour the
         # consent gate even at creation time. The research enrollment gate is
         # applied on top of the legacy preference.
-        content_included = resolve_store_agent_content(
-            db, session_id, study_id=assignment.study_id
-        )
-        # Explicit phase-05 attribution: resolved from the authorized account and
-        # the frozen assignment, never guessed (NULL when there is no live
-        # research context).
         binding = access.resolve_research_binding(
             db, account_id=session.user_id, study_id=assignment.study_id
+        )
+        content_included = resolve_store_agent_content(
+            db,
+            session_id,
+            study_id=assignment.study_id,
+            enrollment_id=binding.enrollment_id if binding else None,
         )
 
         task = crud.create_agent_task(
@@ -279,7 +279,10 @@ async def run_agent_inference(
         # request body — see backend.routers.agent.consent. The research
         # enrollment gate is applied on top.
         content_included = resolve_store_agent_content(
-            db, session_id, study_id=task.study_id
+            db,
+            session_id,
+            study_id=task.study_id,
+            enrollment_id=task.enrollment_id,
         )
         profile = task.profile
         if profile is None and task.profile_id is not None:

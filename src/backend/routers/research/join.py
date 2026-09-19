@@ -26,6 +26,42 @@ GLOBAL_CONSENT_TEXT = (
     "is used in research data; your account identity remains private."
 )
 
+METADATA_ONLY_CONSENT_TEXT = (
+    GLOBAL_CONSENT_TEXT
+    + " This study is configured for metadata only: prompts, tool arguments and "
+    "results, model responses and file contents are not stored."
+)
+
+CONTENT_CAPTURE_CONSENT_TEXT = (
+    GLOBAL_CONSENT_TEXT
+    + " This study is configured to store content: prompts, tool arguments and "
+    "results, model responses and file contents may be stored under the study's "
+    "approved telemetry policy."
+)
+
+
+def _collection_policy(study: Any) -> dict[str, Any]:
+    """Project the frozen study telemetry policy without exposing internals."""
+    config = getattr(study, "research_config_json", None) or {}
+    raw = config.get("telemetry_policy") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "content_capture": raw.get("content_capture") is True,
+        "allowed_field_classes": list(raw.get("allowed_field_classes") or []),
+    }
+
+
+def _consent_payload(study: Any) -> dict[str, Any]:
+    """Render the actual frozen collection policy in participant-facing text."""
+    policy = _collection_policy(study)
+    text = (
+        CONTENT_CAPTURE_CONSENT_TEXT
+        if policy["content_capture"]
+        else METADATA_ONLY_CONSENT_TEXT
+    )
+    return {"text": text, "collection_policy": policy}
+
 
 def _require_authenticated_user(current_user: AuthenticatedUser) -> AuthenticatedUser:
     if current_user is None:
@@ -75,7 +111,7 @@ def resolve_join_code(
             content={
                 "join_code": study.join_code,
                 "study": _study_payload(study),
-                "consent": {"text": GLOBAL_CONSENT_TEXT},
+                "consent": _consent_payload(study),
             },
         )
     finally:

@@ -242,7 +242,10 @@ def ingest_agent_events(
         # enrollment denies content collection even when the legacy preference
         # would allow it.
         content_included = resolve_store_agent_content_for_acp(
-            db, scope.user_id, study_id=task.study_id
+            db,
+            scope.user_id,
+            study_id=task.study_id,
+            enrollment_id=task.enrollment_id,
         )
 
         ingested, skipped = ingest_module.ingest_event_batch(

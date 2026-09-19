@@ -581,7 +581,8 @@ def get_acp_agent_config(
             # (agents.registry → database.crud → … → this router package).
             from agents import registry
 
-            profile = registry.resolve_assignment(db, user_uuid)
+            assignment = registry.resolve_assignment_context(db, user_uuid)
+            profile = assignment.profile if assignment is not None else None
             if profile is not None:
                 agent_profile = profile.name
                 framework_version = profile.framework_version
@@ -614,7 +615,9 @@ def get_acp_agent_config(
                 )
 
             store_agent_content = resolve_store_agent_content_for_acp(
-                db, session.user_id
+                db,
+                session.user_id,
+                study_id=assignment.study_id if assignment is not None else None,
             )
 
             # The command allowlist is an operational guardrail, so it can be
@@ -701,7 +704,7 @@ def get_acp_agent_config(
     )
 
 
-def _managed_policy(db, user_id: uuid.UUID, profile) -> dict:
+def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.UUID] = None) -> dict:
     """Build the executable v1 policy; malformed study profiles fail closed."""
     if profile.framework_version != MANAGED_RUNTIME:
         raise HTTPException(
@@ -773,7 +776,9 @@ def _managed_policy(db, user_id: uuid.UUID, profile) -> dict:
         "max_iterations": max_iterations,
         "max_context_tokens": max_context_tokens,
         "commands_allowlist": commands_allowlist,
-        "store_agent_content": resolve_store_agent_content_for_acp(db, str(user_id)),
+        "store_agent_content": resolve_store_agent_content_for_acp(
+            db, str(user_id), study_id=study_id
+        ),
     }
 
 
@@ -787,13 +792,16 @@ def get_participant_readiness(
     try:
         from agents import registry
 
-        profile = registry.resolve_assignment(db, current_user.user_id)
-        if profile is None:
+        resolution = registry.resolve_assignment_context(db, current_user.user_id)
+        if resolution is None:
             raise HTTPException(
                 status_code=503,
                 detail="No active study agent profile is assigned to this user",
             )
-        policy = _managed_policy(db, current_user.user_id, profile)
+        profile = resolution.profile
+        policy = _managed_policy(
+            db, current_user.user_id, profile, study_id=resolution.study_id
+        )
         funding_owner_user_id, owner_is_admin = provider_module.funding_owner_for_profile(
             db, profile
         )
