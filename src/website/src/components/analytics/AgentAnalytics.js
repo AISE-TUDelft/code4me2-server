@@ -160,6 +160,7 @@ const AgentAnalytics = ({ timeWindow = "7d" }) => {
           <span className="agent-eyebrow">Operational telemetry</span>
           <h2>Agent Performance</h2>
           <p>Understand how agents run, where they spend time, and where execution fails.</p>
+          <p className="agent-scope-hint">Your own agent runs — personal scope</p>
         </div>
         <div className="agent-window">Last {timeWindow.replace("d", " days")}</div>
       </div>

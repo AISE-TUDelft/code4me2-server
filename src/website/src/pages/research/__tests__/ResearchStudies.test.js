@@ -8,6 +8,10 @@ jest.mock("../../../utils/api");
 
 beforeEach(() => {
   api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: false } });
+  api.getStudyParticipantCoverage.mockResolvedValue({
+    ok: true,
+    data: { study_id: "study-1", participants: [] },
+  });
 });
 
 const STUDY = {
@@ -54,6 +58,21 @@ test("shows selected profiles as read-only study configuration", async () => {
   expect(await screen.findByText("Selected agent profiles")).toBeInTheDocument();
   expect(screen.getByText("Code4Me")).toBeInTheDocument();
   expect(screen.getByText("Profile selection is fixed after study creation.")).toBeInTheDocument();
+});
+
+test("mounts the study-scoped participant coverage view for the selected study", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+
+  expect(await screen.findByText("Study participant coverage")).toBeInTheDocument();
+  expect(
+    screen.getByText("Study participants — study-scoped, participant-local codes"),
+  ).toBeInTheDocument();
+  await waitFor(() =>
+    expect(api.getStudyParticipantCoverage).toHaveBeenCalledWith("study-1"),
+  );
 });
 
 test("creates a Draft study through the lifecycle API", async () => {

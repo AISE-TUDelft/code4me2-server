@@ -185,6 +185,69 @@ test("resolveResearchJoinCode maps study and consent contract fields", async () 
   });
 });
 
+test("getStudyParticipantCoverage requests the study-scoped coverage endpoint", async () => {
+  global.fetch.mockResolvedValue(
+    jsonResponse({
+      study_id: "s-1",
+      coverage_version: "v1",
+      population: "enrolled",
+      participant_count: 1,
+      participants: [
+        {
+          enrollment_id: "e-1",
+          participant_code: "P-0001",
+          status: "ACTIVE",
+          assignment: {
+            agent_profile_id: "p-1",
+            strategy: "RANDOM_EQUAL",
+            randomization_epoch: 1,
+          },
+          sessions: { total: 1, active: 1, terminal: 0 },
+          events: {
+            total: 2,
+            by_event_type: { tool_call: 2 },
+            by_source: { acp: 2 },
+          },
+        },
+      ],
+    }),
+  );
+
+  const result = await api.getStudyParticipantCoverage("s-1");
+
+  expect(global.fetch).toHaveBeenCalledWith(
+    expect.stringContaining(
+      "/api/research/operations/participants/coverage?study_id=s-1",
+    ),
+    expect.objectContaining({ method: "GET" }),
+  );
+  expect(result.ok).toBe(true);
+  expect(result.data.participants[0]).toMatchObject({
+    participant_code: "P-0001",
+    assignment: { strategy: "RANDOM_EQUAL", randomization_epoch: 1 },
+    events: {
+      by_event_type: { tool_call: 2 },
+      by_source: { acp: 2 },
+    },
+  });
+});
+
+test("getStudyParticipantCoverage reports a 403 as forbidden", async () => {
+  global.fetch.mockResolvedValue(
+    jsonResponse({ detail: { code: "FORBIDDEN" } }, 403),
+  );
+
+  const result = await api.getStudyParticipantCoverage("s-1");
+
+  expect(result).toMatchObject({
+    ok: false,
+    forbidden: true,
+    code: "FORBIDDEN",
+    status: 403,
+  });
+  expect(result.error).toMatch(/study owner or an administrator/i);
+});
+
 test("redeemResearchJoinCode preserves enrollment assignment and idempotency fields", async () => {
   global.fetch.mockResolvedValue(
     jsonResponse({

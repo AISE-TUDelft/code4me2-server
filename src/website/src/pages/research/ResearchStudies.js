@@ -10,6 +10,7 @@ import {
   stopResearchStudy,
   updateResearchStudyMetadata,
 } from "../../utils/api";
+import StudyParticipantCoverage from "./StudyParticipantCoverage";
 import "./research.css";
 import "./ResearchStudies.css";
 
@@ -467,10 +468,14 @@ const ResearchStudies = () => {
                   ))}
                 </ul>
               ) : (
-                <p className="research-hint">No profiles selected.</p>
+                <p className="research-hint">
+                  No profiles selected. A study without selected agent profiles
+                  cannot be joined.
+                </p>
               )}
               <p className="research-hint">Profile selection is fixed after study creation.</p>
             </div>
+            <StudyParticipantCoverage studyId={selectedStudy.study_id} />
             {selectedStudy.research_status !== "STUDY_STOPPED" && (
               <form onSubmit={handleMetadataSave}>
                 <label>

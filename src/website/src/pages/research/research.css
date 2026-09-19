@@ -370,6 +370,52 @@ fieldset.research-card legend {
   width: 1px;
 }
 
+/* Study-scoped participant coverage (ISSUE-13). */
+.research-participant-coverage {
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+}
+
+.research-participant-coverage .research-card-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.research-participant-coverage h4 {
+  color: var(--text-color);
+  margin: 0;
+}
+
+.research-scope-hint {
+  background-color: var(--background-color);
+  border: 1px dashed var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.research-participant-profile {
+  display: block;
+  font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.research-participant-coverage td small {
+  color: var(--text-secondary);
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 @media (max-width: 900px) {
   .research-header {
     flex-direction: column;
