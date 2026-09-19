@@ -1,0 +1,83 @@
+{
+  "_comment": "Example scenario for `python3 -m code4me_e2e run --scenario scenario.example.json`. Every key is optional; the harness has the same defaults built in. Keys beginning with `_` or `$` are documentation only. Override any value from the CLI with `--set dotted.key=value`.",
+  "base_url": "http://localhost:28008",
+
+  "stack": {
+    "_comment": "The harness's own disposable docker-compose stack.",
+    "project_name": "code4me-e2e",
+    "backend_port": 28008,
+    "db_port": 25432,
+    "redis_port": 26379,
+    "image": "code4me2-server-backend:latest",
+    "bootstrap_signing_secret": "e2e-bootstrap-secret",
+    "stub_secret_env": "E2E_STUB_API_KEY",
+    "stub_secret_value": "e2e-stub-secret-value",
+    "db_password": "postgres",
+    "db_name": "code4me_e2e",
+    "db_user": "postgres",
+    "stub_port": 28999
+  },
+
+  "admin": {
+    "_comment": "A fresh admin account the harness creates; there is no admin endpoint, so `grant_roles` promotes it via SQL. Emails must use a normal TLD (`.test` is rejected by EmailStr).",
+    "email": "e2e-admin@example.com",
+    "password": "AdminPass123",
+    "name": "E2E Admin"
+  },
+
+  "researcher": {
+    "email": "e2e-researcher@example.com",
+    "password": "ResearcherPass123",
+    "name": "E2E Researcher"
+  },
+
+  "participant": {
+    "email": "e2e-participant@example.com",
+    "password": "ParticipantPass123",
+    "name": "E2E Participant"
+  },
+
+  "study": {
+    "name": "E2E Synthetic Study",
+    "description": "Synthetic study created by the code4me-e2e harness.",
+    "owner": "e2e-research-ops",
+    "start_at": null,
+    "end_at": null
+  },
+
+  "agent": {
+    "model": "e2e-stub-model",
+    "framework_version": "code4me2-agent",
+    "approval_policy": "auto",
+    "max_steps": 4,
+    "agent_id": "code4me2-e2e-agent",
+    "release_id": "e2e-release-1",
+    "release_version": "1.0.0",
+    "artifact_digest": null,
+    "artifact_path": null,
+    "artifact_size": 1024,
+    "profile_name": "e2e-profile",
+    "adapter_id": null,
+    "adapter_version": "1.0.0",
+    "adapter_digest": null
+  },
+
+  "platform": {
+    "os": "macos",
+    "arch": "aarch64",
+    "ide_build": "IU-243.1",
+    "host_kind": "IntelliJ IDEA",
+    "plugin_version": "e2e"
+  },
+
+  "message": {
+    "_comment": "expected_substring null means: assert the stub provider's own deterministic token.",
+    "prompt": "Say hello in one short sentence.",
+    "expected_substring": null
+  },
+
+  "timeouts": {
+    "backend_ready_seconds": 300,
+    "step_seconds": 120
+  }
+}

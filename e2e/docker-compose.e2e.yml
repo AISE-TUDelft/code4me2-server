@@ -1,0 +1,101 @@
+# Disposable, isolated backend stack for the code4me-e2e harness.
+#
+# This stack is intentionally separate from the developer stack: it always runs
+# under its own compose project name and its own named volume, uses distinct
+# host ports, and never sets a fixed container_name. It never stops, restarts or
+# removes the developer containers/volumes.
+#
+# Bring it up with the harness, not by hand:
+#   python3 -m code4me_e2e stack up
+#
+# Interpolation variables all carry a safe default so that
+# `docker compose -f e2e/docker-compose.e2e.yml config` is valid with no env.
+# The harness always passes real (non-default) values for ports and secrets.
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${E2E_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${E2E_DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${E2E_DB_NAME:-code4me_e2e}
+    volumes:
+      - code4me_e2e_dbdata:/var/lib/postgresql/data
+      - ../src/database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:${E2E_DB_PORT:-25432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  redis:
+    image: redis:7.0
+    ports:
+      - "127.0.0.1:${E2E_REDIS_PORT:-26379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  backend:
+    image: ${E2E_BACKEND_IMAGE:-code4me2-server-backend:latest}
+    working_dir: /app
+    volumes:
+      - ../src:/app/src:ro
+      - ../alembic.ini:/app/alembic.ini:ro
+      - ./backend.env:/app/.env:ro
+    env_file:
+      - ./backend.env
+    environment:
+      # Compose `environment` wins over `env_file`, so the disposable stack's
+      # connection targets never leak in from the developer `.env`.
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: ${E2E_DB_NAME:-code4me_e2e}
+      DB_USER: ${E2E_DB_USER:-postgres}
+      DB_PASSWORD: ${E2E_DB_PASSWORD:-postgres}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      CELERY_BROKER_HOST: redis
+      CELERY_BROKER_PORT: "6379"
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "8008"
+      PYTHONPATH: /app/src
+      PRELOAD_MODELS: "false"
+      MODEL_USE_CACHE: "false"
+      MODEL_WARMUP: "false"
+      MODEL_USE_COMPILE: "false"
+      BOOTSTRAP_SIGNING_SECRET: ${E2E_BOOTSTRAP_SIGNING_SECRET:-e2e-bootstrap-secret}
+      E2E_STUB_API_KEY: ${E2E_STUB_API_KEY:-e2e-stub-secret-value}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${E2E_BACKEND_PORT:-28008}:8008"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Fresh disposable DB: init.sql runs on first volume creation, then the
+    # migrations bring it to head (adding can_research/is_research/provider_*).
+    command:
+      - /bin/bash
+      - -c
+      - source activate myenv && alembic upgrade head && exec python src/main.py
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /opt/conda/envs/myenv/bin/python -c "import urllib.request as u;
+          r=u.urlopen(u.Request('http://localhost:8008/api/ping', method='HEAD'), timeout=5);
+          exit(0 if r.status == 200 else 1)"
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 30s
+
+volumes:
+  code4me_e2e_dbdata:

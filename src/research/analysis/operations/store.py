@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from database.research_schemas import (
     RECORD_KIND_HEALTH,
@@ -29,6 +29,7 @@ from database.research_schemas import (
 )
 from research.analysis.operations.kill_switch import KillSwitchRegistry
 
+from .enums import KillSwitchScopeKind
 from .models import (
     KillSwitchRecord,
     OperationalHealthV1,
@@ -358,12 +359,41 @@ def is_kill_switch_engaged(
     """Whether a persisted ``KILL_SWITCH`` record covers the requested scope.
 
     This is the DB-backed counterpart of the in-memory
-    :class:`~research.analysis.operations.kill_switch.KillSwitchRegistry`: it rebuilds the
-    registry from the persisted records and evaluates the same scope matching
-    (study/enrollment). A record whose scope kind does not cover the
-    requested identifiers does not block.
+    :class:`~research.analysis.operations.kill_switch.KillSwitchRegistry`: it reads
+    only the records whose scope can possibly match the requested identifiers
+    (``STUDY`` for the study, ``ENROLLMENT`` for the enrollment) and evaluates the
+    same scope matching. A record whose scope kind does not cover the requested
+    identifiers does not block, so the SQL filter is exactly equivalent to the
+    previous load-everything-then-filter behaviour without the O(all rows) read.
     """
-    registry = KillSwitchRegistry(kill_switch_records(session))
+    scope_conditions = []
+    if study_id is not None:
+        scope_conditions.append(
+            and_(
+                ResearchRecord.scope_type == KillSwitchScopeKind.STUDY.value,
+                ResearchRecord.scope_id == study_id,
+            )
+        )
+    if enrollment_id is not None:
+        scope_conditions.append(
+            and_(
+                ResearchRecord.scope_type == KillSwitchScopeKind.ENROLLMENT.value,
+                ResearchRecord.scope_id == enrollment_id,
+            )
+        )
+    if not scope_conditions:
+        return False
+    statement = (
+        select(ResearchRecord)
+        .where(
+            ResearchRecord.kind == RECORD_KIND_KILL_SWITCH,
+            or_(*scope_conditions),
+        )
+        .order_by(ResearchRecord.occurred_at.desc())
+    )
+    registry = KillSwitchRegistry(
+        [row_to_kill_switch(row) for row in session.execute(statement).scalars().all()]
+    )
     return registry.is_engaged(
         study_id=study_id,
         enrollment_id=enrollment_id,

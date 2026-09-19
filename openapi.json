@@ -8,16 +8,22 @@
   "paths": {
     "/api/session/acquire": {
       "get": {
-        "tags": ["Session"],
+        "tags": [
+          "Session"
+        ],
         "summary": "Acquire Session",
-        "description": "Acquire or create a session token using the provided auth token.\n\n- If the auth token is missing or invalid, return 401.\n- If no session is associated yet, create one and store it in Redis.",
+        "description": "Acquire or create a session token linked to the provided auth token.\n\nArgs:\n    app (App): Injected FastAPI app instance.\n    auth_token (str): Auth token from the client's cookies.\n\nReturns:\n    JsonResponseWithStatus: Contains the session token or appropriate error response.\n\nBehavior:\n    - Returns 401 if auth token is missing or invalid.\n    - If no session token exists for the auth token, creates a new session.\n    - Sets the session token as an HttpOnly cookie with expiration.",
         "operationId": "acquire_session_api_session_acquire_get",
         "parameters": [
           {
             "name": "auth_token",
             "in": "cookie",
             "required": false,
-            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Auth Token"
+            }
           }
         ],
         "responses": {
@@ -41,10 +47,22 @@
             },
             "description": "Unauthorized"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotFoundError"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -52,7 +70,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -60,7 +80,9 @@
           "500": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/AcquireSessionError" }
+                "schema": {
+                  "$ref": "#/components/schemas/AcquireSessionError"
+                }
               }
             },
             "description": "Internal Server Error"
@@ -70,23 +92,31 @@
     },
     "/api/project/create": {
       "post": {
-        "tags": ["Project"],
+        "tags": [
+          "Project"
+        ],
         "summary": "Create Project",
-        "description": "Create a new project\n1. Validate the provided session token\n2. If valid, create a project and return the project token\n3. If invalid, return an appropriate error response",
+        "description": "Create a new project for an authenticated user.\n\nSteps:\n1. Validate the provided auth token to get session info.\n2. Verify the session token is valid.\n3. Create a new project in the database.\n4. Associate the project with the session and the user.\n5. Store project metadata in Redis.\n6. Return the project token as an HttpOnly cookie in the response.\n\nArgs:\n    project_to_create: Project data provided in the request body.\n    app: FastAPI dependency to access the app context.\n    auth_token: Auth token passed as a cookie for authentication.\n\nReturns:\n    JsonResponseWithStatus: JSON response with project token or error details.",
         "operationId": "create_project_api_project_create_post",
         "parameters": [
           {
             "name": "auth_token",
             "in": "cookie",
             "required": false,
-            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Auth Token"
+            }
           }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/CreateProject" }
+              "schema": {
+                "$ref": "#/components/schemas/CreateProject"
+              }
             }
           }
         },
@@ -129,10 +159,30 @@
             },
             "description": "Unauthorized"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/UserNotFoundError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionNotFoundError"
+                    }
+                  ],
+                  "title": "Response 404 Create Project Api Project Create Post"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -140,7 +190,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -148,7 +200,9 @@
           "500": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/CreateProjectError" }
+                "schema": {
+                  "$ref": "#/components/schemas/CreateProjectError"
+                }
               }
             },
             "description": "Internal Server Error"
@@ -158,23 +212,31 @@
     },
     "/api/project/activate": {
       "put": {
-        "tags": ["Project"],
+        "tags": [
+          "Project"
+        ],
         "summary": "Activate Project",
-        "description": "Activates the project by following these steps:\n1. Validate the provided auth token\n2. If valid, return confirmation\n3. If invalid, return an appropriate error response\n4. The project might exist in redis or in the database, if it is in the database, it should be fetched from there and put in redis\nif it is in the redis, its expiration time should be updated.",
+        "description": "Activate a project for a user session by performing the following:\n\n1. Validate the auth token and session token from cookies.\n2. If the project exists in Redis, update its expiration time.\n3. If the project is not found in Redis, fetch it from the database and cache it.\n4. Associate the project with the user session and user in the database if not already linked.\n5. Return a success response with the project token set as an HttpOnly cookie.\n\nArgs:\n    activate_project_request: Request data containing the project ID to activate.\n    app: FastAPI dependency injection to get app context.\n    auth_token: Auth token from cookie to validate user identity.\n\nReturns:\n    JsonResponseWithStatus: Success or error response with appropriate status and messages.",
         "operationId": "activate_project_api_project_activate_put",
         "parameters": [
           {
             "name": "auth_token",
             "in": "cookie",
             "required": false,
-            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Auth Token"
+            }
           }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ActivateProject" }
+              "schema": {
+                "$ref": "#/components/schemas/ActivateProject"
+              }
             }
           }
         },
@@ -197,7 +259,9 @@
                     {
                       "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
                     },
-                    { "$ref": "#/components/schemas/InvalidOrExpiredAuthToken" }
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
+                    }
                   ],
                   "title": "Response 401 Activate Project Api Project Activate Put"
                 }
@@ -205,10 +269,33 @@
             },
             "description": "Unauthorized"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/UserNotFoundError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionNotFoundError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectNotFoundError"
+                    }
+                  ],
+                  "title": "Response 404 Activate Project Api Project Activate Put"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -216,7 +303,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -236,17 +325,23 @@
     },
     "/api/user/create": {
       "post": {
-        "tags": ["User"],
+        "tags": [
+          "User"
+        ],
         "summary": "Create User",
-        "description": "Create a new user in the system.\n\nArgs:\n    user_to_create (Union[Queries.CreateUser, Queries.CreateUserOauth]):\n        The user data to create, can be standard or OAuth-based.\n    app (App):\n        The application instance, injected by FastAPI's dependency system.\n\nReturns:\n    JsonResponseWithStatus: Response with status code and content.\n\nSteps:\n    1. Check if the user already exists by email.\n    2. If OAuth, verify the JWT token and email.\n    3. Create the user in the database if not exists.\n    4. Send verification email.\n    5. Return appropriate response.",
+        "description": "Create a new user in the system using standard or OAuth-based data.\n\nArgs:\n    user_to_create (Union[CreateUser, CreateUserOauth]):\n        User data from the request body (standard or OAuth-based).\n    app (App):\n        Application context with access to database and services.\n\nReturns:\n    JsonResponseWithStatus: JSON response indicating success or failure.\n\nFlow:\n    1. Check if a user already exists with the given email.\n    2. If using OAuth, validate the JWT token.\n    3. Insert the new user into the database.\n    4. Send a verification email via Celery.\n    5. Return HTTP 201 with the new user ID.",
         "operationId": "create_user_api_user_create_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
                 "anyOf": [
-                  { "$ref": "#/components/schemas/CreateUser" },
-                  { "$ref": "#/components/schemas/CreateUserOauth" }
+                  {
+                    "$ref": "#/components/schemas/CreateUser"
+                  },
+                  {
+                    "$ref": "#/components/schemas/CreateUserOauth"
+                  }
                 ],
                 "title": "User To Create"
               }
@@ -299,7 +394,9 @@
             "description": "Unprocessable Entity",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -307,7 +404,9 @@
             "description": "Too Many Requests",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -315,7 +414,9 @@
             "description": "Internal Server Error",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/CreateUserError" }
+                "schema": {
+                  "$ref": "#/components/schemas/CreateUserError"
+                }
               }
             }
           }
@@ -324,23 +425,31 @@
     },
     "/api/user/update": {
       "put": {
-        "tags": ["User"],
+        "tags": [
+          "User"
+        ],
         "summary": "Update User",
-        "description": "Update the currently authenticated user's data.\n\nArgs:\n- user_to_update: Pydantic model containing fields to update.\n- app: Application context, injected by FastAPI.\n- auth_token: Authentication token stored in browser cookies.\n\nReturns:\n- JSON response with updated user information if successful.\n- Appropriate error response if auth token is missing or invalid.",
+        "description": "Update the currently authenticated user's data.\n\nArgs:\n    user_to_update (Queries.UpdateUser): Fields the user wants to update.\n    app (App): Injected application instance with DB and Redis access.\n    auth_token (str): Auth token stored in the user's browser cookies.\n\nReturns:\n    JsonResponseWithStatus: Contains updated user data or error info.",
         "operationId": "update_user_api_user_update_put",
         "parameters": [
           {
             "name": "auth_token",
             "in": "cookie",
             "required": false,
-            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Auth Token"
+            }
           }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/UpdateUser" }
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUser"
+              }
             }
           }
         },
@@ -375,6 +484,16 @@
             },
             "description": "Unauthorized"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotFoundError"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
           "409": {
             "content": {
               "application/json": {
@@ -388,7 +507,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -396,7 +517,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -404,7 +527,9 @@
           "500": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/UpdateUserError" }
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateUserError"
+                }
               }
             },
             "description": "Internal Server Error"
@@ -414,9 +539,11 @@
     },
     "/api/user/delete": {
       "delete": {
-        "tags": ["User"],
+        "tags": [
+          "User"
+        ],
         "summary": "Delete User",
-        "description": "Delete the authenticated user's account and optionally their data.\n\nArgs:\n    delete_data (bool): Flag indicating whether to delete associated data (default: False).\n    auth_token (str): Authentication token stored in browser cookies.\n    app (App): Application instance with access to database and session managers.\n\nReturns:\n    JsonResponseWithStatus: A success message or an appropriate error response.",
+        "description": "Delete the authenticated user's account and optionally their associated data.\n\nArgs:\n    delete_data (bool): If True, removes all user-related data (default is False).\n    auth_token (str): Auth token provided in cookies to authenticate the user.\n    app (App): Dependency-injected app instance with DB and Redis access.\n\nReturns:\n    JsonResponseWithStatus: A success or error response depending on the outcome.",
         "operationId": "delete_user_api_user_delete_delete",
         "parameters": [
           {
@@ -425,17 +552,21 @@
             "required": false,
             "schema": {
               "type": "boolean",
-              "description": "Delete user's data",
+              "description": "Delete user's associated data",
               "default": false,
               "title": "Delete Data"
             },
-            "description": "Delete user's data"
+            "description": "Delete user's associated data"
           },
           {
             "name": "auth_token",
             "in": "cookie",
             "required": false,
-            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Auth Token"
+            }
           }
         ],
         "responses": {
@@ -462,7 +593,9 @@
           "404": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/UserNotFoundError" }
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotFoundError"
+                }
               }
             },
             "description": "Not Found"
@@ -470,7 +603,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -478,7 +613,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -486,7 +623,9 @@
           "500": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeleteUserError" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteUserError"
+                }
               }
             },
             "description": "Internal Server Error"
@@ -496,9 +635,12 @@
     },
     "/api/user/authenticate": {
       "post": {
-        "tags": ["User", "Authentication"],
+        "tags": [
+          "User",
+          "Authentication"
+        ],
         "summary": "Authenticate User",
-        "description": "Authenticate a user via either OAuth (JWT token) or traditional email/password.\n\nThis endpoint supports two methods of authentication:\n1. OAuth Authentication:\n   - The input contains a JWT token from an OAuth provider (Google).\n   - The token's validity is verified.\n   - If valid, the user is fetched by email from the database.\n   - A session auth token is created and returned as a cookie.\n2. Email/Password Authentication:\n   - The input contains user email and password.\n   - Credentials are verified against the database.\n   - If valid, a session auth token is created and returned as a cookie.\n\nArgs:\n    user_to_authenticate: Union of OAuth token or email/password credentials.\n    app: FastAPI dependency to access the application context.\n\nReturns:\n    JsonResponseWithStatus: A JSON response containing the authenticated user info\n    and a session auth token cookie on success, or an error response otherwise.",
+        "description": "Authenticate a user using either OAuth (via JWT) or email/password.\n\nThis endpoint supports:\n- OAuth: Validates a JWT token and fetches the user by email.\n- Email/Password: Verifies credentials against the database.\n\nArgs:\n    user_to_authenticate (Union[AuthenticateUserEmailPassword, AuthenticateUserOAuth]):\n        Either an email/password object or a JWT-based OAuth object.\n    app (App): FastAPI dependency that provides access to DB and config.\n\nReturns:\n    JsonResponseWithStatus: Authenticated user info + auth token cookie,\n    or an error response.",
         "operationId": "authenticate_user_api_user_authenticate_post",
         "requestBody": {
           "content": {
@@ -508,7 +650,9 @@
                   {
                     "$ref": "#/components/schemas/AuthenticateUserEmailPassword"
                   },
-                  { "$ref": "#/components/schemas/AuthenticateUserOAuth" }
+                  {
+                    "$ref": "#/components/schemas/AuthenticateUserOAuth"
+                  }
                 ],
                 "title": "User To Authenticate"
               }
@@ -533,8 +677,12 @@
               "application/json": {
                 "schema": {
                   "anyOf": [
-                    { "$ref": "#/components/schemas/InvalidOrExpiredJWTToken" },
-                    { "$ref": "#/components/schemas/InvalidEmailOrPassword" }
+                    {
+                      "$ref": "#/components/schemas/InvalidOrExpiredJWTToken"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidEmailOrPassword"
+                    }
                   ],
                   "title": "Response 401 Authenticate User Api User Authenticate Post"
                 }
@@ -545,7 +693,9 @@
             "description": "Not Found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ConfigNotFound" }
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigNotFound"
+                }
               }
             }
           },
@@ -553,7 +703,9 @@
             "description": "Unprocessable Entity",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -561,7 +713,9 @@
             "description": "Too Many Requests",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
@@ -580,16 +734,23 @@
     },
     "/api/user/verify/check": {
       "get": {
-        "tags": ["User", "User Verification"],
+        "tags": [
+          "User",
+          "User Verification"
+        ],
         "summary": "Check Verification",
-        "description": "Check if the user is verified",
+        "description": "Check if the currently authenticated user has verified their email.\n\nParameters:\n- app (App): Dependency-injected application context providing access to services.\n- auth_token (str): Authentication token retrieved from the user's cookie.\n\nReturns:\n- JsonResponseWithStatus: User verification status or appropriate error message.",
         "operationId": "check_verification_api_user_verify_check_get",
         "parameters": [
           {
             "name": "auth_token",
             "in": "cookie",
             "required": false,
-            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Auth Token"
+            }
           }
         ],
         "responses": {
@@ -616,7 +777,9 @@
           "404": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/UserNotFoundError" }
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotFoundError"
+                }
               }
             },
             "description": "Not Found"
@@ -624,7 +787,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -632,7 +797,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -652,16 +819,23 @@
     },
     "/api/user/verify/resend": {
       "post": {
-        "tags": ["User", "User Verification"],
+        "tags": [
+          "User",
+          "User Verification"
+        ],
         "summary": "Resend Verification Email",
-        "description": "Resend verification email to the user",
+        "description": "Resend a verification email to the user if not already verified.\n\nParameters:\n- app (App): Application context for accessing services.\n- auth_token (str): Auth token from cookie identifying the user.\n\nReturns:\n- JsonResponseWithStatus: Success confirmation or error message.",
         "operationId": "resend_verification_email_api_user_verify_resend_post",
         "parameters": [
           {
             "name": "auth_token",
             "in": "cookie",
             "required": false,
-            "schema": { "type": "string", "default": "", "title": "Auth Token" }
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Auth Token"
+            }
           }
         ],
         "responses": {
@@ -688,7 +862,9 @@
           "404": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/UserNotFoundError" }
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotFoundError"
+                }
               }
             },
             "description": "Not Found"
@@ -696,7 +872,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -704,7 +882,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -723,11 +903,14 @@
       }
     },
     "/api/user/verify/": {
-      "post": {
-        "tags": ["User", "User Verification"],
+      "get": {
+        "tags": [
+          "User",
+          "User Verification"
+        ],
         "summary": "Verify Email",
-        "description": "Verify user email with the provided token",
-        "operationId": "verify_email_api_user_verify__post",
+        "description": "Verify the user's email address using the provided verification token.\n\nParameters:\n- token (str): Token for email verification, passed via query parameter.\n- app (App): Application context for accessing services.\n\nReturns:\n- HTMLResponseWithStatus: HTML response indicating verification outcome.",
+        "operationId": "verify_email_api_user_verify__get",
         "parameters": [
           {
             "name": "token",
@@ -747,7 +930,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VerifyUserPostHTMLResponse"
+                  "$ref": "#/components/schemas/VerifyUserGetHTMLResponse"
                 }
               }
             }
@@ -765,7 +948,9 @@
           "404": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/UserNotFoundError" }
+                "schema": {
+                  "$ref": "#/components/schemas/UserNotFoundError"
+                }
               }
             },
             "description": "Not Found"
@@ -773,7 +958,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -781,7 +968,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -789,7 +978,9 @@
           "500": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/VerifyUserError" }
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyUserError"
+                }
               }
             },
             "description": "Internal Server Error"
@@ -799,9 +990,11 @@
     },
     "/api/completion/request": {
       "post": {
-        "tags": ["Completion"],
+        "tags": [
+          "Completion"
+        ],
         "summary": "Request Completion",
-        "description": "Request code completions based on provided context.",
+        "description": "Handle a code completion request.\n\nSteps:\n- Authenticate session, user, and project tokens via Redis.\n- Redact any secrets from the context before processing.\n- Prepare optional Celery tasks for storing context and telemetry.\n- Aggregate multi-file context if available.\n- Run completion models concurrently using a thread pool.\n- Queue database update tasks asynchronously using Celery.\n- Return completion results or appropriate error responses.",
         "operationId": "request_completion_api_completion_request_post",
         "parameters": [
           {
@@ -829,7 +1022,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/RequestCompletion" }
+              "schema": {
+                "$ref": "#/components/schemas/RequestCompletion"
+              }
             }
           }
         },
@@ -850,9 +1045,6 @@
                 "schema": {
                   "anyOf": [
                     {
-                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
-                    },
-                    {
                       "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
                     },
                     {
@@ -868,7 +1060,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -876,7 +1070,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -896,9 +1092,11 @@
     },
     "/api/completion/feedback": {
       "post": {
-        "tags": ["Completion"],
+        "tags": [
+          "Completion"
+        ],
         "summary": "Submit Completion Feedback",
-        "description": "Submit feedback on a generated completion.",
+        "description": "Submit feedback on a generated completion.\n\nThis endpoint validates the user's session and project tokens against Redis,\nverifies the user's authorization to provide feedback on the given query,\nand enqueues asynchronous tasks to update generation status and optionally\nsave ground truth feedback.\n\nParameters:\n- feedback: The feedback data submitted by the user, including acceptance\n  status and optional ground truth.\n- app: Dependency-injected application instance providing DB and Redis access.\n- session_token: Session cookie used to authenticate the user session.\n- project_token: Project cookie used to authorize project-level access.\n\nReturns:\n- JsonResponseWithStatus: A response indicating success or describing errors,\n  including authorization failures, missing records, or internal errors.",
         "operationId": "submit_completion_feedback_api_completion_feedback_post",
         "parameters": [
           {
@@ -926,7 +1124,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/FeedbackCompletion" }
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackCompletion"
+              }
             }
           }
         },
@@ -948,9 +1148,6 @@
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
-                    },
-                    {
-                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
                     },
                     {
                       "$ref": "#/components/schemas/InvalidOrExpiredProjectToken"
@@ -985,7 +1182,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -993,7 +1192,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -1013,9 +1214,11 @@
     },
     "/api/completion/{query_id}": {
       "get": {
-        "tags": ["Completion"],
+        "tags": [
+          "Completion"
+        ],
         "summary": "Get Completions By Query",
-        "description": "Get completions for a specific query ID.",
+        "description": "Retrieve code completions associated with a specific query ID.\n\nThis endpoint validates the user's session token and authorization,\nensures the requested query exists and belongs to the requesting user,\nand then fetches all the associated completion generations from the database.\n\nParameters:\n- query_id (UUID): The unique identifier for the meta query whose completions are requested.\n- app (App, dependency): The application instance providing database and Redis access.\n- session_token (str, cookie): The session token cookie for user authentication.\n\nReturns:\n- JsonResponseWithStatus: JSON response with HTTP status and either the completions data\n  or an error response detailing the failure reason.\n\nPossible responses:\n- 200: Successfully retrieved completions for the given query ID.\n- 401: Session token is invalid, expired, or missing.\n- 403: User does not have access rights to the requested query.\n- 404: The requested query ID does not exist.\n- 422, 429: Various client errors (validation or rate limiting).\n- 500: Internal server error while retrieving completions.",
         "operationId": "get_completions_by_query_api_completion__query_id__get",
         "parameters": [
           {
@@ -1073,7 +1276,9 @@
           "404": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/QueryNotFoundError" }
+                "schema": {
+                  "$ref": "#/components/schemas/QueryNotFoundError"
+                }
               }
             },
             "description": "Not Found"
@@ -1081,7 +1286,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -1089,7 +1296,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -1109,9 +1318,11 @@
     },
     "/api/completion/multi-file-context/update": {
       "post": {
-        "tags": ["Multi File Context"],
+        "tags": [
+          "Multi File Context"
+        ],
         "summary": "Update Multi File Context",
-        "description": "Update the context for a specific query ID.",
+        "description": "Endpoint to update multi-file context content for a given project and session.\n\nSteps:\n- Validate session token and retrieve session info from Redis.\n- Validate project token and retrieve project info from Redis.\n- Apply line-level context updates to the existing multi-file contexts.\n- Redact secrets in the updated content lines.\n- Remove any files with empty content.\n- Update the context change logs accordingly.\n- Store the updated project info back in Redis.\n- Return the updated context in the response.\n\nArgs:\n    context_update: UpdateMultiFileContext model containing the changes to apply.\n    app: The application instance (dependency-injected).\n    session_token: Session token from cookies.\n    project_token: Project token from cookies.\n\nReturns:\n    JsonResponseWithStatus containing the updated multi-file context or an error response.",
         "operationId": "update_multi_file_context_api_completion_multi_file_context_update_post",
         "parameters": [
           {
@@ -1177,7 +1388,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -1185,7 +1398,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -1205,7 +1420,9 @@
     },
     "/api/chat/request": {
       "post": {
-        "tags": ["Chat"],
+        "tags": [
+          "Chat"
+        ],
         "summary": "Request Chat Completion",
         "description": "Request chat completions based on provided messages.\n\nThe contract here is that the request always contains all the history of the chat as well\n\nWe do this because it could be that the user modifies the chat history in the frontend\nand we want to ensure that the chat completions are based on the latest state of the chat.\n\nTake the case where the user edits a message in the chat history midway through a chat.\nWe don't want to be generating a completion based on the old state of the chat.",
         "operationId": "request_chat_completion_api_chat_request_post",
@@ -1235,7 +1452,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/RequestChatCompletion" }
+              "schema": {
+                "$ref": "#/components/schemas/RequestChatCompletion"
+              }
             }
           }
         },
@@ -1244,7 +1463,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ChatHistoryResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ChatHistoryResponse"
+                }
               }
             }
           },
@@ -1253,9 +1474,6 @@
               "application/json": {
                 "schema": {
                   "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
-                    },
                     {
                       "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
                     },
@@ -1272,7 +1490,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -1280,7 +1500,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -1300,16 +1522,21 @@
     },
     "/api/chat/get/{page_number}": {
       "get": {
-        "tags": ["Chat"],
+        "tags": [
+          "Chat"
+        ],
         "summary": "Get Chat History",
-        "description": "Get the complete chat history for",
+        "description": "Retrieve a page of chat history for a specific project associated with the current session.\n\nParameters:\n- app (App): Dependency-injected FastAPI application instance.\n- page_number (int): The page number of the chat history to retrieve.\n- session_token (str): Session token stored in a cookie.\n- project_token (str): Project token stored in a cookie.\n\nReturns:\n- JsonResponseWithStatus: Paginated chat history or an error response.",
         "operationId": "get_chat_history_api_chat_get__page_number__get",
         "parameters": [
           {
             "name": "page_number",
             "in": "path",
             "required": true,
-            "schema": { "type": "integer", "title": "Page Number" }
+            "schema": {
+              "type": "integer",
+              "title": "Page Number"
+            }
           },
           {
             "name": "session_token",
@@ -1349,9 +1576,6 @@
                 "schema": {
                   "anyOf": [
                     {
-                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
-                    },
-                    {
                       "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
                     },
                     {
@@ -1377,7 +1601,9 @@
           "404": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/QueryNotFoundError" }
+                "schema": {
+                  "$ref": "#/components/schemas/QueryNotFoundError"
+                }
               }
             },
             "description": "Not Found"
@@ -1385,7 +1611,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -1393,7 +1621,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -1413,7 +1643,9 @@
     },
     "/api/chat/delete/{chat_id}": {
       "delete": {
-        "tags": ["Chat"],
+        "tags": [
+          "Chat"
+        ],
         "summary": "Delete Chat",
         "description": "Delete a specific chat by its ID.\nValidates that the user has access to the chat through their session and project tokens.",
         "operationId": "delete_chat_api_chat_delete__chat_id__delete",
@@ -1422,7 +1654,11 @@
             "name": "chat_id",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid", "title": "Chat Id" }
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Chat Id"
+            }
           },
           {
             "name": "session_token",
@@ -1462,9 +1698,6 @@
                 "schema": {
                   "anyOf": [
                     {
-                      "$ref": "#/components/schemas/InvalidOrExpiredAuthToken"
-                    },
-                    {
                       "$ref": "#/components/schemas/InvalidOrExpiredSessionToken"
                     },
                     {
@@ -1490,7 +1723,9 @@
           "404": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/QueryNotFoundError" }
+                "schema": {
+                  "$ref": "#/components/schemas/QueryNotFoundError"
+                }
               }
             },
             "description": "Not Found"
@@ -1498,7 +1733,9 @@
           "422": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Unprocessable Entity"
@@ -1506,7 +1743,9 @@
           "429": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             },
             "description": "Too Many Requests"
@@ -1514,7 +1753,9 @@
           "500": {
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeleteChatError" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteChatError"
+                }
               }
             },
             "description": "Internal Server Error"
@@ -1523,23 +1764,18 @@
       }
     },
     "/api/ping": {
-      "get": {
-        "summary": "Ping",
-        "operationId": "ping_api_ping_head",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": { "application/json": { "schema": {} } }
-          }
-        }
-      },
       "head": {
         "summary": "Ping",
+        "description": "Lightweight health check endpoint.\n\nReturns:\n    dict: A simple response indicating the service is available.",
         "operationId": "ping_api_ping_head",
         "responses": {
           "200": {
             "description": "Successful Response",
-            "content": { "application/json": { "schema": {} } }
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
           }
         }
       }
@@ -1572,7 +1808,9 @@
           }
         },
         "type": "object",
-        "required": ["session_token"],
+        "required": [
+          "session_token"
+        ],
         "title": "AcquireSessionGetResponse"
       },
       "ActivateProject": {
@@ -1585,7 +1823,9 @@
           }
         },
         "type": "object",
-        "required": ["project_id"],
+        "required": [
+          "project_id"
+        ],
         "title": "ActivateProject"
       },
       "ActivateProjectError": {
@@ -1627,7 +1867,10 @@
           }
         },
         "type": "object",
-        "required": ["email", "password"],
+        "required": [
+          "email",
+          "password"
+        ],
         "title": "AuthenticateUserEmailPassword"
       },
       "AuthenticateUserError": {
@@ -1654,7 +1897,10 @@
           }
         },
         "type": "object",
-        "required": ["provider", "token"],
+        "required": [
+          "provider",
+          "token"
+        ],
         "title": "AuthenticateUserOAuth"
       },
       "AuthenticateUserPostResponse": {
@@ -1669,41 +1915,59 @@
             "description": "User details"
           },
           "config": {
-            "additionalProperties": true,
-            "type": "object",
+            "type": "string",
             "title": "Config",
-            "description": "Users config json string"
+            "description": "User's config HOCON string"
           }
         },
         "type": "object",
-        "required": ["message", "user", "config"],
+        "required": [
+          "message",
+          "user",
+          "config"
+        ],
         "title": "AuthenticateUserPostResponse"
       },
       "BehavioralTelemetryData": {
         "properties": {
           "time_since_last_shown": {
             "anyOf": [
-              { "type": "integer", "minimum": 0.0 },
-              { "type": "null" }
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Time Since Last Shown",
             "description": "Time since last completion shown (ms)"
           },
           "time_since_last_accepted": {
             "anyOf": [
-              { "type": "integer", "minimum": 0.0 },
-              { "type": "null" }
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Time Since Last Accepted",
             "description": "Time since last completion accepted (ms)"
           },
           "typing_speed": {
             "anyOf": [
-              { "type": "integer", "minimum": 0.0 },
-              { "type": "null" }
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Typing Speed",
-            "description": "Typing speed (chars per minute)"
+            "description": "Typing speed"
           }
         },
         "type": "object",
@@ -1719,12 +1983,15 @@
           "model_name": {
             "type": "string",
             "title": "Model Name",
-            "description": "Model name"
+            "description": "Model name that failed"
           }
         },
         "type": "object",
-        "required": ["model_name"],
-        "title": "ChatCompletionErrorItem"
+        "required": [
+          "model_name"
+        ],
+        "title": "ChatCompletionErrorItem",
+        "description": "Represents a failed attempt to generate a chat completion."
       },
       "ChatCompletionItem": {
         "properties": {
@@ -1748,7 +2015,7 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "Generation Time",
-            "description": "Generation time"
+            "description": "Generation time in ms"
           },
           "confidence": {
             "type": "number",
@@ -1758,7 +2025,7 @@
           "was_accepted": {
             "type": "boolean",
             "title": "Was Accepted",
-            "description": "Whether the completion was accepted"
+            "description": "User acceptance status"
           }
         },
         "type": "object",
@@ -1771,30 +2038,37 @@
           "was_accepted"
         ],
         "title": "ChatCompletionItem",
-        "description": "Represents a single model completion in a chat conversation"
+        "description": "Model-generated response in a chat conversation."
       },
       "ChatHistoryItem": {
         "properties": {
           "user_message": {
             "$ref": "#/components/schemas/ChatMessageItem",
-            "description": "User's message"
+            "description": "User's input message"
           },
           "assistant_responses": {
             "items": {
               "anyOf": [
-                { "$ref": "#/components/schemas/ChatCompletionItem" },
-                { "$ref": "#/components/schemas/ChatCompletionErrorItem" }
+                {
+                  "$ref": "#/components/schemas/ChatCompletionItem"
+                },
+                {
+                  "$ref": "#/components/schemas/ChatCompletionErrorItem"
+                }
               ]
             },
             "type": "array",
             "title": "Assistant Responses",
-            "description": "Assistant's responses from different models"
+            "description": "Assistant's model responses"
           }
         },
         "type": "object",
-        "required": ["user_message", "assistant_responses"],
+        "required": [
+          "user_message",
+          "assistant_responses"
+        ],
         "title": "ChatHistoryItem",
-        "description": "Represents a single turn in the chat conversation"
+        "description": "Represents a single user-assistant interaction in a chat session."
       },
       "ChatHistoryResponse": {
         "properties": {
@@ -1802,84 +2076,110 @@
             "type": "string",
             "format": "uuid",
             "title": "Chat Id",
-            "description": "Chat ID"
+            "description": "Unique chat session ID"
           },
           "title": {
             "type": "string",
             "title": "Title",
-            "description": "Chat title"
+            "description": "Title of the chat"
           },
           "history": {
-            "items": { "$ref": "#/components/schemas/ChatHistoryItem" },
+            "items": {
+              "$ref": "#/components/schemas/ChatHistoryItem"
+            },
             "type": "array",
             "title": "History",
-            "description": "Chat conversation history"
+            "description": "List of message exchanges"
           }
         },
         "type": "object",
-        "required": ["chat_id", "title", "history"],
+        "required": [
+          "chat_id",
+          "title",
+          "history"
+        ],
         "title": "ChatHistoryResponse",
-        "description": "Response containing the entire chat history"
+        "description": "Complete chat conversation history for a session."
       },
       "ChatHistoryResponsePage": {
         "properties": {
           "page": {
             "type": "integer",
             "title": "Page",
-            "description": "Current page number"
+            "description": "Current page index"
           },
           "per_page": {
             "type": "integer",
             "title": "Per Page",
-            "description": "Number of records per page"
+            "description": "Number of items per page"
           },
           "items": {
-            "items": { "$ref": "#/components/schemas/ChatHistoryResponse" },
+            "items": {
+              "$ref": "#/components/schemas/ChatHistoryResponse"
+            },
             "type": "array",
             "title": "Items",
-            "description": "List of chat history responses"
+            "description": "Paginated chat sessions"
           }
         },
         "type": "object",
-        "required": ["page", "per_page", "items"],
+        "required": [
+          "page",
+          "per_page",
+          "items"
+        ],
         "title": "ChatHistoryResponsePage",
-        "description": "A glorified list of chat history responses with pagination"
+        "description": "Paginated response containing multiple chat histories."
       },
       "ChatMessageItem": {
         "properties": {
           "role": {
             "$ref": "#/components/schemas/ChatMessageRole",
-            "description": "Role of the message sender"
+            "description": "Sender's role"
           },
           "content": {
             "type": "string",
             "title": "Content",
-            "description": "Content of the message"
+            "description": "Message content"
           },
           "timestamp": {
             "type": "string",
             "format": "date-time",
             "title": "Timestamp",
-            "description": "When the message was sent"
+            "description": "Time the message was sent"
           },
           "meta_query_id": {
             "anyOf": [
-              { "type": "string", "format": "uuid" },
-              { "type": "null" }
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Meta Query Id",
-            "description": "Associated query ID if any"
+            "description": "Associated meta query ID, if applicable"
           }
         },
         "type": "object",
-        "required": ["role", "content", "timestamp"],
+        "required": [
+          "role",
+          "content",
+          "timestamp"
+        ],
         "title": "ChatMessageItem",
-        "description": "Represents a single message in a chat conversation"
+        "description": "Represents a single message in a chat conversation."
       },
       "ChatMessageRole": {
         "type": "string",
-        "enum": ["user", "assistant", "system"],
-        "title": "ChatMessageRole"
+        "enum": [
+          "user",
+          "assistant",
+          "system"
+        ],
+        "title": "ChatMessageRole",
+        "description": "Enumeration of roles within a chat conversation."
       },
       "CompletionErrorItem": {
         "properties": {
@@ -1891,12 +2191,15 @@
           "model_name": {
             "type": "string",
             "title": "Model Name",
-            "description": "Model name"
+            "description": "Model name that failed"
           }
         },
         "type": "object",
-        "required": ["model_name"],
-        "title": "CompletionErrorItem"
+        "required": [
+          "model_name"
+        ],
+        "title": "CompletionErrorItem",
+        "description": "Represents an error during code completion."
       },
       "CompletionFeedbackPostResponse": {
         "properties": {
@@ -1911,7 +2214,9 @@
           }
         },
         "type": "object",
-        "required": ["data"],
+        "required": [
+          "data"
+        ],
         "title": "CompletionFeedbackPostResponse"
       },
       "CompletionPostResponse": {
@@ -1927,7 +2232,9 @@
           }
         },
         "type": "object",
-        "required": ["data"],
+        "required": [
+          "data"
+        ],
         "title": "CompletionPostResponse"
       },
       "ConfigNotFound": {
@@ -1943,7 +2250,11 @@
       },
       "ContextChangeType": {
         "type": "string",
-        "enum": ["update", "insert", "remove"],
+        "enum": [
+          "update",
+          "insert",
+          "remove"
+        ],
         "title": "ContextChangeType"
       },
       "ContextData": {
@@ -1959,21 +2270,42 @@
             "description": "Code after cursor"
           },
           "file_name": {
-            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "File Name",
             "description": "File name",
             "default": "unknown_file"
           },
           "selected_text": {
-            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Selected Text",
             "description": "Selected text in editor",
             "default": ""
           },
           "context_files": {
             "anyOf": [
-              { "items": { "type": "string" }, "type": "array" },
-              { "type": "null" }
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Context Files",
             "description": "Context files to consider",
@@ -1981,7 +2313,10 @@
           }
         },
         "type": "object",
-        "required": ["prefix", "suffix"],
+        "required": [
+          "prefix",
+          "suffix"
+        ],
         "title": "ContextData"
       },
       "ContextualTelemetryData": {
@@ -2005,37 +2340,64 @@
             "description": "Programming language ID"
           },
           "file_path": {
-            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "File Path",
             "description": "Path to the file being edited"
           },
           "caret_line": {
             "anyOf": [
-              { "type": "integer", "minimum": 0.0 },
-              { "type": "null" }
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Caret Line",
             "description": "Line number of cursor"
           },
           "document_char_length": {
             "anyOf": [
-              { "type": "integer", "minimum": 0.0 },
-              { "type": "null" }
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Document Char Length",
             "description": "Document length in characters"
           },
           "relative_document_position": {
             "anyOf": [
-              { "type": "number", "maximum": 1.0, "minimum": 0.0 },
-              { "type": "null" }
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Relative Document Position",
             "description": "Cursor position as fraction of document"
           }
         },
         "type": "object",
-        "required": ["version_id", "trigger_type_id", "language_id"],
+        "required": [
+          "version_id",
+          "trigger_type_id",
+          "language_id"
+        ],
         "title": "ContextualTelemetryData"
       },
       "CreateProject": {
@@ -2049,7 +2411,9 @@
           }
         },
         "type": "object",
-        "required": ["project_name"],
+        "required": [
+          "project_name"
+        ],
         "title": "CreateProject"
       },
       "CreateProjectError": {
@@ -2077,7 +2441,9 @@
           }
         },
         "type": "object",
-        "required": ["project_token"],
+        "required": [
+          "project_token"
+        ],
         "title": "CreateProjectPostResponse"
       },
       "CreateUser": {
@@ -2114,7 +2480,12 @@
           }
         },
         "type": "object",
-        "required": ["email", "name", "password", "config_id"],
+        "required": [
+          "email",
+          "name",
+          "password",
+          "config_id"
+        ],
         "title": "CreateUser"
       },
       "CreateUserError": {
@@ -2196,7 +2567,9 @@
           }
         },
         "type": "object",
-        "required": ["user_id"],
+        "required": [
+          "user_id"
+        ],
         "title": "CreateUserPostResponse"
       },
       "DeleteChatError": {
@@ -2209,7 +2582,7 @@
         },
         "type": "object",
         "title": "DeleteChatError",
-        "description": "Error response for chat deletion failure"
+        "description": "Error response for chat deletion failure."
       },
       "DeleteChatSuccessResponse": {
         "properties": {
@@ -2221,7 +2594,7 @@
         },
         "type": "object",
         "title": "DeleteChatSuccessResponse",
-        "description": "Success response for chat deletion"
+        "description": "Acknowledgement response for successful chat deletion."
       },
       "DeleteUserDeleteResponse": {
         "properties": {
@@ -2254,7 +2627,9 @@
           }
         },
         "type": "object",
-        "required": ["message"],
+        "required": [
+          "message"
+        ],
         "title": "ErrorResponse"
       },
       "FeedbackCompletion": {
@@ -2277,13 +2652,24 @@
             "description": "Whether completion was accepted"
           },
           "ground_truth": {
-            "anyOf": [{ "type": "string" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Ground Truth",
             "description": "Actual code if available"
           }
         },
         "type": "object",
-        "required": ["meta_query_id", "model_id", "was_accepted"],
+        "required": [
+          "meta_query_id",
+          "model_id",
+          "was_accepted"
+        ],
         "title": "FeedbackCompletion"
       },
       "FeedbackRecordingError": {
@@ -2316,14 +2702,21 @@
             "description": "End line number"
           },
           "new_lines": {
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "type": "array",
             "title": "New Lines",
             "description": "New lines of code"
           }
         },
         "type": "object",
-        "required": ["change_type", "start_line", "end_line", "new_lines"],
+        "required": [
+          "change_type",
+          "start_line",
+          "end_line",
+          "new_lines"
+        ],
         "title": "FileContextChangeData"
       },
       "GenerateChatCompletionsError": {
@@ -2384,7 +2777,9 @@
           }
         },
         "type": "object",
-        "required": ["user_is_verified"],
+        "required": [
+          "user_is_verified"
+        ],
         "title": "GetVerificationGetResponse"
       },
       "InvalidEmailOrPassword": {
@@ -2479,7 +2874,9 @@
           }
         },
         "type": "object",
-        "required": ["data"],
+        "required": [
+          "data"
+        ],
         "title": "MultiFileContextUpdatePostResponse"
       },
       "NoAccessToGetQueryError": {
@@ -2504,14 +2901,32 @@
         "type": "object",
         "title": "NoAccessToProvideFeedbackError"
       },
+      "ProjectNotFoundError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Project not found. You may need to create or activate it again."
+          }
+        },
+        "type": "object",
+        "title": "ProjectNotFoundError"
+      },
       "Provider": {
         "type": "string",
-        "enum": ["no_provider", "google"],
+        "enum": [
+          "no_provider",
+          "google"
+        ],
         "title": "Provider"
       },
       "QueryChatMessageRole": {
         "type": "string",
-        "enum": ["user", "assistant", "system"],
+        "enum": [
+          "user",
+          "assistant",
+          "system"
+        ],
         "title": "QueryChatMessageRole"
       },
       "QueryNotFoundError": {
@@ -2528,7 +2943,9 @@
       "RequestChatCompletion": {
         "properties": {
           "model_ids": {
-            "items": { "type": "integer" },
+            "items": {
+              "type": "integer"
+            },
             "type": "array",
             "title": "Model Ids",
             "description": "Models to use for chat completion"
@@ -2542,8 +2959,12 @@
           "messages": {
             "items": {
               "prefixItems": [
-                { "$ref": "#/components/schemas/QueryChatMessageRole" },
-                { "type": "string" }
+                {
+                  "$ref": "#/components/schemas/QueryChatMessageRole"
+                },
+                {
+                  "type": "string"
+                }
               ],
               "type": "array",
               "maxItems": 2,
@@ -2558,7 +2979,14 @@
             "description": "Context data for completion"
           },
           "store_context": {
-            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Store Context",
             "description": "Whether to store context data in database",
             "default": false
@@ -2568,7 +2996,14 @@
             "description": "Contextual telemetry data"
           },
           "store_contextual_telemetry": {
-            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Store Contextual Telemetry",
             "description": "Whether to store contextual telemetry in database",
             "default": true
@@ -2578,13 +3013,27 @@
             "description": "Behavioral telemetry data"
           },
           "store_behavioral_telemetry": {
-            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Store Behavioral Telemetry",
             "description": "Whether to store behavioral telemetry in database",
             "default": true
           },
           "web_enabled": {
-            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Web Enabled",
             "description": "Whether web access is enabled",
             "default": false
@@ -2604,7 +3053,9 @@
       "RequestCompletion": {
         "properties": {
           "model_ids": {
-            "items": { "type": "integer" },
+            "items": {
+              "type": "integer"
+            },
             "type": "array",
             "title": "Model Ids",
             "description": "Models to use for completion"
@@ -2614,7 +3065,14 @@
             "description": "Context data for completion"
           },
           "store_context": {
-            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Store Context",
             "description": "Whether to store context data in database",
             "default": false
@@ -2624,7 +3082,14 @@
             "description": "Contextual telemetry data"
           },
           "store_contextual_telemetry": {
-            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Store Contextual Telemetry",
             "description": "Whether to store contextual telemetry in database",
             "default": true
@@ -2634,15 +3099,29 @@
             "description": "Behavioral telemetry data"
           },
           "store_behavioral_telemetry": {
-            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Store Behavioral Telemetry",
             "description": "Whether to store behavioral telemetry in database",
             "default": true
           },
           "stop_sequences": {
             "anyOf": [
-              { "items": { "type": "string" }, "type": "array" },
-              { "type": "null" }
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Stop Sequences",
             "description": "List of sequences that signal the end of generation",
@@ -2702,12 +3181,12 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "Generation Time",
-            "description": "Generation time"
+            "description": "Generation time in ms"
           },
           "confidence": {
             "type": "number",
             "title": "Confidence",
-            "description": "Confidence score"
+            "description": "Confidence score of the result"
           }
         },
         "type": "object",
@@ -2718,7 +3197,8 @@
           "generation_time",
           "confidence"
         ],
-        "title": "ResponseCompletionItem"
+        "title": "ResponseCompletionItem",
+        "description": "Represents a successful model completion result."
       },
       "ResponseCompletionResponseData": {
         "properties": {
@@ -2731,18 +3211,26 @@
           "completions": {
             "items": {
               "anyOf": [
-                { "$ref": "#/components/schemas/ResponseCompletionItem" },
-                { "$ref": "#/components/schemas/CompletionErrorItem" }
+                {
+                  "$ref": "#/components/schemas/ResponseCompletionItem"
+                },
+                {
+                  "$ref": "#/components/schemas/CompletionErrorItem"
+                }
               ]
             },
             "type": "array",
             "title": "Completions",
-            "description": "Generated completions"
+            "description": "List of generated completions or errors"
           }
         },
         "type": "object",
-        "required": ["meta_query_id", "completions"],
-        "title": "ResponseCompletionResponseData"
+        "required": [
+          "meta_query_id",
+          "completions"
+        ],
+        "title": "ResponseCompletionResponseData",
+        "description": "Container for completion responses for a given meta-query."
       },
       "ResponseFeedbackResponseData": {
         "properties": {
@@ -2760,8 +3248,12 @@
           }
         },
         "type": "object",
-        "required": ["meta_query_id", "model_id"],
-        "title": "ResponseFeedbackResponseData"
+        "required": [
+          "meta_query_id",
+          "model_id"
+        ],
+        "title": "ResponseFeedbackResponseData",
+        "description": "Response model for storing feedback about completions."
       },
       "ResponseUser": {
         "properties": {
@@ -2784,7 +3276,7 @@
             "type": "string",
             "format": "password",
             "title": "Password",
-            "description": "User's password (will be hashed)",
+            "description": "User's password (hashed)",
             "writeOnly": true
           },
           "config_id": {
@@ -2797,35 +3289,57 @@
             "type": "string",
             "format": "uuid",
             "title": "User Id",
-            "description": "Unique id for the user"
+            "description": "Unique ID for the user"
           },
           "joined_at": {
             "type": "string",
             "format": "date-time",
             "title": "Joined At",
-            "description": "When the user was created"
+            "description": "Timestamp when the user joined"
           },
           "verified": {
             "type": "boolean",
             "title": "Verified",
-            "description": "Whether the user's email has been verified"
+            "description": "Whether the user's email is verified"
           },
           "preference": {
             "anyOf": [
-              { "additionalProperties": true, "type": "object" },
-              { "type": "null" }
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Preference",
-            "description": "Users preference for data management",
+            "description": "User preferences for data management",
             "default": {}
           },
           "auth_token": {
             "anyOf": [
-              { "type": "string", "format": "uuid" },
-              { "type": "null" }
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Auth Token",
-            "description": "Last auth token used to login"
+            "description": "Last authentication token used by the user"
+          },
+          "is_admin": {
+            "type": "boolean",
+            "title": "Is Admin",
+            "description": "Whether the user is an admin",
+            "default": false
+          },
+          "can_research": {
+            "type": "boolean",
+            "title": "Can Research",
+            "description": "Whether an admin enabled this account for research",
+            "default": false
           }
         },
         "type": "object",
@@ -2838,7 +3352,8 @@
           "joined_at",
           "verified"
         ],
-        "title": "ResponseUser"
+        "title": "ResponseUser",
+        "description": "Response model representing a user in the system."
       },
       "RetrieveChatCompletionsError": {
         "properties": {
@@ -2862,11 +3377,24 @@
         "type": "object",
         "title": "RetrieveCompletionsError"
       },
+      "SessionNotFoundError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "Session not found. You may need to log in again."
+          }
+        },
+        "type": "object",
+        "title": "SessionNotFoundError"
+      },
       "UpdateMultiFileContext": {
         "properties": {
           "context_updates": {
             "additionalProperties": {
-              "items": { "$ref": "#/components/schemas/FileContextChangeData" },
+              "items": {
+                "$ref": "#/components/schemas/FileContextChangeData"
+              },
               "type": "array"
             },
             "type": "object",
@@ -2875,61 +3403,103 @@
           }
         },
         "type": "object",
-        "required": ["context_updates"],
+        "required": [
+          "context_updates"
+        ],
         "title": "UpdateMultiFileContext"
       },
       "UpdateUser": {
         "properties": {
           "name": {
             "anyOf": [
-              { "type": "string", "maxLength": 50, "minLength": 3 },
-              { "type": "null" }
+              {
+                "type": "string",
+                "maxLength": 50,
+                "minLength": 3
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Name",
             "description": "User's new name"
           },
           "email": {
             "anyOf": [
-              { "type": "string", "format": "email" },
-              { "type": "null" }
+              {
+                "type": "string",
+                "format": "email"
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Email",
             "description": "New email of user"
           },
           "previous_password": {
             "anyOf": [
-              { "type": "string", "format": "password", "writeOnly": true },
-              { "type": "null" }
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Previous Password",
             "description": "Previous password of user"
           },
           "password": {
             "anyOf": [
-              { "type": "string", "format": "password", "writeOnly": true },
-              { "type": "null" }
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Password",
             "description": "New password of user"
           },
           "preference": {
             "anyOf": [
-              { "additionalProperties": true, "type": "object" },
-              { "type": "null" }
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Preference",
             "description": "Updated user preferences as a dictionary"
           },
           "config_id": {
             "anyOf": [
-              { "type": "integer", "minimum": 1.0 },
-              { "type": "null" }
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Config Id",
             "description": "New configuration ID"
           },
           "verified": {
-            "anyOf": [{ "type": "boolean" }, { "type": "null" }],
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Verified",
             "description": "Whether user verified or not"
           }
@@ -2961,7 +3531,9 @@
           }
         },
         "type": "object",
-        "required": ["user"],
+        "required": [
+          "user"
+        ],
         "title": "UpdateUserPutResponse"
       },
       "UserAlreadyExistsWithThisEmail": {
@@ -2997,7 +3569,7 @@
         "type": "object",
         "title": "VerifyUserError"
       },
-      "VerifyUserPostHTMLResponse": {
+      "VerifyUserGetHTMLResponse": {
         "properties": {
           "message": {
             "type": "string",
@@ -3007,11 +3579,11 @@
           "html": {
             "type": "string",
             "title": "Html",
-            "default": "<!DOCTYPE html>\n                              <html>\n                              <head>\n                                  <title>Email Verification Successful</title>\n                                  <style>\n                                      body {\n                                          font-family: Arial, sans-serif;\n                                          text-align: center;\n                                          padding: 50px;\n                                      }\n                                      .success {\n                                          color: #4CAF50;\n                                          font-size: 24px;\n                                          margin-bottom: 20px;\n                                      }\n                                      .message {\n                                          font-size: 18px;\n                                          margin-bottom: 30px;\n                                      }\n                                      .button {\n                                          display: inline-block;\n                                          padding: 10px 20px;\n                                          background-color: #4CAF50;\n                                          color: white;\n                                          text-decoration: none;\n                                          border-radius: 5px;\n                                          font-size: 16px;\n                                      }\n                                  </style>\n                              </head>\n                              <body>\n                                  <div class=\"success\">Email Verification Successful!</div>\n                                  <div class=\"message\">Your email has been verified successfully. You can now close this page and continue using the application.</div>\n                                  <a href=\"/\" class=\"button\">Go to Homepage</a>\n                              </body>\n                              </html>\n                      "
+            "default": "<!DOCTYPE html>\n<html>\n<head>\n    <title>Email Verification Successful</title>\n    <style>\n        body {\n            font-family: Arial, sans-serif;\n            text-align: center;\n            padding: 50px;\n        }\n        .success {\n            color: #4CAF50;\n            font-size: 24px;\n            margin-bottom: 20px;\n        }\n        .message {\n            font-size: 18px;\n            margin-bottom: 30px;\n        }\n        .button {\n            display: inline-block;\n            padding: 10px 20px;\n            background-color: #4CAF50;\n            color: white;\n            text-decoration: none;\n            border-radius: 5px;\n            font-size: 16px;\n        }\n    </style>\n</head>\n<body>\n    <div class=\"success\">Email Verification Successful!</div>\n    <div class=\"message\">Your email has been verified successfully. You can now close this page and continue using the application.</div>\n    <a href=\"/\" class=\"button\">Go to Homepage</a>\n</body>\n</html>"
           }
         },
         "type": "object",
-        "title": "VerifyUserPostHTMLResponse"
+        "title": "VerifyUserGetHTMLResponse"
       }
     }
   }

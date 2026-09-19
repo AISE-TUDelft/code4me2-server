@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Run from any directory: ./e2e/test [--layer backend|plugin|browser|all] [--json]."""
+from code4me_e2e.cli import main
+import sys
+
+raise SystemExit(main(["test", *sys.argv[1:]]))
