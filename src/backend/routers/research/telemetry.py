@@ -39,6 +39,7 @@ from research.telemetry.ingestion.models import (
     TelemetryBatchRequestV1,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
 )
 from research.telemetry.ingestion.service import ingest_batch
+from research.telemetry.privacy import PrivacyPolicy
 from research.telemetry.ingestion.store import SqlAlchemyIngestionStore, get_receipt_by_id
 
 router = APIRouter()
@@ -155,6 +156,23 @@ def _session_resolver(db):
     return resolve
 
 
+def _privacy_policy_resolver(db):
+    def resolve(enrollment):
+        study = db.get(StudyRow, enrollment.study_id)
+        if study is None:
+            raise HTTPException(status_code=409, detail="Study policy is unavailable")
+        config = study.research_config_json or {}
+        return PrivacyPolicy.from_study_policy(
+            config.get("telemetry_policy") or {},
+            consent_active=(
+                enrollment.status == EnrollmentStatus.ACTIVE
+                and enrollment.consent_accepted_at is not None
+            ),
+        )
+
+    return resolve
+
+
 @router.post("/batches", summary="Submit a canonical telemetry batch")
 def submit_telemetry_batch(
     payload: TelemetryBatchRequestV1,
@@ -172,6 +190,7 @@ def submit_telemetry_batch(
             store=store,
             now=_now(),
             kill_switch_check=_ingestion_kill_switch_check(db, payload),
+            privacy_policy_resolver=_privacy_policy_resolver(db),
         )
         _log_ack(ack)
         return JsonResponseWithStatus(

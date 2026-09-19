@@ -41,8 +41,11 @@ from research.runtime.assignment.enums import AllocationOutcome
 from research.runtime.assignment.service import allocate
 from research.runtime.bootstrap.models import (
     BootstrapAgentProfile,
+    BootstrapManifestV1,
     ResearchSessionRef,
 )
+from research.runtime.bootstrap.capability import verify_capability
+from research.runtime.bootstrap.signer import verify_manifest
 from research.runtime.bootstrap.service import (
     BootstrapSigningContext,
     compose_bootstrap,
@@ -80,6 +83,68 @@ def _require_signer() -> BootstrapSigningContext:
             },
         )
     return _SIGNER
+
+
+class ManifestVerificationRequest(BaseModel):
+    manifest: BootstrapManifestV1
+    enrollment_id: uuid.UUID
+    context_id: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/verify", summary="Authenticate a manifest for its owner and execution context")
+def verify_bootstrap_manifest(
+    payload: ManifestVerificationRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    app: App = Depends(App.get_instance),
+):
+    """Online HMAC verification; the signing secret never leaves the server.
+
+    Consumers trust this authenticated HTTPS origin and must bind its response
+    to the exact manifest digest, enrollment and context they requested.
+    """
+    signer = _require_signer()
+    manifest = payload.manifest
+    verification = verify_manifest(manifest, signer.secret)
+    if not verification.ok:
+        raise HTTPException(status_code=409, detail={"code": verification.reason.value})
+    if manifest.enrollment_id != payload.enrollment_id:
+        raise HTTPException(status_code=403, detail="Manifest enrollment mismatch")
+    db = app.get_db_session()
+    try:
+        enrollment = _owned_enrollment(db, current_user, payload.enrollment_id)
+        session = session_store.get_session(db, manifest.research_session.research_session_id)
+        if (
+            session is None
+            or session.enrollment_id != enrollment.enrollment_id
+            or session.study_id != enrollment.study_id
+            or manifest.study_id != enrollment.study_id
+            or session.context_id != payload.context_id
+            or SessionState(session.state).is_terminal
+        ):
+            raise HTTPException(status_code=409, detail="Manifest session is not active in this context")
+        capability = verify_capability(
+            manifest.session_capability,
+            signer.secret,
+            expected_audience="research-runtime",
+            expected_scope=["telemetry:write", "session:heartbeat", "session:close"],
+            now=_now(),
+            current_revocation_epoch=enrollment.revocation_epoch,
+            expected_enrollment_id=enrollment.enrollment_id,
+            expected_research_session_id=session.session_id,
+            expected_study_id=enrollment.study_id,
+        )
+        if not capability.ok:
+            raise HTTPException(status_code=409, detail={"code": capability.reason.value})
+        if _kill_switch_for_scope(db, study_id=enrollment.study_id, enrollment_id=enrollment.enrollment_id)():
+            raise HTTPException(status_code=409, detail={"code": "KILL_SWITCH_ENGAGED"})
+        return {
+            "verified": True,
+            "manifest_digest": manifest.manifest_digest,
+            "enrollment_id": str(enrollment.enrollment_id),
+            "context_id": payload.context_id,
+        }
+    finally:
+        db.close()
 
 
 def _kill_switch_for_scope(

@@ -307,9 +307,14 @@ def _admin(user_id: uuid.UUID) -> AuthenticatedUser:
 
 
 def _telemetry_event(
-    *, study_id: str, enrollment_id: str, research_session_id: str, event_id: str
+    *,
+    study_id: str,
+    enrollment_id: str,
+    research_session_id: str,
+    event_id: str,
+    payload: Optional[dict] = None,
 ) -> dict:
-    return {
+    event = {
         "event_id": event_id,
         "schema_version": "1",
         "event_type": "tool.completed",
@@ -326,6 +331,9 @@ def _telemetry_event(
             "fidelity": "normalized",
         },
     }
+    if payload is not None:
+        event["payload"] = payload
+    return event
 
 
 def test_http_packaged_bootstrap_session_telemetry_lifecycle(http_runtime):
@@ -400,6 +408,47 @@ def test_http_packaged_bootstrap_session_telemetry_lifecycle(http_runtime):
     assert capability["research_session_id"] == manifest["research_session"]["research_session_id"]
     assert set(capability["scope"]) >= {"telemetry:write", "session:heartbeat", "session:close"}
     research_session_id = manifest["research_session"]["research_session_id"]
+
+    # The manifest is authenticated by the server before the plugin may trust it
+    # (the signing secret never leaves the server).
+    verified = client.post(
+        "/api/research/bootstrap/verify",
+        json={
+            "manifest": manifest,
+            "enrollment_id": enrollment_id,
+            "context_id": "lifecycle-packaged-context",
+        },
+    )
+    assert verified.status_code == 200, verified.text
+    proof = verified.json()
+    assert proof["verified"] is True
+    assert proof["manifest_digest"] == manifest["manifest_digest"]
+    assert proof["enrollment_id"] == enrollment_id
+    assert proof["context_id"] == "lifecycle-packaged-context"
+
+    # A tampered manifest fails the HMAC check.
+    tampered_manifest = json.loads(json.dumps(manifest))
+    tampered_manifest["agent_release"]["agent_id"] = "attacker-agent"
+    tampered = client.post(
+        "/api/research/bootstrap/verify",
+        json={
+            "manifest": tampered_manifest,
+            "enrollment_id": enrollment_id,
+            "context_id": "lifecycle-packaged-context",
+        },
+    )
+    assert tampered.status_code == 409, tampered.text
+
+    # A verification for another execution context is refused.
+    wrong_context = client.post(
+        "/api/research/bootstrap/verify",
+        json={
+            "manifest": manifest,
+            "enrollment_id": enrollment_id,
+            "context_id": "another-context",
+        },
+    )
+    assert wrong_context.status_code == 409, wrong_context.text
 
     opened = client.post(
         "/api/research/sessions/",
@@ -486,6 +535,39 @@ def test_http_packaged_bootstrap_session_telemetry_lifecycle(http_runtime):
     )
     assert duplicate.status_code == 200, duplicate.text
     assert duplicate.json()["receipt_id"] == receipt_id
+
+    # Server-side privacy enforcement: content the study policy does not allow is
+    # rejected, never silently stored or rewritten.
+    content_event_id = str(uuid.uuid4())
+    content_batch = client.post(
+        "/api/research/telemetry/batches",
+        json={
+            "batch_id": str(uuid.uuid4()),
+            "session_capability": capability,
+            "client_instance_id": "lifecycle-client",
+            "events": [
+                _telemetry_event(
+                    study_id=study_id,
+                    enrollment_id=enrollment_id,
+                    research_session_id=research_session_id,
+                    event_id=content_event_id,
+                    payload={"prompt": "summarise the private source file"},
+                )
+            ],
+        },
+    )
+    assert content_batch.status_code == 200, content_batch.text
+    assert [entry["reason"] for entry in content_batch.json()["rejected"]] == ["PRIVACY_BLOCKED"]
+    assert content_batch.json()["accepted"] == []
+    session = session_factory()
+    try:
+        stored = session.execute(
+            text("SELECT count(*) FROM public.research_event WHERE event_id = :event_id"),
+            {"event_id": content_event_id},
+        ).scalar_one()
+    finally:
+        session.close()
+    assert stored == 0, "policy-blocked content must not be stored"
 
     tampered = dict(capability)
     tampered["signature"] = "0" * 64

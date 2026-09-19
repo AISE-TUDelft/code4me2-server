@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Callable, Optional, Protocol, Sequence
 from research.canonical import canonical_hash
 from research.participants.enums import EnrollmentStatus
 from research.runtime.bootstrap.models import CapabilityReasonCode
+from research.telemetry.privacy import PrivacyPolicy, filter_event
 
 from .enums import EventDisposition, IngestionReasonCode
 from .errors import IntegrityConflictError, ReceiptConflictError, StoreUnavailable
@@ -367,6 +368,7 @@ def ingest_batch(
     continuity_required: bool = False,
     retry_hint: int = DEFAULT_RETRY_HINT_SECONDS,
     kill_switch_check: Optional[Callable[[], bool]] = None,
+    privacy_policy_resolver: Optional[Callable[[Enrollment], PrivacyPolicy]] = None,
 ) -> TelemetryBatchAckV1:
     """Ingest one batch and return a durable, deterministic acknowledgement."""
     server_time = _now(now)
@@ -502,6 +504,7 @@ def ingest_batch(
         server_time=server_time,
         continuity_required=continuity_required,
         retry_hint=retry_hint,
+        privacy_policy=privacy_policy_resolver(enrollment) if privacy_policy_resolver else PrivacyPolicy.default(),
     )
 
 
@@ -515,6 +518,7 @@ def _ingest_authorized_events(
     server_time: datetime,
     continuity_required: bool,
     retry_hint: int,
+    privacy_policy: Optional[PrivacyPolicy] = None,
 ) -> TelemetryBatchAckV1:
     """Persist already-authorized events with the HTTP route's exact semantics.
 
@@ -562,6 +566,18 @@ def _ingest_authorized_events(
                 )
             )
             continue
+
+        if privacy_policy is not None:
+            filtered = filter_event(event, privacy_policy)
+            if filtered.summary.blocked or filtered.event.payload != event.payload:
+                # Do not rewrite canonical bytes: that would invalidate the
+                # producer's digest and turn a retry into an integrity conflict.
+                rejected.append(EventAck(
+                    event_id=event.event_id,
+                    disposition=EventDisposition.REJECTED,
+                    reason=IngestionReasonCode.PRIVACY_BLOCKED,
+                ))
+                continue
 
         digest = compute_event_digest(event)
         existing_digest = stored.get(event.event_id)

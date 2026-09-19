@@ -16,6 +16,7 @@ Policy actions:
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -60,6 +61,27 @@ class PrivacyPolicy(BaseModel):
     def default(cls) -> PrivacyPolicy:
         """The deny-by-default policy: metadata only, no content capture."""
         return cls()
+
+    @classmethod
+    def from_study_policy(cls, telemetry_policy: Mapping[str, Any], *, consent_active: bool) -> PrivacyPolicy:
+        """Resolve the current manifest policy using the IDE's field defaults.
+
+        Content always needs the explicit content_capture flag and consent.
+        Code metadata is allowed when declared (or using the legacy/default
+        metadata policy); otherwise clients must upload SHA-256 tokens.
+        """
+        declared = {
+            field_class for field_class in FieldClass
+            if field_class.value in telemetry_policy.get("allowed_field_classes", [])
+        }
+        allowed = (declared or {FieldClass.SYSTEM, FieldClass.BEHAVIORAL, FieldClass.CODE_METADATA}) - {FieldClass.SECRET}
+        return cls(
+            allowed_field_classes=sorted(allowed, key=lambda item: item.value),
+            content_allowed=telemetry_policy.get("content_capture") is True,
+            consent_active=consent_active,
+            code_metadata_mode="allow" if FieldClass.CODE_METADATA in allowed else "hash",
+            policy_digest=canonical_hash(dict(telemetry_policy)),
+        )
 
     @classmethod
     def from_revision_policy(
@@ -145,6 +167,9 @@ _DROPPED = object()
 
 
 def _hash_value(value: Any) -> str:
+    # Filtering at ingestion must preserve values already hashed by a producer.
+    if isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+        return value
     return "sha256:" + canonical_hash({"value": value})
 
 
