@@ -74,7 +74,7 @@ class CapabilityVerifier(Protocol):
         capability: SessionCapability,
         *,
         now: datetime,
-        current_revocation_epoch: int,
+        current_revocation_epoch: Optional[int],
         expected_enrollment_id: Optional[uuid.UUID] = None,
         expected_research_session_id: Optional[uuid.UUID] = None,
         expected_study_id: Optional[uuid.UUID] = None,
@@ -356,6 +356,53 @@ def _is_terminal(session: ResearchSessionV1) -> bool:
     return state.is_terminal if hasattr(state, "is_terminal") else False
 
 
+def _receipt_denied_ack(
+    request: TelemetryBatchRequestV1, server_time: datetime, retry_hint: int
+) -> TelemetryBatchAckV1:
+    """A refusal that leaks no receipt content and never writes a new receipt."""
+    return _ack(
+        request.batch_id,
+        server_time,
+        retryable=[
+            EventAck(
+                event_id=event.event_id,
+                disposition=EventDisposition.RETRYABLE,
+                reason=IngestionReasonCode.CAPABILITY_INVALID,
+            )
+            for event in request.events
+        ],
+        retry_hint=retry_hint,
+    )
+
+
+def _authorized_receipt(
+    request: TelemetryBatchRequestV1,
+    receipt: BatchReceipt,
+    *,
+    receipt_capability_verifier: CapabilityVerifier,
+    server_time: datetime,
+    retry_hint: int,
+) -> TelemetryBatchAckV1:
+    """Return a stored receipt only to the capability's own subject (ISSUE-08).
+
+    The batch id alone is never sufficient: the signed capability must cover
+    the receipt's enrollment/session subject. Receipts persisted before subject
+    binding existed (no enrollment/session) are refused rather than echoed.
+    """
+    if receipt.enrollment_id is None and receipt.research_session_id is None:
+        return _receipt_denied_ack(request, server_time, retry_hint)
+    verification = receipt_capability_verifier(
+        request.session_capability,
+        now=server_time,
+        current_revocation_epoch=None,
+        expected_enrollment_id=receipt.enrollment_id,
+        expected_research_session_id=receipt.research_session_id,
+    )
+    if not verification.ok:
+        return _receipt_denied_ack(request, server_time, retry_hint)
+    return receipt.ack
+
+
 def ingest_batch(
     request: TelemetryBatchRequestV1,
     *,
@@ -369,15 +416,24 @@ def ingest_batch(
     retry_hint: int = DEFAULT_RETRY_HINT_SECONDS,
     kill_switch_check: Optional[Callable[[], bool]] = None,
     privacy_policy_resolver: Optional[Callable[[Enrollment], PrivacyPolicy]] = None,
+    receipt_capability_verifier: Optional[CapabilityVerifier] = None,
 ) -> TelemetryBatchAckV1:
     """Ingest one batch and return a durable, deterministic acknowledgement."""
     server_time = _now(now)
 
-    # Retry of an already-received batch returns the immutable receipt. The
-    # authoritative re-check happens after the subject rows are locked.
+    # Retry of an already-received batch returns the immutable receipt, but only
+    # after the capability proves the caller owns its subject (ISSUE-08).
     existing_receipt = store.get_receipt(request.batch_id)
     if existing_receipt is not None:
-        return existing_receipt.ack
+        return _authorized_receipt(
+            request,
+            existing_receipt,
+            receipt_capability_verifier=(
+                receipt_capability_verifier or capability_verifier
+            ),
+            server_time=server_time,
+            retry_hint=retry_hint,
+        )
 
     if len(request.events) > max_events:
         return _reject_all(
@@ -408,9 +464,14 @@ def ingest_batch(
         )
 
     if not request.events:
-        ack = _ack(request.batch_id, server_time)
-        return _finalize(
-            store, request.batch_id, ack, enrollment_id=None, research_session_id=None
+        # An empty batch has no subject to anchor or authorize: refuse it with a
+        # typed reason and never persist a durable receipt for an
+        # unauthenticated caller (ISSUE-08).
+        return _ack(
+            request.batch_id,
+            server_time,
+            retry_hint=retry_hint,
+            diagnostics={"batch": IngestionReasonCode.EMPTY_BATCH.value},
         )
 
     anchored = _anchor_context(request, enrollment_resolver, session_resolver)
@@ -433,7 +494,15 @@ def ingest_batch(
     locked_receipt = store.get_receipt(request.batch_id)
     if locked_receipt is not None:
         store.rollback()
-        return locked_receipt.ack
+        return _authorized_receipt(
+            request,
+            locked_receipt,
+            receipt_capability_verifier=(
+                receipt_capability_verifier or capability_verifier
+            ),
+            server_time=server_time,
+            retry_hint=retry_hint,
+        )
 
     verification = capability_verifier(
         request.session_capability,
@@ -684,16 +753,18 @@ def ingest_events_for_context(
     telemetry_schema_version: str = "1",
     max_events: int = DEFAULT_MAX_EVENTS,
     retry_hint: int = DEFAULT_RETRY_HINT_SECONDS,
+    privacy_policy: Optional[PrivacyPolicy] = None,
 ) -> TelemetryBatchAckV1:
     """Server-authorized internal ingestion entry point (no HTTP hop).
 
     A narrow adapter calls this directly with a context it has already derived
     from the authorized account + frozen assignment (an explicit research
     binding), so legacy producers stop writing a parallel store. It applies the
-    same kill-switch, enrollment-ACTIVE and terminal-session rules as the
-    participant upload route, then shares the route's validation, uniqueness,
-    receipt and commit-before-ACK semantics. The context/assignment is trusted
-    server-side state, never a caller-supplied body.
+    same kill-switch, privacy-policy, enrollment-ACTIVE and terminal-session
+    rules as the participant upload route, then shares the route's validation,
+    uniqueness, receipt and commit-before-ACK semantics. The
+    context/assignment is trusted server-side state, never a caller-supplied
+    body.
     """
     server_time = _now(now)
     batch_id = uuid.uuid4()
@@ -721,13 +792,11 @@ def ingest_events_for_context(
         return _ack(batch_id, server_time, retryable=group, retry_hint=retry_hint)
 
     if not events:
-        ack = _ack(batch_id, server_time)
-        return _finalize(
-            store,
+        return _ack(
             batch_id,
-            ack,
-            enrollment_id=context.enrollment_id,
-            research_session_id=context.research_session_id,
+            server_time,
+            retry_hint=retry_hint,
+            diagnostics={"batch": IngestionReasonCode.EMPTY_BATCH.value},
         )
 
     if enrollment.status != EnrollmentStatus.ACTIVE:
@@ -765,4 +834,5 @@ def ingest_events_for_context(
         server_time=server_time,
         continuity_required=continuity_required,
         retry_hint=retry_hint,
+        privacy_policy=privacy_policy,
     )

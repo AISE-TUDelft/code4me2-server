@@ -33,13 +33,32 @@ from backend.acp_authorization import AcpSessionAuthorization  # noqa: TC001 - F
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.agent.acp_auth import require_acp_scope
 from backend.routers.agent.consent import resolve_store_agent_content_for_acp
-from backend.routers.research.access import resolve_research_binding
+from backend.routers.research.access import (
+    FundedAccessRefused,
+    require_live_enrollment,
+    resolve_research_binding,
+)
 from database import crud
+from research.participants import identity as identity_store
+from research.participants.enums import EnrollmentStatus
+from research.runtime.sessions import store as session_store
+from research.telemetry.adapters import (
+    CanonicalIngestionFailed,  # noqa: TC001 - raised by agents.ingest
+)
 
 router = APIRouter()
 
 # Terminal runtime statuses that should finalize the backing task.
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "error"})
+
+# Research session states that can never accept new content.
+_TERMINAL_SESSION_STATES = frozenset({"ended", "revoked"})
+
+# Requested session and enrollment must agree with the persisted task binding.
+_RESEARCH_CONTEXT_MISMATCH = {
+    "code": "RESEARCH_CONTEXT_MISMATCH",
+    "message": "the run's research context does not match the task",
+}
 
 
 class AgentRunEnvelope(BaseModel):
@@ -91,6 +110,88 @@ class AgentEventEnvelope(BaseModel):
 class AgentEventBatchIngest(BaseModel):
     run: AgentRunEnvelope
     events: list[AgentEventEnvelope] = Field(default_factory=list)
+
+
+def _refuse_research_context(code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=409, detail={"code": code, "message": message})
+
+
+def _validate_task_research_context(db, task) -> None:
+    """Fail closed when a task's research enrollment/session is terminal.
+
+    A run that was created while the enrollment was active must not keep
+    submitting content after a revoke/stop/completed transition (ISSUE-01).
+    The response is a typed terminal reason, never a silent 200.
+    """
+    enrollment_id = getattr(task, "enrollment_id", None)
+    research_session_id = getattr(task, "research_session_id", None)
+    if enrollment_id is None and research_session_id is None:
+        return
+    enrollment_row = (
+        identity_store.get_enrollment(db, enrollment_id)
+        if enrollment_id is not None
+        else None
+    )
+    if enrollment_row is None:
+        raise _refuse_research_context(
+            "RESEARCH_CONTEXT_UNAVAILABLE",
+            "the run's research enrollment no longer exists",
+        )
+    if enrollment_row.status != EnrollmentStatus.ACTIVE.value:
+        raise _refuse_research_context(
+            "ENROLLMENT_NOT_ACTIVE",
+            "the run's research enrollment is no longer active",
+        )
+    if getattr(task, "study_id", None) is not None:
+        try:
+            require_live_enrollment(
+                db,
+                account_id=getattr(task, "owner_user_id", None),
+                study_id=task.study_id,
+            )
+        except FundedAccessRefused as exc:
+            raise _refuse_research_context(exc.code, exc.message) from exc
+    if research_session_id is not None:
+        session_row = session_store.get_session(db, research_session_id)
+        if session_row is None or str(getattr(session_row, "state", "")) in _TERMINAL_SESSION_STATES:
+            raise _refuse_research_context(
+                "SESSION_TERMINAL",
+                "the run's research session is no longer active",
+            )
+
+
+def _backfill_task_research_context(db, task, *, owner_user_uuid) -> None:
+    """Backfill missing canonical attribution from an unambiguous live context.
+
+    Called only for an existing task: a legacy row created before attribution
+    landed must not silently drop canonical facts. A mismatch or an ambiguous
+    context is refused by :func:`_validate_task_research_context`.
+    """
+    if getattr(task, "study_id", None) is None:
+        return
+    if task.enrollment_id is not None and task.research_session_id is not None:
+        return
+    binding = resolve_research_binding(
+        db, account_id=owner_user_uuid, study_id=task.study_id
+    )
+    if binding is None:
+        raise _refuse_research_context(
+            "RESEARCH_CONTEXT_REQUIRED",
+            "the run has no active research enrollment for its study",
+        )
+    changed = False
+    if task.enrollment_id is None:
+        task.enrollment_id = binding.enrollment_id
+        changed = True
+    if task.research_session_id is None and binding.research_session_id is not None:
+        task.research_session_id = binding.research_session_id
+        changed = True
+    if changed:
+        db.commit()
+        logging.info(
+            f"[Agent/ingest] backfilled research attribution for run "
+            f"{task.external_run_id} enrollment={str(task.enrollment_id)[:8]}…"
+        )
 
 
 def _resolve_or_create_task(
@@ -154,6 +255,11 @@ def _resolve_or_create_task(
                 status_code=409,
                 detail="Agent run belongs to another ACP session.",
             )
+        # ISSUE-02: validate (and backfill, when unambiguous) the canonical
+        # research attribution before accepting any new fact. A terminal
+        # enrollment/session refuses here instead of silently accepting content.
+        _backfill_task_research_context(db, task, owner_user_uuid=owner_user_uuid)
+        _validate_task_research_context(db, task)
         return task, False
 
     assignment = registry.resolve_assignment_context(db, owner_user_uuid)
@@ -166,10 +272,24 @@ def _resolve_or_create_task(
     content_included = resolve_store_agent_content_for_acp(
         db, scope.user_id, study_id=assignment.study_id
     )
-    binding = resolve_research_binding(
-        db, account_id=owner_user_uuid, study_id=assignment.study_id
-    )
-
+    binding = None
+    if assignment.study_id is not None:
+        # A study-bound self-report run must carry the canonical attribution
+        # (ISSUE-02). Never create an unattributed research task: ambiguity is
+        # refused, not guessed.
+        binding = resolve_research_binding(
+            db, account_id=owner_user_uuid, study_id=assignment.study_id
+        )
+        if binding is None:
+            raise _refuse_research_context(
+                "RESEARCH_CONTEXT_REQUIRED",
+                "no active research enrollment exists for the assigned study",
+            )
+        if binding.research_session_id is None:
+            raise _refuse_research_context(
+                "RESEARCH_CONTEXT_AMBIGUOUS",
+                "the account has no single active research session",
+            )
     task = crud.create_agent_task(
         db,
         agent_profile=profile.name,
@@ -278,6 +398,15 @@ def ingest_agent_events(
         )
     except HTTPException:
         raise
+    except CanonicalIngestionFailed as error:
+        db.rollback()
+        # A research-bound canonical write failure must never be reported as a
+        # success or silently written to the legacy table (ISSUE-07).
+        status_code = 503 if error.retryable else 409
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": error.reason, "message": error.message},
+        ) from error
     except Exception as error:
         db.rollback()
         logging.error(f"[Agent/ingest] error ingesting events: {error}", exc_info=True)

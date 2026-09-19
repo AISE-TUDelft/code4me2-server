@@ -102,6 +102,35 @@ def _verify_session_capability(
     )
 
 
+def _verify_receipt_capability(
+    capability: SessionCapability,
+    *,
+    now: datetime,
+    current_revocation_epoch: Optional[int],
+    expected_enrollment_id: Optional[uuid.UUID] = None,
+    expected_research_session_id: Optional[uuid.UUID] = None,
+    expected_study_id: Optional[uuid.UUID] = None,
+) -> CapabilityVerification:
+    """Verify a capability for an *already committed* receipt (ISSUE-08).
+
+    Re-reading an immutable ACK is not new data collection, so expiry and the
+    live revocation epoch must not block a producer from confirming a batch the
+    server already accepted. The signature, audience, scope and subject binding
+    are still mandatory: knowing a ``batch_id`` is never sufficient.
+    """
+    return verify_capability(
+        capability,
+        BOOTSTRAP_SIGNING_SECRET or "",
+        expected_audience=AUDIENCE,
+        expected_scope=[SCOPE_WRITE],
+        now=capability.issued_at,
+        current_revocation_epoch=None,
+        expected_enrollment_id=expected_enrollment_id,
+        expected_research_session_id=expected_research_session_id,
+        expected_study_id=expected_study_id,
+    )
+
+
 def _ingestion_kill_switch_check(db, payload: TelemetryBatchRequestV1):
     """DB-backed kill-switch predicate scoped to the batch's active subject.
 
@@ -179,12 +208,23 @@ def submit_telemetry_batch(
     app: App = Depends(App.get_instance),
 ):
     """Ingest a batch authenticated by its scoped session capability."""
+    if not payload.events:
+        # No subject to authorize and no fact to store: refuse at the boundary
+        # with a typed reason and never create a durable receipt (ISSUE-08).
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "EMPTY_BATCH",
+                "message": "a telemetry batch must contain at least one event",
+            },
+        )
     db = app.get_db_session()
     try:
         store = SqlAlchemyIngestionStore(db)
         ack = ingest_batch(
             payload,
             capability_verifier=_verify_session_capability,
+            receipt_capability_verifier=_verify_receipt_capability,
             enrollment_resolver=_enrollment_resolver(db),
             session_resolver=_session_resolver(db),
             store=store,

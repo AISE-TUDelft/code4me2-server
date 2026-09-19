@@ -10,14 +10,21 @@ authority and there is no parallel canonical writer.
 
 A task with no research binding keeps the legacy operational path: ``agent_event``
 is retained for genuinely non-research operational data and this adapter returns
-``False`` so the caller performs its legacy write. Nothing is fabricated: a fact
+``None`` so the caller performs its legacy write. Nothing is fabricated: a fact
 with no exact canonical equivalent is preserved as an explicit unknown (with its
 original kind in ``payload.legacy_kind`` and provenance), never reclassified, and
 a missing measurement is never turned into zero.
+
+For a research-bound task there is **no silent legacy fallback** (ISSUE-07): the
+adapter always returns a result, and a canonical write that fails retryably or
+is refused is reported to the caller so the producer keeps the batch instead of
+recording it in the legacy table.
 """
 
 from __future__ import annotations
 
+import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional, Sequence
@@ -25,13 +32,20 @@ from typing import Any, Optional, Sequence
 from research.participants import identity as identity_store
 from research.runtime.sessions import store as session_store
 from research.telemetry.builder import EventBuilder
+from research.telemetry.content_policy import resolve_study_content_policy
 from research.telemetry.enums import CanonicalEventType, EventSource
-from research.telemetry.ingestion.models import IngestionContext
+from research.telemetry.ingestion.models import (
+    IngestionContext,
+    TelemetryBatchAckV1,
+)
 from research.telemetry.ingestion.service import ingest_events_for_context
 from research.telemetry.ingestion.store import SqlAlchemyIngestionStore
 from research.telemetry.models import Correlations, Coverage, EventMetrics
+from research.telemetry.privacy import PrivacyPolicy
 
 __all__ = [
+    "CanonicalIngestionFailed",
+    "CanonicalRecordResult",
     "LegacyFact",
     "RELAY_NORMALIZER_VERSION",
     "record_legacy_facts",
@@ -49,6 +63,55 @@ _KIND_TO_TYPE: dict[str, CanonicalEventType] = {
     "tool_failed": CanonicalEventType.TOOL_FAILED,
     "observation": CanonicalEventType.UNKNOWN_SOURCE_EVENT,
 }
+
+
+class CanonicalIngestionFailed(Exception):
+    """A research-bound canonical write did not commit.
+
+    Raised so a route can map the failure to a truthful HTTP result instead of
+    reporting success or silently writing the legacy table (ISSUE-07).
+    """
+
+    def __init__(
+        self,
+        *,
+        reason: str,
+        message: str = "",
+        retryable: bool = True,
+        ack: Optional[TelemetryBatchAckV1] = None,
+    ) -> None:
+        super().__init__(message or reason)
+        self.reason = reason
+        self.message = message or reason
+        self.retryable = retryable
+        self.ack = ack
+
+
+@dataclass(frozen=True)
+class CanonicalRecordResult:
+    """Outcome of one internal canonical write (ISSUE-07).
+
+    ``written`` is True only after the ingestion writer committed. A research
+    bound caller must treat any non-written result as a failure: ``retryable``
+    marks a transient failure (keep and re-send the batch), otherwise the facts
+    were terminally refused.
+    """
+
+    written: bool
+    retryable: bool = False
+    reason: str = "OK"
+    message: str = ""
+    ack: Optional[TelemetryBatchAckV1] = None
+
+    @property
+    def ingested_event_ids(self) -> tuple[uuid.UUID, ...]:
+        if self.ack is None:
+            return ()
+        return tuple(
+            entry.event_id
+            for entry in (self.ack.accepted + self.ack.duplicate)
+            if entry.event_id is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -70,8 +133,17 @@ class LegacyFact:
 
 
 def research_bound(task: Any) -> bool:
-    """Whether a task carries the explicit phase-05 research binding."""
-    return getattr(task, "research_session_id", None) is not None
+    """Whether a task carries the explicit research binding.
+
+    Either canonical attribution id is sufficient: ``enrollment_id`` alone (a
+    binding without an unambiguous session) must still use the canonical
+    authority and must never fall back to the legacy table. This is pinned by
+    ``test_agent_event_boundary.py``.
+    """
+    return (
+        getattr(task, "research_session_id", None) is not None
+        or getattr(task, "enrollment_id", None) is not None
+    )
 
 
 def build_legacy_events(task: Any, facts: Sequence[LegacyFact]) -> list:
@@ -106,32 +178,65 @@ def build_legacy_events(task: Any, facts: Sequence[LegacyFact]) -> list:
     return events
 
 
-def record_legacy_facts(db: Any, *, task: Any, facts: Sequence[LegacyFact]) -> bool:
+def _kill_switch_check(db: Any, task: Any):
+    """Scope the operator kill switch to the task's study/enrollment."""
+    from research.analysis.operations import store as operations_store
+
+    return operations_store.db_kill_switch_check(
+        db,
+        study_id=getattr(task, "study_id", None),
+        enrollment_id=getattr(task, "enrollment_id", None),
+    )
+
+
+def record_legacy_facts(
+    db: Any, *, task: Any, facts: Sequence[LegacyFact]
+) -> Optional[CanonicalRecordResult]:
     """Persist legacy facts through the canonical ingestion writer.
 
-    Returns ``True`` when the facts were canonicalized (the caller must **not**
-    also write ``agent_event``). Returns ``False`` when the task has no research
-    binding — or its binding rows are unavailable — so the caller keeps the
-    legacy operational write. Never raises: a canonical-write failure returns
-    ``False`` so the caller's legacy path still records the observation.
+    Returns ``None`` when the task has no research binding, so the caller keeps
+    its legacy operational write. For a research-bound task it always returns a
+    result: the caller must not fall back to ``agent_event`` even when the
+    canonical write failed (ISSUE-07). Never raises.
     """
     if task is None or not facts or not research_bound(task):
-        return False
+        return None
     try:
         enrollment_row = (
-            identity_store.get_enrollment(db, task.enrollment_id)
+            identity_store.get_enrollment(db, task.enrollment_id, for_update=True)
             if getattr(task, "enrollment_id", None) is not None
             else None
         )
         session_row = (
-            session_store.get_session(db, task.research_session_id)
+            session_store.get_session(db, task.research_session_id, for_update=True)
             if getattr(task, "research_session_id", None) is not None
             else None
         )
         if enrollment_row is None or session_row is None:
-            return False
+            return CanonicalRecordResult(
+                written=False,
+                retryable=True,
+                reason="RESEARCH_CONTEXT_UNAVAILABLE",
+                message=(
+                    "the task's enrollment/session rows are unavailable; "
+                    "the batch must be retried, never written to the legacy table"
+                ),
+            )
         enrollment = identity_store.row_to_enrollment(enrollment_row)
         session = session_store.row_to_session(session_row)
+
+        # The study policy is the single authority for content storage on this
+        # boundary too (ISSUE-01/ISSUE-07). Missing/malformed policy denies
+        # content; the ingestion writer rejects the offending facts instead of
+        # storing them.
+        decision = resolve_study_content_policy(
+            db,
+            account_id=getattr(task, "owner_user_id", None),
+            study_id=task.study_id,
+            enrollment_id=task.enrollment_id,
+        )
+        policy = decision.policy or PrivacyPolicy.default()
+
         context = IngestionContext(
             study_id=task.study_id,
             enrollment_id=task.enrollment_id,
@@ -139,13 +244,41 @@ def record_legacy_facts(db: Any, *, task: Any, facts: Sequence[LegacyFact]) -> b
             revocation_epoch=enrollment.revocation_epoch,
         )
         events = build_legacy_events(task, facts)
-        ingest_events_for_context(
+        ack = ingest_events_for_context(
             context=context,
             enrollment=enrollment,
             session=session,
             events=events,
             store=SqlAlchemyIngestionStore(db),
+            kill_switch_check=_kill_switch_check(db, task),
+            privacy_policy=policy,
         )
-        return True
-    except Exception:  # noqa: BLE001 - the caller keeps the legacy fallback
-        return False
+        if ack.retryable:
+            return CanonicalRecordResult(
+                written=False,
+                retryable=True,
+                reason="RETRYABLE",
+                message="canonical ingestion returned retryable events",
+                ack=ack,
+            )
+        if ack.rejected and not (ack.accepted or ack.duplicate):
+            return CanonicalRecordResult(
+                written=False,
+                retryable=False,
+                reason="REJECTED",
+                message="canonical ingestion rejected the batch",
+                ack=ack,
+            )
+        return CanonicalRecordResult(written=True, reason="OK", ack=ack)
+    except Exception as error:  # noqa: BLE001 - research-bound writes must not raise
+        logging.warning(
+            "[relay-adapter] canonical write failed for task %s — %s",
+            getattr(task, "task_id", None),
+            error,
+        )
+        return CanonicalRecordResult(
+            written=False,
+            retryable=True,
+            reason="STORE_UNAVAILABLE",
+            message="canonical ingestion store is unavailable; retry the batch",
+        )

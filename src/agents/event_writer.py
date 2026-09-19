@@ -162,14 +162,25 @@ def write_model_call_event(
     db = app.get_db_session()
     try:
         task = crud.get_agent_task(db, task_uuid)
-        if task is not None and record_legacy_facts(
-            db, task=task, facts=[_model_call_fact(record, latency_ms, span, extra)]
-        ):
-            logging.info(
-                f"[Agent/events] model_call canonicalized — task={task_uuid} "
-                f"latency_ms={latency_ms} tokens={record.total_tokens}"
+        if task is not None:
+            result = record_legacy_facts(
+                db, task=task, facts=[_model_call_fact(record, latency_ms, span, extra)]
             )
-            return
+            if result is not None:
+                # Research-bound: the canonical writer is the only authority.
+                # A failed canonical write is never re-recorded in the legacy
+                # table (ISSUE-07); it is logged and left to the producer.
+                if result.written:
+                    logging.info(
+                        f"[Agent/events] model_call canonicalized — task={task_uuid} "
+                        f"latency_ms={latency_ms} tokens={record.total_tokens}"
+                    )
+                else:
+                    logging.warning(
+                        f"[Agent/events] model_call canonical write refused — "
+                        f"task={task_uuid} reason={result.reason} retryable={result.retryable}"
+                    )
+                return
         event_index = crud.reserve_agent_event_indexes(db, task_uuid, 1)
         source_event_id = span.get("span_id") or record.request_id
         crud.append_agent_event(
@@ -268,19 +279,29 @@ def write_tool_call_events(
     db = app.get_db_session()
     try:
         task = crud.get_agent_task(db, task_uuid)
-        if task is not None and record_legacy_facts(
-            db,
-            task=task,
-            facts=[
-                _tool_call_fact(tc, latency_ms, parent_span_id)
-                for tc in tool_executions
-            ],
-        ):
-            logging.info(
-                f"[Agent/events] {len(tool_executions)} tool_call event(s) "
-                f"canonicalized for task={task_uuid}"
+        if task is not None:
+            result = record_legacy_facts(
+                db,
+                task=task,
+                facts=[
+                    _tool_call_fact(tc, latency_ms, parent_span_id)
+                    for tc in tool_executions
+                ],
             )
-            return
+            if result is not None:
+                # Research-bound: never fall back to the legacy table on a
+                # failed canonical write (ISSUE-07).
+                if result.written:
+                    logging.info(
+                        f"[Agent/events] {len(tool_executions)} tool_call event(s) "
+                        f"canonicalized for task={task_uuid}"
+                    )
+                else:
+                    logging.warning(
+                        f"[Agent/events] tool_call canonical write refused — "
+                        f"task={task_uuid} reason={result.reason}"
+                    )
+                return
         event_index = crud.reserve_agent_event_indexes(db, task_uuid, len(tool_executions))
         for offset, tc in enumerate(tool_executions):
             arguments = tc.get("arguments")

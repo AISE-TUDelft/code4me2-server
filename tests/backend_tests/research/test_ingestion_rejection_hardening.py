@@ -16,6 +16,7 @@ from research.telemetry.ingestion.enums import EventDisposition, IngestionReason
 from research.telemetry.ingestion.models import (
     BatchReceipt,
     ResearchEventRecord,
+    TelemetryBatchAckV1,
     TelemetryBatchRequestV1,
 )
 from research.telemetry.ingestion.service import ingest_batch
@@ -133,8 +134,8 @@ def test_oversized_batch_bounds_acks_and_does_not_persist_a_receipt():
     assert store.receipts == [], "an oversized batch must not write a receipt"
 
 
-def test_an_empty_batch_still_finalizes_normally():
-    """Control: a legitimate empty batch keeps the ordinary receipt path."""
+def test_an_empty_batch_is_refused_without_persisting_a_receipt():
+    """ISSUE-08: no durable receipt for a batch with no subject and no fact."""
     store = _RecordingStore()
 
     ack = ingest_batch(
@@ -147,4 +148,108 @@ def test_an_empty_batch_still_finalizes_normally():
     )
 
     assert ack.accepted == [] and ack.rejected == []
-    assert len(store.receipts) == 1, "the ordinary path still persists its receipt"
+    assert ack.coverage_diagnostics == {"batch": IngestionReasonCode.EMPTY_BATCH.value}
+    assert store.receipts == [], "an empty batch must not create a durable receipt"
+    assert store.commits == 0
+
+
+def _verifier_subject(expected: tuple[uuid.UUID, uuid.UUID]):
+    from research.runtime.bootstrap.capability import CapabilityVerification
+    from research.runtime.bootstrap.models import CapabilityReasonCode
+
+    def verify(  # noqa: ANN001 - structural double
+        capability,
+        *,
+        now,
+        current_revocation_epoch,
+        expected_enrollment_id=None,
+        expected_research_session_id=None,
+        expected_study_id=None,
+    ):
+        ok = (
+            expected_enrollment_id == expected[0]
+            and expected_research_session_id == expected[1]
+        )
+        return CapabilityVerification(
+            ok=ok,
+            reason=(
+                CapabilityReasonCode.OK
+                if ok
+                else CapabilityReasonCode.SUBJECT_MISMATCH
+            ),
+            message="",
+        )
+
+    return verify
+
+
+def _stored_receipt(request, *, enrollment_id, research_session_id):
+    ack = TelemetryBatchAckV1(
+        receipt_id=uuid.uuid4(),
+        batch_id=request.batch_id,
+        server_time=NOW,
+    )
+    return BatchReceipt(
+        receipt_id=ack.receipt_id,
+        batch_id=request.batch_id,
+        enrollment_id=enrollment_id,
+        research_session_id=research_session_id,
+        accepted_at=NOW,
+        ack=ack,
+    )
+
+
+def test_a_known_batch_id_alone_cannot_read_the_receipt():
+    """Knowing another batch id must not disclose its ACK (ISSUE-08)."""
+    store = _RecordingStore()
+    request = _request(1)
+    subject = (uuid.uuid4(), uuid.uuid4())
+    receipt = _stored_receipt(
+        request, enrollment_id=subject[0], research_session_id=subject[1]
+    )
+    store.receipts.append(receipt)
+
+    # The caller's capability verifies cryptographically but does not cover the
+    # receipt's subject: the lookup must be refused without any ACK content.
+    ack = ingest_batch(
+        request,
+        capability_verifier=_verifier_ok,
+        receipt_capability_verifier=_verifier_subject(
+            (uuid.uuid4(), uuid.uuid4())
+        ),
+        enrollment_resolver=lambda _id: None,
+        session_resolver=lambda _id: None,
+        store=store,
+        now=NOW,
+    )
+
+    assert ack.receipt_id != receipt.ack.receipt_id
+    assert ack.accepted == [] and ack.duplicate == []
+    assert all(
+        entry.reason == IngestionReasonCode.CAPABILITY_INVALID for entry in ack.retryable
+    )
+    assert len(store.receipts) == 1, "the refusal must not write a second receipt"
+
+
+def test_the_owning_subject_still_receives_its_receipt():
+    """A legitimate retry with the matching subject keeps idempotency."""
+    store = _RecordingStore()
+    request = _request(1)
+    subject = (uuid.uuid4(), uuid.uuid4())
+    receipt = _stored_receipt(
+        request, enrollment_id=subject[0], research_session_id=subject[1]
+    )
+    store.receipts.append(receipt)
+
+    ack = ingest_batch(
+        request,
+        capability_verifier=_verifier_ok,
+        receipt_capability_verifier=_verifier_subject(subject),
+        enrollment_resolver=lambda _id: None,
+        session_resolver=lambda _id: None,
+        store=store,
+        now=NOW,
+    )
+
+    assert ack.receipt_id == receipt.ack.receipt_id
+    assert len(store.receipts) == 1

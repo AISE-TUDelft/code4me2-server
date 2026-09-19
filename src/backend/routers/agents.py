@@ -482,14 +482,26 @@ def upload_agent_telemetry(
             _span_fact(span, _SPAN_EVENT_TYPE.get(span.name, "observation"))
             for span in child_spans
         ]
-        if task_row is not None and record_legacy_facts(
-            db, task=task_row, facts=span_facts
-        ):
-            logging.info(
-                f"[Agent/telemetry] canonicalized {len(child_spans)} span(s) "
-                f"for task {task_id}"
-            )
-            return Response(status_code=204)
+        if task_row is not None:
+            result = record_legacy_facts(db, task=task_row, facts=span_facts)
+            if result is not None:
+                # Research-bound task: the canonical writer is the only
+                # authority; a refused write is surfaced truthfully rather than
+                # silently degraded to the legacy table (ISSUE-07).
+                if not result.written:
+                    status_code = 503 if result.retryable else 409
+                    raise HTTPException(
+                        status_code=status_code,
+                        detail={
+                            "code": result.reason,
+                            "message": result.message,
+                        },
+                    )
+                logging.info(
+                    f"[Agent/telemetry] canonicalized {len(child_spans)} span(s) "
+                    f"for task {task_id}"
+                )
+                return Response(status_code=204)
 
         base_index = (
             crud.reserve_agent_event_indexes(db, task_id, len(child_spans))

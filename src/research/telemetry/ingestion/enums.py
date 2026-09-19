@@ -49,6 +49,7 @@ class IngestionReasonCode(str, Enum):
     RECEIPT_CONFLICT = "RECEIPT_CONFLICT"
     DUPLICATE_BATCH = "DUPLICATE_BATCH"
     BATCH_TOO_LARGE = "BATCH_TOO_LARGE"
+    EMPTY_BATCH = "EMPTY_BATCH"
     CONTINUITY_REQUIRED = "CONTINUITY_REQUIRED"
 
     # Transient (safe to retry after re-bootstrap or backoff).
@@ -77,6 +78,7 @@ PERMANENT_REASONS = frozenset(
         IngestionReasonCode.RECEIPT_CONFLICT,
         IngestionReasonCode.DUPLICATE_BATCH,
         IngestionReasonCode.BATCH_TOO_LARGE,
+        IngestionReasonCode.EMPTY_BATCH,
         IngestionReasonCode.CONTINUITY_REQUIRED,
     }
 )

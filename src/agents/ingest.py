@@ -40,7 +40,11 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from database import crud
-from research.telemetry.adapters import LegacyFact, record_legacy_facts
+from research.telemetry.adapters import (
+    CanonicalIngestionFailed,
+    LegacyFact,
+    record_legacy_facts,
+)
 from research.telemetry.enums import CoverageState
 from research.telemetry.models import Correlations, Coverage, EventMetrics
 
@@ -293,8 +297,14 @@ def map_event_to_columns(
     }
 
 
-def _fact_from_columns(columns: dict) -> "LegacyFact":
-    """Build the canonical fact for one self-reported event (structural only)."""
+def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "LegacyFact":
+    """Build the canonical fact for one self-reported event.
+
+    Structural metadata is always included. When the study policy allowed
+    content, the mapped content columns are carried in the canonical payload
+    under content-classified keys, so the ingestion privacy gate is the final
+    authority before persistence (ISSUE-01).
+    """
     kind = columns.get("event_type") or "observation"
     counts: dict[str, int] = {}
     for key in ("prompt_tokens", "completion_tokens", "message_count", "step_index"):
@@ -311,6 +321,15 @@ def _fact_from_columns(columns: dict) -> "LegacyFact":
         value = columns.get(key)
         if value is not None:
             payload[key] = value
+    if content_included:
+        if columns.get("tool_arguments") is not None:
+            payload["tool_arguments"] = columns["tool_arguments"]
+        if columns.get("tool_result") is not None:
+            # ``result_text`` carries a content token so the privacy gate
+            # classifies it as CONTENT (``tool_result`` alone would not).
+            payload["result_text"] = columns["tool_result"]
+        if columns.get("payload_json") is not None:
+            payload["payload"] = columns["payload_json"]
     return LegacyFact(
         kind=kind,
         occurred_at=columns.get("occurred_at") or datetime.now(timezone.utc),
@@ -404,9 +423,22 @@ def ingest_event_batch(
                 by_request_id=by_request_id,
                 by_tool_call_id=by_tool_call_id,
             )
-            facts.append(_fact_from_columns(columns))
-        if task is not None and record_legacy_facts(db, task=task, facts=facts):
-            return len(facts), skipped
+            facts.append(
+                _fact_from_columns(columns, content_included=content_included)
+            )
+        if task is not None:
+            result = record_legacy_facts(db, task=task, facts=facts)
+            if result is not None:
+                # Research-bound task: the canonical writer is the only
+                # authority. Never fall back to the legacy table (ISSUE-07).
+                if not result.written:
+                    raise CanonicalIngestionFailed(
+                        reason=result.reason,
+                        message=result.message,
+                        retryable=result.retryable,
+                        ack=result.ack,
+                    )
+                return len(facts), skipped
     ingested = 0
     for offset, (event, source_event_id) in enumerate(pending):
         columns = map_event_to_columns(
