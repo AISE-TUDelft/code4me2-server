@@ -7,6 +7,7 @@ records (never raw ORM/JSON) and never join login identity into a read model.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional, Sequence
 
 from sqlalchemy import select
@@ -34,12 +35,24 @@ from research.runtime.sessions import store as session_store
 from research.telemetry.ingestion import store as ingestion_store
 
 __all__ = [
+    "StudyCoverageInputs",
     "list_agent_runs",
     "list_assignments",
+    "list_coverage_inputs",
     "list_enrollments",
     "list_events",
     "list_sessions",
 ]
+
+
+@dataclass(frozen=True)
+class StudyCoverageInputs:
+    """One study's coverage inputs as domain records (no login identity)."""
+
+    enrollments: Sequence[Enrollment]
+    assignments: Sequence[AssignmentV1]
+    sessions: Sequence[ResearchSessionV1]
+    events: Sequence[ResearchEventRecord]
 
 
 def list_enrollments(session: Session, study_id: uuid.UUID) -> Sequence[Enrollment]:
@@ -126,3 +139,18 @@ def list_events(
         ingestion_store.row_to_record(row)
         for row in session.execute(statement).scalars().all()
     ]
+
+
+def list_coverage_inputs(session: Session, study_id: uuid.UUID) -> StudyCoverageInputs:
+    """Load every study-scoped input the participant coverage model needs.
+
+    One call composes the existing study-scoped helpers so the per-table row
+    mapping stays in one place. The events query reuses ``list_events`` and
+    therefore excludes retention tombstones (``retention_state == "DELETED"``).
+    """
+    return StudyCoverageInputs(
+        enrollments=list_enrollments(session, study_id),
+        assignments=list_assignments(session, study_id),
+        sessions=list_sessions(session, study_id),
+        events=list_events(session, study_id),
+    )

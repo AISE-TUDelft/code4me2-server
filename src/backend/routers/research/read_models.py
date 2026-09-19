@@ -59,3 +59,28 @@ def telemetry_coverage(
         return JsonResponseWithStatus(status_code=200, content=model.model_dump(mode="json"))
     finally:
         db.close()
+
+
+@operations_router.get(
+    "/participants/coverage",
+    summary="Per-participant coverage for a study (study owner/admin only)",
+)
+def participant_coverage(
+    study_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    app: App = Depends(App.get_instance),
+):
+    db = app.get_db_session()
+    try:
+        _authorize(db, current_user, study_id)
+        inputs = read_store.list_coverage_inputs(db, study_id)
+        model = read_service.build_participant_coverage(
+            inputs.enrollments,
+            inputs.assignments,
+            inputs.sessions,
+            inputs.events,
+            study_id=study_id,
+        )
+        return JsonResponseWithStatus(status_code=200, content=model.model_dump(mode="json"))
+    finally:
+        db.close()
