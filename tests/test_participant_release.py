@@ -161,6 +161,31 @@ def test_changed_dependency_gets_new_leaf_without_rewriting_history(tmp_path):
     assert first == json.loads((tmp_path / "first/registration.json").read_text())
 
 
+def test_local_subset_preparation_declares_exactly_its_platforms(tmp_path):
+    inputs = tmp_path / "inputs"
+    recipe = make_inputs(inputs)
+    manifest_path = inputs / "runtime.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["artifacts"] = [
+        artifact for artifact in manifest["artifacts"]
+        if artifact["archive"] == "code4me-agent-macos-arm64.zip"
+    ]
+    write_json(manifest_path, manifest)
+    recipe.runtime.sha256 = file_sha256(manifest_path)
+    plan = prepare(recipe, inputs, tmp_path / "prepared", platforms=("macos-aarch64",))
+    assert plan["inventory"]["platforms"] == ["macos-aarch64"]
+    managed = AgentReleaseV1.model_validate(plan["releases"]["code4me2-agent"])
+    assert [(artifact.os, artifact.arch) for artifact in managed.artifacts] == [("macos", "arm64")]
+    catalog = json.loads((tmp_path / "prepared/catalog.json").read_text())
+    assert [f"{item['os']}-{item['arch']}" for item in catalog["platforms"]] == ["macos-aarch64"]
+    assert catalog["participant_release"]["platforms"] == ["macos-aarch64"]
+    # Requesting a platform the manifest does not provide is rejected.
+    with pytest.raises(ValueError, match="requested native platforms"):
+        prepare(recipe, inputs, tmp_path / "other", platforms=("macos-aarch64", "linux-x64"))
+    with pytest.raises(ValueError, match="supported native platforms"):
+        prepare(recipe, inputs, tmp_path / "bad", platforms=("solaris-sparc",))
+
+
 def test_changed_preparation_cannot_be_built_or_applied(tmp_path):
     recipe = make_inputs(tmp_path / "inputs")
     prepare(recipe, tmp_path / "inputs", tmp_path / "prepared")

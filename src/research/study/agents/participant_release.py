@@ -12,7 +12,7 @@ import shutil
 import stat
 import zipfile
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -169,8 +169,23 @@ def extract_execution(archive: Path, destination: Path, executable: str) -> Pack
     return PackagedExecution(entrypoint=[executable, "--managed"], files=records)
 
 
-def prepare(recipe: ParticipantRecipe, inputs: Path, output: Path) -> dict:
-    """Prepare into a new directory; callers can atomically publish it on success."""
+def prepare(
+    recipe: ParticipantRecipe,
+    inputs: Path,
+    output: Path,
+    platforms: Sequence[str] = PLATFORMS,
+) -> dict:
+    """Prepare into a new directory; callers can atomically publish it on success.
+
+    ``platforms`` defaults to every supported native platform. A caller may
+    request an explicit subset for a local development release; the emitted
+    catalog, manifest and inventory then declare exactly that subset, so a
+    partial preparation is visible in every downstream artifact.
+    """
+    requested = tuple(platforms)
+    if (not requested or len(set(requested)) != len(requested)
+            or not set(requested) <= set(PLATFORMS)):
+        raise ValueError("platforms must be a non-empty unique subset of the supported native platforms")
     runtime_manifest = input_path(inputs, recipe.runtime.manifest)
     if file_sha256(runtime_manifest) != recipe.runtime.sha256:
         raise ValueError("runtime release manifest checksum mismatch")
@@ -181,12 +196,17 @@ def prepare(recipe: ParticipantRecipe, inputs: Path, output: Path) -> dict:
     if runtime.get("runtime_version") != managed.version or runtime.get("managed_protocol_version") != "1":
         raise ValueError("runtime version/protocol does not match the managed agent")
     expected = {
-        f"code4me-agent-{p.replace('aarch64', 'arm64')}.zip": p for p in PLATFORMS
+        f"code4me-agent-{p.replace('aarch64', 'arm64')}.zip": p for p in requested
     }
     raw_artifacts = runtime.get("artifacts", [])
     names = [a.get("archive") for a in raw_artifacts]
     if len(names) != len(expected) or set(names) != set(expected):
-        raise ValueError("runtime release must cover all four supported native platforms")
+        if set(requested) == set(PLATFORMS):
+            raise ValueError("runtime release must cover all four supported native platforms")
+        raise ValueError(
+            "runtime release must cover exactly the requested native platforms: "
+            + ", ".join(requested)
+        )
     # Validate all transport hashes before extraction.
     for raw in raw_artifacts:
         archive = input_path(runtime_manifest.parent, raw["archive"])
@@ -283,7 +303,7 @@ def prepare(recipe: ParticipantRecipe, inputs: Path, output: Path) -> dict:
     inventory = {
         "schema_version": "1", "recipe_digest": manifest_digest(recipe.model_dump(mode="json")),
         "plugin_version": recipe.plugin_version, "plugin_commit": recipe.plugin_commit,
-        "server_commit": recipe.server_commit, "platforms": list(PLATFORMS),
+        "server_commit": recipe.server_commit, "platforms": list(requested),
         "releases": [{"framework": framework, "release_id": r.release_id,
                       "source_manifest_digest": r.source_manifest_digest,
                       "distribution_mode": r.distribution_mode.value,
