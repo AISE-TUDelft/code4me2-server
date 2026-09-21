@@ -51,3 +51,13 @@ test("an unauthenticated visitor is redirected to login", async () => {
   expect(await screen.findByText("LOGIN-PAGE")).toBeInTheDocument();
   expect(screen.queryByText("EDITOR-PAGE")).not.toBeInTheDocument();
 });
+
+test("registered route tag count matches the route enumeration (ISSUE-007)", () => {
+  // Pins the App.js route inventory: every <Route tag counted by
+  // grep -cE '<Route[ >]|<Route$' (== 11) resolves to an intended surface.
+  const fs = require("fs");
+  const path = require("path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "App.js"), "utf8");
+  const matches = source.match(/<Route[ >]|<Route$/gm) || [];
+  expect(matches.length).toBe(11);
+});

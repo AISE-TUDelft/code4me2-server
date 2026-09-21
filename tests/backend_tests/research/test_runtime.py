@@ -1229,6 +1229,42 @@ def test_bootstrap_selects_only_the_artifact_the_evidence_qualifies():
     assert refused.issue.code == BootstrapReasonCode.ARTIFACT_NOT_QUALIFIED
 
 
+def test_bootstrap_publishes_distinct_archive_and_execution_identity():
+    from research.study.agents.models import ExecutionFile, PackagedExecution
+
+    release = agent_registry___release()
+    artifact = release.artifacts[0]
+    artifact.execution = PackagedExecution(
+        entrypoint=["code4me2-agent", "--managed"],
+        files=[ExecutionFile(path="code4me2-agent", sha256="b" * 64, size=20, executable=True)],
+    )
+    artifact.path = "runtime.zip"
+    document = _bootstrap_document(release, host={"os": artifact.os, "arch": artifact.arch})
+    document["conformance"][0].update(
+        release_id=release.release_id,
+        execution_manifest_digest=artifact.execution.manifest_digest,
+    )
+    result = _compose_for(release, document, (artifact.os, artifact.arch))
+    assert result.outcome == BootstrapOutcome.ISSUED
+    projection = result.manifest.agent_release
+    assert projection.artifact_digest == artifact.sha256
+    assert projection.archive_sha256 == artifact.sha256
+    assert projection.executable_sha256 == "b" * 64
+    assert projection.execution_manifest_digest == artifact.execution.manifest_digest
+    assert projection.adapter_digest == release.adapter.digest
+
+
+def test_bootstrap_refuses_historical_archive_leaf_without_rewriting_it():
+    release = agent_registry___release()
+    release.artifacts[0].path = "historical.zip"
+    document = _bootstrap_document(release)
+    before = release.model_dump(mode="json")
+    result = _compose_for(release, document, release.artifacts[0].platform)
+    assert result.outcome == BootstrapOutcome.BLOCKED
+    assert result.reason == BootstrapReasonCode.ARTIFACT_UNAVAILABLE
+    assert release.model_dump(mode="json") == before
+
+
 def test_bootstrap_refuses_an_artifact_not_bound_to_the_platform_evidence():
     """A release-level QUALIFIED never covers a different artifact/platform."""
     release = agent_registry___release()

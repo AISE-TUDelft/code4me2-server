@@ -26,9 +26,13 @@ __all__ = [
     "SnapshotCapabilityState",
 ]
 
-#: The one agent runtime the managed protocol runs in this release. Goose and
-#: Codex releases exist as BYOA identities but are not participant-ready, so a
-#: study may not bind them until the managed protocol manages them.
+#: The one agent runtime the managed protocol runs in this release. This is a
+#: readiness default, not a binding ban, and the three concepts stay distinct:
+#: a BYOA release is *qualified* by a passing receipt bound to its own manifest
+#: digest (ISSUE-003); a BYOA *distribution* still verifies as unverified at
+#: publication (admin WARNING, non-admin ERROR; ISSUE-004); and a participant
+#: host without the installed agent blocks with AGENT_NOT_FOUND at resolution.
+#: Qualification never implies verification or readiness, or vice versa.
 MANAGED_RUNTIME_FRAMEWORK = "code4me2-agent"
 
 

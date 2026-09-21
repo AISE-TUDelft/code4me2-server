@@ -327,6 +327,12 @@ def compose_bootstrap(
                 "the selected artifact is not bound to passing conformance evidence",
                 "release.artifacts",
             )
+        if artifact.execution is None and artifact.path.lower().endswith(".zip"):
+            return _blocked(
+                BootstrapReasonCode.ARTIFACT_UNAVAILABLE,
+                "historical archive-pinned release has no execution manifest; prepare a new release",
+                "release.artifacts.execution",
+            )
         artifact_digest = artifact.sha256
     else:
         artifact_digest = ""
@@ -373,6 +379,10 @@ def compose_bootstrap(
             agent_id=release.agent_id,
             release_id=release.release_id,
             artifact_digest=artifact_digest,
+            archive_sha256=(artifact.sha256 if not release.is_byoa and artifact.execution else None),
+            executable_sha256=(artifact.execution.executable_sha256 if not release.is_byoa and artifact.execution else None),
+            execution_manifest_digest=(artifact.execution.manifest_digest if not release.is_byoa and artifact.execution else None),
+            adapter_digest=getattr(adapter, "digest", None),
             adapter_id=adapter_id,
             adapter_version=adapter_version,
             distribution_mode=getattr(getattr(release, "distribution_mode", None), "value", "PACKAGED"),

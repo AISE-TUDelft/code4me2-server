@@ -103,6 +103,8 @@ def create_receipt(
             row = packaging_store.insert_receipt(db, payload)
         except LookupError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
         return JsonResponseWithStatus(
             status_code=201,
             content={

@@ -103,6 +103,8 @@ class ConformanceRunner:
         fixture_digests: Optional[Mapping[str, str]] = None,
         now: Optional[datetime] = None,
         receipt_id: Optional[UUID] = None,
+        release_id: Optional[str] = None,
+        execution_manifest_digest: Optional[str] = None,
     ) -> ConformanceReceiptV1:
         """Execute prerequisite-established cases and return a bound receipt."""
         states = {name: _coerce_state(value) for name, value in prerequisites.items()}
@@ -110,6 +112,8 @@ class ConformanceRunner:
         status = self._aggregate(results)
         return ConformanceReceiptV1(
             receipt_id=receipt_id or uuid.uuid4(),
+            release_id=release_id,
+            execution_manifest_digest=execution_manifest_digest,
             artifact_digest=artifact_digest,
             adapter_digest=adapter_digest,
             host=host,
@@ -309,6 +313,11 @@ def qualification_for_release(
         for receipt in receipts
         if normalize_sha256(receipt.artifact_digest) == artifact_hex
         and receipt.adapter_digest == release.adapter.digest
+        and (receipt.release_id is None or receipt.release_id == release.release_id)
+        and (artifact.execution is None or (
+            receipt.release_id == release.release_id
+            and normalize_sha256(receipt.execution_manifest_digest) == normalize_sha256(artifact.execution.manifest_digest)
+        ))
     ]
     if not candidates:
         return QualificationDecision(

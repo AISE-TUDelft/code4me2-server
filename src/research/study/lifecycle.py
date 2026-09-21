@@ -23,6 +23,7 @@ from database.research_schemas import (
 from research.participants import identity as identity_store
 from research.participants.enums import EnrollmentStatus
 from research.participants.models import ResearchEligibility
+from research.runtime.sessions.enums import CloseReason
 from research.study.protocol.store import build_profile_selections
 
 
@@ -365,7 +366,7 @@ def revoke_research_enrollment(
     for research_session in sessions:
         setattr(research_session, "state", "revoked")
         setattr(research_session, "closed_at", timestamp)
-        setattr(research_session, "close_reason", "REVOKED")
+        setattr(research_session, "close_reason", CloseReason.REVOKED.value)
     session.commit()
     return EnrollmentRevokeSummary(
         enrollment_id=enrollment_id,

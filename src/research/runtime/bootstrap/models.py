@@ -169,6 +169,10 @@ class BootstrapAgentRelease(BaseModel):
     agent_id: str
     release_id: str
     artifact_digest: str = ""
+    archive_sha256: Optional[str] = None
+    executable_sha256: Optional[str] = None
+    execution_manifest_digest: Optional[str] = None
+    adapter_digest: Optional[str] = None
     adapter_id: Optional[str] = None
     adapter_version: Optional[str] = None
     distribution_mode: str = "PACKAGED"

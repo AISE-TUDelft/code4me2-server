@@ -593,6 +593,137 @@ def test_http_revoke_marks_enrollment_and_assignment_terminal(http_runtime):
     finally:
         session.close()
 
+    current_user["value"] = _owner(owner_id)
+    created = client.post(
+        "/api/research/studies",
+        json={
+            "name": "Revoke terminal study",
+            "session_policy": VALID_SESSION_POLICY,
+            "profile_ids": [str(profile_id)],
+        },
+    )
+    assert created.status_code == 201, created.text
+    study = created.json()["study"]
+    study_id = study["study_id"]
+
+    current_user["value"] = _participant(participant_id)
+    resolved = client.get(f"/api/research/join/{study['join_code']}")
+    assert resolved.status_code == 200, resolved.text
+    joined = client.post(
+        "/api/research/join",
+        json={"join_code": study["join_code"], "accept_consent": True},
+    )
+    assert joined.status_code == 201, joined.text
+    enrollment_id = joined.json()["enrollment_id"]
+    assert joined.json()["assignment_id"]
+
+    signing_secret = "revoke-terminal-secret"
+    bootstrap_capability = issue_capability(
+        audience="research-runtime",
+        scope=["telemetry:write", "session:heartbeat", "session:close"],
+        ttl_seconds=900,
+        revocation_epoch=0,
+        secret=signing_secret,
+        enrollment_id=uuid.UUID(enrollment_id),
+        research_session_id=uuid.uuid4(),
+        study_id=uuid.UUID(study_id),
+    )
+    with patch("backend.routers.research.bootstrap.BOOTSTRAP_SIGNING_SECRET", signing_secret), patch(
+        "backend.routers.research.sessions.BOOTSTRAP_SIGNING_SECRET", signing_secret
+    ):
+        session_response = client.post(
+            "/api/research/sessions/",
+            json={
+                "capability": bootstrap_capability.model_dump(mode="json"),
+                "enrollment_id": enrollment_id,
+                "study_id": study_id,
+                "manifest_digest": "revoke-manifest",
+                "context_id": "revoke-context",
+            },
+        )
+        assert session_response.status_code == 201, session_response.text
+        research_session_id = session_response.json()["session"]["research_session_id"]
+        session_capability = issue_capability(
+            audience="research-runtime",
+            scope=["telemetry:write", "session:heartbeat", "session:close"],
+            ttl_seconds=900,
+            revocation_epoch=0,
+            secret=signing_secret,
+            enrollment_id=uuid.UUID(enrollment_id),
+            research_session_id=uuid.UUID(research_session_id),
+            study_id=uuid.UUID(study_id),
+        )
+        heartbeat = client.post(
+            "/api/research/sessions/heartbeat",
+            json={
+                "capability": session_capability.model_dump(mode="json"),
+                "research_session_id": research_session_id,
+            },
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+
+    current_user["value"] = _owner(owner_id)
+    revoked = client.post(
+        f"/api/research/studies/{study_id}/enrollments/{enrollment_id}/revoke",
+        json={"actor": "revoke-owner"},
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert revoked.json()["revoked"] is True
+    assert revoked.json()["enrollment_id"] == enrollment_id
+    assert revoked.json()["session_count"] == 1
+
+    # Terminal enrollment asserted over HTTP: the participant's own status
+    # projection now reports REVOKED.
+    current_user["value"] = _participant(participant_id)
+    mine = client.get("/api/research/participants/me")
+    assert mine.status_code == 200, mine.text
+    statuses = [
+        entry["status"]
+        for entry in mine.json()["enrollments"]
+        if entry["enrollment_id"] == enrollment_id
+    ]
+    assert statuses == ["REVOKED"]
+
+    # Session revocation asserted over HTTP: the pre-revoke capability no
+    # longer operates the revoked session.
+    with patch(
+        "backend.routers.research.sessions.BOOTSTRAP_SIGNING_SECRET", signing_secret
+    ):
+        dead = client.post(
+            "/api/research/sessions/heartbeat",
+            json={
+                "capability": session_capability.model_dump(mode="json"),
+                "research_session_id": research_session_id,
+            },
+        )
+    assert dead.status_code == 403, dead.text
+    assert dead.json()["detail"]["code"] == "CAPABILITY_INVALID"
+
+    # The revoke response carries no assignment state, so the terminal
+    # assignment is asserted via an in-test database read.
+    session = session_factory()
+    try:
+        enrollment_status = session.execute(
+            text("SELECT status FROM public.research_enrollment WHERE enrollment_id = :id"),
+            {"id": enrollment_id},
+        ).scalar_one()
+        assignment_status = session.execute(
+            text("SELECT status FROM public.study_assignment WHERE enrollment_id = :id"),
+            {"id": enrollment_id},
+        ).scalar_one()
+        revoked_session_state = session.execute(
+            text(
+                "SELECT state FROM public.research_session "
+                "WHERE session_id = :id"
+            ),
+            {"id": research_session_id},
+        ).scalar_one()
+    finally:
+        session.close()
+    assert enrollment_status == "REVOKED"
+    assert assignment_status == "REVOKED"
+    assert revoked_session_state == "revoked"
+
 
 def test_http_web_join_contract_matrix(http_runtime):
     client, session_factory, current_user = http_runtime

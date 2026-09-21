@@ -1061,7 +1061,7 @@ def test_revoke_enrollment_is_terminal_but_retains_identity():
                 "WHERE session_id = :session_id"
             ),
             {"session_id": session_id},
-        ).one() == ("revoked", "REVOKED")
+        ).one() == ("revoked", "revoked")
     finally:
         session.close()
         engine.dispose()

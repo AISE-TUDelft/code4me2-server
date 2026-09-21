@@ -333,6 +333,8 @@ class ConformanceReceiptV1(BaseModel):
     model_config = _BASE
 
     receipt_id: UUID
+    release_id: Optional[str] = None
+    execution_manifest_digest: Optional[str] = None
     artifact_digest: str
     adapter_digest: str
     host: PlatformTriple

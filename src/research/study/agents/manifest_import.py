@@ -37,6 +37,7 @@ from .models import (
     AgentReleaseV1,
     DistributionArtifact,
     ReleaseDisplay,
+    PackagedExecution,
 )
 
 __all__ = [
@@ -373,6 +374,7 @@ def build_manifest_release(
                 sha256="sha256:" + declared,
                 size=size,
                 executable=str(executable).strip() if executable else None,
+                execution=PackagedExecution.model_validate(raw["execution"]) if raw.get("execution") else None,
             )
         )
 

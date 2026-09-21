@@ -37,6 +37,7 @@ from fastapi import APIRouter, Body, Cookie, Depends, Header, HTTPException, Que
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 import Queries  # noqa: TC001 - FastAPI evaluates route annotations at runtime
 from agents import provider as provider_module
@@ -851,6 +852,26 @@ def _scope_ids(scope: AcpServerAuthorization) -> tuple[uuid.UUID, uuid.UUID, uui
         raise HTTPException(status_code=401, detail="ACP authorization scope is malformed") from error
 
 
+def _is_external_run_id_unique_violation(error: Exception) -> bool:
+    """True only for the raced ``agent_task.external_run_id`` unique insert.
+
+    The default deployment dialect is psycopg2, where a raced concurrent
+    insert surfaces as ``IntegrityError`` with ``orig.pgcode == "23505"`` and
+    ``orig.diag.constraint_name`` naming the ``external_run_id`` constraint.
+    Every other failure — unrelated integrity violations, post-commit errors
+    such as a refresh failure, generic exceptions — must take the logged 500
+    path and never replay.
+    """
+    if not isinstance(error, IntegrityError):
+        return False
+    orig = getattr(error, "orig", None)
+    if getattr(orig, "pgcode", None) != "23505":
+        return False
+    diag = getattr(orig, "diag", None)
+    constraint_name = getattr(diag, "constraint_name", None)
+    return isinstance(constraint_name, str) and "external_run_id" in constraint_name
+
+
 def _require_managed_task(db, body: ManagedRunRequest, scope: AcpServerAuthorization):
     user_id, project_id, _ = _scope_ids(scope)
     task = crud.get_agent_task_by_external_run_id(db, body.run_id)
@@ -1007,7 +1028,16 @@ def create_managed_run(
     except HTTPException:
         raise
     except Exception as error:
-        # A concurrent identical request can race the unique external_run_id.
+        if not _is_external_run_id_unique_violation(error):
+            # Only the raced unique insert may replay: any other failure
+            # (funding/policy refusals surface as HTTPException above;
+            # unrelated integrity violations, post-commit failures and generic
+            # errors land here) is a logged 500. A retry then replays
+            # idempotently through the pre-read path above.
+            db.rollback()
+            logging.error("[ACP/runs] failed to create managed run: %s", error, exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to create managed run") from error
+        # A concurrent identical request raced the unique external_run_id.
         # Roll back before attempting an ownership-safe idempotent read.
         db.rollback()
         existing = crud.get_agent_task_by_external_run_id(db, body.run_id)

@@ -49,6 +49,7 @@ from .models import (
     EnvironmentRef,
     SnapshotFailure,
     normalize_platform,
+    PackagedExecution,
 )
 
 _BASE_CONFIG = ConfigDict(extra="forbid")
@@ -317,8 +318,22 @@ def qualified_artifact_keys(
 
     keys: set[ArtifactKey] = set()
     for receipt in _passing_receipts(release_json):
+        if receipt.get("release_id") is not None and receipt["release_id"] != release_json.get("release_id"):
+            continue
         if components:
             for component in components:
+                execution = component.get("execution")
+                if execution:
+                    # Archive receipts from historical leaves must not qualify a
+                    # new execution contract over the same transport bytes.
+                    if receipt.get("release_id") != release_json.get("release_id"):
+                        continue
+                    try:
+                        expected = PackagedExecution.model_validate(execution).manifest_digest
+                    except ValueError:
+                        continue
+                    if not _same_digest(expected, receipt.get("execution_manifest_digest")):
+                        continue
                 if not _receipt_binds_to_component(
                     receipt, component, declared_adapter_digest
                 ):

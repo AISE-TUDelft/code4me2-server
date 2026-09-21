@@ -1085,3 +1085,128 @@ def test_http_bootstrap_refuses_an_unqualified_platform_artifact(http_runtime):
     finally:
         session.close()
     assert sessions == 0, "a refused bootstrap must not leave a session row"
+
+
+def test_http_telemetry_per_event_duplicate_under_new_batch_id(http_runtime):
+    """Same event_id plus digest reposted under a fresh batch id is DUPLICATE.
+
+    Unlike the batch-reuse retry path (same batch id returns the stored
+    receipt), a repost under a NEW batch id flows through per-event
+    deduplication: the ack carries the event in ``duplicate`` with disposition
+    DUPLICATE and exactly one row is stored.
+    """
+    client, session_factory, current_user = http_runtime
+    session = session_factory()
+    try:
+        owner_id = _seed_user(session, "duplicate-owner@example.com", can_research=True)
+        participant_id = _seed_user(session, "duplicate-participant@example.com")
+        release_id = _qualified_packaged_release(session)
+        profile_id, _connection_id = _release_profile(session, owner_id, release_id)
+    finally:
+        session.close()
+
+    current_user["value"] = _owner(owner_id)
+    created = client.post(
+        "/api/research/studies",
+        json={
+            "name": "Per-event duplicate study",
+            "session_policy": {
+                "idle_timeout_seconds": 600,
+                "resume_grace_seconds": 120,
+                "heartbeat_seconds": 30,
+            },
+            "profile_ids": [str(profile_id)],
+        },
+    )
+    assert created.status_code == 201, created.text
+    study = created.json()["study"]
+    study_id = study["study_id"]
+
+    current_user["value"] = _participant(participant_id)
+    joined = client.post(
+        "/api/research/join",
+        json={"join_code": study["join_code"], "accept_consent": True},
+    )
+    assert joined.status_code == 201, joined.text
+    enrollment_id = joined.json()["enrollment_id"]
+
+    signing_secret = BOOTSTRAP_SIGNING_SECRET
+    assert signing_secret, "BOOTSTRAP_SIGNING_SECRET must be configured for this suite"
+    with patch(
+        "backend.routers.research.bootstrap._SIGNER",
+        BootstrapSigningContext(secret=signing_secret),
+    ):
+        bootstrap = client.post(
+            "/api/research/bootstrap/research-sessions",
+            json={
+                "enrollment_id": enrollment_id,
+                "context_id": "duplicate-context",
+                "environment": {"os": "macos", "arch": "arm64"},
+            },
+        )
+    assert bootstrap.status_code == 201, bootstrap.text
+    manifest = bootstrap.json()["manifest"]
+    capability = manifest["session_capability"]
+    research_session_id = manifest["research_session"]["research_session_id"]
+
+    opened = client.post(
+        "/api/research/sessions/",
+        json={
+            "capability": capability,
+            "enrollment_id": enrollment_id,
+            "study_id": study_id,
+            "manifest_digest": manifest["manifest_digest"],
+            "context_id": "duplicate-context",
+        },
+    )
+    assert opened.status_code == 200, opened.text
+
+    # One canonical event dict, posted twice: identical bytes mean an identical
+    # digest, which is what the DUPLICATE branch requires.
+    event_id = str(uuid.uuid4())
+    event = _telemetry_event(
+        study_id=study_id,
+        enrollment_id=enrollment_id,
+        research_session_id=research_session_id,
+        event_id=event_id,
+    )
+    first = client.post(
+        "/api/research/telemetry/batches",
+        json={
+            "batch_id": str(uuid.uuid4()),
+            "session_capability": capability,
+            "client_instance_id": "duplicate-client",
+            "events": [event],
+        },
+    )
+    assert first.status_code == 200, first.text
+    assert len(first.json()["accepted"]) == 1
+    assert first.json()["accepted"][0]["event_id"] == event_id
+    assert first.json()["accepted"][0]["disposition"] == "ACCEPTED"
+
+    second = client.post(
+        "/api/research/telemetry/batches",
+        json={
+            "batch_id": str(uuid.uuid4()),
+            "session_capability": capability,
+            "client_instance_id": "duplicate-client",
+            "events": [event],
+        },
+    )
+    assert second.status_code == 200, second.text
+    repeat = second.json()
+    assert repeat["accepted"] == []
+    assert repeat["rejected"] == []
+    assert len(repeat["duplicate"]) == 1
+    assert repeat["duplicate"][0]["event_id"] == event_id
+    assert repeat["duplicate"][0]["disposition"] == "DUPLICATE"
+
+    session = session_factory()
+    try:
+        stored = session.execute(
+            text("SELECT count(*) FROM public.research_event WHERE event_id = :event_id"),
+            {"event_id": event_id},
+        ).scalar_one()
+    finally:
+        session.close()
+    assert stored == 1, "a DUPLICATE repost must not store a second row"

@@ -251,3 +251,36 @@ def test_record_legacy_facts_locks_the_lifecycle_rows():
     assert result is not None and result.written is True
     assert get_enrollment.call_args.kwargs["for_update"] is True
     assert get_session.call_args.kwargs["for_update"] is True
+
+
+def test_a_non_bound_task_still_writes_the_legacy_operational_row():
+    """ISSUE-005: the non-research operational write path stays working.
+
+    A task with no research binding must reach ``crud.append_agent_event`` —
+    this is the positive counterpart to the boundary assertion that the
+    adapter returns ``None`` for such tasks.
+    """
+    from agents import event_writer
+    from agents.telemetry import InferenceRecord
+
+    task = SimpleNamespace(research_session_id=None, enrollment_id=None)
+    record = InferenceRecord(
+        request_id="req-legacy",
+        model="m1",
+        streaming=False,
+        message_count=1,
+        latency_ms=5,
+        upstream_status=200,
+    )
+    app = SimpleNamespace(get_db_session=lambda: MagicMock())
+
+    with patch.object(event_writer.crud, "get_agent_task", return_value=task), patch.object(
+        event_writer.crud, "reserve_agent_event_indexes", return_value=7
+    ) as reserve, patch.object(event_writer.crud, "append_agent_event") as legacy_append:
+        event_writer.write_model_call_event(
+            app, uuid.uuid4(), record, latency_ms=5, span=None, extra=None
+        )
+
+    reserve.assert_called_once()
+    legacy_append.assert_called_once()
+    assert legacy_append.call_args.kwargs["event_type"] == "model_call"

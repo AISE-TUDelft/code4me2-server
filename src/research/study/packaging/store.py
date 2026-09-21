@@ -202,15 +202,16 @@ def _find_release_for_artifact(
 ) -> Optional[AgentRelease]:
     """Find the release that owns an exact artifact/adapter digest."""
     statement = select(AgentRelease)
+    matches = {}
     for row in session.execute(statement).scalars().all():
         data = row.release_json or {}
         for artifact in data.get("artifacts") or []:
             if _same_digest(artifact.get("sha256"), artifact_digest):
-                return row
+                matches[row.release_id] = row
         manifest = data.get(PACKAGE_KEY) or {}
         for component in manifest.get("components") or []:
             if _same_digest(component.get("sha256"), artifact_digest):
-                return row
+                matches[row.release_id] = row
         # A BYOA release has no distribution artifact, so its conformance
         # evidence binds to the release's own distribution digest instead. This
         # keeps evidence-driven qualification working for participant-installed
@@ -218,8 +219,10 @@ def _find_release_for_artifact(
         if not (data.get("artifacts") or []) and _same_digest(
             data.get("source_manifest_digest"), artifact_digest
         ):
-            return row
-    return None
+            matches[row.release_id] = row
+    if len(matches) > 1:
+        raise ValueError("artifact digest belongs to multiple releases; receipt.release_id is required")
+    return next(iter(matches.values()), None)
 
 
 def insert_receipt(
@@ -229,13 +232,38 @@ def insert_receipt(
 
     The release is located by the exact artifact digest the receipt is bound to.
     """
-    row = _find_release_for_artifact(session, receipt.artifact_digest)
+    row = (session.get(AgentRelease, receipt.release_id) if receipt.release_id
+           else _find_release_for_artifact(session, receipt.artifact_digest))
     if row is None:
         raise LookupError(
             "no registered release owns artifact digest "
             f"{receipt.artifact_digest!r}"
         )
     data = dict(row.release_json or {})
+    if receipt.release_id:
+        from research.study.agents.models import AgentReleaseV1
+
+        fields = AgentReleaseV1.model_fields
+        release = AgentReleaseV1.model_validate({k: v for k, v in data.items() if k in fields})
+        if not _same_digest(getattr(release.adapter, "digest", None), receipt.adapter_digest):
+            raise ValueError("receipt adapter does not match the pinned release")
+        if release.is_byoa:
+            if not _same_digest(release.source_manifest_digest, receipt.artifact_digest):
+                raise ValueError("receipt does not bind the installed-agent release")
+        else:
+            artifact = release.artifact_for(receipt.host.os, receipt.host.arch)
+            if artifact is None or not _same_digest(artifact.sha256, receipt.artifact_digest):
+                raise ValueError("receipt does not bind the selected platform archive")
+            if artifact.execution and not _same_digest(
+                artifact.execution.manifest_digest, receipt.execution_manifest_digest
+            ):
+                raise ValueError("receipt does not bind the execution manifest")
+    existing = next((item for item in data.get(CONFORMANCE_KEY, [])
+                     if str(item.get("receipt_id")) == str(receipt.receipt_id)), None)
+    if existing is not None:
+        if ConformanceReceiptV1.model_validate(existing) != receipt:
+            raise ValueError("receipt ID already has different immutable content")
+        return receipt
     conformance = [
         item
         for item in (data.get(CONFORMANCE_KEY) or [])
