@@ -9,7 +9,7 @@ responsible for session lifecycle (``App.get_db_session`` / ``rollback`` /
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 
 from sqlalchemy import select
 
@@ -29,7 +29,12 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def upsert_release(session: Session, release: AgentReleaseV1) -> AgentRelease:
+def upsert_release(
+    session: Session,
+    release: AgentReleaseV1,
+    *,
+    evidence: Optional[Mapping[str, Any]] = None,
+) -> AgentRelease:
     """Insert or update one release row.
 
     A release's artifacts and adapter are part of ``release_json`` (its
@@ -38,9 +43,11 @@ def upsert_release(session: Session, release: AgentReleaseV1) -> AgentRelease:
     ``(agent_id, source_manifest_digest)`` constraint; callers decide whether
     that is a conflict or an idempotent retry.
 
-    Qualification is **never** taken from the incoming model: it is derived from
-    the stored conformance evidence, so re-registering a release cannot promote
-    or downgrade it.
+    ``evidence`` carries the import-time recipe verdict (its ``tests`` block)
+    into ``release_json``. Qualification is **never** taken from the incoming
+    model: it is derived from that stored evidence, so re-registering a release
+    cannot promote or downgrade it. A one-way ``disabled`` flag is preserved
+    across re-imports.
     """
     row = session.get(AgentRelease, release.release_id)
     release_json = release.model_dump(mode="json")
@@ -49,11 +56,14 @@ def upsert_release(session: Session, release: AgentReleaseV1) -> AgentRelease:
         merged = dict(release_json)
     else:
         merged = dict(row.release_json or {})
-        # Packaging/conformance evidence shares release_json with the release
-        # model, so a re-registration must not drop those sibling keys.
+        # Import-time evidence shares release_json with the release model, so a
+        # re-registration must not drop those sibling keys or the disabled flag.
         merged.update(release_json)
         row.agent_id = release.agent_id
         row.source_manifest_digest = release.source_manifest_digest
+
+    for key, value in (evidence or {}).items():
+        merged[key] = value
 
     status = derive_qualification_status(merged)
     merged["qualification_status"] = status.value
@@ -72,6 +82,28 @@ def upsert_release(session: Session, release: AgentReleaseV1) -> AgentRelease:
         row.status = status.value
         row.release_json = merged
 
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def disable_release(session: Session, release_id: str) -> Optional[AgentRelease]:
+    """Disable a release one-way, or ``None`` when it does not exist.
+
+    Disabling is idempotent and terminal: the stored ``disabled`` flag is what
+    :func:`derive_qualification_status` reads, and re-importing the same recipe
+    preserves it (the release can never be re-enabled through this path).
+    """
+    row = session.get(AgentRelease, release_id)
+    if row is None:
+        return None
+    data = dict(row.release_json or {})
+    data["disabled"] = True
+    status = derive_qualification_status(data)
+    data["qualification_status"] = status.value
+    row.status = status.value
+    row.release_json = data
+    session.add(row)
     session.commit()
     session.refresh(row)
     return row

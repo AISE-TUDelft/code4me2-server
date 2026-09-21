@@ -148,15 +148,11 @@ def _qualified_packaged_release(session) -> str:
     )
     release_json = release.model_dump(mode="json")
     release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
-    release_json["conformance"] = [
-        {
-            "status": "PASS",
-            "artifact_digest": artifact_digest,
-            "adapter_digest": adapter_digest,
-            "host": {"os": "macos", "arch": "arm64"},
-            "case_results": [{"status": "PASS"}],
-        }
-    ]
+    release_json["tests"] = {
+        "status": "PASS",
+        "approval_options": ["auto", "per_step", "suggestion_only"],
+        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+    }
     session.execute(
         text(
             "INSERT INTO public.agent_release "
@@ -204,17 +200,11 @@ def _qualified_codex_byoa_release(session) -> str:
     )
     release_json = release.model_dump(mode="json")
     release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
-    release_json["conformance"] = [
-        {
-            "status": "PASS",
-            "artifact_digest": release.source_manifest_digest,
-            "adapter_digest": adapter_digest,
-            "host": {"os": "macos", "arch": "arm64"},
-            "case_results": [
-                {"case_id": "acp.initialize.session", "status": "PASS"}
-            ],
-        }
-    ]
+    release_json["tests"] = {
+        "status": "PASS",
+        "approval_options": ["auto", "per_step", "suggestion_only"],
+        "cases": [{"case_id": "acp.initialize.session", "status": "PASS"}],
+    }
     session.execute(
         text(
             "INSERT INTO public.agent_release "
@@ -233,15 +223,13 @@ def _qualified_codex_byoa_release(session) -> str:
     return release.release_id
 
 
-def _partially_qualified_packaged_release(session) -> str:
-    """Insert a packaged release whose PASS receipt covers only macOS.
+def _macos_only_packaged_release(session) -> str:
+    """Insert a packaged release whose recipe built only the macOS artifact.
 
-    The release publishes macOS *and* Linux artifacts, but the receipt binds
-    the macOS digest+platform only, so a Linux bootstrap must be refused even
-    though the release-level status is QUALIFIED (ISSUE-10).
+    Identity is the ZIP fingerprint per platform, so a platform the recipe did
+    not build has no artifact at all and a bootstrap for it must be refused.
     """
     macos_digest = "sha256:" + "c" * 64
-    linux_digest = "sha256:" + "e" * 64
     adapter_digest = "sha256:" + "d" * 64
     release = AgentReleaseV1(
         agent_id="codex-acp",
@@ -257,13 +245,6 @@ def _partially_qualified_packaged_release(session) -> str:
                 sha256=macos_digest,
                 size=1048576,
             ),
-            DistributionArtifact(
-                os="linux",
-                arch="x64",
-                path="codex/1.2.3/linux-x64.tar.gz",
-                sha256=linux_digest,
-                size=1048576,
-            ),
         ],
         adapter=AdapterRef(
             adapter_id="acp-adapter",
@@ -274,15 +255,11 @@ def _partially_qualified_packaged_release(session) -> str:
     )
     release_json = release.model_dump(mode="json")
     release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
-    release_json["conformance"] = [
-        {
-            "status": "PASS",
-            "artifact_digest": macos_digest,
-            "adapter_digest": adapter_digest,
-            "host": {"os": "macos", "arch": "arm64"},
-            "case_results": [{"status": "PASS"}],
-        }
-    ]
+    release_json["tests"] = {
+        "status": "PASS",
+        "approval_options": ["auto", "per_step", "suggestion_only"],
+        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+    }
     session.execute(
         text(
             "INSERT INTO public.agent_release "
@@ -1018,15 +995,14 @@ def test_http_codex_byoa_adapter_normalization_and_terminal_closure(http_runtime
     assert terminal.json()["rejected"][0]["reason"] == "REVOKED"
 
 
-def test_http_bootstrap_refuses_an_unqualified_platform_artifact(http_runtime):
-    """ISSUE-10: a release-qualified study still cannot bootstrap an artifact
-    whose exact digest+platform+adapter was never covered by conformance."""
+def test_http_bootstrap_refuses_a_platform_the_recipe_did_not_build(http_runtime):
+    """A usable release still cannot bootstrap a platform it declares no artifact for."""
     client, session_factory, current_user = http_runtime
     session = session_factory()
     try:
         owner_id = _seed_user(session, "partial-owner@example.com", can_research=True)
         participant_id = _seed_user(session, "partial-participant@example.com")
-        release_id = _partially_qualified_packaged_release(session)
+        release_id = _macos_only_packaged_release(session)
         profile_id, _connection_id = _release_profile(session, owner_id, release_id)
     finally:
         session.close()
@@ -1070,7 +1046,7 @@ def test_http_bootstrap_refuses_an_unqualified_platform_artifact(http_runtime):
             },
         )
     assert refused.status_code == 409, refused.text
-    assert "ARTIFACT_NOT_QUALIFIED" in json.dumps(refused.json())
+    assert "ARTIFACT_UNAVAILABLE" in json.dumps(refused.json())
     assert "manifest" not in refused.json()
 
     session = session_factory()

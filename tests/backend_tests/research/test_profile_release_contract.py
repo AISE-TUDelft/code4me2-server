@@ -92,20 +92,10 @@ def _release_row(
     }
     if mode == "BYOA_EXTERNAL":
         document["byoa_config"] = list(BYOA_CONFIG_BINDINGS)
-        receipt_digest = document["source_manifest_digest"]
-        host = {"os": "macos", "arch": "arm64"}
-    else:
-        receipt_digest = artifact_digest
-        host = {"os": "macos", "arch": "aarch64"}
-    document["conformance"] = [
-        {
-            "status": "PASS",
-            "artifact_digest": receipt_digest,
-            "adapter_digest": adapter_digest if with_adapter else None,
-            "host": host,
-            "case_results": [{"case_id": "acp.initialize", "status": "PASS"}],
-        }
-    ]
+    document["tests"] = {
+        "status": "PASS",
+        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+    }
     return SimpleNamespace(status="QUALIFIED", release_json=document)
 
 
@@ -306,15 +296,10 @@ def _byoa_receipt_document(release: AgentReleaseV1) -> dict:
     digest, so :func:`derive_qualification_status` reports QUALIFIED.
     """
     document = release.model_dump(mode="json")
-    document["conformance"] = [
-        {
-            "status": "PASS",
-            "artifact_digest": release.source_manifest_digest,
-            "adapter_digest": release.adapter.digest if release.adapter else None,
-            "host": {"os": "macos", "arch": "arm64"},
-            "case_results": [{"case_id": "acp.initialize", "status": "PASS"}],
-        }
-    ]
+    document["tests"] = {
+        "status": "PASS",
+        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+    }
     return document
 
 

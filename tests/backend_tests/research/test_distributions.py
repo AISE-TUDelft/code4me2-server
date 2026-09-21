@@ -123,27 +123,18 @@ def _release(
 
 
 def _evidence(
-    release: AgentReleaseV1, *, case_ids: tuple[str, ...] = ("acp.initialize",)
+    release: AgentReleaseV1,
+    *,
+    case_ids: tuple[str, ...] = ("acp.initialize",),
+    approval_options: tuple[str, ...] = ("auto", "per_step", "suggestion_only"),
 ) -> dict:
-    """A stored evidence document whose receipt binds the release's identity."""
+    """A stored evidence document recording a passing self-check verdict."""
     document = release.model_dump(mode="json")
-    if release.is_byoa:
-        digest = release.source_manifest_digest
-        host = {"os": "macos", "arch": "arm64"}
-    else:
-        digest = release.artifacts[0].sha256
-        host = {"os": release.artifacts[0].os, "arch": release.artifacts[0].arch}
-    document["conformance"] = [
-        {
-            "status": "PASS",
-            "artifact_digest": digest,
-            "adapter_digest": release.adapter.digest if release.adapter else None,
-            "host": host,
-            "case_results": [
-                {"case_id": case_id, "status": "PASS"} for case_id in case_ids
-            ],
-        }
-    ]
+    document["tests"] = {
+        "status": "PASS",
+        "approval_options": list(approval_options),
+        "cases": [{"case_id": case_id, "status": "PASS"} for case_id in case_ids],
+    }
     return document
 
 
@@ -547,18 +538,18 @@ def test_profile_configuration_enforces_approval_option_evidence():
     release = _release(qualified=True)
     profile = _profile(approval_policy="per_step")
 
-    # A receipt with only a generic case does not cover the gated option.
+    # A recipe that does not declare the gated option does not cover it.
     with pytest.raises(ProfileConfigurationError) as error:
         validate_profile_configuration(
-            profile, release, release_json=_evidence(release, case_ids=("acp.initialize",))
+            profile, release, release_json=_evidence(release, approval_options=("auto",))
         )
     assert error.value.code == "APPROVAL_OPTION_UNVERIFIED"
 
-    # A passing permission-request case does.
+    # A recipe that declares the exercised option does.
     validate_profile_configuration(
         profile,
         release,
-        release_json=_evidence(release, case_ids=("builtin.permission.request",)),
+        release_json=_evidence(release, approval_options=("auto", "per_step")),
     )
 
 

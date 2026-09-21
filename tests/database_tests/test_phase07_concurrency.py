@@ -31,10 +31,10 @@ from research.study.protocol import store as study_store
 
 
 def _qualified_release_json(release_id: str, *, agent_id: str) -> str:
-    """A PACKAGED release with real conformance evidence (ISSUE-10/ISSUE-17).
+    """A PACKAGED release whose recipe self-check passed.
 
     Minimal seed rows with an empty ``release_json`` can no longer be selected:
-    qualification is derived from evidence bound to the exact artifact.
+    qualification is derived from the recorded recipe self-check.
     """
     digest = "a" * 64
     return json.dumps(
@@ -53,14 +53,10 @@ def _qualified_release_json(release_id: str, *, agent_id: str) -> str:
                     "size": 1,
                 }
             ],
-            "conformance": [
-                {
-                    "status": "PASS",
-                    "artifact_digest": digest,
-                    "host": {"os": "macos", "arch": "arm64"},
-                    "case_results": [{"case_id": "install", "status": "PASS"}],
-                }
-            ],
+            "tests": {
+                "status": "PASS",
+                "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+            },
         }
     )
 

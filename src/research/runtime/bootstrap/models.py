@@ -168,10 +168,12 @@ class BootstrapAgentRelease(BaseModel):
 
     agent_id: str
     release_id: str
+    # The bootstrap pin is the ZIP fingerprint: ``artifact_digest``/``archive_sha256``
+    # are the same value for a PACKAGED release and empty for BYOA.
     artifact_digest: str = ""
     archive_sha256: Optional[str] = None
-    executable_sha256: Optional[str] = None
-    execution_manifest_digest: Optional[str] = None
+    # The executable name inside the pinned archive (not its bytes).
+    executable: Optional[str] = None
     adapter_digest: Optional[str] = None
     adapter_id: Optional[str] = None
     adapter_version: Optional[str] = None

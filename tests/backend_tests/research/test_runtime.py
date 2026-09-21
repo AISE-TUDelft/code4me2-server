@@ -18,14 +18,16 @@ from pydantic import ValidationError as PydanticValidationError
 
 from backend.routers.analytics.auth_utils import AuthenticatedUser
 from backend.routers.research.agents import (
-    ReleaseRegisterRequest,
+    DeployedImportRequest,
     ResolveArtifactRequest,
     SnapshotUploadRequest,
     coverage,
+    disable_release,
     get_release,
+    import_release,
+    import_release_deployed,
     list_releases,
     list_snapshots,
-    register_release,
     resolve_artifact,
     upload_snapshot,
 )
@@ -67,16 +69,11 @@ from research.study.agents.registry import (
 )
 from research.study.agents.resolver import RegistryReleaseResolver
 from research.study.packaging import (
-    CaseObservation,
     ComponentEntry,
-    ConformanceCaseV1,
-    ConformanceRunner,
-    ConformanceStatus,
     PackageReasonCode,
     PlatformTriple,
     RuntimeManifestV2,
     build_package,
-    qualification_for_release,
     resolve_component,
     resolved_digest,
     sha256_of_bytes,
@@ -415,11 +412,7 @@ def test_store_helpers_use_session():
     session.execute.return_value.scalars.return_value.first.return_value = None
 
     assert list(packaging_store.list_packages(session, "rel-1")) == []
-    assert list(packaging_store.list_receipts(session)) == []
     assert packaging_store.get_package_by_digest(session, "sha256:abc") is None
-    coverage = packaging_store.conformance_coverage(session)
-    assert coverage["total"] == 0
-    assert coverage["by_status"] == {}
 
 
 def test_packages_routes_are_wired():
@@ -428,12 +421,13 @@ def test_packages_routes_are_wired():
     paths = {route.path for route in api_router.routes}
     for path in (
         "/research/packages",
-        "/research/packages/receipts",
-        "/research/packages/coverage",
         "/research/packages/{package_id}",
-        "/research/packages/{package_id}/qualification",
     ):
         assert path in paths, path
+    # There is no conformance-receipt or qualification route.
+    assert "/research/packages/receipts" not in paths
+    assert "/research/packages/coverage" not in paths
+    assert "/research/packages/{package_id}/qualification" not in paths
 
 
 def test_manifest_rejects_unknown_fields():
@@ -443,284 +437,6 @@ def test_manifest_rejects_unknown_fields():
     data["prompt"] = "CANARY"
     with pytest.raises(ValidationError):
         RuntimeManifestV2.model_validate(data)
-
-
-# --------------------------------------------------------------------------
-# test_conformance_suite
-# --------------------------------------------------------------------------
-# Tests for the capability-aware conformance suite (Issue 11).
-conformance_suite__FIXTURE_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "research" / "packaging"
-conformance_suite__NOW = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
-conformance_suite__HOST = PlatformTriple(os="macos", arch="arm64")
-conformance_suite__ARTIFACT = "sha256:" + "a" * 64
-conformance_suite__ADAPTER = "sha256:" + "d" * 64
-
-
-class conformance_suite___Observer:
-    """Deterministic observer used to drive each truthful-status branch."""
-
-    def __init__(
-        self,
-        *,
-        host_observations: list[str] | None = None,
-        agent_observations: list[str] | None = None,
-        cleanup_ok: bool | None = True,
-        performance_ms: float | None = 5.0,
-        status: ConformanceStatus | None = None,
-        raise_error: bool = False,
-    ) -> None:
-        self.host_observations = host_observations if host_observations is not None else ["h"]
-        self.agent_observations = agent_observations if agent_observations is not None else ["a"]
-        self.cleanup_ok = cleanup_ok
-        self.performance_ms = performance_ms
-        self.status = status
-        self.raise_error = raise_error
-
-    def observe(self, case: ConformanceCaseV1) -> CaseObservation:
-        if self.raise_error:
-            raise RuntimeError("fixture exploded")
-        return CaseObservation(
-            host_observations=self.host_observations,
-            agent_observations=self.agent_observations,
-            cleanup_ok=self.cleanup_ok,
-            performance_ms=self.performance_ms,
-            status=self.status,
-        )
-
-
-def conformance_suite___case(case_id: str = "c1", **overrides) -> ConformanceCaseV1:
-    data = {
-        "case_id": case_id,
-        "prerequisites": ["acp.initialize"],
-        "fixture_ref": "fixture",
-        "action_steps": ["run"],
-        "expected_host_observations": ["h"],
-        "expected_agent_observations": ["a"],
-        "cleanup_assertion": "temp removed",
-    }
-    data.update(overrides)
-    return ConformanceCaseV1(**data)
-
-
-def conformance_suite___run(cases, prerequisites, observer, **overrides):
-    runner = ConformanceRunner(observer)
-    params = {
-        "artifact_digest": conformance_suite__ARTIFACT,
-        "adapter_digest": conformance_suite__ADAPTER,
-        "host": conformance_suite__HOST,
-        "plugin_version": "2026.1",
-        "protocol_version": "1",
-        "fixture_digests": {"initialize": "sha256:" + "f" * 64},
-        "now": conformance_suite__NOW,
-    }
-    params.update(overrides)
-    return runner.run(cases, prerequisites, **params)
-
-
-def conformance_suite___release(*, artifact_sha: str = conformance_suite__ARTIFACT, adapter_digest: str = conformance_suite__ADAPTER) -> AgentReleaseV1:
-    return AgentReleaseV1(
-        agent_id="codex",
-        release_id="rel-1",
-        version="1.0.0",
-        source_type=DistributionSourceType.EXTERNAL_REGISTRY,
-        source_manifest_digest="sha256:" + "1" * 64,
-        artifacts=[
-            DistributionArtifact(
-                os="macos", arch="arm64", path="bin/codex-acp", sha256=artifact_sha, size=10
-            )
-        ],
-        adapter=AdapterRef(adapter_id="code4me-acp", version="1.0.0", digest=adapter_digest),
-        qualification_status=QualificationStatus.DRAFT,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Truthful statuses
-# ---------------------------------------------------------------------------
-
-
-def test_pass_requires_established_prerequisites_and_matching_observations():
-    receipt = conformance_suite___run([conformance_suite___case()], {"acp.initialize": "ESTABLISHED"}, conformance_suite___Observer())
-    assert receipt.status == ConformanceStatus.PASS
-    assert receipt.case_results[0].status == ConformanceStatus.PASS
-    assert receipt.case_results[0].evidence_digest
-
-
-def test_unsupported_and_unknown_prerequisites_are_never_pass():
-    unsupported = conformance_suite___run([conformance_suite___case()], {"acp.initialize": "UNSUPPORTED"}, conformance_suite___Observer())
-    assert unsupported.case_results[0].status == ConformanceStatus.UNSUPPORTED
-    assert unsupported.status == ConformanceStatus.UNSUPPORTED
-
-    unknown = conformance_suite___run([conformance_suite___case()], {"acp.initialize": "UNKNOWN"}, conformance_suite___Observer())
-    assert unknown.case_results[0].status == ConformanceStatus.UNKNOWN
-
-    missing = conformance_suite___run([conformance_suite___case()], {}, conformance_suite___Observer())
-    assert missing.case_results[0].status == ConformanceStatus.UNKNOWN
-
-
-def test_observer_exception_is_blocked():
-    receipt = conformance_suite___run([conformance_suite___case()], {"acp.initialize": "ESTABLISHED"}, conformance_suite___Observer(raise_error=True))
-    assert receipt.case_results[0].status == ConformanceStatus.BLOCKED
-    assert receipt.status == ConformanceStatus.BLOCKED
-
-
-def test_cleanup_failure_is_fail_even_with_matching_observations():
-    receipt = conformance_suite___run([conformance_suite___case()], {"acp.initialize": "ESTABLISHED"}, conformance_suite___Observer(cleanup_ok=False))
-    assert receipt.case_results[0].status == ConformanceStatus.FAIL
-    assert "cleanup" in receipt.case_results[0].reason
-
-
-def test_unverified_cleanup_assertion_is_unknown():
-    receipt = conformance_suite___run([conformance_suite___case()], {"acp.initialize": "ESTABLISHED"}, conformance_suite___Observer(cleanup_ok=None))
-    assert receipt.case_results[0].status == ConformanceStatus.UNKNOWN
-
-
-def test_missing_expected_observation_is_fail():
-    receipt = conformance_suite___run(
-        [conformance_suite___case()],
-        {"acp.initialize": "ESTABLISHED"},
-        conformance_suite___Observer(agent_observations=[]),
-    )
-    assert receipt.case_results[0].status == ConformanceStatus.FAIL
-
-
-def test_observer_reported_non_pass_status_is_preserved():
-    receipt = conformance_suite___run(
-        [conformance_suite___case()],
-        {"acp.initialize": "ESTABLISHED"},
-        conformance_suite___Observer(status=ConformanceStatus.UNSUPPORTED),
-    )
-    assert receipt.case_results[0].status == ConformanceStatus.UNSUPPORTED
-
-
-def test_performance_bound_exceeded_is_fail():
-    case = conformance_suite___case(max_performance_ms=1.0)
-    receipt = conformance_suite___run([case], {"acp.initialize": "ESTABLISHED"}, conformance_suite___Observer(performance_ms=10.0))
-    assert receipt.case_results[0].status == ConformanceStatus.FAIL
-    assert "performance" in receipt.case_results[0].reason
-
-
-def test_receipt_status_precedence_fail_dominates():
-    cases = [conformance_suite___case("c1"), conformance_suite___case("c2")]
-    first = conformance_suite___run(cases, {"acp.initialize": "ESTABLISHED"}, conformance_suite___Observer())
-    assert first.status == ConformanceStatus.PASS
-
-    class MixedObserver:
-        def observe(self, case: ConformanceCaseV1) -> CaseObservation:
-            if case.case_id == "c1":
-                return CaseObservation(cleanup_ok=False)
-            return CaseObservation(status=ConformanceStatus.UNKNOWN)
-
-    mixed = conformance_suite___run(cases, {"acp.initialize": "ESTABLISHED"}, MixedObserver())
-    assert mixed.status == ConformanceStatus.FAIL
-
-
-# ---------------------------------------------------------------------------
-# Receipt binding
-# ---------------------------------------------------------------------------
-
-
-def test_receipt_binds_exact_artifact_adapter_host_plugin_protocol_and_fixtures():
-    receipt = conformance_suite___run([conformance_suite___case()], {"acp.initialize": "ESTABLISHED"}, conformance_suite___Observer())
-    assert receipt.artifact_digest == conformance_suite__ARTIFACT
-    assert receipt.adapter_digest == conformance_suite__ADAPTER
-    assert receipt.host == conformance_suite__HOST
-    assert receipt.host.key == "macos-arm64"
-    assert receipt.plugin_version == "2026.1"
-    assert receipt.protocol_version == "1"
-    assert receipt.fixture_digests == {"initialize": "sha256:" + "f" * 64}
-    assert receipt.created_at == conformance_suite__NOW
-    assert isinstance(receipt.receipt_id, uuid.UUID)
-
-
-def test_fixture_conformance_cases_load_and_validate():
-    raw = json.loads((conformance_suite__FIXTURE_DIR / "conformance_cases.json").read_text())
-    cases = [ConformanceCaseV1.model_validate(item) for item in raw]
-    assert {case.case_id for case in cases} == {
-        "initialize.session",
-        "tool.read",
-        "permission.cancel",
-    }
-    assert all(case.prerequisites for case in cases)
-
-
-# ---------------------------------------------------------------------------
-# Qualification linking
-# ---------------------------------------------------------------------------
-
-
-def conformance_suite___passing_receipt(*, artifact_digest: str = conformance_suite__ARTIFACT, adapter_digest: str = conformance_suite__ADAPTER, host: PlatformTriple = conformance_suite__HOST):
-    receipt = conformance_suite___run(
-        [conformance_suite___case("c1"), conformance_suite___case("c2")],
-        {"acp.initialize": "ESTABLISHED"},
-        conformance_suite___Observer(),
-        artifact_digest=artifact_digest,
-        adapter_digest=adapter_digest,
-        host=host,
-    )
-    assert receipt.status == ConformanceStatus.PASS
-    return receipt
-
-
-def test_qualification_promoted_with_all_required_cases_passing():
-    release = conformance_suite___release()
-    receipt = conformance_suite___passing_receipt()
-    decision = qualification_for_release(
-        release, [receipt], required_cases=["c1", "c2"], os="macos", arch="arm64"
-    )
-    assert decision.promote is True
-    assert decision.reason == PackageReasonCode.OK
-    assert decision.receipt_id == receipt.receipt_id
-
-
-def test_qualification_not_promoted_without_a_pass():
-    release = conformance_suite___release()
-    failing = conformance_suite___run([conformance_suite___case("c1")], {"acp.initialize": "ESTABLISHED"}, conformance_suite___Observer(cleanup_ok=False))
-    assert failing.status == ConformanceStatus.FAIL
-
-    decision = qualification_for_release(
-        release, [failing], required_cases=["c1"], os="macos", arch="arm64"
-    )
-    assert decision.promote is False
-    assert decision.reason == PackageReasonCode.CONFORMANCE_NOT_PASSED
-
-
-def test_qualification_not_promoted_when_a_required_case_is_missing():
-    release = conformance_suite___release()
-    receipt = conformance_suite___passing_receipt()
-    decision = qualification_for_release(
-        release, [receipt], required_cases=["c1", "c9"], os="macos", arch="arm64"
-    )
-    assert decision.promote is False
-
-
-def test_qualification_host_mismatch_is_typed():
-    release = conformance_suite___release()
-    receipt = conformance_suite___passing_receipt(host=PlatformTriple(os="linux", arch="x64"))
-    decision = qualification_for_release(
-        release, [receipt], required_cases=["c1"], os="macos", arch="arm64"
-    )
-    assert decision.promote is False
-    assert decision.reason == PackageReasonCode.RECEIPT_HOST_MISMATCH
-
-
-def test_qualification_artifact_digest_mismatch_is_not_promoted():
-    release = conformance_suite___release(artifact_sha="sha256:" + "9" * 64)
-    receipt = conformance_suite___passing_receipt()
-    decision = qualification_for_release(
-        release, [receipt], required_cases=["c1"], os="macos", arch="arm64"
-    )
-    assert decision.promote is False
-    assert decision.reason == PackageReasonCode.CONFORMANCE_NOT_PASSED
-
-
-def test_qualification_missing_artifact_is_typed():
-    release = conformance_suite___release()
-    decision = qualification_for_release(
-        release, [], required_cases=["c1"], os="windows", arch="x64"
-    )
-    assert decision.promote is False
-    assert decision.reason == PackageReasonCode.MISSING_COMPONENT
 
 
 # --------------------------------------------------------------------------
@@ -983,384 +699,112 @@ def test_artifact_with_empty_digest_is_blocked():
 
 
 # ---------------------------------------------------------------------------
-# Qualification transitions and assessment
+# Recipe-derived qualification
 # ---------------------------------------------------------------------------
 
 
-def _bound_passing_receipt(release) -> dict:
-    """A PASS receipt bound to the fixture release's exact artifact identity."""
-    artifact = release.artifacts[0]
-    return {
-        "receipt_id": str(uuid.uuid4()),
-        "status": "PASS",
-        "artifact_digest": artifact.sha256,
-        "adapter_digest": release.adapter.digest,
-        "host": {"os": artifact.os, "arch": artifact.arch},
-        "case_results": [{"case_id": "acp.initialize", "status": "PASS"}],
+def _recipe_document(release: AgentReleaseV1, *, status: str = "PASS", **overrides) -> dict:
+    document = release.model_dump(mode="json")
+    document["tests"] = {
+        "status": status,
+        "cases": [{"case_id": "acp.initialize", "status": status}],
     }
+    document.update(overrides)
+    return document
 
 
-def test_qualification_is_derived_from_passing_conformance_evidence():
-    release = agent_registry___release()
-    release_json = release.model_dump(mode="json")
-
-    # No conformance evidence -> unqualified, even when a caller-supplied status
-    # is present in the document.
-    assert derive_qualification_status({}) == QualificationStatus.UNQUALIFIED
-    assert (
-        derive_qualification_status({"qualification_status": "QUALIFIED"})
-        == QualificationStatus.UNQUALIFIED
-    )
-    # A failing receipt never promotes.
-    assert (
-        derive_qualification_status({"conformance": [{"status": "FAIL"}]})
-        == QualificationStatus.UNQUALIFIED
-    )
-    # 'Any PASS receipt' is not adequate: a receipt that does not bind to the
-    # release's exact artifact/adapter/platform/cases never promotes.
-    assert (
-        derive_qualification_status({"conformance": [{"status": "PASS"}]})
-        == QualificationStatus.UNQUALIFIED
-    )
-    unbound = _bound_passing_receipt(release)
-    unbound["artifact_digest"] = "sha256:" + "e" * 64
-    assert (
-        derive_qualification_status({**release_json, "conformance": [unbound]})
-        == QualificationStatus.UNQUALIFIED
-    )
-    wrong_adapter = _bound_passing_receipt(release)
-    wrong_adapter["adapter_digest"] = "sha256:" + "f" * 64
-    assert (
-        derive_qualification_status({**release_json, "conformance": [wrong_adapter]})
-        == QualificationStatus.UNQUALIFIED
-    )
-    wrong_platform = _bound_passing_receipt(release)
-    wrong_platform["host"] = {"os": "windows", "arch": "x86_64"}
-    assert (
-        derive_qualification_status({**release_json, "conformance": [wrong_platform]})
-        == QualificationStatus.UNQUALIFIED
-    )
-    no_cases = _bound_passing_receipt(release)
-    no_cases["case_results"] = []
-    assert (
-        derive_qualification_status({**release_json, "conformance": [no_cases]})
-        == QualificationStatus.UNQUALIFIED
-    )
-    # A receipt bound to the exact artifact/adapter/platform with a passing case
-    # is the only promotion path.
-    bound = _bound_passing_receipt(release)
-    assert (
-        derive_qualification_status({**release_json, "conformance": [bound]})
-        == QualificationStatus.QUALIFIED
-    )
-
-
-def test_cross_artifact_receipt_does_not_qualify_either_artifact():
-    """The review reproduction: digest-A receipt + platform-B must stay UNQUALIFIED.
-
-    The fixture release publishes macOS digest A and Linux digest B. A passing
-    receipt that names digest A but the Linux host belongs to *neither* artifact,
-    so no artifact/platform combination may be promoted (ISSUE-10).
-    """
-    release = agent_registry___release()
-    release_json = release.model_dump(mode="json")
-    macos_artifact, linux_artifact = release.artifacts[0], release.artifacts[1]
-
-    receipt = _bound_passing_receipt(release)
-    receipt["artifact_digest"] = macos_artifact.sha256
-    receipt["host"] = {"os": linux_artifact.os, "arch": linux_artifact.arch}
-    document = {**release_json, "conformance": [receipt]}
-
-    assert derive_qualification_status(document) == QualificationStatus.UNQUALIFIED
-    assert qualified_artifact_keys(document) == set()
-    assert (
-        artifact_qualified(
-            document,
-            os_name=macos_artifact.os,
-            arch=macos_artifact.arch,
-            digest=macos_artifact.sha256,
-            adapter_digest=release.adapter.digest,
-        )
-        is False
-    )
-    assert (
-        artifact_qualified(
-            document,
-            os_name=linux_artifact.os,
-            arch=linux_artifact.arch,
-            digest=linux_artifact.sha256,
-            adapter_digest=release.adapter.digest,
-        )
-        is False
-    )
-
-
-def test_qualified_artifact_keys_bind_only_the_receipts_own_platform():
-    """One artifact receipt qualifies that artifact and not its sibling."""
-    release = agent_registry___release()
-    release_json = release.model_dump(mode="json")
-    macos_artifact, linux_artifact = release.artifacts[0], release.artifacts[1]
-    document = {**release_json, "conformance": [_bound_passing_receipt(release)]}
+def test_qualification_is_derived_from_the_recipe_self_check():
+    release = agent_registry___single_artifact_release()
+    document = _recipe_document(release)
 
     assert derive_qualification_status(document) == QualificationStatus.QUALIFIED
-    # Keys are normalised: platform canonicalised, digests without the prefix.
-    assert qualified_artifact_keys(document) == {
-        ("macos", "aarch64", "a" * 64, "d" * 64)
-    }
+    assert artifact_qualified(
+        document,
+        os_name="macos",
+        arch="aarch64",
+        digest=release.artifacts[0].sha256,
+        adapter_digest=release.adapter.digest,
+    ) is True
+
     assert (
-        artifact_qualified(
-            document,
-            os_name=macos_artifact.os,
-            arch=macos_artifact.arch,
-            digest=macos_artifact.sha256,
-            adapter_digest=release.adapter.digest,
-        )
-        is True
+        derive_qualification_status({**document, "tests": {"status": "FAIL"}})
+        == QualificationStatus.UNQUALIFIED
     )
     assert (
-        artifact_qualified(
-            document,
-            os_name=linux_artifact.os,
-            arch=linux_artifact.arch,
-            digest=linux_artifact.sha256,
-            adapter_digest=release.adapter.digest,
+        derive_qualification_status(
+            {key: value for key, value in document.items() if key != "tests"}
         )
-        is False
+        == QualificationStatus.UNQUALIFIED
+    )
+    assert (
+        derive_qualification_status({**document, "disabled": True})
+        == QualificationStatus.DISABLED
     )
 
 
-# ---------------------------------------------------------------------------
-# Bootstrap artifact qualification (ISSUE-10)
-# ---------------------------------------------------------------------------
+def test_qualified_artifact_keys_are_the_zip_fingerprints():
+    release = agent_registry___single_artifact_release()
+    document = _recipe_document(release)
 
-
-def _bootstrap_document(release: AgentReleaseV1, *, host: dict | None = None) -> dict:
-    """A stored evidence document with one PASS receipt for ``release``."""
-    artifact = release.artifacts[0]
-    receipt: dict = {
-        "receipt_id": str(uuid.uuid4()),
-        "status": "PASS",
-        "artifact_digest": artifact.sha256,
-        "adapter_digest": release.adapter.digest if release.adapter else None,
-        "case_results": [{"case_id": "acp.initialize", "status": "PASS"}],
+    keys = qualified_artifact_keys(document)
+    assert keys == {
+        ("macos", "aarch64", release.artifacts[0].sha256.removeprefix("sha256:"),
+         release.adapter.digest.removeprefix("sha256:")),
     }
-    if host is not None:
-        receipt["host"] = host
-    return {**release.model_dump(mode="json"), "conformance": [receipt]}
+    # A release that is not qualified pins nothing.
+    assert qualified_artifact_keys({**document, "tests": {"status": "FAIL"}}) == set()
 
 
-def _bootstrap_inputs(release: AgentReleaseV1):
-    """Enrollment/study/assignment fakes accepted by ``compose_bootstrap``."""
-    profile_id = uuid.uuid4()
-    enrollment_id = uuid.uuid4()
-    study_id = uuid.uuid4()
-    snapshot = {
-        "profile_id": str(profile_id),
-        "name": "bootstrap-arm",
-        "model": "model",
-        "framework_version": "code4me2-agent",
-        "release_id": release.release_id,
-        "tools_json": "[]",
-        "approval_policy": "auto",
-        "max_steps": 1,
-    }
-    enrollment = SimpleNamespace(
-        enrollment_id=enrollment_id,
-        study_id=study_id,
-        status=EnrollmentStatus.ACTIVE,
-        revocation_epoch=0,
-    )
-    study = SimpleNamespace(
-        study_id=study_id,
-        is_research=True,
-        research_status="ACTIVE",
-        is_active=True,
-        starts_at=None,
-        ends_at=None,
-        research_config_json={},
-        research_config_digest="digest",
-    )
-    assignment = SimpleNamespace(
-        assignment_id=uuid.uuid4(),
-        enrollment_id=enrollment_id,
-        study_id=study_id,
-        agent_profile_id=profile_id,
-        strategy="RANDOMIZED",
-        randomization_epoch=1,
-        profile_snapshot_json=snapshot,
-        profile_digest=canonical_hash(snapshot),
-    )
-    return enrollment, study, assignment
-
-
-def _compose_for(release, document, platform):
-    enrollment, study, assignment = _bootstrap_inputs(release)
-    return compose_bootstrap(
-        enrollment,
-        study,
-        assignment,
-        release.model_copy(update={"qualification_status": QualificationStatus.QUALIFIED}),
-        None,
-        EphemeralSessionFactory(),
-        BootstrapSigningContext(secret="bootstrap-test-secret"),
-        platform=platform,
-        release_evidence_json=document,
-    )
-
-
-def test_bootstrap_selects_only_the_artifact_the_evidence_qualifies():
-    """Two artifacts, one passing receipt: only the covered platform issues."""
-    release = agent_registry___release()
-    macos_artifact, linux_artifact = release.artifacts[0], release.artifacts[1]
-    document = _bootstrap_document(
-        release, host={"os": macos_artifact.os, "arch": macos_artifact.arch}
-    )
-
-    qualified = _compose_for(release, document, (macos_artifact.os, macos_artifact.arch))
-    assert qualified.outcome == BootstrapOutcome.ISSUED
-    assert qualified.manifest is not None
-    assert qualified.manifest.agent_release.artifact_digest == macos_artifact.sha256
-
-    refused = _compose_for(release, document, (linux_artifact.os, linux_artifact.arch))
-    assert refused.outcome == BootstrapOutcome.BLOCKED
-    assert refused.manifest is None
-    assert refused.reason == BootstrapReasonCode.ARTIFACT_NOT_QUALIFIED
-    assert refused.issue is not None
-    assert refused.issue.code == BootstrapReasonCode.ARTIFACT_NOT_QUALIFIED
-
-
-def test_bootstrap_publishes_distinct_archive_and_execution_identity():
-    from research.study.agents.models import ExecutionFile, PackagedExecution
-
-    release = agent_registry___release()
-    artifact = release.artifacts[0]
-    artifact.execution = PackagedExecution(
-        entrypoint=["code4me2-agent", "--managed"],
-        files=[ExecutionFile(path="code4me2-agent", sha256="b" * 64, size=20, executable=True)],
-    )
-    artifact.path = "runtime.zip"
-    document = _bootstrap_document(release, host={"os": artifact.os, "arch": artifact.arch})
-    document["conformance"][0].update(
-        release_id=release.release_id,
-        execution_manifest_digest=artifact.execution.manifest_digest,
-    )
-    result = _compose_for(release, document, (artifact.os, artifact.arch))
-    assert result.outcome == BootstrapOutcome.ISSUED
-    projection = result.manifest.agent_release
-    assert projection.artifact_digest == artifact.sha256
-    assert projection.archive_sha256 == artifact.sha256
-    assert projection.executable_sha256 == "b" * 64
-    assert projection.execution_manifest_digest == artifact.execution.manifest_digest
-    assert projection.adapter_digest == release.adapter.digest
-
-
-def test_bootstrap_refuses_historical_archive_leaf_without_rewriting_it():
-    release = agent_registry___release()
-    release.artifacts[0].path = "historical.zip"
-    document = _bootstrap_document(release)
-    before = release.model_dump(mode="json")
-    result = _compose_for(release, document, release.artifacts[0].platform)
-    assert result.outcome == BootstrapOutcome.BLOCKED
-    assert result.reason == BootstrapReasonCode.ARTIFACT_UNAVAILABLE
-    assert release.model_dump(mode="json") == before
-
-
-def test_bootstrap_refuses_an_artifact_not_bound_to_the_platform_evidence():
-    """A release-level QUALIFIED never covers a different artifact/platform."""
-    release = agent_registry___release()
-    linux_artifact = release.artifacts[1]
-    # The receipt names digest A but the Linux host: it binds nothing, so even
-    # the release-level model is only QUALIFIED because of another receipt.
-    cross = _bootstrap_document(
-        release, host={"os": linux_artifact.os, "arch": linux_artifact.arch}
-    )
-    cross["conformance"][0]["artifact_digest"] = release.artifacts[0].sha256
-
-    refused = _compose_for(release, cross, (linux_artifact.os, linux_artifact.arch))
-    assert refused.outcome == BootstrapOutcome.BLOCKED
-    assert refused.manifest is None
-    assert refused.reason == BootstrapReasonCode.ARTIFACT_NOT_QUALIFIED
-
-
-def test_bootstrap_qualifies_a_byoa_release_bound_to_its_manifest_digest():
-    """A qualified BYOA release keeps issuing its identity-only manifest."""
+def test_byoa_qualification_uses_the_release_manifest_identity():
     release = AgentReleaseV1(
         agent_id="codex",
-        release_id="rel-byoa-bootstrap",
-        version="1.2.3",
+        release_id="rel-byoa-recipe",
+        version="1.0.0",
         source_manifest_digest="sha256:" + "2" * 64,
         distribution_mode=DistributionMode.BYOA_EXTERNAL,
         agent_package="codex",
-        adapter=AdapterRef(
-            adapter_id="acp-adapter", version="0.4.0", digest="sha256:" + "d" * 64
-        ),
     )
-    document = release.model_dump(mode="json")
-    document["conformance"] = [
-        {
-            "status": "PASS",
-            "artifact_digest": release.source_manifest_digest,
-            "adapter_digest": release.adapter.digest,
-            "host": {"os": "macos", "arch": "arm64"},
-            "case_results": [{"case_id": "acp.initialize", "status": "PASS"}],
-        }
-    ]
+    document = _recipe_document(release)
+    assert derive_qualification_status(document) == QualificationStatus.QUALIFIED
     assert byoa_identity_qualified(document) is True
+    assert (
+        byoa_identity_qualified({**document, "tests": {"status": "FAIL"}}) is False
+    )
 
-    issued = _compose_for(release, document, ("macos", "arm64"))
-    assert issued.outcome == BootstrapOutcome.ISSUED
-    assert issued.manifest is not None
-    assert issued.manifest.agent_release.artifact_digest == ""
-    assert issued.manifest.agent_release.distribution_mode == "BYOA_EXTERNAL"
-    assert issued.manifest.agent_release.agent_package == "codex"
 
-    # A receipt bound to another digest never issues a BYOA manifest.
-    document["conformance"][0]["artifact_digest"] = "sha256:" + "3" * 64
-    assert byoa_identity_qualified(document) is False
-    refused = _compose_for(release, document, ("macos", "arm64"))
-    assert refused.outcome == BootstrapOutcome.BLOCKED
-    assert refused.manifest is None
+def test_disabled_release_is_never_usable():
+    release = agent_registry___single_artifact_release()
+    document = _recipe_document(release, disabled=True)
+    assert derive_qualification_status(document) == QualificationStatus.DISABLED
+    assert qualified_artifact_keys(document) == set()
+    assert artifact_qualified(
+        document,
+        os_name="macos",
+        arch="aarch64",
+        digest=release.artifacts[0].sha256,
+    ) is False
 
 
 def test_upsert_release_never_trusts_a_caller_supplied_status():
-    release = agent_registry___release(
-        qualification_status=QualificationStatus.QUALIFIED
+    release = agent_registry___single_artifact_release()
+    release = release.model_copy(
+        update={"qualification_status": QualificationStatus.QUALIFIED}
     )
     session = MagicMock()
     session.get.return_value = None
-
     row = store_module.upsert_release(session, release)
-
     assert row.status == QualificationStatus.UNQUALIFIED.value
-    assert row.release_json["qualification_status"] == "UNQUALIFIED"
 
 
-def test_row_to_release_derives_qualified_from_stored_conformance():
-    release = agent_registry___release()
-    row = agent_registry___release_row(release)
-    row.release_json = {
-        **row.release_json,
-        "conformance": [_bound_passing_receipt(release)],
-    }
-
-    restored = store_module.row_to_release(row)
-
-    assert restored.qualification_status == QualificationStatus.QUALIFIED
-    assert store_module.release_summary(row)["status"] == "QUALIFIED"
-
-
-def test_row_to_release_stays_unqualified_for_an_unbound_pass_receipt():
-    release = agent_registry___release()
-    row = agent_registry___release_row(release)
-    row.release_json = {
-        **row.release_json,
-        "conformance": [{"receipt_id": str(uuid.uuid4()), "status": "PASS"}],
-    }
-
-    restored = store_module.row_to_release(row)
-
-    assert restored.qualification_status == QualificationStatus.UNQUALIFIED
-    assert store_module.release_summary(row)["status"] == "UNQUALIFIED"
+def test_upsert_release_records_the_recipe_verdict_as_evidence():
+    release = agent_registry___single_artifact_release()
+    session = MagicMock()
+    session.get.return_value = None
+    row = store_module.upsert_release(
+        session, release, evidence={"tests": {"status": "PASS", "cases": []}}
+    )
+    assert row.status == QualificationStatus.QUALIFIED.value
+    assert row.release_json["tests"]["status"] == "PASS"
 
 
 def test_qualification_assessment_reports_blockers():
@@ -1699,23 +1143,34 @@ def test_agent_registry_routes_are_wired_under_the_research_prefix():
 
     paths = {route.path for route in api_router.routes}
     assert "/research/agents/releases" in paths
+    assert "/research/agents/releases/import" in paths
+    assert "/research/agents/releases/import/deployed" in paths
     assert "/research/agents/releases/{release_id}" in paths
+    assert "/research/agents/releases/{release_id}/disable" in paths
     assert "/research/agents/releases/{release_id}/resolve" in paths
     assert "/research/agents/releases/{release_id}/snapshots" in paths
     assert "/research/agents/releases/{release_id}/coverage" in paths
-    # The caller-driven qualification transition endpoint has been removed:
-    # qualification is derived from conformance evidence.
+    # There is no direct registration, qualification transition or re-approval.
     assert "/research/agents/releases/{release_id}/transition" not in paths
+    assert "/research/agents/releases/{release_id}/approve" not in paths
 
 
-def test_register_release_requires_admin():
+def test_import_and_disable_require_admin():
     app = MagicMock()
-    payload = ReleaseRegisterRequest(release=agent_registry___release())
-
     with pytest.raises(HTTPException) as error:
-        register_release(payload, agent_registry___non_admin(), app)
-
+        import_release_deployed(
+            DeployedImportRequest(
+                manifest_url="https://example.invalid/recipe.json",
+                archive_urls=["https://example.invalid/code4me-agent-macos-arm64.zip"],
+            ),
+            agent_registry___non_admin(),
+            app,
+        )
     assert error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as disable_error:
+        disable_release("rel-1", agent_registry___non_admin(), app)
+    assert disable_error.value.status_code == 403
     app.get_db_session.assert_not_called()
 
 
@@ -1727,63 +1182,23 @@ def test_list_releases_requires_admin():
     app.get_db_session.assert_not_called()
 
 
-def test_register_release_returns_typed_response():
+def test_disable_release_marks_a_release_one_way():
     app = MagicMock()
     release = agent_registry___release()
     fake_row = agent_registry___release_row(release)
 
     with patch(
-        "backend.routers.research.agents.store.list_releases", return_value=[]
-    ), patch(
-        "backend.routers.research.agents.store.upsert_release",
-        return_value=fake_row,
-    ) as upsert, patch(
+        "backend.routers.research.agents.store.disable_release", return_value=fake_row
+    ) as disable, patch(
         "backend.routers.research.agents.store.release_summary",
-        return_value={"release_id": release.release_id, "status": "QUALIFIED"},
+        return_value={"release_id": release.release_id, "status": "DISABLED"},
     ):
-        response = register_release(
-            ReleaseRegisterRequest(release=release), agent_registry___admin(), app
-        )
+        response = disable_release(release.release_id, agent_registry___admin(), app)
 
     body = json.loads(response.body)
-    assert response.status_code == 201
-    assert body["accepted"] is True
-    assert body["release"]["release_id"] == release.release_id
-    upsert.assert_called_once()
-    app.get_db_session.return_value.close.assert_called_once()
-
-
-def test_register_release_rejects_duplicate_digest_identity():
-    app = MagicMock()
-    release = agent_registry___release()
-
-    with patch(
-        "backend.routers.research.agents.store.list_releases",
-        return_value=[agent_registry___release_row(release)],
-    ), patch(
-        "backend.routers.research.agents.store.upsert_release"
-    ) as upsert:
-        with pytest.raises(HTTPException) as error:
-            register_release(ReleaseRegisterRequest(release=release), agent_registry___admin(), app)
-
-    assert error.value.status_code == 409
-    assert error.value.detail["code"] == RegistryReasonCode.DUPLICATE_RELEASE.value
-    upsert.assert_not_called()
-
-
-def test_register_release_rejects_caller_supplied_qualification():
-    app = MagicMock()
-    release = agent_registry___release(
-        qualification_status=QualificationStatus.QUALIFIED
-    )
-
-    with pytest.raises(HTTPException) as error:
-        register_release(
-            ReleaseRegisterRequest(release=release), agent_registry___admin(), app
-        )
-
-    assert error.value.status_code == 422
-    app.get_db_session.assert_not_called()
+    assert response.status_code == 200
+    assert body["release"]["status"] == "DISABLED"
+    disable.assert_called_once()
 
 
 def test_resolve_endpoint_returns_matching_artifact():
@@ -1825,27 +1240,6 @@ def agent_registry___byoa_release(**overrides) -> AgentReleaseV1:
     }
     data.update(overrides)
     return AgentReleaseV1.model_validate(data)
-
-
-def test_register_endpoint_accepts_a_byoa_release_without_a_digest():
-    app = MagicMock()
-    db = MagicMock()
-    app.get_db_session.return_value = db
-    release = agent_registry___byoa_release()
-
-    with (
-        patch("backend.routers.research.agents.store.list_releases", return_value=[]),
-        patch(
-            "backend.routers.research.agents.store.upsert_release",
-            return_value=agent_registry___release_row(release),
-        ),
-    ):
-        response = register_release(
-            ReleaseRegisterRequest(release=release), agent_registry___admin(), app
-        )
-
-    assert response.status_code == 201
-    assert json.loads(response.body)["accepted"] is True
 
 
 def test_resolve_endpoint_returns_the_byoa_identity_not_an_artifact():

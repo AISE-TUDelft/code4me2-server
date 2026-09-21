@@ -53,7 +53,7 @@ from research.study.agents.enums import (
     DistributionSourceType,
     QualificationStatus,
 )
-from research.study.agents.manifest_import import build_manifest_release
+from research.study.agents.manifest_import import build_manifest_releases
 from research.study.agents.models import (
     AdapterRef,
     AgentReleaseV1,
@@ -61,19 +61,19 @@ from research.study.agents.models import (
     ReleaseDisplay,
 )
 from research.study.agents.registry import AgentRegistry
-from research.study.packaging import (
-    CaseObservation,
-    ConformanceCaseV1,
-    ConformanceRunner,
-)
-from research.study.packaging import store as packaging_store
-from research.study.packaging.enums import ConformanceStatus
-from research.study.packaging.models import (
-    ConformanceCaseResultV1,
-    ConformanceReceiptV1,
-    PlatformTriple,
-)
 from research.study.protocol import store as protocol_store
+
+#: Synthetic self-check verdict recorded by the development seeder. A real
+#: release gets its verdict from the producer CLI/CI; the seeder stands in for it.
+SEED_TESTS: dict[str, Any] = {
+    "status": "PASS",
+    "approval_options": ["auto", "per_step", "suggestion_only"],
+    "cases": [
+        {"case_id": "builtin.manifest.smoke", "status": "PASS"},
+        {"case_id": "builtin.permission.request", "status": "PASS"},
+        {"case_id": "builtin.edit.suggestion", "status": "PASS"},
+    ],
+}
 
 # The fixed window is deliberately deterministic (not "now + N days") so the
 # seeded study schedule is identical on every run. ``end_at`` stays far enough
@@ -205,8 +205,7 @@ class FreshDbRequest:
     """
 
     manifest: dict[str, Any]
-    artifact_root: Optional[str] = None
-    artifact_sizes: dict[str, int] = field(default_factory=dict)
+    manifest_dir: Optional[str] = None
     study_name: str = DEFAULT_BUILTIN_STUDY_NAME
     actor: str = "seed-script"
     require_capabilities: bool = False
@@ -439,65 +438,12 @@ def _registry_from_db(session: Any) -> AgentRegistry:
     return registry
 
 
-def build_synthetic_conformance_receipt(
-    release: AgentReleaseV1,
-    request: SeedRequest,
-    *,
-    now: datetime,
-) -> ConformanceReceiptV1:
-    """A deterministic passing receipt bound to the release's exact artifact.
-
-    Promotion is evidence-driven: this receipt is what makes the registry report
-    the synthetic release as QUALIFIED. It is synthetic (no real host run) and
-    therefore only used by the local onboarding script.
-    """
-    if release.is_byoa:
-        # A BYOA release has no distribution artifact; conformance binds to the
-        # release's own distribution digest so evidence-driven qualification
-        # still applies to a participant-installed agent.
-        artifact_digest = release.source_manifest_digest
-    else:
-        artifact = release.artifact_for(request.os_name, request.arch)
-        if artifact is None:
-            raise SeedError(
-                f"release {release.release_id!r} has no artifact for "
-                f"({request.os_name}, {request.arch})"
-            )
-        artifact_digest = artifact.sha256
-    adapter_digest = release.adapter.digest if release.adapter else ""
-    if not adapter_digest:
-        raise SeedError(f"release {release.release_id!r} declares no adapter digest")
-    receipt_key = (
-        f"code4me2://research/conformance/{release.release_id}/"
-        f"{request.os_name}/{request.arch}"
-    )
-    return ConformanceReceiptV1(
-        receipt_id=uuid.uuid5(uuid.NAMESPACE_URL, receipt_key),
-        artifact_digest=artifact_digest,
-        adapter_digest=adapter_digest,
-        host=PlatformTriple(os=request.os_name, arch=request.arch),
-        plugin_version="seed",
-        protocol_version=DEFAULT_EXPECTED_PROTOCOL_VERSION,
-        fixture_digests={},
-        case_results=[
-            ConformanceCaseResultV1(
-                case_id="seed.smoke",
-                status=ConformanceStatus.PASS,
-                evidence_digest="seed",
-                reason="synthetic onboarding receipt",
-            )
-        ],
-        status=ConformanceStatus.PASS,
-        created_at=now,
-    )
-
-
 def ensure_release(session: Any, request: SeedRequest) -> AgentReleaseV1:
-    """Register (or resolve) the synthetic release and ensure it is QUALIFIED.
+    """Register (or resolve) the synthetic release and ensure it is usable.
 
-    Qualification is derived from conformance evidence only, so the release is
-    promoted by recording a passing conformance receipt (never by a reviewer
-    transition or a request payload).
+    Usability is derived from the recorded self-check verdict only, so the
+    release is made usable by recording a passing ``tests`` block (never by a
+    reviewer transition or a request payload).
     """
     from research.study.agents import store as agents_store
 
@@ -512,7 +458,7 @@ def ensure_release(session: Any, request: SeedRequest) -> AgentReleaseV1:
                 "release could not be registered: "
                 f"{registration.issue.message if registration.issue else 'unknown'}"
             )
-        agents_store.upsert_release(session, desired)
+        agents_store.upsert_release(session, desired, evidence={"tests": SEED_TESTS})
         current = desired
     else:
         if existing.digest_identity != desired.digest_identity:
@@ -539,10 +485,7 @@ def ensure_release(session: Any, request: SeedRequest) -> AgentReleaseV1:
         current = existing
 
     if current.qualification_status != QualificationStatus.QUALIFIED:
-        receipt = build_synthetic_conformance_receipt(
-            desired, request, now=datetime.now(timezone.utc)
-        )
-        packaging_store.insert_receipt(session, receipt)
+        agents_store.upsert_release(session, desired, evidence={"tests": SEED_TESTS})
 
     row = agents_store.get_release(session, request.release_id)
     if row is None:
@@ -693,26 +636,48 @@ def ensure_distribution(
 # ---------------------------------------------------------------------------
 
 
+def _verified_from_directory(manifest: dict[str, Any], root: Optional[str]) -> dict[str, tuple[str, int]]:
+    """Recompute ``basename -> (sha256, size)`` for a recipe's archives on disk.
+
+    The archives live next to the recipe document (or in its staged
+    ``resources/code4me-runtime`` directory); there is no separate
+    caller-supplied artifact root or size override. A missing archive fails
+    rather than trusting a recipe that carries bytes it did not receive.
+    """
+    if root is None:
+        raise SeedError("seed import requires the recipe's archives next to --manifest")
+    base = Path(root)
+    verified: dict[str, tuple[str, int]] = {}
+    for raw in manifest.get("artifacts") or []:
+        name = str(raw.get("archive") or "")
+        candidates = [base / Path(name).name, base / name, base / "resources" / "code4me-runtime" / Path(name).name]
+        candidate = next((item for item in candidates if item.is_file()), None)
+        if candidate is None:
+            raise SeedError(f"declared archive {name!r} is not present under {root!r}")
+        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        verified[Path(name).name] = (digest, candidate.stat().st_size)
+    return verified
+
+
 def import_manifest_release(
     session: Any, request: FreshDbRequest
 ) -> tuple[AgentReleaseV1, list[dict[str, str]]]:
-    """Register the release the build manifest describes (idempotently).
+    """Register the release the build recipe describes (idempotently).
 
-    The manifest is mapped through the same pure planner the import endpoint
-    uses, so the seeder and CI resolve the exact same release identity. When the
-    manifest's archives are available under ``artifact_root`` their real digests
-    are verified; a mismatch raises rather than silently trusting the manifest.
+    The recipe is mapped through the same pure planner the import endpoint uses,
+    so the seeder and CI resolve the exact same release identity. The archives
+    beside the recipe are hashed and verified; a mismatch raises rather than
+    silently trusting the recipe.
     """
     from research.study.agents import store as agents_store
 
+    manifest = dict(request.manifest)
+    manifest.setdefault("tests", SEED_TESTS)
     try:
-        plan = build_manifest_release(
-            request.manifest,
-            artifact_root=request.artifact_root,
-            artifact_sizes=request.artifact_sizes,
-        )
+        verified = _verified_from_directory(manifest, request.manifest_dir)
+        plan = build_manifest_releases(manifest, verified=verified)
     except Exception as error:  # noqa: BLE001 - re-raise as an operator-facing error
-        raise SeedError(f"build manifest could not be imported: {error}") from error
+        raise SeedError(f"build recipe could not be imported: {error}") from error
 
     desired = plan.release
     registry = _registry_from_db(session)
@@ -724,110 +689,34 @@ def import_manifest_release(
                 "release could not be registered: "
                 f"{registration.issue.message if registration.issue else 'unknown'}"
             )
-        agents_store.upsert_release(session, desired)
+        agents_store.upsert_release(session, desired, evidence={"tests": manifest["tests"]})
     elif existing.digest_identity != desired.digest_identity:
         raise SeedError(
             f"release {desired.release_id!r} already exists with a different digest "
-            "identity; the manifest is immutable -- remove the stale release first."
+            "identity; the recipe is immutable -- remove the stale release first."
         )
 
     row = agents_store.get_release(session, desired.release_id)
     if row is None:  # pragma: no cover - defensive
         raise SeedError(f"release {desired.release_id!r} vanished after registration")
-    skipped = [
-        {"platform": item.platform, "archive": item.archive, "reason": item.reason}
-        for item in plan.skipped
-    ]
-    return agents_store.row_to_release(row), skipped
+    return agents_store.row_to_release(row), []
 
 
-def _recorded_passing_case_ids(session: Any, release_id: str) -> set[str]:
-    """Passing conformance case ids already recorded on a release."""
-    from sqlalchemy import select
+def ensure_manifest_tests(session: Any, release: AgentReleaseV1) -> None:
+    """Record the passing self-check verdict that makes ``release`` usable.
 
-    from database.research_schemas import AgentRelease as AgentReleaseRow
-
-    row = (
-        session.execute(
-            select(AgentReleaseRow).where(AgentReleaseRow.release_id == release_id)
-        )
-        .scalars()
-        .first()
-    )
-    if row is None:
-        return set()
-    passed: set[str] = set()
-    for receipt in (row.release_json or {}).get("conformance") or []:
-        if str(receipt.get("status", "")).strip().upper() != "PASS":
-            continue
-        for case in receipt.get("case_results") or []:
-            if str(case.get("status", "")).strip().upper() != "PASS":
-                continue
-            case_id = str(case.get("case_id", "")).strip()
-            if case_id:
-                passed.add(case_id)
-    return passed
-
-
-def ensure_manifest_conformance(
-    session: Any,
-    release: AgentReleaseV1,
-    *,
-    protocol_version: str = DEFAULT_EXPECTED_PROTOCOL_VERSION,
-) -> None:
-    """Record the passing conformance receipt that makes ``release`` QUALIFIED.
-
-    Qualification is *derived* from a recorded PASS receipt (see
-    ``derive_qualification_status``); this records a real
-    :class:`ConformanceReceiptV1` through the packaging store -- it never writes
-    a qualification flag. The receipt is produced by the real
-    :class:`ConformanceRunner` against the release's exact artifact/adapter/host.
-
-    The development seed records *synthetic* evidence: the observer passes
-    without driving a real agent. The case ids name the host behaviours each one
-    stands for, so the derived ``verified_approval_options`` offers the same
-    policies a real conformance run would: ``builtin.manifest.smoke`` (install),
-    ``builtin.permission.request`` (per-step), ``builtin.edit.suggestion``
-    (suggestion-only). A production release gets real cases from CI instead.
-    Re-running also *repairs* a release qualified before those cases existed, by
-    recording the missing evidence instead of skipping an already-QUALIFIED one.
+    Usability is *derived* from the recorded ``tests`` block; this records the
+    synthetic seed verdict through the release store (it never writes a
+    qualification flag). The case ids name the host behaviours each one stands
+    for, so the derived ``verified_approval_options`` offers the same policies a
+    real producer run would. A production release gets its real verdict from the
+    producer CLI/CI instead.
     """
-    required_cases = (
-        ConformanceCaseV1(case_id="builtin.manifest.smoke"),
-        ConformanceCaseV1(case_id="builtin.permission.request"),
-        ConformanceCaseV1(case_id="builtin.edit.suggestion"),
-    )
-    required_ids = {case.case_id for case in required_cases}
-    already = _recorded_passing_case_ids(session, release.release_id)
-    if release.qualification_status == QualificationStatus.QUALIFIED and required_ids <= already:
+    if release.qualification_status == QualificationStatus.QUALIFIED:
         return
-    if not release.artifacts:
-        raise SeedError(f"release {release.release_id!r} declares no artifact")
-    if release.adapter is None or not (release.adapter.digest or "").strip():
-        raise SeedError(f"release {release.release_id!r} declares no adapter digest")
+    from research.study.agents import store as agents_store
 
-    artifact = sorted(release.artifacts, key=lambda item: (item.os, item.arch))[0]
-
-    class _PassingSmokeObserver:
-        def observe(self, observed_case: ConformanceCaseV1) -> CaseObservation:
-            return CaseObservation(
-                status=ConformanceStatus.PASS,
-                cleanup_ok=True,
-                agent_observations=[observed_case.case_id],
-                evidence={"source": "builtin-manifest-import"},
-            )
-
-    receipt = ConformanceRunner(_PassingSmokeObserver()).run(
-        list(required_cases),
-        {},
-        artifact_digest=artifact.sha256,
-        adapter_digest=release.adapter.digest or "",
-        host=PlatformTriple(os=artifact.os, arch=artifact.arch),
-        plugin_version="builtin-manifest-import",
-        protocol_version=protocol_version,
-        now=datetime.now(timezone.utc),
-    )
-    packaging_store.insert_receipt(session, receipt)
+    agents_store.upsert_release(session, release, evidence={"tests": SEED_TESTS})
 
 
 def ensure_dev_provider_connection(
@@ -988,7 +877,7 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
     )
 
     release, skipped = import_manifest_release(session, request)
-    ensure_manifest_conformance(session, release)
+    ensure_manifest_tests(session, release)
 
     owner = ensure_dev_owner(session, request.owner_email)
     connection = ensure_dev_provider_connection(
@@ -1193,25 +1082,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "path to the build runtime manifest JSON for --fresh-db (use '-' to "
-            "read it from stdin)"
-        ),
-    )
-    parser.add_argument(
-        "--artifact-root",
-        default=None,
-        help=(
-            "directory the manifest's relative archive paths resolve against; "
-            "when a listed archive is present its real digest/size are verified"
-        ),
-    )
-    parser.add_argument(
-        "--artifact-size-override",
-        action="append",
-        default=[],
-        metavar="NAME=SIZE",
-        help=(
-            "supply a size for an archive that is not available on disk "
-            "(repeatable); never guessed"
+            "read it from stdin); the recipe's archives must sit beside it or in "
+            "its resources/code4me-runtime directory"
         ),
     )
     parser.add_argument(
@@ -1384,25 +1256,6 @@ def request_from_args(args: argparse.Namespace) -> SeedRequest:
     )
 
 
-def _parse_size_overrides(values: Sequence[str]) -> dict[str, int]:
-    """Parse repeated ``NAME=SIZE`` overrides into a mapping."""
-    sizes: dict[str, int] = {}
-    for value in values:
-        name, separator, raw_size = value.partition("=")
-        if not separator or not name.strip():
-            raise SystemExit(f"--artifact-size-override expects NAME=SIZE, got {value!r}")
-        try:
-            size = int(raw_size)
-        except ValueError as error:
-            raise SystemExit(
-                f"--artifact-size-override size must be an integer, got {raw_size!r}"
-            ) from error
-        if size <= 0:
-            raise SystemExit("--artifact-size-override size must be positive")
-        sizes[name.strip()] = size
-    return sizes
-
-
 def _load_manifest(source: str) -> dict[str, Any]:
     """Load a manifest JSON document from a path or ``-`` (stdin)."""
     if source == "-":
@@ -1419,10 +1272,12 @@ def fresh_db_request_from_args(args: argparse.Namespace) -> FreshDbRequest:
     """Build the fresh-DB seed request from parsed CLI arguments."""
     if not args.manifest:
         raise SystemExit("--fresh-db requires --manifest PATH (or --manifest -).")
+    manifest_dir = (
+        None if args.manifest == "-" else str(Path(args.manifest).resolve().parent)
+    )
     return FreshDbRequest(
         manifest=_load_manifest(args.manifest),
-        artifact_root=args.artifact_root,
-        artifact_sizes=_parse_size_overrides(args.artifact_size_override),
+        manifest_dir=manifest_dir,
         study_name=args.builtin_study_name,
         actor=args.actor,
         require_capabilities=args.require_capabilities,

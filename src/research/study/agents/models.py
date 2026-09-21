@@ -16,10 +16,7 @@ Two documents are defined:
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from pathlib import PurePosixPath
 from datetime import datetime  # noqa: TC003 - pydantic resolves model annotations at runtime
 from typing import Any, Literal, Optional
 from uuid import UUID  # noqa: TC003 - pydantic resolves model annotations at runtime
@@ -95,67 +92,13 @@ class ReleaseDisplay(BaseModel):
     homepage: Optional[str] = None
 
 
-class ExecutionFile(BaseModel):
-    """One member of a packaged runtime, relative to its extraction root."""
-
-    model_config = _BASE_CONFIG
-    path: str
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    size: int = Field(ge=0)
-    executable: bool = False
-
-    @field_validator("path")
-    @classmethod
-    def safe_path(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if (not value or path.is_absolute() or str(path) != value
-                or ".." in path.parts or "\\" in value or ":" in value
-                or any(ord(c) < 32 for c in value)):
-            raise ValueError("execution paths must be normalized relative paths")
-        return value
-
-
-class PackagedExecution(BaseModel):
-    """Launch identity, distinct from the enclosing transport archive identity.
-
-    The canonical manifest binds argv and the complete extracted inventory.
-    Historical artifacts omit this field; their archive hashes retain meaning.
-    """
-
-    model_config = _BASE_CONFIG
-    schema_version: Literal["1"] = "1"
-    entrypoint: list[str] = Field(min_length=1)
-    files: list[ExecutionFile] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def complete_entrypoint(self) -> PackagedExecution:
-        paths = [item.path for item in self.files]
-        if len(set(paths)) != len(paths):
-            raise ValueError("duplicate execution file")
-        if paths != sorted(paths):
-            raise ValueError("execution files must be sorted by path")
-        if self.entrypoint[0] not in paths:
-            raise ValueError("execution entrypoint must be in the inventory")
-        if not next(item for item in self.files if item.path == self.entrypoint[0]).executable:
-            raise ValueError("execution entrypoint must be executable")
-        return self
-
-    @property
-    def executable_sha256(self) -> str:
-        return next(item.sha256 for item in self.files if item.path == self.entrypoint[0])
-
-    @property
-    def manifest_digest(self) -> str:
-        raw = json.dumps(self.model_dump(mode="json"), sort_keys=True,
-                         separators=(",", ":"), ensure_ascii=False).encode()
-        return "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
 class DistributionArtifact(BaseModel):
     """One platform-specific distribution artifact of a release.
 
     ``path`` is deliberately *relative*: releases must never carry a local
-    absolute path or host-specific mutable registry configuration.
+    absolute path or host-specific mutable registry configuration. The artifact's
+    identity is its archive digest (the plugin's bootstrap pin) plus, for the
+    managed runtime, the adapter name and the executable name.
     """
 
     model_config = _BASE_CONFIG
@@ -169,8 +112,6 @@ class DistributionArtifact(BaseModel):
     license: Optional[str] = None
     license_review: Optional[str] = None
     signature: Optional[str] = None
-    # sha256/path/size continue to identify the archive, never its entrypoint.
-    execution: Optional[PackagedExecution] = None
 
     @property
     def platform(self) -> tuple[str, str]:

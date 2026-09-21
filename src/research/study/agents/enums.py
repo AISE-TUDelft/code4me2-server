@@ -28,10 +28,10 @@ __all__ = [
 
 #: The one agent runtime the managed protocol runs in this release. This is a
 #: readiness default, not a binding ban, and the three concepts stay distinct:
-#: a BYOA release is *qualified* by a passing receipt bound to its own manifest
-#: digest (ISSUE-003); a BYOA *distribution* still verifies as unverified at
-#: publication (admin WARNING, non-admin ERROR; ISSUE-004); and a participant
-#: host without the installed agent blocks with AGENT_NOT_FOUND at resolution.
+#: a BYOA release is *usable* when its recipe self-check passed; a BYOA
+#: *distribution* still verifies as unverified at publication (admin WARNING,
+#: non-admin ERROR; ISSUE-004); and a participant host without the installed
+#: agent blocks with AGENT_NOT_FOUND at resolution.
 #: Qualification never implies verification or readiness, or vice versa.
 MANAGED_RUNTIME_FRAMEWORK = "code4me2-agent"
 
@@ -56,11 +56,11 @@ class QualificationStatus(str, Enum):
     """Review status of one agent release.
 
     Distribution, protocol capability and observability capability are
-    separate contracts. ``QUALIFIED`` is **derived** from verified conformance
-    evidence (a passing receipt bound to the release's artifact/adapter); a
-    release without such evidence is ``UNQUALIFIED``. ``DRAFT``,
-    ``CONDITIONALLY_QUALIFIED``, ``RETIRED`` and ``BLOCKED`` remain in the
-    persisted vocabulary for historical rows and for the withdrawal mapping.
+    separate contracts. ``QUALIFIED`` is **derived** from the imported recipe's
+    self-check verdict (``tests.status == "PASS"``); a release without a passing
+    recipe is ``UNQUALIFIED``. ``DISABLED`` is a one-way administrator action.
+    ``DRAFT``, ``CONDITIONALLY_QUALIFIED``, ``RETIRED`` and ``BLOCKED`` remain in
+    the persisted vocabulary for historical rows and for the withdrawal mapping.
     """
 
     UNQUALIFIED = "UNQUALIFIED"
@@ -69,6 +69,7 @@ class QualificationStatus(str, Enum):
     CONDITIONALLY_QUALIFIED = "CONDITIONALLY_QUALIFIED"
     RETIRED = "RETIRED"
     BLOCKED = "BLOCKED"
+    DISABLED = "DISABLED"
 
 
 class DistributionSourceType(str, Enum):

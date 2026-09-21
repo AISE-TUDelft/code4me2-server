@@ -317,7 +317,7 @@ def test_codex_byoa_fixture_derives_qualified_and_projects_adapter_identity():
     assert derive_qualification_status(raw) == QualificationStatus.QUALIFIED
 
     release = AgentReleaseV1.model_validate(
-        {key: value for key, value in raw.items() if key != "conformance"}
+        {key: value for key, value in raw.items() if key != "tests"}
     )
     assert release.distribution_mode == DistributionMode.BYOA_EXTERNAL
     assert release.is_byoa is True
@@ -327,52 +327,32 @@ def test_codex_byoa_fixture_derives_qualified_and_projects_adapter_identity():
     assert release.adapter.version == "0.4.0"
 
 
-def test_codex_byoa_fixture_is_unqualified_when_the_receipt_does_not_bind():
+def test_codex_byoa_fixture_is_unqualified_without_a_passing_self_check():
     raw = json.loads(
         (AGENTS_FIXTURE_DIR / "release_codex_byoa_v1.json").read_text()
     )
-    receipt = dict(raw["conformance"][0])
 
-    wrong_artifact = dict(receipt, artifact_digest="sha256:" + "9" * 64)
-    assert (
-        derive_qualification_status({**raw, "conformance": [wrong_artifact]})
-        == QualificationStatus.UNQUALIFIED
-    )
+    missing = {key: value for key, value in raw.items() if key != "tests"}
+    assert derive_qualification_status(missing) == QualificationStatus.UNQUALIFIED
 
-    wrong_adapter = dict(receipt, adapter_digest="sha256:" + "8" * 64)
-    assert (
-        derive_qualification_status({**raw, "conformance": [wrong_adapter]})
-        == QualificationStatus.UNQUALIFIED
-    )
-
-    no_cases = dict(receipt, case_results=[])
-    assert (
-        derive_qualification_status({**raw, "conformance": [no_cases]})
-        == QualificationStatus.UNQUALIFIED
-    )
+    failing = {**raw, "tests": {**raw["tests"], "status": "FAIL"}}
+    assert derive_qualification_status(failing) == QualificationStatus.UNQUALIFIED
 
 
-def test_codex_byoa_receipt_host_is_optional_and_never_cross_binds():
-    """A BYOA receipt binds the release manifest digest; the host is optional."""
+def test_codex_byoa_identity_is_usable_only_when_qualified():
+    """A BYOA release is usable from its own manifest identity, never a host pin."""
     raw = json.loads(
         (AGENTS_FIXTURE_DIR / "release_codex_byoa_v1.json").read_text()
     )
-    receipt = dict(raw["conformance"][0])
 
-    hostless = dict(receipt)
-    hostless.pop("host")
-    assert (
-        derive_qualification_status({**raw, "conformance": [hostless]})
-        == QualificationStatus.QUALIFIED
-    )
-    assert byoa_identity_qualified({**raw, "conformance": [hostless]}) is True
+    assert byoa_identity_qualified(raw) is True
+    missing = {key: value for key, value in raw.items() if key != "tests"}
+    assert byoa_identity_qualified(missing) is False
 
-    # The same receipt can never qualify a *packaged* release whose artifact
-    # digest differs, even when its platform matches a declared artifact.
+    # A packaged release is never a BYOA identity, even when usable.
     packaged = json.loads(
         (AGENTS_FIXTURE_DIR / "release_codex_acp_v1.json").read_text()
     )
-    packaged["conformance"] = [dict(receipt, host={"os": packaged["artifacts"][0]["os"], "arch": packaged["artifacts"][0]["arch"]})]
-    assert (
-        derive_qualification_status(packaged) == QualificationStatus.UNQUALIFIED
-    )
+    packaged["tests"] = {"status": "PASS", "cases": [{"case_id": "acp", "status": "PASS"}]}
+    assert derive_qualification_status(packaged) == QualificationStatus.QUALIFIED
+    assert byoa_identity_qualified(packaged) is False

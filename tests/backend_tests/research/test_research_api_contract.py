@@ -133,14 +133,11 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
                     "version": "1.0.0",
                     "digest": adapter_digest,
                 },
-                "conformance": [
-                    {
-                        "status": "PASS",
-                        "artifact_digest": artifact_digest,
-                        "adapter_digest": adapter_digest,
-                        "case_results": [{"status": "PASS"}],
-                    }
-                ],
+                "tests": {
+                    "status": "PASS",
+                    "approval_options": ["auto", "per_step", "suggestion_only"],
+                    "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+                },
             }),
         },
     )
@@ -217,14 +214,11 @@ def _qualified_byoa_release(session) -> str:
     )
     release_json = release.model_dump(mode="json")
     release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
-    release_json["conformance"] = [
-        {
-            "status": "PASS",
-            "artifact_digest": release.source_manifest_digest,
-            "host": {"os": "macos", "arch": "arm64"},
-            "case_results": [{"status": "PASS"}],
-        }
-    ]
+    release_json["tests"] = {
+        "status": "PASS",
+        "approval_options": ["auto", "per_step", "suggestion_only"],
+        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+    }
     session.execute(
         text(
             "INSERT INTO public.agent_release "

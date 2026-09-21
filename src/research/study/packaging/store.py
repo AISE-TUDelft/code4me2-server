@@ -1,11 +1,13 @@
-"""Persistence helpers for runtime packages and conformance receipts (Issue 11).
+"""Persistence helpers for runtime packages (Issue 11).
 
-Packaging evidence is not a table: a release's ``RuntimeManifestV2`` lives in
-``agent_release.release_json.package_json`` and its immutable conformance
-receipts live in ``agent_release.release_json.conformance[]``. Every helper
-takes a caller-supplied SQLAlchemy ``Session`` and works in domain models
-(:class:`RuntimeManifestV2`, :class:`ConformanceReceiptV1`), never raw ORM rows.
-The packaging package itself imports no FastAPI/App.
+A release's ``RuntimeManifestV2`` lives in
+``agent_release.release_json.package_json``. Every helper takes a
+caller-supplied SQLAlchemy ``Session`` and works in domain models
+(:class:`RuntimeManifestV2`), never raw ORM rows. The packaging package itself
+imports no FastAPI/App.
+
+There is no conformance-receipt store: a release's usability comes from the
+recipe self-check recorded on the release at import time.
 """
 
 from __future__ import annotations
@@ -20,29 +22,23 @@ from sqlalchemy import select
 from database.research_schemas import AgentRelease
 from research.study.agents.registry import derive_qualification_status
 
-from .models import ConformanceReceiptV1, RuntimeManifestV2, normalize_sha256
+from .models import RuntimeManifestV2
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 __all__ = [
     "PackageView",
-    "conformance_coverage",
     "get_package",
     "get_package_by_digest",
-    "get_receipt",
-    "insert_receipt",
     "list_packages",
-    "list_receipts",
     "package_summary",
     "row_to_manifest",
-    "row_to_receipt",
     "upsert_package",
 ]
 
-#: ``release_json`` keys that carry packaging evidence.
+#: ``release_json`` key that carries the packaging evidence.
 PACKAGE_KEY = "package_json"
-CONFORMANCE_KEY = "conformance"
 
 
 def _now() -> datetime:
@@ -107,8 +103,8 @@ def upsert_package(
     """Store a release's package manifest, or return the existing digest view.
 
     The package is folded into ``agent_release.release_json.package_json`` (the
-    release is created in ``DRAFT`` if it is not registered yet). ``package_id``
-    is derived from the manifest digest, so it is deterministic.
+    release is created in ``UNQUALIFIED`` if it is not registered yet).
+    ``package_id`` is derived from the manifest digest, so it is deterministic.
     """
     existing = get_package_by_digest(session, manifest.manifest_digest)
     if existing is not None:
@@ -188,180 +184,4 @@ def package_summary(view: PackageView) -> dict[str, Any]:
         "component_count": len(manifest.get("components") or []),
         "supported_platforms": manifest.get("supported_platforms") or [],
         "created_at": view.created_at.isoformat() if view.created_at else None,
-    }
-
-
-def _same_digest(left: Optional[str], right: Optional[str]) -> bool:
-    return normalize_sha256(left) is not None and normalize_sha256(
-        left
-    ) == normalize_sha256(right)
-
-
-def _find_release_for_artifact(
-    session: Session, artifact_digest: str
-) -> Optional[AgentRelease]:
-    """Find the release that owns an exact artifact/adapter digest."""
-    statement = select(AgentRelease)
-    matches = {}
-    for row in session.execute(statement).scalars().all():
-        data = row.release_json or {}
-        for artifact in data.get("artifacts") or []:
-            if _same_digest(artifact.get("sha256"), artifact_digest):
-                matches[row.release_id] = row
-        manifest = data.get(PACKAGE_KEY) or {}
-        for component in manifest.get("components") or []:
-            if _same_digest(component.get("sha256"), artifact_digest):
-                matches[row.release_id] = row
-        # A BYOA release has no distribution artifact, so its conformance
-        # evidence binds to the release's own distribution digest instead. This
-        # keeps evidence-driven qualification working for participant-installed
-        # agents without inventing a fake artifact.
-        if not (data.get("artifacts") or []) and _same_digest(
-            data.get("source_manifest_digest"), artifact_digest
-        ):
-            matches[row.release_id] = row
-    if len(matches) > 1:
-        raise ValueError("artifact digest belongs to multiple releases; receipt.release_id is required")
-    return next(iter(matches.values()), None)
-
-
-def insert_receipt(
-    session: Session, receipt: ConformanceReceiptV1
-) -> ConformanceReceiptV1:
-    """Append one immutable conformance receipt to its release's ``release_json``.
-
-    The release is located by the exact artifact digest the receipt is bound to.
-    """
-    row = (session.get(AgentRelease, receipt.release_id) if receipt.release_id
-           else _find_release_for_artifact(session, receipt.artifact_digest))
-    if row is None:
-        raise LookupError(
-            "no registered release owns artifact digest "
-            f"{receipt.artifact_digest!r}"
-        )
-    data = dict(row.release_json or {})
-    if receipt.release_id:
-        from research.study.agents.models import AgentReleaseV1
-
-        fields = AgentReleaseV1.model_fields
-        release = AgentReleaseV1.model_validate({k: v for k, v in data.items() if k in fields})
-        if not _same_digest(getattr(release.adapter, "digest", None), receipt.adapter_digest):
-            raise ValueError("receipt adapter does not match the pinned release")
-        if release.is_byoa:
-            if not _same_digest(release.source_manifest_digest, receipt.artifact_digest):
-                raise ValueError("receipt does not bind the installed-agent release")
-        else:
-            artifact = release.artifact_for(receipt.host.os, receipt.host.arch)
-            if artifact is None or not _same_digest(artifact.sha256, receipt.artifact_digest):
-                raise ValueError("receipt does not bind the selected platform archive")
-            if artifact.execution and not _same_digest(
-                artifact.execution.manifest_digest, receipt.execution_manifest_digest
-            ):
-                raise ValueError("receipt does not bind the execution manifest")
-    existing = next((item for item in data.get(CONFORMANCE_KEY, [])
-                     if str(item.get("receipt_id")) == str(receipt.receipt_id)), None)
-    if existing is not None:
-        if ConformanceReceiptV1.model_validate(existing) != receipt:
-            raise ValueError("receipt ID already has different immutable content")
-        return receipt
-    conformance = [
-        item
-        for item in (data.get(CONFORMANCE_KEY) or [])
-        if str(item.get("receipt_id")) != str(receipt.receipt_id)
-    ]
-    conformance.append(receipt.model_dump(mode="json"))
-    data[CONFORMANCE_KEY] = conformance
-    # Qualification is derived: recording a passing receipt is the only way a
-    # release becomes QUALIFIED, and the derived value is persisted so the read
-    # path never has to trust a caller-supplied status.
-    derived = derive_qualification_status(data)
-    data["qualification_status"] = derived.value
-    row.status = derived.value
-    row.release_json = data
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return receipt
-
-
-def _iter_receipts(session: Session) -> list[ConformanceReceiptV1]:
-    statement = select(AgentRelease)
-    receipts: list[ConformanceReceiptV1] = []
-    for row in session.execute(statement).scalars().all():
-        for item in (row.release_json or {}).get(CONFORMANCE_KEY) or []:
-            receipts.append(ConformanceReceiptV1.model_validate(item))
-    return receipts
-
-
-def get_receipt(
-    session: Session, receipt_id: uuid.UUID
-) -> Optional[ConformanceReceiptV1]:
-    """Fetch a receipt by id, or ``None``."""
-    for receipt in _iter_receipts(session):
-        if receipt.receipt_id == receipt_id:
-            return receipt
-    return None
-
-
-def list_receipts(
-    session: Session, artifact_digest: Optional[str] = None
-) -> Sequence[ConformanceReceiptV1]:
-    """List receipts, optionally for one artifact digest, oldest-first."""
-    receipts = [
-        receipt
-        for receipt in _iter_receipts(session)
-        if artifact_digest is None
-        or _same_digest(receipt.artifact_digest, artifact_digest)
-    ]
-    return sorted(receipts, key=lambda receipt: receipt.created_at)
-
-
-def row_to_receipt(row: Any) -> ConformanceReceiptV1:
-    """Rehydrate a receipt from a row, a stored dict, or a model."""
-    if isinstance(row, ConformanceReceiptV1):
-        return row
-    if isinstance(row, dict):
-        return ConformanceReceiptV1.model_validate(row)
-    return ConformanceReceiptV1.model_validate(row.receipt_json)
-
-
-def conformance_coverage(
-    session: Session, release_id: Optional[str] = None
-) -> dict[str, Any]:
-    """A coverage view: receipt counts by status and by ``(os, arch)`` host.
-
-    ``release_id`` filters to that release's stored receipts; without it every
-    stored receipt is summarized. The view is explicit: a platform with no
-    ``PASS`` receipt is reported as uncovered, not omitted.
-    """
-    statement = select(AgentRelease)
-    rows = list(session.execute(statement).scalars().all())
-    receipts: list[ConformanceReceiptV1] = []
-    for row in rows:
-        if release_id is not None and row.release_id != release_id:
-            continue
-        for item in (row.release_json or {}).get(CONFORMANCE_KEY) or []:
-            receipts.append(ConformanceReceiptV1.model_validate(item))
-
-    by_status: dict[str, int] = {}
-    by_host: dict[str, dict[str, int]] = {}
-    for receipt in receipts:
-        status = receipt.status.value
-        by_status[status] = by_status.get(status, 0) + 1
-        host = by_host.setdefault(receipt.host.key, {})
-        host[status] = host.get(status, 0) + 1
-    return {
-        "release_id": release_id,
-        "total": len(receipts),
-        "by_status": by_status,
-        "by_host": {
-            host: {
-                "pass": counts.get("PASS", 0),
-                "fail": counts.get("FAIL", 0),
-                "unsupported": counts.get("UNSUPPORTED", 0),
-                "unknown": counts.get("UNKNOWN", 0),
-                "blocked": counts.get("BLOCKED", 0),
-            }
-            for host, counts in by_host.items()
-        },
     }

@@ -18,10 +18,11 @@ creation, so an unexecutable combination is rejected before enrollment.
 
 Verification is **derived**, never stored:
 
-* ``PACKAGED`` is verified only when its release carries a passing conformance
-  receipt (``derive_qualification_status(release) == QUALIFIED``).
+* ``PACKAGED`` is verified only when its release is usable
+  (``derive_qualification_status(release) == QUALIFIED``), i.e. the imported
+  recipe's self-check passed.
 * ``BYOA_EXTERNAL`` is *always* unverified: a participant-installed agent has no
-  artifact to bind conformance evidence to.
+  artifact whose bytes the server can pin.
 """
 
 from __future__ import annotations
@@ -61,7 +62,11 @@ __all__ = [
 ]
 
 _WITHDRAWN = frozenset(
-    {QualificationStatus.RETIRED, QualificationStatus.BLOCKED}
+    {
+        QualificationStatus.RETIRED,
+        QualificationStatus.BLOCKED,
+        QualificationStatus.DISABLED,
+    }
 )
 
 #: The distribution mode each supported framework can execute (ISSUE-03).

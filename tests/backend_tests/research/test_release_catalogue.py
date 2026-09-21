@@ -40,18 +40,14 @@ def _qualified_release(session) -> str:
             "version": "0.1.0",
             "digest": adapter_digest,
         },
-        "conformance": [
-            {
-                "status": "PASS",
-                "artifact_digest": manifest_digest,
-                "adapter_digest": adapter_digest,
-                "host": {"os": "macos", "arch": "arm64"},
-                "case_results": [
-                    {"case_id": "approval.permission", "status": "PASS"},
-                    {"case_id": "diff.review", "status": "PASS"},
-                ],
-            }
-        ],
+        "tests": {
+            "status": "PASS",
+            "approval_options": ["auto", "per_step", "suggestion_only"],
+            "cases": [
+                {"case_id": "acp.initialize", "status": "PASS"},
+                {"case_id": "approval.permission", "status": "PASS"},
+            ],
+        },
     }
     session.execute(
         text(
@@ -159,10 +155,12 @@ def test_release_catalogue_requires_a_researcher_and_keeps_admin_routes(http_run
     assert refused.json()["detail"]["code"] == "RESEARCHER_REQUIRED"
 
     # Import/qualification and the existing release list stay administrator-only.
+    # The import endpoint is multipart (recipe + archive bytes), so the authz
+    # refusal is asserted with a well-formed request rather than a JSON body.
     assert client.get("/api/research/agents/releases").status_code == 403
     assert client.get(
         f"/api/research/agents/releases/{release_id}"
     ).status_code == 403
     assert client.post(
-        "/api/research/agents/releases/import", json={"manifest": {}}
+        "/api/research/agents/releases/import", data={"recipe": "{}"}
     ).status_code == 403

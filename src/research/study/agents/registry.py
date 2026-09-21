@@ -10,12 +10,12 @@ Key invariants:
 * A release's identity is ``(agent_id, release_id, source_manifest_digest)``. A
   changed digest requires a distinct release record; an exact duplicate is
   rejected with ``DUPLICATE_RELEASE``.
-* Qualification is **derived** from verified conformance evidence (a passing
-  receipt recorded by the packaging layer), never supplied by a caller. There is
-  no reviewer transition that can mark a release qualified.
-* A receipt binds one *artifact identity*: digest, platform and adapter must all
-  belong to the same declared artifact (see :func:`qualified_artifact_keys`).
-  A digest from one artifact and a platform from another never qualify either.
+* Qualification is **derived** from the imported recipe's self-check verdict
+  (``tests.status == "PASS"``), never supplied by a caller. There is no separate
+  approval or conformance-receipt step; an administrator may only disable a
+  release one-way.
+* Artifact identity is the ZIP fingerprint (``sha256``) plus the adapter name,
+  never an extracted-file inventory (see :func:`qualified_artifact_keys`).
 * Platform resolution is exact and never falls back to another platform.
 * Declared and observed capabilities are stored in separate maps and unknown or
   unavailable measurements stay visible (``value`` stays ``None``).
@@ -49,12 +49,11 @@ from .models import (
     EnvironmentRef,
     SnapshotFailure,
     normalize_platform,
-    PackagedExecution,
 )
 
 _BASE_CONFIG = ConfigDict(extra="forbid")
 
-#: Conformance receipt status that backs a derived ``QUALIFIED``.
+#: Recipe self-check status that backs a derived ``QUALIFIED``.
 _PASSED_CONFORMANCE = "PASS"
 
 #: One qualified artifact identity: ``(os, arch, digest, adapter_digest)``.
@@ -185,37 +184,36 @@ def _distribution_issue(release: AgentReleaseV1) -> Optional[RegistryIssue]:
 def derive_qualification_status(
     release_json: Optional[Mapping[str, Any]],
 ) -> QualificationStatus:
-    """Derive a release's qualification from verified conformance evidence.
+    """Derive a release's usability from the imported recipe's self-check.
 
-    Artifact identity and conformance receipts are owned by the packaging layer
-    and persisted alongside the release in ``agent_release.release_json``. A
-    release is ``QUALIFIED`` exactly when :func:`qualified_artifact_keys` finds
-    at least one artifact identity a passing receipt is bound to. Anything else
-    (no receipt, a failing receipt, a receipt bound to a different
-    artifact/adapter/platform combination, a passing receipt with no case
-    results, or a caller-supplied status) is ``UNQUALIFIED``. A synthetic
-    fixture or any unrelated ``PASS`` receipt can therefore never qualify a real
-    runtime.
+    There is no separate approval or conformance-receipt step: the producer
+    (the participant-release CLI / CI) runs the agent self-check and writes the
+    result into the single recipe document, and the import records that verdict
+    on the release. A release is ``QUALIFIED`` (usable) exactly when its stored
+    recipe declares ``tests.status == "PASS"``. An administrator may disable a
+    release one-way, which is ``DISABLED`` and terminal. Anything else is
+    ``UNQUALIFIED``: a caller-supplied status or an unrelated status can never
+    make a release usable.
     """
+    if not isinstance(release_json, Mapping):
+        return QualificationStatus.UNQUALIFIED
+    if release_json.get("disabled") is True:
+        return QualificationStatus.DISABLED
+    if _recipe_tests_passed(release_json):
+        return QualificationStatus.QUALIFIED
+    return QualificationStatus.UNQUALIFIED
+
+
+def _recipe_tests(release_json: Mapping[str, Any]) -> Mapping[str, Any]:
+    tests = release_json.get("tests")
+    return tests if isinstance(tests, Mapping) else {}
+
+
+def _recipe_tests_passed(release_json: Mapping[str, Any]) -> bool:
     return (
-        QualificationStatus.QUALIFIED
-        if qualified_artifact_keys(release_json)
-        else QualificationStatus.UNQUALIFIED
+        str(_recipe_tests(release_json).get("status", "")).strip().upper()
+        == _PASSED_CONFORMANCE
     )
-
-
-def _passing_receipts(release_json: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    """Conformance receipts that are ``PASS`` and carry a passing case."""
-    receipts = release_json.get("conformance") or []
-    if not isinstance(receipts, (list, tuple)):
-        return []
-    return [
-        receipt
-        for receipt in receipts
-        if isinstance(receipt, Mapping)
-        and str(receipt.get("status", "")).strip().upper() == _PASSED_CONFORMANCE
-        and _receipt_has_passing_case(receipt)
-    ]
 
 
 def _declared_identity_components(
@@ -238,36 +236,6 @@ def _declared_identity_components(
     return [
         item for item in (manifest.get("components") or []) if isinstance(item, Mapping)
     ]
-
-
-def _receipt_binds_to_component(
-    receipt: Mapping[str, Any],
-    component: Mapping[str, Any],
-    declared_adapter_digest: Optional[str],
-) -> bool:
-    """Whether a PASS receipt is bound to this exact component identity.
-
-    Digest, platform and adapter all have to belong to the *same* declared
-    component. A host-less receipt binds by digest/adapter; a receipt that names
-    a host must name the component's platform.
-    """
-    if not _same_digest(component.get("sha256"), receipt.get("artifact_digest")):
-        return False
-    if declared_adapter_digest is not None and not _same_digest(
-        declared_adapter_digest, receipt.get("adapter_digest")
-    ):
-        return False
-    host = receipt.get("host")
-    if isinstance(host, Mapping) and host.get("os") and host.get("arch"):
-        component_os = component.get("os")
-        component_arch = component.get("arch")
-        if not component_os or not component_arch:
-            return False
-        if normalize_platform(str(component_os), str(component_arch)) != normalize_platform(
-            str(host.get("os")), str(host.get("arch"))
-        ):
-            return False
-    return True
 
 
 def _artifact_key(
@@ -294,82 +262,42 @@ def artifact_key(
 def qualified_artifact_keys(
     release_json: Optional[Mapping[str, Any]],
 ) -> set[ArtifactKey]:
-    """The exact artifact identities a release's evidence qualifies.
+    """The exact artifact identities a usable release pins.
 
-    Every key is ``(os, arch, digest, adapter_digest)`` and is only produced
-    when one ``PASS`` receipt with a passing case binds digest, platform and
-    adapter to the *same* declared component:
+    Every key is ``(os, arch, digest, adapter_digest)``. Identity is the ZIP
+    fingerprint (``sha256``) plus the adapter name; there is no separate
+    extracted-file inventory. A release that is not ``QUALIFIED`` pins nothing.
 
-    * ``PACKAGED`` releases bind to a declared artifact (or, for a package-only
-      release, a package component) by its own ``sha256`` and ``(os, arch)``.
-    * ``BYOA_EXTERNAL`` releases have no artifact, so the receipt binds to the
-      release's own ``source_manifest_digest``; the host is optional and, when
-      absent, both platform values are empty strings.
-
-    An empty set means no platform/artifact combination is qualified.
+    * ``PACKAGED`` releases pin each declared platform artifact by its own
+      ``sha256`` and ``(os, arch)``.
+    * ``BYOA_EXTERNAL`` releases have no artifact, so the identity is the
+      release's own ``source_manifest_digest``; both platform values are empty.
     """
-    if not isinstance(release_json, Mapping):
+    if derive_qualification_status(release_json) is not QualificationStatus.QUALIFIED:
         return set()
     adapter = release_json.get("adapter")
     declared_adapter_digest = (
         _normalize_digest(adapter.get("digest")) if isinstance(adapter, Mapping) else None
     )
     components = _declared_identity_components(release_json)
-
-    keys: set[ArtifactKey] = set()
-    for receipt in _passing_receipts(release_json):
-        if receipt.get("release_id") is not None and receipt["release_id"] != release_json.get("release_id"):
-            continue
-        if components:
-            for component in components:
-                execution = component.get("execution")
-                if execution:
-                    # Archive receipts from historical leaves must not qualify a
-                    # new execution contract over the same transport bytes.
-                    if receipt.get("release_id") != release_json.get("release_id"):
-                        continue
-                    try:
-                        expected = PackagedExecution.model_validate(execution).manifest_digest
-                    except ValueError:
-                        continue
-                    if not _same_digest(expected, receipt.get("execution_manifest_digest")):
-                        continue
-                if not _receipt_binds_to_component(
-                    receipt, component, declared_adapter_digest
-                ):
-                    continue
-                keys.add(
-                    _artifact_key(
-                        component.get("os"),
-                        component.get("arch"),
-                        component.get("sha256"),
-                        declared_adapter_digest or receipt.get("adapter_digest"),
-                    )
-                )
-            continue
-
-        # BYOA_EXTERNAL: the receipt binds the release's own manifest digest and
-        # adapter; the recorded host is optional and never platform-pins it.
-        if not _same_digest(
-            release_json.get("source_manifest_digest"), receipt.get("artifact_digest")
-        ):
-            continue
-        if declared_adapter_digest is not None and not _same_digest(
-            declared_adapter_digest, receipt.get("adapter_digest")
-        ):
-            continue
-        host = receipt.get("host")
-        host_os = host.get("os") if isinstance(host, Mapping) else None
-        host_arch = host.get("arch") if isinstance(host, Mapping) else None
-        keys.add(
+    if components:
+        return {
             _artifact_key(
-                host_os,
-                host_arch,
-                release_json.get("source_manifest_digest"),
-                declared_adapter_digest or receipt.get("adapter_digest"),
+                component.get("os"),
+                component.get("arch"),
+                component.get("sha256"),
+                declared_adapter_digest,
             )
+            for component in components
+        }
+    return {
+        _artifact_key(
+            None,
+            None,
+            release_json.get("source_manifest_digest"),
+            declared_adapter_digest,
         )
-    return keys
+    }
 
 
 def artifact_qualified(
@@ -388,55 +316,29 @@ def artifact_qualified(
 
 
 def byoa_identity_qualified(release_json: Optional[Mapping[str, Any]]) -> bool:
-    """Whether a BYOA release's manifest digest/adapter is covered by evidence.
+    """Whether a BYOA release's own manifest identity is usable.
 
-    The platform recorded on the receipt is ignored: a participant-installed
-    agent is not platform-pinned, so any qualified key for the release's own
-    digest (and declared adapter, when one is declared) is sufficient.
+    A participant-installed agent has no platform artifact, so it is usable when
+    the release is ``QUALIFIED`` (its recipe self-check passed) and it declares
+    no packaged artifacts.
     """
     if not isinstance(release_json, Mapping):
         return False
-    manifest_digest = _normalize_digest(release_json.get("source_manifest_digest"))
-    if not manifest_digest:
+    if derive_qualification_status(release_json) is not QualificationStatus.QUALIFIED:
         return False
-    adapter = release_json.get("adapter")
-    declared_adapter_digest = (
-        _normalize_digest(adapter.get("digest")) if isinstance(adapter, Mapping) else None
-    )
-    for key in qualified_artifact_keys(release_json):
-        if key[2] != manifest_digest:
-            continue
-        if declared_adapter_digest is not None and key[3] != declared_adapter_digest:
-            continue
-        return True
-    return False
-
-
-def _receipt_has_passing_case(receipt: Mapping[str, Any]) -> bool:
-    """A PASS receipt with no observed case results is not execution evidence."""
-    cases = receipt.get("case_results")
-    if not isinstance(cases, (list, tuple)) or not cases:
-        return False
-    return any(
-        isinstance(case, Mapping)
-        and str(case.get("status", "")).strip().upper() == _PASSED_CONFORMANCE
-        for case in cases
-    )
+    return not _declared_identity_components(release_json)
 
 
 # ---------------------------------------------------------------------------
-# Per-release verified approval options (phase 04; folded from approvals.py)
+# Per-release approval options (phase 04; folded from approvals.py)
 # ---------------------------------------------------------------------------
 #
-# An agent profile selects an approval policy, but a study may only require an
-# option the selected release's conformance evidence actually exercises. The
-# baseline ``auto`` policy needs no host permission gate, so it is always
-# available. ``per_step`` (ask per turn) requires a passing permission-request
-# case; ``suggestion_only`` (propose edits without applying) requires a passing
-# edit-proposal/diff case. Absent evidence, the gated options are **not** offered
-# — a matching version string is never enough. The ``auto``/``per_step``/
-# ``suggestion_only`` vocabulary has one owner: ``backend.routers.agent.profiles``
-# validates the same values.
+# An agent profile selects an approval policy. The producer's recipe declares
+# which options its self-check actually exercised; the editor must not offer an
+# option the recipe does not declare. The baseline ``auto`` policy needs no host
+# permission gate, so it is always available. The ``auto``/``per_step``/
+# ``suggestion_only`` vocabulary has one owner:
+# ``backend.routers.agent.profiles`` validates the same values.
 
 APPROVAL_AUTO = "auto"
 APPROVAL_PER_STEP = "per_step"
@@ -448,51 +350,34 @@ ALL_APPROVAL_OPTIONS: tuple[str, ...] = (
     APPROVAL_SUGGESTION_ONLY,
 )
 
-#: Substrings of a passing conformance case id that verify each gated option.
-_PER_STEP_CASE_HINTS = ("permission",)
-_SUGGESTION_CASE_HINTS = ("edit", "suggestion", "diff")
 
-
-def _passed_approval_case_ids(release_json: Optional[Mapping[str, Any]]) -> set[str]:
+def _declared_approval_options(
+    release_json: Optional[Mapping[str, Any]],
+) -> set[str]:
     if not isinstance(release_json, Mapping):
         return set()
-    receipts = release_json.get("conformance") or []
-    if not isinstance(receipts, (list, tuple)):
+    declared = release_json.get("approval_options")
+    if declared is None:
+        declared = _recipe_tests(release_json).get("approval_options")
+    if not isinstance(declared, (list, tuple)):
         return set()
-    passed: set[str] = set()
-    for receipt in receipts:
-        if not isinstance(receipt, Mapping):
-            continue
-        if str(receipt.get("status", "")).strip().upper() != _PASSED_CONFORMANCE:
-            continue
-        cases = receipt.get("case_results") or []
-        if not isinstance(cases, (list, tuple)):
-            continue
-        for case in cases:
-            if not isinstance(case, Mapping):
-                continue
-            if str(case.get("status", "")).strip().upper() != _PASSED_CONFORMANCE:
-                continue
-            case_id = str(case.get("case_id", "")).strip()
-            if case_id:
-                passed.add(case_id)
-    return passed
+    return {
+        str(option).strip().lower()
+        for option in declared
+        if str(option).strip().lower() in ALL_APPROVAL_OPTIONS
+    }
 
 
 def verified_approval_options(release_json: Optional[Mapping[str, Any]]) -> list[str]:
-    """Return the approval options the release's evidence verifies.
+    """Return the approval options the release's recipe verifies.
 
     Always includes ``auto``. ``per_step`` and ``suggestion_only`` are included
-    only when a passing conformance case exercises the corresponding host
-    behaviour, so an unsupported option is never offered to the editor.
+    only when the recipe declares the corresponding option as exercised, so an
+    unsupported option is never offered to the editor.
     """
-    passed = {case_id.lower() for case_id in _passed_approval_case_ids(release_json)}
-    options = [APPROVAL_AUTO]
-    if any(hint in case_id for case_id in passed for hint in _PER_STEP_CASE_HINTS):
-        options.append(APPROVAL_PER_STEP)
-    if any(hint in case_id for case_id in passed for hint in _SUGGESTION_CASE_HINTS):
-        options.append(APPROVAL_SUGGESTION_ONLY)
-    return options
+    declared = _declared_approval_options(release_json)
+    declared.add(APPROVAL_AUTO)
+    return [option for option in ALL_APPROVAL_OPTIONS if option in declared]
 
 
 def approval_option_verified(

@@ -607,8 +607,10 @@ def test_store_round_trips_receipt_json():
 def test_compatibility_self_attestation_routes_are_removed():
     """The public compatibility receipts/evaluate/fixtures surface is removed.
 
-    Qualification stays confined to the admin-only /research/packages operator
-    surface; the pure evaluator used by bootstrap is unaffected.
+    There is no conformance-receipt or qualification endpoint: a release becomes
+    usable only through the admin-only /research/agents/releases/import path,
+    which verifies the producer's recipe bytes. The pure evaluator used by
+    bootstrap is unaffected.
     """
     from backend.routers import router as api_router
 
@@ -616,4 +618,5 @@ def test_compatibility_self_attestation_routes_are_removed():
     assert "/research/compatibility/receipts" not in paths
     assert "/research/compatibility/evaluate" not in paths
     assert "/research/compatibility/fixtures" not in paths
-    assert "/research/packages/receipts" in paths
+    assert "/research/packages/receipts" not in paths
+    assert "/research/agents/releases/import" in paths

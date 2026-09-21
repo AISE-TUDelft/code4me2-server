@@ -1,9 +1,8 @@
-"""Pydantic v2 contracts for runtime packaging and conformance (Issue 11).
+"""Pydantic v2 contracts for runtime packaging (Issue 11).
 
 ``RuntimeManifestV2`` is authoritative for the exact contents and integrity of a
-participant runtime package. ``ConformanceCaseV1``/``ConformanceReceiptV1`` bind
-observed results to the exact artifact/adapter/host/plugin/protocol/fixture
-digests, and preserve ``UNSUPPORTED``/``UNKNOWN`` rather than upgrading them.
+participant runtime package. There is no separate conformance receipt: a
+release's usability comes from the recipe self-check recorded at import time.
 
 Digest convention: component payload digests and the manifest digest are
 ``sha256:<64 lowercase hex>`` so they compare directly with the agent
@@ -14,9 +13,7 @@ digest is also accepted when comparing (see :func:`normalize_sha256`).
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime  # noqa: TC003 - pydantic resolves annotations at runtime
 from typing import Optional
-from uuid import UUID  # noqa: TC003 - pydantic resolves annotations at runtime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,7 +21,6 @@ from research.canonical import canonical_hash
 from research.study.agents.models import AdapterRef
 
 from .enums import (
-    ConformanceStatus,
     PackageReasonCode,  # noqa: TC001 - pydantic resolves annotations at runtime
 )
 
@@ -33,9 +29,6 @@ _BASE = ConfigDict(extra="forbid")
 __all__ = [
     "AdapterRef",
     "ComponentEntry",
-    "ConformanceCaseV1",
-    "ConformanceCaseResultV1",
-    "ConformanceReceiptV1",
     "PackageIssue",
     "PackageVerificationResult",
     "PlatformTriple",
@@ -296,59 +289,4 @@ class ResolutionResult(BaseModel):
     error: Optional[PackageIssue] = None
 
 
-class ConformanceCaseV1(BaseModel):
-    """One capability-aware conformance case."""
 
-    model_config = _BASE
-
-    case_id: str
-    prerequisites: list[str] = Field(default_factory=list)
-    fixture_ref: str = ""
-    action_steps: list[str] = Field(default_factory=list)
-    expected_host_observations: list[str] = Field(default_factory=list)
-    expected_agent_observations: list[str] = Field(default_factory=list)
-    cleanup_assertion: str = ""
-    max_performance_ms: Optional[float] = None
-    status: ConformanceStatus = ConformanceStatus.UNKNOWN
-
-
-class ConformanceCaseResultV1(BaseModel):
-    """The observed result of one conformance case."""
-
-    model_config = _BASE
-
-    case_id: str
-    status: ConformanceStatus
-    host_observations: list[str] = Field(default_factory=list)
-    agent_observations: list[str] = Field(default_factory=list)
-    cleanup_ok: Optional[bool] = None
-    performance_ms: Optional[float] = None
-    evidence_digest: str = ""
-    reason: str = ""
-
-
-class ConformanceReceiptV1(BaseModel):
-    """Binds conformance results to exact artifact/adapter/host/plugin/protocol/fixtures."""
-
-    model_config = _BASE
-
-    receipt_id: UUID
-    release_id: Optional[str] = None
-    execution_manifest_digest: Optional[str] = None
-    artifact_digest: str
-    adapter_digest: str
-    host: PlatformTriple
-    plugin_version: str
-    protocol_version: str
-    fixture_digests: dict[str, str] = Field(default_factory=dict)
-    case_results: list[ConformanceCaseResultV1] = Field(default_factory=list)
-    status: ConformanceStatus = ConformanceStatus.UNKNOWN
-    created_at: datetime
-
-    def passed_cases(self) -> set[str]:
-        """Case ids whose observed status is exactly ``PASS``."""
-        return {
-            result.case_id
-            for result in self.case_results
-            if result.status == ConformanceStatus.PASS
-        }

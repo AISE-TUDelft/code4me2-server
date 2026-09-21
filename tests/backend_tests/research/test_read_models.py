@@ -141,14 +141,11 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
                         "version": "1.0.0",
                         "digest": adapter_digest,
                     },
-                    "conformance": [
-                        {
-                            "status": "PASS",
-                            "artifact_digest": artifact_digest,
-                            "adapter_digest": adapter_digest,
-                            "case_results": [{"status": "PASS"}],
-                        }
-                    ],
+                    "tests": {
+                        "status": "PASS",
+                        "approval_options": ["auto", "per_step", "suggestion_only"],
+                        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+                    },
                 }
             ),
         },

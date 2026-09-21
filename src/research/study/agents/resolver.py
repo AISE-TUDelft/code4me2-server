@@ -6,7 +6,7 @@ publication rejects releases that are missing, retired, blocked, or not yet
 qualified:
 
 * not found -> ``NOT_FOUND``
-* ``RETIRED`` / ``BLOCKED`` -> ``WITHDRAWN``
+* ``RETIRED`` / ``BLOCKED`` / ``DISABLED`` -> ``WITHDRAWN``
 * ``UNQUALIFIED`` / ``DRAFT`` / ``CONDITIONALLY_QUALIFIED`` -> ``UNQUALIFIED``
 * ``QUALIFIED`` -> ``RESOLVED`` with the selected artifact's digest
 """
@@ -25,7 +25,11 @@ if TYPE_CHECKING:
     from .registry import AgentRegistry
 
 _WITHDRAWN = frozenset(
-    {QualificationStatus.RETIRED, QualificationStatus.BLOCKED}
+    {
+        QualificationStatus.RETIRED,
+        QualificationStatus.BLOCKED,
+        QualificationStatus.DISABLED,
+    }
 )
 _UNQUALIFIED = frozenset(
     {

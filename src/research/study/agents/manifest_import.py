@@ -1,25 +1,30 @@
-"""Import a *build* runtime manifest into a digest-pinned :class:`AgentReleaseV1`.
+"""Import a producer *recipe* plus its verified archive bytes into release(s).
 
-The packaging pipeline emits a JSON build manifest (``manifest_version``,
-``runtime_version``, ``server_commit``/``plugin_commit`` and ``artifacts[]``).
-This module turns that document into the registry's own release contract so a
-fresh database can be made immediately usable without a human hand-typing a
-digest:
+The single producer (the ``scripts/participant-release.py`` CLI, run locally or
+by CI) emits one recipe JSON document. It declares, for every supported
+platform, the exact archive **basename**, ``sha256`` and ``size`` of the runtime
+ZIP, the adapter identity, the BYOA agent declarations, and the result of the
+agent self-check (``tests``). The server turns that document into the registry's
+release contract:
 
-* the release identity (``agent_id``/``release_id``/``version``) is derived
-  deterministically from the manifest, so re-importing identical bytes resolves
-  the *same* release instead of piling up duplicates;
-* ``source_manifest_digest`` is the SHA-256 of the canonical manifest bytes;
-* each built ``artifacts[]`` entry becomes a :class:`DistributionArtifact` whose
-  ``sha256`` is verified against the real archive **when the archive is present
-  under ``artifact_root``** -- a mismatch fails loudly rather than silently
-  trusting the declared digest;
-* an artifact with a placeholder (all-zero) digest is a platform the build did
-  not actually produce. It is *excluded* and reported in ``skipped`` rather than
-  imported as a fake digest-pinned artifact.
+* the release identity is derived deterministically from the recipe, so
+  re-importing identical bytes resolves the *same* release instead of piling up
+  duplicates;
+* ``source_manifest_digest`` is the SHA-256 of the canonical recipe bytes;
+* every declared archive is bound to the **exact bytes** the caller supplied --
+  locally as multipart uploads, or deployed from ``archive_urls`` that the server
+  downloads and hashes itself. A digest or size mismatch, a missing, extra or
+  duplicated archive, or a recipe that requires bytes it did not receive rejects
+  the *entire* import and creates no release row;
+* a recipe whose self-check did not pass is rejected: "tests passed" is the only
+  thing that makes a release usable.
+
+There is no extracted-file inventory: a runtime's identity is its ZIP
+fingerprint plus the adapter and executable names. There is no artifact-root
+lookup and no caller-supplied size.
 
 The module is deliberately free of database/App dependencies: the API router and
-the local-dev seeder share exactly this planning step.
+any local-dev seeding share exactly this planning step.
 """
 
 from __future__ import annotations
@@ -29,33 +34,36 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
-from .enums import DistributionSourceType
+from .enums import DistributionMode, DistributionSourceType
 from .models import (
     AdapterRef,
+    AgentConfigBinding,
     AgentReleaseV1,
     DistributionArtifact,
     ReleaseDisplay,
-    PackagedExecution,
 )
 
 __all__ = [
+    "PLACEHOLDER_DIGEST",
     "ManifestImportError",
     "ManifestImportPlan",
-    "SkippedArtifact",
-    "build_manifest_release",
+    "build_manifest_releases",
     "canonical_manifest_bytes",
     "manifest_digest",
     "sha256_prefixed",
 ]
 
-#: Sentinel digest a build manifest uses for a platform it did not package.
+#: Sentinel digest a recipe must never carry for a shipped archive.
 PLACEHOLDER_DIGEST = "0" * 64
+
+#: One verified archive: ``basename -> (bare sha256 hex, size)``.
+VerifiedArchives = Mapping[str, tuple[str, int]]
 
 
 class ManifestImportError(ValueError):
-    """A typed, operator-facing reason a build manifest cannot be imported.
+    """A typed, operator-facing reason a recipe cannot be imported.
 
     ``code``/``field`` mirror the registry's typed issue shape so the endpoint
     can return a machine-readable rejection.
@@ -69,29 +77,28 @@ class ManifestImportError(ValueError):
 
 
 @dataclass(frozen=True)
-class SkippedArtifact:
-    """One ``artifacts[]`` entry that was not imported, and why."""
-
-    platform: str
-    archive: str
-    reason: str
-
-
-@dataclass(frozen=True)
 class ManifestImportPlan:
-    """The release a build manifest resolves to, plus what was excluded."""
+    """The release(s) a recipe + its archives resolve to."""
 
-    release: AgentReleaseV1
-    manifest_digest: str
-    skipped: list[SkippedArtifact] = field(default_factory=list)
+    releases: list[AgentReleaseV1] = field(default_factory=list)
+    manifest_digest: str = ""
+    verified_artifacts: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def release(self) -> AgentReleaseV1:
+        """The managed (PACKAGED) release this recipe describes."""
+        for release in self.releases:
+            if release.distribution_mode == DistributionMode.PACKAGED:
+                return release
+        raise LookupError("the recipe declares no packaged release")
 
 
 def canonical_manifest_bytes(manifest: Mapping[str, Any]) -> bytes:
-    """Canonical UTF-8 bytes of a manifest mapping.
+    """Canonical UTF-8 bytes of a recipe mapping.
 
     Keys are sorted and separators are compact so the digest is stable for the
     same semantic document regardless of formatting/whitespace: a re-import of
-    the "same" manifest is idempotent and never a new release.
+    the "same" recipe is idempotent and never a new release.
     """
     return json.dumps(
         manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -99,7 +106,7 @@ def canonical_manifest_bytes(manifest: Mapping[str, Any]) -> bytes:
 
 
 def manifest_digest(manifest: Mapping[str, Any]) -> str:
-    """``sha256:<hex>`` of the canonical manifest bytes."""
+    """``sha256:<hex>`` of the canonical recipe bytes (release identity)."""
     return sha256_prefixed(canonical_manifest_bytes(manifest))
 
 
@@ -119,7 +126,7 @@ def _bare_digest(value: Any) -> Optional[str]:
 
 
 def _normalize_os(value: Any) -> str:
-    """Map a manifest platform name onto the repo's ``macos|linux|windows``."""
+    """Map a recipe platform name onto the repo's ``macos|linux|windows``."""
     text = str(value or "").strip().lower()
     if text in {"macos", "darwin", "mac", "macosx"}:
         return "macos"
@@ -133,7 +140,7 @@ def _normalize_os(value: Any) -> str:
 
 
 def _normalize_arch(value: Any) -> str:
-    """Map a manifest architecture onto the repo's ``arm64|x64`` vocabulary."""
+    """Map a recipe architecture onto the repo's canonical ``arm64|x64``."""
     text = str(value or "").strip().lower()
     if text in {"arm64", "aarch64"}:
         return "arm64"
@@ -155,62 +162,39 @@ def _as_size(value: Any) -> Optional[int]:
     return size if size > 0 else None
 
 
-def _resolve_archive(artifact_root: Optional[Path], archive: str) -> Optional[Path]:
-    """The on-disk path of an artifact archive, or ``None`` when unavailable."""
-    if artifact_root is None or not archive:
-        return None
-    candidate = (artifact_root / archive).resolve()
-    if candidate.is_file():
-        return candidate
-    basename = (artifact_root / Path(archive).name).resolve()
-    if basename.is_file():
-        return basename
-    return None
-
-
-def _file_digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _size_from_supplied(
-    *,
-    archive: str,
-    platform: str,
-    raw_platform: str,
-    raw_arch: str,
-    sizes: Mapping[str, Any],
-) -> Optional[int]:
-    """Look up a caller-supplied size by archive path / platform key / basename."""
-    for key in (
-        archive,
-        platform,
-        f"{raw_platform}-{raw_arch}",
-        Path(archive).name,
-    ):
-        if key and key in sizes:
-            resolved = _as_size(sizes[key])
-            if resolved is not None:
-                return resolved
-    return None
+def _archive_basename(value: Any, field_name: str) -> str:
+    """A declared archive must be a bare basename (no directory component)."""
+    text = str(value or "").strip()
+    if not text:
+        raise ManifestImportError(
+            "INVALID_MANIFEST", "artifact declares no archive name", field_name
+        )
+    if text != Path(text).name or "/" in text or "\\" in text:
+        raise ManifestImportError(
+            "INVALID_MANIFEST",
+            (
+                f"artifact archive {text!r} must be a bare archive basename; "
+                "the recipe never carries a directory prefix"
+            ),
+            field_name,
+        )
+    return text
 
 
 def _derive_identity(
     manifest: Mapping[str, Any], digest: str
 ) -> tuple[str, str, str]:
     """Deterministically derive ``(agent_id, release_id, version)``."""
-    artifacts = [item for item in manifest.get("artifacts") or [] if isinstance(item, Mapping)]
+    artifacts = [
+        item for item in manifest.get("artifacts") or [] if isinstance(item, Mapping)
+    ]
     runtime_ids = sorted(
         {str(item.get("runtime_id")).strip() for item in artifacts if item.get("runtime_id")}
     )
     if len(runtime_ids) > 1:
         raise ManifestImportError(
             "INVALID_MANIFEST",
-            "manifest artifacts disagree on runtime_id: "
-            + ", ".join(runtime_ids),
+            "recipe artifacts disagree on runtime_id: " + ", ".join(runtime_ids),
             "artifacts.runtime_id",
         )
     agent_id = runtime_ids[0] if runtime_ids else "code4me-agent"
@@ -221,71 +205,203 @@ def _derive_identity(
     if not version:
         raise ManifestImportError(
             "INVALID_MANIFEST",
-            "manifest declares no runtime_version",
+            "recipe declares no runtime_version",
             "runtime_version",
         )
 
-    # The digest is folded into the release id so a changed manifest is a
-    # *distinct* release, exactly as the registry's digest identity requires.
     digest_hex = digest[len("sha256:") :]
     release_id = f"{agent_id}-{version}-{digest_hex[:12]}"
     return agent_id, release_id, version
 
 
-def _derive_adapter(
-    manifest: Mapping[str, Any], *, agent_id: str, version: str, digest: str
-) -> AdapterRef:
-    """The adapter identity for the release.
+def _derive_adapter(manifest: Mapping[str, Any]) -> Optional[AdapterRef]:
+    """The adapter identity the recipe declares, or ``None``.
 
-    A manifest may carry an explicit ``adapter``/``adapter_ref`` block; when it
-    does not, the packaging layer that emitted this manifest is identified by the
-    manifest digest itself (no digest is invented from thin air).
+    A recipe that carries an explicit ``adapter``/``adapter_ref`` block keeps it
+    as-is. Otherwise the release declares **no** adapter: the server never
+    invents an adapter identity or reuses the recipe digest as one.
     """
     explicit = manifest.get("adapter") or manifest.get("adapter_ref")
     if isinstance(explicit, Mapping):
         return AdapterRef.model_validate(dict(explicit))
-    return AdapterRef(
-        adapter_id=f"{agent_id}-managed-adapter",
+    return None
+
+
+def recipe_tests(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """The self-check block a usable recipe must carry and pass."""
+    tests = manifest.get("tests")
+    if not isinstance(tests, Mapping):
+        raise ManifestImportError(
+            "RECIPE_TESTS_FAILED",
+            "the recipe declares no agent self-check result",
+            "tests",
+        )
+    if str(tests.get("status", "")).strip().upper() != "PASS":
+        raise ManifestImportError(
+            "RECIPE_TESTS_FAILED",
+            "the recipe's agent self-check did not pass; a release is only usable when tests pass",
+            "tests.status",
+        )
+    approval = tests.get("approval_options")
+    if approval is not None and (
+        not isinstance(approval, list)
+        or not all(isinstance(item, str) for item in approval)
+    ):
+        raise ManifestImportError(
+            "INVALID_MANIFEST",
+            "tests.approval_options must be an array of strings",
+            "tests.approval_options",
+        )
+    return dict(tests)
+
+
+def _verify_archives(
+    artifacts: Sequence[DistributionArtifact],
+    verified: VerifiedArchives,
+) -> list[dict[str, Any]]:
+    """Bind each declared artifact to exactly one supplied, matching archive.
+
+    Extra, missing, duplicated or mismatched archives reject the whole import.
+    """
+    declared_names = [artifact.path for artifact in artifacts]
+    supplied = dict(verified)
+    for name in supplied:
+        candidate = _archive_basename(name, "archives")
+        if candidate != name:
+            raise ManifestImportError(
+                "INVALID_UPLOAD",
+                f"uploaded archive {name!r} must be a bare archive basename",
+                "archives",
+            )
+    unexpected = sorted(set(supplied) - set(declared_names))
+    if unexpected:
+        raise ManifestImportError(
+            "UNEXPECTED_ARCHIVE",
+            "supplied archive(s) are not declared by the recipe: " + ", ".join(unexpected),
+            "archives",
+        )
+    missing = sorted(set(declared_names) - set(supplied))
+    if missing:
+        raise ManifestImportError(
+            "ARTIFACT_MISSING",
+            "declared archive(s) were not supplied: " + ", ".join(missing),
+            "archives",
+        )
+    verified_artifacts: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        digest_hex, size = supplied[artifact.path]
+        expected = _bare_digest(artifact.sha256)
+        if expected is None or _bare_digest(digest_hex) != expected:
+            raise ManifestImportError(
+                "DIGEST_MISMATCH",
+                (
+                    f"archive {artifact.path!r} digest {digest_hex} does not match "
+                    f"the recipe's {expected}"
+                ),
+                "archives",
+            )
+        if size != artifact.size:
+            raise ManifestImportError(
+                "SIZE_MISMATCH",
+                (
+                    f"archive {artifact.path!r} size {size} does not match the "
+                    f"recipe's {artifact.size}"
+                ),
+                "archives",
+            )
+        verified_artifacts.append(
+            {
+                "archive": artifact.path,
+                "platform": f"{artifact.os}-{artifact.arch}",
+                "sha256": "sha256:" + expected,
+                "size": size,
+                "verified": True,
+            }
+        )
+    return verified_artifacts
+
+
+def _byoa_release(raw: Mapping[str, Any], digest: str) -> Optional[AgentReleaseV1]:
+    """Build one participant-installed (BYOA) release from a recipe declaration."""
+    framework = str(raw.get("framework") or raw.get("agent_id") or "").strip().lower()
+    if not framework or framework == "code4me2-agent":
+        return None
+    version = str(raw.get("version") or "").strip()
+    if not version:
+        raise ManifestImportError(
+            "INVALID_MANIFEST",
+            f"agent {framework!r} declares no version",
+            "agents.version",
+        )
+    try:
+        adapter = (
+            AdapterRef.model_validate(dict(raw["adapter"]))
+            if isinstance(raw.get("adapter"), Mapping)
+            else None
+        )
+        bindings = [
+            AgentConfigBinding.model_validate(dict(item))
+            for item in (raw.get("byoa_config") or [])
+        ]
+        command_args = [str(item) for item in (raw.get("agent_command_args") or [])]
+    except (TypeError, ValueError) as error:
+        raise ManifestImportError(
+            "INVALID_MANIFEST",
+            f"agent {framework!r} declaration is invalid: {error}",
+            "agents",
+        ) from error
+    declaration_digest = manifest_digest(dict(raw))
+    return AgentReleaseV1(
+        agent_id=framework,
+        release_id=f"{framework}-{version}-{declaration_digest[7:19]}",
         version=version,
-        digest=digest,
+        display=ReleaseDisplay(name=f"{framework} {version}", vendor=framework),
+        source_type=DistributionSourceType.BUNDLED,
+        source_manifest_digest=declaration_digest,
+        distribution_mode=DistributionMode.BYOA_EXTERNAL,
+        agent_package=framework,
+        agent_command=str(raw.get("agent_command") or "").strip() or None,
+        agent_command_args=command_args,
+        byoa_config=bindings,
+        adapter=adapter,
+        created_at=datetime.now(timezone.utc),
     )
 
 
-def build_manifest_release(
+def build_manifest_releases(
     manifest: Mapping[str, Any],
     *,
-    artifact_root: Optional[str | Path] = None,
-    artifact_sizes: Optional[Mapping[str, Any]] = None,
+    verified: Optional[VerifiedArchives] = None,
 ) -> ManifestImportPlan:
-    """Build the :class:`AgentReleaseV1` a build manifest describes.
+    """Build the release(s) a recipe plus its verified archive bytes describe.
 
-    ``artifact_root`` is the directory the manifest's relative ``archive`` paths
-    are resolved against. When a listed archive exists there its real digest and
-    size are computed and the declared digest is verified; when it does not, the
-    declared digest is trusted but an explicit size must be supplied (from the
-    manifest itself or ``artifact_sizes``) -- a size is never invented.
+    ``verified`` maps each declared archive **basename** to ``(sha256, size)``
+    that the caller computed from the real bytes (an upload or a download). Every
+    declared archive must be present exactly once, every supplied archive must be
+    declared, and each must match the recipe. Any failure rejects the whole import.
     """
     if not isinstance(manifest, Mapping):
         raise ManifestImportError(
-            "INVALID_MANIFEST", "manifest must be a JSON object", "manifest"
+            "INVALID_MANIFEST", "recipe must be a JSON object", "manifest"
         )
+    if manifest.get("manifest_version") not in (None, 1, "1"):
+        raise ManifestImportError(
+            "INVALID_MANIFEST", "unsupported manifest_version", "manifest_version"
+        )
+    tests = recipe_tests(manifest)
+
     raw_artifacts = manifest.get("artifacts")
     if not isinstance(raw_artifacts, list) or not raw_artifacts:
         raise ManifestImportError(
-            "INVALID_MANIFEST",
-            "manifest declares no artifacts",
-            "artifacts",
+            "INVALID_MANIFEST", "recipe declares no artifacts", "artifacts"
         )
 
     digest = manifest_digest(manifest)
     agent_id, release_id, version = _derive_identity(manifest, digest)
-    root = Path(artifact_root) if artifact_root is not None else None
-    sizes = dict(artifact_sizes or {})
 
     artifacts: list[DistributionArtifact] = []
-    skipped: list[SkippedArtifact] = []
-    seen: set[tuple[str, str]] = set()
-
+    declared_names: set[str] = set()
+    seen_platforms: set[tuple[str, str]] = set()
     for index, raw in enumerate(raw_artifacts):
         if not isinstance(raw, Mapping):
             raise ManifestImportError(
@@ -293,113 +409,85 @@ def build_manifest_release(
                 "each artifacts[] entry must be an object",
                 f"artifacts[{index}]",
             )
-        raw_platform = raw.get("platform")
-        raw_arch = raw.get("architecture")
-        os_name = _normalize_os(raw_platform)
-        arch = _normalize_arch(raw_arch)
+        os_name = _normalize_os(raw.get("platform"))
+        arch = _normalize_arch(raw.get("architecture"))
         platform = f"{os_name}-{arch}"
-        if (os_name, arch) in seen:
+        if (os_name, arch) in seen_platforms:
             raise ManifestImportError(
                 "INVALID_MANIFEST",
                 f"duplicate artifact for platform {platform!r}",
                 f"artifacts[{index}]",
             )
-        seen.add((os_name, arch))
+        seen_platforms.add((os_name, arch))
 
-        archive = str(raw.get("archive") or "").strip()
-        declared = _bare_digest(raw.get("sha256"))
-        archive_path = _resolve_archive(root, archive)
-
-        if declared is None or declared == PLACEHOLDER_DIGEST:
-            if archive_path is not None:
-                raise ManifestImportError(
-                    "DIGEST_MISMATCH",
-                    (
-                        f"artifact {archive!r} exists on disk but the manifest "
-                        "declares a placeholder digest; a real artifact must "
-                        "carry its real sha256"
-                    ),
-                    f"artifacts[{index}].sha256",
-                )
-            # A placeholder digest is a platform the build did not produce. It is
-            # excluded explicitly instead of being imported as a fake pin.
-            skipped.append(
-                SkippedArtifact(
-                    platform=platform,
-                    archive=archive,
-                    reason="manifest digest is a placeholder (platform not built)",
-                )
+        archive = _archive_basename(raw.get("archive"), f"artifacts[{index}].archive")
+        if archive in declared_names:
+            raise ManifestImportError(
+                "DUPLICATE_ARCHIVE",
+                f"recipe declares archive {archive!r} more than once",
+                f"artifacts[{index}].archive",
             )
-            continue
+        declared_names.add(archive)
 
-        if archive_path is not None:
-            real = _file_digest(archive_path)
-            if real != declared:
-                raise ManifestImportError(
-                    "DIGEST_MISMATCH",
-                    (
-                        f"artifact {archive!r} digest {real} does not match the "
-                        f"manifest's {declared}"
-                    ),
-                    f"artifacts[{index}].sha256",
-                )
-            size = archive_path.stat().st_size
-        else:
-            size = _as_size(raw.get("size"))
-            if size is None:
-                size = _size_from_supplied(
-                    archive=archive,
-                    platform=platform,
-                    raw_platform=str(raw_platform or ""),
-                    raw_arch=str(raw_arch or ""),
-                    sizes=sizes,
-                )
-            if size is None:
-                raise ManifestImportError(
-                    "SIZE_MISSING",
-                    (
-                        f"artifact {archive or platform!r} is not available under "
-                        "the artifact root and the manifest/caller supplies no "
-                        "size; provide artifact_sizes for it"
-                    ),
-                    f"artifacts[{index}].size",
-                )
-
-        executable = raw.get("executable")
+        declared = _bare_digest(raw.get("sha256"))
+        if declared is None or declared == PLACEHOLDER_DIGEST:
+            raise ManifestImportError(
+                "PLACEHOLDER_DIGEST",
+                (
+                    f"artifact {archive!r} declares a placeholder or malformed "
+                    "sha256; a shipped archive must carry its real digest"
+                ),
+                f"artifacts[{index}].sha256",
+            )
+        declared_size = _as_size(raw.get("size"))
+        if declared_size is None:
+            raise ManifestImportError(
+                "INVALID_MANIFEST",
+                f"artifact {archive!r} declares no positive size",
+                f"artifacts[{index}].size",
+            )
         artifacts.append(
             DistributionArtifact(
                 os=os_name,
                 arch=arch,
-                path=archive or f"code4me-runtime/{platform}",
+                path=archive,
                 sha256="sha256:" + declared,
-                size=size,
-                executable=str(executable).strip() if executable else None,
-                execution=PackagedExecution.model_validate(raw["execution"]) if raw.get("execution") else None,
+                size=declared_size,
+                executable=(
+                    str(raw.get("executable")).strip() if raw.get("executable") else None
+                ),
             )
         )
 
-    if not artifacts:
-        raise ManifestImportError(
-            "INCOMPLETE_ARTIFACTS",
-            "manifest has no built artifact with a real digest",
-            "artifacts",
-        )
+    verified_artifacts = _verify_archives(artifacts, verified or {})
 
-    release = AgentReleaseV1(
+    managed = AgentReleaseV1(
         agent_id=agent_id,
         release_id=release_id,
         version=version,
         display=ReleaseDisplay(
             name=f"Code4Me agent runtime {version}",
             vendor="code4me2",
-            description="Imported from the built runtime manifest.",
+            description="Imported from the produced recipe and its verified archives.",
         ),
         source_type=DistributionSourceType.BUNDLED,
         source_manifest_digest=digest,
         artifacts=artifacts,
-        adapter=_derive_adapter(
-            manifest, agent_id=agent_id, version=version, digest=digest
-        ),
+        adapter=_derive_adapter(manifest),
         created_at=datetime.now(timezone.utc),
     )
-    return ManifestImportPlan(release=release, manifest_digest=digest, skipped=skipped)
+    releases = [managed]
+    for raw in manifest.get("agents") or []:
+        if not isinstance(raw, Mapping):
+            raise ManifestImportError(
+                "INVALID_MANIFEST", "each agents[] entry must be an object", "agents"
+            )
+        byoa = _byoa_release(raw, digest)
+        if byoa is not None:
+            releases.append(byoa)
+
+    return ManifestImportPlan(
+        releases=releases,
+        manifest_digest=digest,
+        verified_artifacts=verified_artifacts,
+    )
