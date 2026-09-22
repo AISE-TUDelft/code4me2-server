@@ -46,6 +46,11 @@ router = APIRouter()
 # later at agent-startup time.
 SUPPORTED_FRAMEWORKS = ("code4me2-agent", "goose", "codex")
 
+# Cap on researcher-authored system prompts. Long enough for detailed study
+# instructions, short enough to keep them a bounded fraction of the context
+# window and avoid bloat in stored profile rows.
+SYSTEM_PROMPT_MAX_LENGTH = 4000
+
 
 class AgentProfilePayload(BaseModel):
     name: str = Field(..., min_length=1)
@@ -63,6 +68,20 @@ class AgentProfilePayload(BaseModel):
     # None = don't inject; let the provider use its own default.
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     max_context_tokens: Optional[int] = Field(default=None, ge=1)
+    # Researcher-authored system prompt for this arm. None/empty = the runtime's
+    # default prompt. When set it fully replaces that default; see the runtime.
+    system_prompt: Optional[str] = Field(default=None, max_length=SYSTEM_PROMPT_MAX_LENGTH)
+
+    @field_validator("system_prompt")
+    @classmethod
+    def validate_system_prompt(cls, value: Optional[str]) -> Optional[str]:
+        """Blank is fine (use the runtime default); non-blank is stored trimmed."""
+        if value is None:
+            return None
+        candidate = value.strip()
+        if not candidate:
+            return None
+        return candidate
 
     @field_validator("tools_json")
     @classmethod
@@ -125,6 +144,7 @@ def _profile_to_dict(profile: AgentProfile) -> dict[str, Any]:
         "is_active": profile.is_active,
         "temperature": profile.temperature,
         "max_context_tokens": profile.max_context_tokens,
+        "system_prompt": profile.system_prompt,
         "created_at": (
             profile.created_at.isoformat()
             if isinstance(profile.created_at, datetime)
@@ -230,6 +250,7 @@ def create_agent_profile(
             is_active=payload.is_active,
             temperature=payload.temperature,
             max_context_tokens=payload.max_context_tokens,
+            system_prompt=payload.system_prompt,
         )
         return JsonResponseWithStatus(
             status_code=201, content={"profile": _profile_to_dict(profile)}
@@ -274,6 +295,7 @@ def update_agent_profile(
             is_active=payload.is_active,
             temperature=payload.temperature,
             max_context_tokens=payload.max_context_tokens,
+            system_prompt=payload.system_prompt,
         )
         if profile is None:
             raise HTTPException(status_code=404, detail="Agent profile not found")

@@ -86,7 +86,8 @@
 }
 
 .profile-form input,
-.profile-form select {
+.profile-form select,
+.profile-form textarea {
   background-color: var(--background-color);
   border: 1px solid var(--border-color);
   border-radius: 6px;
@@ -95,8 +96,16 @@
   padding: 10px 12px;
 }
 
+.profile-form textarea {
+  resize: vertical;
+  min-height: 120px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
 .profile-form input:focus,
-.profile-form select:focus {
+.profile-form select:focus,
+.profile-form textarea:focus {
   border-color: var(--primary-color);
   outline: none;
   box-shadow: 0 0 0 2px rgba(66, 133, 244, 0.18);

@@ -304,6 +304,14 @@ class AcpAgentConfigGetResponse(BaseResponse):
     max_context_tokens: Optional[int] = Field(
         default=None, description="Per-turn context window; null = model maximum."
     )
+    system_prompt: Optional[str] = Field(
+        default=None,
+        description=(
+            "Researcher-authored system prompt for the assigned profile. Null = "
+            "use the runtime's built-in default prompt; when set it fully "
+            "replaces that default (the runtime only appends the workspace root)."
+        ),
+    )
     approval_policy: Optional[str] = Field(
         default=None, description="How tool calls should be confirmed."
     )

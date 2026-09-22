@@ -948,6 +948,13 @@ class OpenAICompatibleReactAdapter:
 
     def _system_context(self) -> str:
         workspace_root = self._config.workspace_root.as_posix()
+        # Researcher-authored prompt fully replaces the built-in default;
+        # only the workspace root is appended for technical correctness.
+        if self._config.adapter.system_prompt:
+            return (
+                f"{self._config.adapter.system_prompt}\n"
+                f"The current working directory and workspace root is {workspace_root}."
+            )
         return (
             "You are a helpful programming assistant. "
             f"The current working directory and workspace root is {workspace_root}. "

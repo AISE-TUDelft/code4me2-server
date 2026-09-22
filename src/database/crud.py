@@ -1221,6 +1221,7 @@ def create_agent_profile(
     is_active: bool = True,
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
 ) -> db_schemas.AgentProfile:
     profile = db_schemas.AgentProfile(
         profile_id=uuid.uuid4(),
@@ -1235,6 +1236,7 @@ def create_agent_profile(
         is_active=is_active,
         max_context_tokens=max_context_tokens,
         temperature=temperature,
+        system_prompt=system_prompt,
     )
     db.add(profile)
     db.commit()
@@ -1292,6 +1294,7 @@ def update_agent_profile(
     is_active: bool = True,
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
 ) -> Optional[db_schemas.AgentProfile]:
     result = (
         db.query(db_schemas.AgentProfile)
@@ -1309,6 +1312,7 @@ def update_agent_profile(
                 "is_active": is_active,
                 "max_context_tokens": max_context_tokens,
                 "temperature": temperature,
+                "system_prompt": system_prompt,
             }
         )
     )

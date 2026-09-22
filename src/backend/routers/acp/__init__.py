@@ -248,6 +248,7 @@ def get_acp_agent_config(
     approval_policy: Optional[str] = None
     temperature: Optional[float] = None
     max_context_tokens: Optional[int] = None
+    system_prompt: Optional[str] = None
     store_agent_content = False
 
     db = app.get_db_session()
@@ -275,6 +276,7 @@ def get_acp_agent_config(
                 approval_policy = profile.approval_policy
                 temperature = profile.temperature
                 max_context_tokens = profile.max_context_tokens
+                system_prompt = profile.system_prompt
                 max_iterations = max(1, int(profile.max_steps or max_iterations))
                 try:
                     parsed_tools = json.loads(profile.tools_json or "[]")
@@ -336,6 +338,7 @@ def get_acp_agent_config(
             max_context_tokens=max_context_tokens,
             approval_policy=approval_policy,
             temperature=temperature,
+            system_prompt=system_prompt,
             store_agent_content=store_agent_content,
         ),
     )

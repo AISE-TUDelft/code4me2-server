@@ -1,14 +1,21 @@
-# Local dev stack for machines without an NVIDIA GPU (Apple Silicon / aarch64,
-# or any x86_64 box without CUDA). Mirrors docker-compose.yml but:
-#   - builds backend/celery-worker from Dockerfile.cpu instead of Dockerfile
-#   - drops GPU device reservations, NVIDIA_*/CUDA_* env vars, and the NVML
-#     library bind-mounts
-#   - defaults PRELOAD_MODELS=false, since loading a multi-GB transformer
-#     model on CPU is impractical for local testing and unnecessary for
-#     exercising the agent subsystem (which calls an external OpenAI-compatible
-#     upstream such as OpenRouter, not a locally loaded model)
+# Development stack for macOS ARM64 (Apple Silicon) and other non-NVIDIA hosts.
 #
-# Usage: docker compose -f docker-compose.dev-arm.yaml up -d --build
+# This is the compose file the code's own setup docs reference
+# (code4me2_agent/cli.py: "docker compose -f docker-compose.dev-arm.yaml up")
+# but which was never added to the repo. It mirrors the production
+# docker-compose.yml except:
+#
+#   * backend / celery-worker build from Dockerfile.arm (CPU-only, linux/arm64)
+#   * no NVIDIA GPU reservations, no CUDA/NVML environment or volume mounts
+#   * no `huggingface-cli login --token $HF_TOKEN` gate in the entrypoint
+#   * service names, ports, env wiring and mount points are unchanged, so the
+#     rest of the stack (nginx, website, migrations, agent subsystem) is
+#     identical to production.
+#
+# Usage:
+#   docker compose -f docker-compose.dev-arm.yaml up -d
+#   docker compose -f docker-compose.dev-arm.yaml exec backend \
+#     python src/database/migration/migration_manager.py migrate
 
 services:
   db:
@@ -75,18 +82,14 @@ services:
   celery-worker:
     build:
       context: .
-      dockerfile: Dockerfile.cpu
+      dockerfile: Dockerfile.arm
     container_name: celery-worker
-    command: [
+    command:
+      [
         "/bin/bash",
         "-c",
-        "source activate myenv && celery -A celery_app.celery_app worker --loglevel=info -E -Q llm,db --concurrency=1 --prefetch-multiplier=1",
+        "celery -A celery_app.celery_app worker --loglevel=info -E -Q llm,db --concurrency=1 --prefetch-multiplier=1",
       ]
-    depends_on:
-      redis-celery:
-        condition: service_healthy
-      db:
-        condition: service_healthy
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=${REDIS_PORT}
@@ -104,17 +107,21 @@ services:
       - TRANSFORMERS_CACHE=/app/hf_cache
       - MODEL_CACHE_DIR=/app/hf_cache
       - CELERY_WORKER=true
-      - PRELOAD_MODELS=false
     volumes:
       - .:/app
       - ${DATA_DIR}/hf:/app/hf_cache
+    depends_on:
+      redis-celery:
+        condition: service_healthy
+      db:
+        condition: service_healthy
     healthcheck:
       test:
         [
           "CMD",
           "bash",
           "-c",
-          "source activate myenv && celery -A celery_app.celery_app status",
+          "celery -A celery_app.celery_app status",
         ]
       start_period: 0s
       interval: 60s
@@ -124,9 +131,14 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile.cpu
+      dockerfile: Dockerfile.arm
     container_name: backend
-    command: ["/bin/bash", "-c", "source activate myenv && python /app/src/main.py"]
+    command:
+      [
+        "/bin/bash",
+        "-c",
+        "python /app/src/main.py",
+      ]
     expose:
       - ${SERVER_PORT}
     ports:
@@ -143,6 +155,9 @@ services:
       - CELERY_BROKER_PORT=${CELERY_BROKER_PORT}
       - DB_HOST=db
       - DB_PORT=${DB_PORT}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
       - WEBSITE_HOST=website
       - WEBSITE_PORT=${WEBSITE_PORT}
       - PYTHONPATH=/app/src
@@ -151,8 +166,8 @@ services:
       - HF_HUB_CACHE=/app/hf_cache
       - TRANSFORMERS_CACHE=/app/hf_cache
       - MODEL_CACHE_DIR=/app/hf_cache
-      - PRELOAD_MODELS=false
-      # Agent subsystem (ACP) upstream provider config, see .env.example
+      - PRELOAD_MODELS=${PRELOAD_MODELS}
+      # Agent subsystem (ACP) upstream provider config
       - AGENT_UPSTREAM_BASE_URL=${AGENT_UPSTREAM_BASE_URL}
       - AGENT_UPSTREAM_API_KEY=${AGENT_UPSTREAM_API_KEY}
       - OLLAMA_API_KEY=${OLLAMA_API_KEY}
@@ -172,7 +187,13 @@ services:
       celery-worker:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--spider", "http://127.0.0.1:8008/api/ping"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--spider",
+          "http://127.0.0.1:8008/api/ping",
+        ]
       start_period: 0s
       interval: 60s
       timeout: 5s
@@ -215,3 +236,41 @@ services:
       interval: 60s
       timeout: 5s
       retries: 3
+
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/postgres
+  pgadmin_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/pgadmin
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/redis
+  redis_celery_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/redis_celery
+  website_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/website
+  celery_worker_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR}/celery_worker

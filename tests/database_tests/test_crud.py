@@ -1322,6 +1322,77 @@ def test_new_schema_features(db_session, test_project):
     assert stored_contexts["utils.py"] == ["def helper():", "    return True"]
 
 
+def test_agent_profile_system_prompt_round_trip(db_session):
+    """system_prompt column: create, update, and NULL handling."""
+    # 1. Create with a system prompt
+    profile = crud.create_agent_profile(
+        db_session,
+        name="test-prompted",
+        model="qwen2.5-coder:7b",
+        tools_json="[]",
+        approval_policy="per_step",
+        max_steps=10,
+        system_prompt="You are a code reviewer.",
+    )
+    assert profile.system_prompt == "You are a code reviewer."
+    fetched = crud.get_agent_profile_by_id(db_session, profile.profile_id)
+    assert fetched.system_prompt == "You are a code reviewer."
+
+    # 2. Create without a system prompt (None → NULL)
+    plain = crud.create_agent_profile(
+        db_session,
+        name="test-default",
+        model="qwen2.5-coder:7b",
+        tools_json="[]",
+        approval_policy="per_step",
+        max_steps=10,
+    )
+    assert plain.system_prompt is None
+    assert crud.get_agent_profile_by_id(db_session, plain.profile_id).system_prompt is None
+
+    # 3. Update from a value back to None
+    crud.update_agent_profile(
+        db_session,
+        profile_id=profile.profile_id,
+        name=profile.name,
+        model=profile.model,
+        tools_json=profile.tools_json,
+        approval_policy=profile.approval_policy,
+        max_steps=profile.max_steps,
+        system_prompt=None,
+    )
+    updated = crud.get_agent_profile_by_id(db_session, profile.profile_id)
+    assert updated.system_prompt is None
+
+    # 4. Update from None to a new prompt
+    crud.update_agent_profile(
+        db_session,
+        profile_id=plain.profile_id,
+        name=plain.name,
+        model=plain.model,
+        tools_json=plain.tools_json,
+        approval_policy=plain.approval_policy,
+        max_steps=plain.max_steps,
+        system_prompt="You are a security auditor. Be concise.",
+    )
+    updated_plain = crud.get_agent_profile_by_id(db_session, plain.profile_id)
+    assert updated_plain.system_prompt == "You are a security auditor. Be concise."
+
+    # 5. Long prompts accepted by DB (API payload validator enforces the 4000-char cap)
+    long_prompt = "x" * 10000
+    crud.update_agent_profile(
+        db_session,
+        profile_id=plain.profile_id,
+        name=plain.name,
+        model=plain.model,
+        tools_json=plain.tools_json,
+        approval_policy=plain.approval_policy,
+        max_steps=plain.max_steps,
+        system_prompt=long_prompt,
+    )
+    assert crud.get_agent_profile_by_id(db_session, plain.profile_id).system_prompt == long_prompt
+
+
 # ============================================================================
 # UTILITY FUNCTION TESTS
 # ============================================================================

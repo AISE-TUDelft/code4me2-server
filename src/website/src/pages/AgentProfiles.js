@@ -46,6 +46,7 @@ const EMPTY_FORM = {
   max_context_tokens: "",
   is_active: true,
   temperature: "", // blank = provider default (no override)
+  system_prompt: "",
 };
 
 const TEMPERATURE_MIN = 0;
@@ -58,6 +59,12 @@ const formatTools = (toolsJson) => {
   } catch (_) {
     return toolsJson || "";
   }
+};
+
+const formatPromptPreview = (prompt) => {
+  if (!prompt) return "default";
+  if (prompt.length > 48) return `${prompt.slice(0, 48)}…`;
+  return prompt;
 };
 
 const getProfileId = (profile) => profile.profile_id || profile.id || profile.name;
@@ -135,6 +142,9 @@ const AgentProfiles = () => {
     }
     if (form.base_url.trim() && !/^https?:\/\//i.test(form.base_url.trim())) {
       return "Base URL must start with http:// or https://";
+    }
+    if (form.system_prompt.length > 4000) {
+      return "System prompt must not exceed 4000 characters.";
     }
     // Guard against the obvious mistake of pasting the key itself. The backend
     // rejects this too; catching it here avoids a round-trip and, more
@@ -226,6 +236,7 @@ const AgentProfiles = () => {
         form.temperature === "" || form.temperature === null
           ? null
           : Number(form.temperature),
+      system_prompt: form.system_prompt.trim() || null,
     };
 
     const response = editingProfileId
@@ -271,6 +282,7 @@ const AgentProfiles = () => {
         profile.temperature === null || profile.temperature === undefined
           ? ""
           : profile.temperature,
+      system_prompt: profile.system_prompt || "",
     });
     setError("");
     setNotice("");
@@ -315,9 +327,10 @@ const AgentProfiles = () => {
           <h2>Agent Profiles</h2>
           <p>
             Define the experiment arms for agent runs: which runtime, which
-            OpenAI-compatible provider, which model, tools, approval policy and
-            step limit. A profile's settings are snapshotted onto each task when
-            it starts, so editing a profile never changes tasks already running.
+            OpenAI-compatible provider, which model, tools, approval policy,
+            system prompt and step limit. A profile's settings are snapshotted
+            onto each task when it starts, so editing a profile never changes
+            tasks already running.
           </p>
         </div>
         <button
@@ -527,6 +540,25 @@ const AgentProfiles = () => {
             />
           </label>
 
+          <label>
+            System prompt
+            <textarea
+              name="system_prompt"
+              className="system-prompt-textarea"
+              rows={6}
+              maxLength={4000}
+              placeholder="You are a helpful programming assistant. Respond conversationally ..."
+              value={form.system_prompt}
+              onChange={handleChange}
+              disabled={isSaving}
+            />
+            <p className="profile-field-hint">
+              Researcher-authored prompt that fully replaces the built-in
+              default for this arm. The runtime automatically appends the
+              workspace path. Leave blank to use the default.
+            </p>
+          </label>
+
           <label className="checkbox-label">
             <input
               name="is_active"
@@ -575,6 +607,7 @@ const AgentProfiles = () => {
                   <th>Tools</th>
                   <th>Steps</th>
                   <th>Temp</th>
+                  <th>Prompt</th>
                   <th>Active</th>
                   <th>Actions</th>
                 </tr>
@@ -595,6 +628,7 @@ const AgentProfiles = () => {
                         ? "default"
                         : profile.temperature}
                     </td>
+                    <td>{formatPromptPreview(profile.system_prompt)}</td>
                     <td>{profile.is_active === false ? "No" : "Yes"}</td>
                     <td>
                       <div className="table-actions">

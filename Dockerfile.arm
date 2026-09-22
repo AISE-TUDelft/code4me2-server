@@ -1,0 +1,30 @@
+# ARM64 / CPU development image for macOS (Apple Silicon) and other
+# non-NVIDIA hosts. The production Dockerfile (Dockerfile) is CUDA/x86_64-only;
+# this one builds for linux/arm64 with CPU-only wheels so the full stack runs
+# on a Mac via `docker compose -f docker-compose.dev-arm.yaml up -d`.
+#
+# Deliberately mirrors the production image's runtime surface (same WORKDIR,
+# PATH, PYTHONPATH usage) without CUDA/NVIDIA bits and without the forced
+# `huggingface-cli login` gate.
+
+FROM python:3.10-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH=/usr/local/bin:$PATH
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir uvicorn
+
+COPY . .
+
+EXPOSE 8008
+
+CMD ["python", "/app/src/main.py"]

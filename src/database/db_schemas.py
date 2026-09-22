@@ -775,6 +775,10 @@ class AgentProfile(Base):
     max_context_tokens = Column(
         Integer, nullable=True
     )  # per-turn rolling window; NULL = model max
+    # Researcher-authored system prompt for this arm. NULL = use the runtime's
+    # built-in default prompt. When set, it fully replaces that default; the
+    # runtime only appends the workspace root for technical correctness.
+    system_prompt = Column(Text, nullable=True)
     # Only active profiles are candidate arms for new A/B assignments. Inactive
     # profiles stay in the table (drafts, or arms retired mid-study) and existing
     # users keep any assignment already pinned to them.
