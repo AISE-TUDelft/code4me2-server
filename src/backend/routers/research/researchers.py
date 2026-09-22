@@ -1,16 +1,17 @@
-"""Administrator researcher enablement (P3).
+"""Administrator account management (P3).
 
-Mounted under ``/api/research/researchers``. An administrator flips the single
-``user.can_research`` flag that lets an account own private profiles and create
-studies. There is no self-service route: no non-administrator can change
-``can_research`` or ``is_admin``.
+Mounted under ``/api/research/researchers``. An administrator lists every
+account and flips the single ``user.can_research`` flag that lets an account own
+private profiles and create studies. There is no self-service route: no
+non-administrator can change ``can_research`` or ``is_admin``, and there is no
+account-search or admin-promotion endpoint.
 """
 
 from __future__ import annotations
 
 import uuid  # noqa: TC003 - FastAPI evaluates route annotations at runtime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
 from App import App
@@ -22,6 +23,10 @@ from backend.routers.analytics.auth_utils import (
 from database import crud
 
 router = APIRouter()
+
+#: Upper bound so one administrator request can never materialize every account
+#: ever created into a single response.
+MAX_ACCOUNT_PAGE = 500
 
 
 class ResearcherEnableRequest(BaseModel):
@@ -37,20 +42,31 @@ def _user_payload(user) -> dict:
         "name": user.name,
         "is_admin": bool(user.is_admin),
         "can_research": bool(user.can_research),
+        "verified": bool(user.verified),
     }
 
 
-@router.get("", summary="List enabled researcher accounts (admin)")
-def list_researchers(
+@router.get("", summary="List accounts (admin)")
+def list_accounts(
+    limit: int = Query(100, ge=1, le=MAX_ACCOUNT_PAGE),
     current_user: AuthenticatedUser = Depends(require_admin),
     app: App = Depends(App.get_instance),
 ):
+    """All accounts (newest first), so an administrator can enable researchers.
+
+    Despite the route name this is the full account list, not only the accounts
+    already enabled for research: the toggle in the admin UI needs both states.
+    """
     require_admin(current_user)
     db = app.get_db_session()
     try:
         return JsonResponseWithStatus(
             status_code=200,
-            content={"researchers": [ _user_payload(u) for u in crud.list_researchers(db)]},
+            content={
+                "researchers": [
+                    _user_payload(u) for u in crud.list_accounts(db, limit)
+                ]
+            },
         )
     finally:
         db.close()

@@ -1532,11 +1532,16 @@ def set_user_can_research(
     return user
 
 
-def list_researchers(db: Session) -> List[db_schemas.User]:
+def list_accounts(db: Session, limit: int = 100) -> List[db_schemas.User]:
+    """Every account, newest first, for the administrator account view.
+
+    The admin panel toggles ``can_research`` per account, so it needs the full
+    account list rather than only the already-enabled researchers.
+    """
     return (
         db.query(db_schemas.User)
-        .filter(db_schemas.User.can_research.is_(True))
-        .order_by(db_schemas.User.name)
+        .order_by(db_schemas.User.joined_at.desc())
+        .limit(limit)
         .all()
     )
 

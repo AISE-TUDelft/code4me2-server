@@ -1466,6 +1466,36 @@ export const researchRequest = async (
 };
 
 /**
+ * Multipart POST. The browser sets the multipart boundary itself, so no
+ * Content-Type header is set here; the same error normalisation as
+ * ``researchRequest`` is applied.
+ */
+export const researchUpload = async (path, formData, { label } = {}) => {
+  try {
+    const response = await fetch(`${RESEARCH_BASE()}${path}`, {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+    });
+    // 204 has no body to parse.
+    const payload =
+      response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, ...normalizeRequestError(payload, response) };
+    }
+    return { ok: true, data: payload, status: response.status };
+  } catch (e) {
+    console.error(`Error ${label || path}:`, e);
+    return {
+      ok: false,
+      error: `Failed to ${label || "complete request"}`,
+      status: null,
+      errors: [],
+    };
+  }
+};
+
+/**
  * List study identities.
  *
  * NOTE: the research API exposes a study index plus per-study lookups; no
@@ -1832,3 +1862,104 @@ export const getStudyAgentEvaluation = async (studyId) => {
     return { ok: false, error: "Failed to load agent evaluation" };
   }
 };
+
+// ── Administrator panel ─────────────────────────────────────────────────────
+//
+// Backs the admin-only Dashboard views (AdminResearchers, AdminConnections and
+// AdminAgents). Every endpoint is administrator-only server-side. All calls go
+// through `researchRequest`, so a typed 422 is normalized into `errors` and
+// never reaches JSX as a raw FastAPI detail array.
+
+// Every account (not only enabled researchers), newest first. The route keeps
+// its historical `/researchers` name but returns the full account list.
+export const listAccounts = async ({ limit = 100 } = {}) => {
+  const query = limit ? `?limit=${encodeURIComponent(limit)}` : "";
+  const result = await researchRequest(`/researchers${query}`, {
+    label: "load accounts",
+  });
+  return result.ok
+    ? { ok: true, data: result.data.researchers || [], status: result.status }
+    : result;
+};
+
+// Toggle the single can_research flag. The server re-checks admin, so a 403 is
+// surfaced as a normal error rather than swallowed.
+export const setResearcherEnabled = async (userId, canResearch) =>
+  researchRequest(`/researchers/${encodeURIComponent(userId)}`, {
+    method: "PUT",
+    body: { can_research: !!canResearch },
+    label: "update researcher access",
+  });
+
+export const createProviderConnection = async (connection) =>
+  researchRequest("/provider-connections", {
+    method: "POST",
+    body: connection,
+    label: "create provider connection",
+  });
+
+export const updateProviderConnection = async (connectionId, connection) =>
+  researchRequest(
+    `/provider-connections/${encodeURIComponent(connectionId)}`,
+    {
+      method: "PUT",
+      body: connection,
+      label: "update provider connection",
+    },
+  );
+
+export const deleteProviderConnection = async (connectionId) =>
+  researchRequest(
+    `/provider-connections/${encodeURIComponent(connectionId)}`,
+    { method: "DELETE", label: "delete provider connection" },
+  );
+
+// Registered releases (admin view). The list is compact, so the release detail
+// endpoint supplies the digest-pinned artifacts and adapter identity.
+export const listRegisteredReleases = async (agentId) => {
+  const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  const result = await researchRequest(`/agents/releases${query}`, {
+    label: "load registered releases",
+  });
+  return result.ok
+    ? { ok: true, data: result.data.releases || [], status: result.status }
+    : result;
+};
+
+export const getRegisteredRelease = async (releaseId) => {
+  const result = await researchRequest(
+    `/agents/releases/${encodeURIComponent(releaseId)}`,
+    { label: "load registered release" },
+  );
+  return result.ok
+    ? { ok: true, release: result.data.release, model: result.data.model }
+    : result;
+};
+
+// Import a build runtime manifest together with the exact archive bytes it
+// declares. The server recomputes every digest and size; a missing, duplicate,
+// unexpected or mismatching upload rejects the whole import. There is no
+// digest-trusting path.
+export const importAgentRelease = async ({ manifest, archives } = {}) => {
+  const form = new FormData();
+  form.append(
+    "manifest",
+    typeof manifest === "string" ? manifest : JSON.stringify(manifest ?? {}),
+  );
+  (archives || []).forEach((file) => {
+    if (file) form.append("archives", file, file.name);
+  });
+  return researchUpload("/agents/releases/import", form, {
+    label: "import agent release",
+  });
+};
+
+export const importAgentReleaseUrl = async ({ manifest_url, archive_urls }) =>
+  researchRequest("/agents/releases/import-url", {
+    method: "POST", body: { manifest_url, archive_urls }, label: "import release URLs",
+  });
+
+export const disableAgentRelease = async (releaseId) =>
+  researchRequest(`/agents/releases/${encodeURIComponent(releaseId)}/disable`, {
+    method: "POST", label: "disable release",
+  });

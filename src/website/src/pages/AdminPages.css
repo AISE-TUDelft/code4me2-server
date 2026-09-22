@@ -1,0 +1,125 @@
+/* Shared styles for the administrator Dashboard views. */
+
+.admin-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.admin-section {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px var(--shadow-color);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+}
+
+.admin-section h3 {
+  color: var(--text-color);
+  margin: 0;
+}
+
+.admin-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.admin-table th,
+.admin-table td {
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-color);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-table th {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.admin-table code {
+  overflow-wrap: anywhere;
+}
+
+.admin-toggle {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.admin-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-status-badge {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.admin-status-badge.ready {
+  background-color: rgba(46, 160, 67, 0.15);
+  color: #2ea043;
+}
+
+.admin-status-badge.not-ready {
+  background-color: rgba(210, 153, 34, 0.18);
+  color: #d29922;
+}
+
+.admin-status-badge.not-built {
+  background-color: rgba(207, 34, 46, 0.15);
+  color: #cf222e;
+}
+
+.admin-status-badge.declared {
+  background-color: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+}
+
+.admin-form-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.admin-form-grid label {
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 4px;
+}
+
+.admin-form-grid input,
+.admin-form-grid textarea {
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-color);
+  font: inherit;
+  padding: 8px;
+}
+
+.admin-form-grid .admin-span {
+  grid-column: 1 / -1;
+}
+
+.admin-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin: 0;
+}

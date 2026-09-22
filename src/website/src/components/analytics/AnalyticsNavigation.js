@@ -52,6 +52,27 @@ const AnalyticsNavigation = ({ activeView, onViewChange, user }) => {
       description: 'Create and manage server/config modules',
       adminOnly: true
     });
+    navigationItems.push({
+      id: 'admin-researchers',
+      label: 'Accounts',
+      icon: '👤',
+      description: 'List accounts and grant researcher access',
+      adminOnly: true
+    });
+    navigationItems.push({
+      id: 'admin-connections',
+      label: 'Provider Connections',
+      icon: '🔌',
+      description: 'Manage provider endpoints and secret names',
+      adminOnly: true
+    });
+    navigationItems.push({
+      id: 'admin-agents',
+      label: 'Agent Catalogue',
+      icon: '📦',
+      description: 'Import tested releases and disable versions',
+      adminOnly: true
+    });
   }
 
   // Researcher surfaces: administrators and administrator-enabled researchers.
