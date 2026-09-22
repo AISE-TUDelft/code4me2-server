@@ -1,12 +1,10 @@
 """Runtime package API (Issue 11).
 
-Mounted under ``/research/packages``. Admin-only: it records package manifests.
-Handlers are thin; the packaging domain logic lives in
-:mod:`research.study.packaging`.
+Mounted under ``/research/packages``. All endpoints are admin-only: they record
+artifact/manifest evidence, so they are never exposed to participants. Handlers
+are thin; the packaging domain logic lives in :mod:`research.study.packaging`.
 
-There is no conformance-receipt or qualification endpoint. A release becomes
-usable only through ``POST /research/agents/releases/import``, which verifies the
-producer's recipe bytes and records the recipe's self-check verdict.
+Package metadata cannot create or qualify a release; import verified bytes first.
 """
 
 from __future__ import annotations
@@ -18,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from App import App
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.analytics.auth_utils import AuthenticatedUser, require_admin
+from research.study.agents import store as agents_store
 from research.study.packaging import store as packaging_store
 from research.study.packaging.models import (
     RuntimeManifestV2,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
@@ -56,6 +55,8 @@ def register_package(
                 status_code=422,
                 detail="manifest_digest does not match the canonical manifest content",
             )
+        if agents_store.get_release(db, payload.release_id) is None:
+            raise HTTPException(status_code=404, detail="Import the verified release first")
         row = packaging_store.upsert_package(db, payload)
         return JsonResponseWithStatus(
             status_code=201, content=packaging_store.package_summary(row)

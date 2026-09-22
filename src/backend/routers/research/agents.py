@@ -1,24 +1,21 @@
 """Admin and researcher API for the agent registry and capability contract.
 
-Mounted under ``/api/research/agents``. Release import and operator views are
-admin-only; the release catalogue and the distribution views are read-only,
-non-secret and researcher-readable. The handlers are intentionally thin:
-identity derivation, platform selection and coverage live in
-:mod:`research.study.agents.registry` and
-:mod:`research.study.agents.manifest_import`, and the SQLAlchemy session is
+Mounted under ``/api/research/agents``. Release import (manifest + verified
+archive bytes), platform tests and operator views are admin-only; the
+release catalogue and the distribution views are read-only, non-secret and
+researcher-readable. The handlers are intentionally thin: identity derivation,
+platform selection and coverage live in :mod:`research.study.agents.registry`
+and :mod:`research.study.agents.manifest_import`, and the SQLAlchemy session is
 supplied by ``App.get_db_session`` and passed to the store helpers.
 
-A release enters the catalogue only through ``POST /releases/import`` (local
-multipart recipe + archives) or ``POST /releases/import/deployed`` (recipe URL +
-archive URLs the server downloads and hashes itself). The recipe's self-check
-verdict is recorded as the release's usability. Release records are digest-pinned
-and immutable; editing bytes requires a new ``release_id``. There is no separate
-approval step, only a one-way administrator disable.
+Release records are digest-pinned and immutable. Editing a release's bytes
+requires a new ``release_id``. There is no unverified registration path: the
+only way a release enters the catalogue is ``POST /releases/import`` with the
+exact archive bytes, whose digests become the plugin's bootstrap pins.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -26,12 +23,11 @@ import tempfile
 import uuid  # noqa: TC003 - FastAPI evaluates route annotations at runtime
 from pathlib import Path
 from typing import Any, Optional
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
-from urllib.request import Request, build_opener
+from urllib.parse import unquote, urljoin, urlsplit
 
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from App import App
@@ -51,8 +47,7 @@ from research.study.agents.distributions import (
 from research.study.agents.enums import DistributionMode, RegistryReasonCode
 from research.study.agents.manifest_import import (
     ManifestImportError,
-    build_manifest_releases,
-    recipe_tests,
+    build_manifest_release,
 )
 from research.study.agents.models import (
     AgentReleaseV1,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
@@ -80,20 +75,7 @@ class SnapshotUploadRequest(BaseModel):
     snapshot: CapabilitySnapshotV1
 
 
-class DeployedImportRequest(BaseModel):
-    """Import a recipe and its archives from URLs the server downloads itself.
-
-    CI publishes the recipe and the platform ZIPs to a GitHub Release; the
-    administrator supplies those URLs. The server downloads the recipe, then
-    downloads every archive, recomputes its SHA-256 and size, and compares them
-    with the recipe. The URLs are never trusted to be consistent with each other.
-    """
-
-    manifest_url: str
-    archive_urls: list[str]
-
-
-#: Chunk size used while streaming an uploaded/downloaded archive to disk.
+#: Chunk size used while streaming an uploaded archive to disk.
 _IMPORT_CHUNK_BYTES = 1024 * 1024
 
 
@@ -109,83 +91,35 @@ def _positive_int_env(name: str, default: int) -> int:
 
 
 def import_limits() -> tuple[int, int]:
-    """``(max archive bytes, max total bytes)`` for one import."""
+    """``(max archive bytes, max total bytes)`` for one multipart import."""
     return (
-        _positive_int_env("RESEARCH_IMPORT_MAX_ARCHIVE_BYTES", 512 * 1024 * 1024),
-        _positive_int_env("RESEARCH_IMPORT_MAX_TOTAL_BYTES", 2 * 1024 * 1024 * 1024),
+        _positive_int_env("RESEARCH_IMPORT_MAX_ARCHIVE_BYTES", 256 * 1024 * 1024),
+        _positive_int_env("RESEARCH_IMPORT_MAX_TOTAL_BYTES", 1024 * 1024 * 1024),
     )
 
 
-def _import_detail(code: str, message: str, field: str = "") -> dict[str, Any]:
-    return {"code": code, "message": message, "field": field}
-
-
-def _hash_and_size(path: Path) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(_IMPORT_CHUNK_BYTES), b""):
-            size += len(chunk)
-            digest.update(chunk)
-    return digest.hexdigest(), size
-
-
-def _safe_origin(url: str) -> None:
-    """Reject non-HTTPS (except loopback) or credential-bearing URLs."""
-    parsed = urlsplit(url)
-    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
-        raise HTTPException(
-            status_code=422,
-            detail=_import_detail("INVALID_URL", f"unsupported URL {url!r}", "urls"),
-        )
-    if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        raise HTTPException(
-            status_code=422,
-            detail=_import_detail(
-                "INVALID_URL", "plain HTTP is only permitted on loopback", "urls"
-            ),
-        )
-
-
-def _download(url: str, destination: Path, max_bytes: int) -> tuple[str, int]:
-    """Download ``url`` to ``destination`` and return its recomputed digest and size."""
-    _safe_origin(url)
-    request = Request(url, headers={"Accept": "*/*"})
+def _parse_manifest_field(raw: str) -> dict[str, Any]:
     try:
-        with build_opener().open(request, timeout=60) as response:
-            size = 0
-            with destination.open("wb") as sink:
-                while True:
-                    chunk = response.read(_IMPORT_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > max_bytes:
-                        raise HTTPException(
-                            status_code=413,
-                            detail=_import_detail(
-                                "ARCHIVE_TOO_LARGE",
-                                f"{url!r} exceeds the {max_bytes}-byte import limit",
-                                "archive_urls",
-                            ),
-                        )
-                    sink.write(chunk)
-    except HTTPException:
-        raise
-    except (HTTPError, URLError, OSError) as error:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as error:
         raise HTTPException(
             status_code=422,
-            detail=_import_detail("DOWNLOAD_FAILED", f"could not fetch {url!r}: {error}", "urls"),
+            detail={
+                "code": "INVALID_MANIFEST",
+                "message": f"the manifest field is not valid JSON: {error}",
+                "field": "manifest",
+            },
         ) from error
-    return _hash_and_size(destination)
-
-
-def _registry_from_db(db: Any) -> AgentRegistry:
-    """Load a registry view so domain checks see existing releases."""
-    registry = AgentRegistry()
-    for row in store.list_releases(db):
-        registry.register_release(store.row_to_release(row))
-    return registry
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_MANIFEST",
+                "message": "the manifest field must be a JSON object",
+                "field": "manifest",
+            },
+        )
+    return parsed
 
 
 def _registry_with_release(release: AgentReleaseV1) -> AgentRegistry:
@@ -261,9 +195,10 @@ def _release_catalogue_entry(row: Any) -> dict[str, Any]:
 
     Derived, read-only fields only: no artifact bytes, command line, endpoint or
     credential material. ``qualification_status`` is recomputed from the stored
-    conformance evidence so legacy rows stay truthful (ISSUE-11).
+    producer test results so legacy rows stay unqualified.
     """
     release = store.row_to_release(row)
+    summary = store.release_summary(row)
     return {
         "release_id": release.release_id,
         "version": release.version,
@@ -272,148 +207,62 @@ def _release_catalogue_entry(row: Any) -> dict[str, Any]:
         "qualification_status": release.qualification_status.value,
         "supported_platforms": distribution_supported_platforms(release),
         "verified_approval_options": verified_approval_options(row.release_json),
+        "tests": summary["tests"],
         "is_byoa": release.is_byoa,
     }
 
 
-def _parse_recipe_field(raw: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError) as error:
-        raise HTTPException(
-            status_code=422,
-            detail=_import_detail(
-                "INVALID_MANIFEST", f"the recipe field is not valid JSON: {error}", "recipe"
-            ),
-        ) from error
-    if not isinstance(parsed, dict):
-        raise HTTPException(
-            status_code=422,
-            detail=_import_detail(
-                "INVALID_MANIFEST", "the recipe field must be a JSON object", "recipe"
-            ),
-        )
-    return parsed
-
-
-def _persist_import(db: Any, plan: Any, tests: dict[str, Any]) -> tuple[list[Any], bool]:
-    """Persist every release the plan describes, idempotently.
-
-    Identity conflicts (same ``release_id``, different digest) are rejected; an
-    exact re-import returns the existing rows. No row is written before the whole
-    recipe and every archive have been verified.
-    """
-    registry = _registry_from_db(db)
-    rows: list[Any] = []
-    created = False
-    for release in plan.releases:
-        existing = registry.get_release(release.agent_id, release.release_id)
-        if existing is not None:
-            if existing.digest_identity != release.digest_identity:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": RegistryReasonCode.DUPLICATE_RELEASE.value,
-                        "message": (
-                            "release_id is already registered for this agent with "
-                            "a different recipe digest"
-                        ),
-                        "field": "release_id",
-                    },
-                )
-            row = store.get_release(db, release.release_id)
-            if row is not None:
-                rows.append(row)
-            continue
-
-        result = registry.register_release(release)
-        if not result.accepted:
-            raise HTTPException(status_code=422, detail=_issue_payload(result.issue))
-        try:
-            row = store.upsert_release(
-                db, release, evidence={"tests": tests}
-            )
-        except IntegrityError as error:
-            db.rollback()
-            raise HTTPException(
-                status_code=409, detail="release recipe digest already exists"
-            ) from error
-        rows.append(row)
-        created = True
-    return rows, created
-
-
-def _import_verified(recipe: dict[str, Any], verified: dict[str, tuple[str, int]], app: App):
-    try:
-        tests = recipe_tests(recipe)
-        plan = build_manifest_releases(recipe, verified=verified)
-    except ManifestImportError as error:
-        raise HTTPException(
-            status_code=422,
-            detail=_import_detail(error.code, error.message, error.field),
-        ) from error
-
-    db = app.get_db_session()
-    try:
-        rows, created = _persist_import(db, plan, tests)
-        return JsonResponseWithStatus(
-            status_code=201 if created else 200,
-            content={
-                "accepted": True,
-                "created": created,
-                "releases": [store.release_summary(row) for row in rows],
-                "verified_artifacts": plan.verified_artifacts,
-            },
-        )
-    finally:
-        db.close()
-
-
 @router.post(
     "/releases/import",
-    summary="Import a recipe and its archive bytes (multipart)",
+    summary="Import a release from a build manifest and its verified archives",
 )
 async def import_release(
-    recipe: str = Form(...),
+    manifest: str = Form(...),
     archives: Optional[list[UploadFile]] = File(None),
     current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
-    """Import a producer recipe **and its archive bytes**.
+    """Import a build manifest **and its archive bytes** as a pinned release.
 
-    Multipart: ``recipe`` is the producer's recipe JSON and ``archives`` are the
-    exact ZIPs it declares (basenames). Every file is streamed to a bounded
+    Multipart: ``manifest`` is the producer manifest JSON and ``archives`` are
+    the exact ZIPs it declares (basenames). Every file is streamed to a bounded
     temporary file, then its size and SHA-256 are recomputed and must match the
-    recipe. A missing, duplicate or unexpected upload, a digest/size mismatch, a
-    recipe whose self-check did not pass, or an import with no bytes rejects the
-    entire import and **no release row is created**. Admin-only.
+    manifest. Exactly the declared basenames are required: a missing, duplicate
+    or unexpected upload, a digest/size mismatch, or a placeholder digest
+    rejects the entire import and **no release row is created**.
+
+    The release identity is the canonical manifest digest; each artifact's
+    digest is the ZIP digest the plugin's bootstrap manifest pins. Admin-only;
+    this is the only way a release enters the catalogue.
     """
     require_admin(current_user)
 
-    parsed = _parse_recipe_field(recipe)
+    parsed = _parse_manifest_field(manifest)
     max_archive, max_total = import_limits()
     uploaded = archives or []
     temp_root = Path(tempfile.mkdtemp(prefix="code4me-release-import-"))
-    verified: dict[str, tuple[str, int]] = {}
+    stored: dict[str, Path] = {}
     total_bytes = 0
     try:
         for upload in uploaded:
-            name = Path(upload.filename or "").name
-            if not name:
+            name = upload.filename or ""
+            if not name or name in {".", ".."} or name != Path(name).name or "\\" in name:
                 raise HTTPException(
                     status_code=422,
-                    detail=_import_detail(
-                        "INVALID_UPLOAD", "every uploaded archive needs a filename", "archives"
-                    ),
+                    detail={
+                        "code": "INVALID_UPLOAD",
+                        "message": "every uploaded archive needs a filename",
+                        "field": "archives",
+                    },
                 )
-            if name in verified:
+            if name in stored:
                 raise HTTPException(
                     status_code=422,
-                    detail=_import_detail(
-                        "DUPLICATE_ARCHIVE",
-                        f"archive {name!r} was uploaded more than once",
-                        "archives",
-                    ),
+                    detail={
+                        "code": "DUPLICATE_ARCHIVE",
+                        "message": f"archive {name!r} was uploaded more than once",
+                        "field": "archives",
+                    },
                 )
             destination = temp_root / name
             size = 0
@@ -427,132 +276,142 @@ async def import_release(
                     if size > max_archive:
                         raise HTTPException(
                             status_code=413,
-                            detail=_import_detail(
-                                "ARCHIVE_TOO_LARGE",
-                                f"archive {name!r} exceeds the {max_archive}-byte limit",
-                                "archives",
-                            ),
+                            detail={
+                                "code": "ARCHIVE_TOO_LARGE",
+                                "message": (
+                                    f"archive {name!r} exceeds the {max_archive}-byte "
+                                    "per-archive import limit"
+                                ),
+                                "field": "archives",
+                            },
                         )
                     if total_bytes > max_total:
                         raise HTTPException(
                             status_code=413,
-                            detail=_import_detail(
-                                "IMPORT_TOO_LARGE",
-                                f"the import exceeds the {max_total}-byte total limit",
-                                "archives",
-                            ),
+                            detail={
+                                "code": "IMPORT_TOO_LARGE",
+                                "message": (
+                                    f"the import exceeds the {max_total}-byte total limit"
+                                ),
+                                "field": "archives",
+                            },
                         )
                     sink.write(chunk)
-            verified[name] = _hash_and_size(destination)
+            stored[name] = destination
 
-        if not verified:
+        try:
+            plan = build_manifest_release(parsed, archives=stored)
+        except ManifestImportError as error:
             raise HTTPException(
                 status_code=422,
-                detail=_import_detail(
-                    "ARTIFACT_MISSING",
-                    "the import carries no archive bytes",
-                    "archives",
-                ),
+                detail={
+                    "code": error.code,
+                    "message": error.message,
+                    "field": error.field,
+                },
+            ) from error
+
+        db = app.get_db_session()
+        try:
+            rows = []
+            created = False
+            for release in [plan.release, *plan.byoa_releases]:
+                existing = store.get_release(db, release.release_id)
+                if existing is not None and (
+                    existing.agent_id != release.agent_id
+                    or existing.source_manifest_digest != release.source_manifest_digest
+                ):
+                    raise HTTPException(status_code=409, detail={"code": "DUPLICATE_RELEASE"})
+                result = AgentRegistry().register_release(release)
+                if not result.accepted:
+                    raise HTTPException(status_code=422, detail=_issue_payload(result.issue))
+                created |= existing is None
+                rows.append(store.upsert_release(db, release, commit=False))
+            db.commit()
+            return JsonResponseWithStatus(
+                status_code=201 if created else 200,
+                content={
+                    "accepted": True,
+                    "created": created,
+                    "release": store.release_summary(rows[0]),
+                    "releases": [store.release_summary(row) for row in rows],
+                    "verified_artifacts": plan.verified_artifacts,
+                },
             )
-        return _import_verified(parsed, verified, app)
+        except IntegrityError as error:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="release identity already exists") from error
+        except HTTPException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-@router.post(
-    "/releases/import/deployed",
-    summary="Import a recipe and its archives from URLs",
-)
-def import_release_deployed(
-    payload: DeployedImportRequest,
+class ReleaseUrlImport(BaseModel):
+    manifest_url: str
+    archive_urls: list[str] = Field(min_length=1, max_length=16)
+
+
+@router.post("/releases/import-url", summary="Import immutable release assets over HTTPS")
+async def import_release_url(
+    payload: ReleaseUrlImport,
     current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
-    """Import a recipe and its archives by URL (the deployed/CI path).
-
-    The server downloads the recipe, then each archive, and **computes** the
-    SHA-256 and size itself before comparing them with the recipe. Nothing about
-    the URLs is trusted. Admin-only.
-    """
     require_admin(current_user)
-
+    allowed_hosts = {
+        host.strip().lower() for host in os.environ.get(
+            "RESEARCH_RELEASE_HOSTS",
+            "github.com,release-assets.githubusercontent.com,objects.githubusercontent.com",
+        ).split(",") if host.strip()
+    }
     max_archive, max_total = import_limits()
-    temp_root = Path(tempfile.mkdtemp(prefix="code4me-release-deploy-"))
-    verified: dict[str, tuple[str, int]] = {}
-    total_bytes = 0
-    try:
-        recipe_path = temp_root / "recipe.json"
-        _download(payload.manifest_url, recipe_path, max_archive)
-        parsed = _parse_recipe_field(recipe_path.read_text(encoding="utf-8"))
-
-        if not payload.archive_urls:
-            raise HTTPException(
-                status_code=422,
-                detail=_import_detail(
-                    "ARTIFACT_MISSING", "the import carries no archive URLs", "archive_urls"
-                ),
-            )
-        for url in payload.archive_urls:
-            name = Path(urlsplit(url).path).name
-            if not name:
-                raise HTTPException(
-                    status_code=422,
-                    detail=_import_detail(
-                        "INVALID_URL", f"archive URL {url!r} has no filename", "archive_urls"
-                    ),
-                )
-            if name in verified:
-                raise HTTPException(
-                    status_code=422,
-                    detail=_import_detail(
-                        "DUPLICATE_ARCHIVE",
-                        f"archive {name!r} was supplied more than once",
-                        "archive_urls",
-                    ),
-                )
-            digest_hex, size = _download(url, temp_root / name, max_archive)
-            total_bytes += size
-            if total_bytes > max_total:
-                raise HTTPException(
-                    status_code=413,
-                    detail=_import_detail(
-                        "IMPORT_TOO_LARGE",
-                        f"the import exceeds the {max_total}-byte total limit",
-                        "archive_urls",
-                    ),
-                )
-            verified[name] = (digest_hex, size)
-
-        return _import_verified(parsed, verified, app)
-    finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
-
-
-@router.post(
-    "/releases/{release_id}/disable",
-    summary="Disable a release (one-way, no re-approval)",
-)
-def disable_release(
-    release_id: str,
-    current_user: AuthenticatedUser = Depends(get_current_user),
-    app: App = Depends(App.get_instance),
-):
-    """Disable a release so it can no longer be resolved or bootstrapped.
-
-    This is the only operator transition: it is one-way and there is no
-    re-approval flow. Admin-only.
-    """
-    require_admin(current_user)
-    db = app.get_db_session()
-    try:
-        row = store.disable_release(db, release_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="Agent release not found")
-        return JsonResponseWithStatus(
-            status_code=200, content={"release": store.release_summary(row)}
-        )
-    finally:
-        db.close()
+    total = 0
+    uploads = []
+    with tempfile.TemporaryDirectory(prefix="code4me-release-url-") as directory:
+        try:
+            async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+                for index, source in enumerate([payload.manifest_url, *payload.archive_urls]):
+                    parsed = urlsplit(source)
+                    name = unquote(parsed.path.rsplit("/", 1)[-1])
+                    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+                        raise HTTPException(422, detail={"code": "INVALID_UPLOAD"})
+                    if index and any(upload.filename == name for upload in uploads):
+                        raise HTTPException(422, detail={"code": "DUPLICATE_ARCHIVE"})
+                    destination = Path(directory) / str(index)
+                    for redirect in range(6):
+                        parsed = urlsplit(source)
+                        if (parsed.scheme != "https" or parsed.hostname not in allowed_hosts
+                                or parsed.username or parsed.password or parsed.port not in (None, 443)):
+                            raise HTTPException(422, detail={"code": "UNTRUSTED_RELEASE_URL"})
+                        async with client.stream("GET", source) as response:
+                            if response.is_redirect:
+                                if redirect == 5 or not response.headers.get("location"):
+                                    raise HTTPException(422, detail={"code": "INVALID_REDIRECT"})
+                                source = urljoin(source, response.headers["location"])
+                                continue
+                            response.raise_for_status()
+                            size = 0
+                            with destination.open("wb") as sink:
+                                async for chunk in response.aiter_bytes(_IMPORT_CHUNK_BYTES):
+                                    size += len(chunk)
+                                    total += len(chunk)
+                                    if size > (max_archive if index else 1024 * 1024) or total > max_total:
+                                        raise HTTPException(413, detail={"code": "IMPORT_TOO_LARGE"})
+                                    sink.write(chunk)
+                            break
+                    if index:
+                        uploads.append(UploadFile(destination.open("rb"), filename=name))
+                manifest = (Path(directory) / "0").read_text(encoding="utf-8")
+                return await import_release(manifest, uploads, current_user, app)
+        except (httpx.HTTPError, UnicodeError, ValueError) as error:
+            raise HTTPException(422, detail={"code": "RELEASE_DOWNLOAD_FAILED"}) from error
+        finally:
+            for upload in uploads:
+                await upload.close()
 
 
 @router.get("/distributions", summary="List distributions and their derived release view")
@@ -665,6 +524,23 @@ def get_release(
                 "model": store.row_to_release(row).model_dump(mode="json"),
             },
         )
+    finally:
+        db.close()
+
+
+@router.post("/releases/{release_id}/disable", summary="Permanently disable a release")
+def disable_release(
+    release_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    app: App = Depends(App.get_instance),
+):
+    require_admin(current_user)
+    db = app.get_db_session()
+    try:
+        row = store.disable_release(db, release_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Agent release not found")
+        return JsonResponseWithStatus(status_code=200, content={"release": store.release_summary(row)})
     finally:
         db.close()
 

@@ -18,11 +18,10 @@ creation, so an unexecutable combination is rejected before enrollment.
 
 Verification is **derived**, never stored:
 
-* ``PACKAGED`` is verified only when its release is usable
-  (``derive_qualification_status(release) == QUALIFIED``), i.e. the imported
-  recipe's self-check passed.
+* ``PACKAGED`` is verified only when its release is ``QUALIFIED`` (at least one
+  administrator-approved host platform).
 * ``BYOA_EXTERNAL`` is *always* unverified: a participant-installed agent has no
-  artifact whose bytes the server can pin.
+  artifact to bind an approval to.
 """
 
 from __future__ import annotations
@@ -44,8 +43,6 @@ from .models import BYOA_CONFIG_FIELDS, BYOA_CONFIG_TRANSPORTS
 from .registry import (
     ALL_APPROVAL_OPTIONS,
     AgentRegistry,
-    approval_option_verified,
-    derive_qualification_status,
 )
 from .resolver import RegistryReleaseResolver
 
@@ -62,11 +59,7 @@ __all__ = [
 ]
 
 _WITHDRAWN = frozenset(
-    {
-        QualificationStatus.RETIRED,
-        QualificationStatus.BLOCKED,
-        QualificationStatus.DISABLED,
-    }
+    {QualificationStatus.RETIRED, QualificationStatus.BLOCKED}
 )
 
 #: The distribution mode each supported framework can execute (ISSUE-03).
@@ -123,8 +116,6 @@ def _qualification_value(release: Any, document: Optional[Mapping[str, Any]]) ->
     value = str(getattr(status, "value", status) or "").strip().upper()
     if value:
         return value
-    if document is not None:
-        return derive_qualification_status(document).value
     return QualificationStatus.UNQUALIFIED.value
 
 
@@ -191,7 +182,8 @@ def validate_profile_configuration(
     * a BYOA release must declare a command/package identity;
     * the selected release must be qualified (never withdrawn);
     * selected tools must belong to the framework's catalogue;
-    * the approval option must be covered by the release's conformance evidence.
+    * for BYOA, every field the profile sets must be covered by a declared
+      configuration binding.
 
     Raises :class:`ProfileConfigurationError` (a ``ValueError`` whose ``str`` is
     ``"CODE: message"``). Nothing is mutated and no database session is needed.
@@ -312,13 +304,6 @@ def validate_profile_configuration(
         raise ProfileConfigurationError(
             "APPROVAL_POLICY_UNSUPPORTED",
             "approval_policy must be one of " + ", ".join(ALL_APPROVAL_OPTIONS),
-            "approval_policy",
-        )
-    if not approval_option_verified(document, option):
-        raise ProfileConfigurationError(
-            "APPROVAL_OPTION_UNVERIFIED",
-            f"approval option {option!r} is not covered by the release's "
-            "conformance evidence",
             "approval_policy",
         )
 

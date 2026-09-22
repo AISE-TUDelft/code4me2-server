@@ -21,7 +21,7 @@ CATALOGUE_PATH = "/api/research/agents/release-catalogue"
 
 
 def _qualified_release(session) -> str:
-    """Insert a QUALIFIED BYOA release whose evidence verifies every option."""
+    """Insert a QUALIFIED BYOA release approved for one host platform."""
     release_id = f"catalogue-{uuid.uuid4()}"
     manifest_digest = "sha256:" + "b" * 64
     adapter_digest = "sha256:" + "d" * 64
@@ -40,27 +40,28 @@ def _qualified_release(session) -> str:
             "version": "0.1.0",
             "digest": adapter_digest,
         },
-        "tests": {
-            "status": "PASS",
-            "approval_options": ["auto", "per_step", "suggestion_only"],
-            "cases": [
-                {"case_id": "acp.initialize", "status": "PASS"},
-                {"case_id": "approval.permission", "status": "PASS"},
-            ],
-        },
     }
+    tests = [
+        {
+            "os": "macos",
+            "arch": "arm64",
+            "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z",
+        }
+    ]
     session.execute(
         text(
             "INSERT INTO public.agent_release "
-            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+            "(release_id, agent_id, source_manifest_digest, status, release_json, "
+            "created_at) "
             "VALUES (:release_id, :agent_id, :manifest, 'UNQUALIFIED', "
-            "CAST(:release_json AS jsonb), now())"
+            "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
         ),
         {
             "release_id": release_id,
             "agent_id": "catalogue-agent",
             "manifest": manifest_digest,
             "release_json": json.dumps(release_json),
+            "tests": json.dumps(tests),
         },
     )
     session.commit()
@@ -114,14 +115,16 @@ def test_release_catalogue_returns_qualified_release_with_zero_profiles(http_run
         "qualification_status",
         "supported_platforms",
         "verified_approval_options",
+        "tests",
         "is_byoa",
     }
     assert entry["release_id"] == release_id
     assert entry["version"] == "2.1.0"
     assert entry["agent_id"] == "catalogue-agent"
     assert entry["distribution_mode"] == "BYOA_EXTERNAL"
-    # Derived from the stored conformance evidence, never the status column.
+    # Derived from the stored approvals, never the status column.
     assert entry["qualification_status"] == "QUALIFIED"
+    assert entry["tests"][0]["os"] == "macos"
     assert entry["supported_platforms"] == []
     assert entry["verified_approval_options"] == ["auto", "per_step", "suggestion_only"]
     assert entry["is_byoa"] is True
@@ -155,12 +158,61 @@ def test_release_catalogue_requires_a_researcher_and_keeps_admin_routes(http_run
     assert refused.json()["detail"]["code"] == "RESEARCHER_REQUIRED"
 
     # Import/qualification and the existing release list stay administrator-only.
-    # The import endpoint is multipart (recipe + archive bytes), so the authz
-    # refusal is asserted with a well-formed request rather than a JSON body.
     assert client.get("/api/research/agents/releases").status_code == 403
     assert client.get(
         f"/api/research/agents/releases/{release_id}"
     ).status_code == 403
+    # The import is multipart (manifest + archive bytes) and stays admin-only.
     assert client.post(
-        "/api/research/agents/releases/import", data={"recipe": "{}"}
+        "/api/research/agents/releases/import", data={"manifest": "{}"}
     ).status_code == 403
+
+
+def test_http_import_is_immediately_usable_and_disable_is_terminal(http_runtime):
+    from .test_manifest_import import ARCHIVE, MANIFEST, PAYLOAD
+
+    client, session_factory, current_user = http_runtime
+    current_user["value"] = AuthenticatedUser(user_id=uuid.uuid4(), is_admin=True, email="admin@example.com", name="Admin")
+    payload = dict(MANIFEST, agents=[{
+        "framework": "codex", "version": "1.2.3", "agent_command": "codex-acp",
+        "adapter": {"adapter_id": "codex-acp", "version": "1.0.0"},
+        "tests": [dict(MANIFEST["artifacts"][0]["tests"], os="macos", arch="arm64")],
+    }])
+    endpoint = "/api/research/agents/releases/import"
+    response = client.post(endpoint, data={"manifest": json.dumps(payload)}, files=[("archives", (ARCHIVE, PAYLOAD, "application/zip"))])
+    assert response.status_code == 201, response.text
+    releases = response.json()["releases"]
+    assert len(releases) == 2
+    assert all(release["status"] == "QUALIFIED" for release in releases)
+    release_id = releases[0]["release_id"]
+    disabled = client.post(f"/api/research/agents/releases/{release_id}/disable")
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["release"]["status"] == "DISABLED"
+    retry = client.post(endpoint, data={"manifest": json.dumps(payload)}, files=[("archives", (ARCHIVE, PAYLOAD, "application/zip"))])
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["release"]["status"] == "DISABLED"
+    with session_factory() as session:
+        assert session.execute(text("SELECT count(*) FROM agent_release")).scalar_one() == 2
+    current_user["value"] = AuthenticatedUser(user_id=uuid.uuid4(), is_admin=False, email="participant@example.com", name="Participant")
+    assert client.post(f"/api/research/agents/releases/{release_id}/disable").status_code == 403
+
+
+def test_http_import_rolls_back_managed_row_when_external_identity_conflicts(http_runtime):
+    from research.study.agents.manifest_import import manifest_digest
+    from .test_manifest_import import ARCHIVE, MANIFEST, PAYLOAD
+
+    client, session_factory, current_user = http_runtime
+    current_user["value"] = AuthenticatedUser(user_id=uuid.uuid4(), is_admin=True, email="admin@example.com", name="Admin")
+    payload = dict(MANIFEST, agents=[{
+        "framework": "goose", "version": "1.0.0", "agent_command": "goose",
+        "adapter": {"adapter_id": "goose", "version": "1"},
+        "tests": [dict(MANIFEST["artifacts"][0]["tests"], os="linux", arch="x64")],
+    }])
+    conflict_id = "goose-1.0.0-" + manifest_digest(payload).removeprefix("sha256:")[:12]
+    with session_factory() as session:
+        session.execute(text("INSERT INTO agent_release (release_id, agent_id, source_manifest_digest, status, release_json, created_at) VALUES (:id, 'goose', 'other-digest', 'UNQUALIFIED', '{}', now())"), {"id": conflict_id})
+        session.commit()
+    response = client.post("/api/research/agents/releases/import", data={"manifest": json.dumps(payload)}, files=[("archives", (ARCHIVE, PAYLOAD, "application/zip"))])
+    assert response.status_code == 409, response.text
+    with session_factory() as session:
+        assert session.execute(text("SELECT release_id FROM agent_release")).scalars().all() == [conflict_id]

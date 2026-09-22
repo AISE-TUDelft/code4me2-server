@@ -43,6 +43,7 @@ from research.study.agents.models import (
     AdapterRef,
     AgentConfigBinding,
     AgentReleaseV1,
+    ReleaseTests,
     DistributionArtifact,
 )
 from research.study.protocol.enums import ReleaseResolutionStatus
@@ -114,6 +115,11 @@ def _release(
             if with_adapter
             else None
         ),
+        tests=(
+            [ReleaseTests(os="macos", arch="arm64", self_check="PASS", acp_initialize="PASS", ran_at="2026-09-21T00:00:00Z")]
+            if qualified
+            else []
+        ),
         qualification_status=(
             QualificationStatus.QUALIFIED
             if qualified
@@ -122,20 +128,9 @@ def _release(
     )
 
 
-def _evidence(
-    release: AgentReleaseV1,
-    *,
-    case_ids: tuple[str, ...] = ("acp.initialize",),
-    approval_options: tuple[str, ...] = ("auto", "per_step", "suggestion_only"),
-) -> dict:
-    """A stored evidence document recording a passing self-check verdict."""
-    document = release.model_dump(mode="json")
-    document["tests"] = {
-        "status": "PASS",
-        "approval_options": list(approval_options),
-        "cases": [{"case_id": case_id, "status": "PASS"} for case_id in case_ids],
-    }
-    return document
+def _evidence(release, **kwargs) -> None:  # noqa: ARG001 - compatibility shim
+    """The retired receipt document is gone; approval lives on the release."""
+    return None
 
 
 def test_packaged_qualified_distribution_is_verified_with_a_digest():
@@ -256,7 +251,6 @@ def _bootstrap_manifest(profile, release):
         EphemeralSessionFactory(),
         BootstrapSigningContext(secret="distribution-view-secret"),
         platform=("macos", "aarch64"),
-        release_evidence_json=_evidence(release),
     )
     assert result.outcome == BootstrapOutcome.ISSUED, result.issue
     assert result.manifest is not None
@@ -532,25 +526,6 @@ def test_profile_configuration_rejects_tools_from_another_framework():
         )
 
     assert error.value.code == "TOOLS_NOT_SUPPORTED"
-
-
-def test_profile_configuration_enforces_approval_option_evidence():
-    release = _release(qualified=True)
-    profile = _profile(approval_policy="per_step")
-
-    # A recipe that does not declare the gated option does not cover it.
-    with pytest.raises(ProfileConfigurationError) as error:
-        validate_profile_configuration(
-            profile, release, release_json=_evidence(release, approval_options=("auto",))
-        )
-    assert error.value.code == "APPROVAL_OPTION_UNVERIFIED"
-
-    # A recipe that declares the exercised option does.
-    validate_profile_configuration(
-        profile,
-        release,
-        release_json=_evidence(release, approval_options=("auto", "per_step")),
-    )
 
 
 def test_profile_configuration_accepts_every_declared_framework_pairing():

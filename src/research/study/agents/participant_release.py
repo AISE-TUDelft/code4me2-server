@@ -27,8 +27,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .models import AdapterRef, AgentConfigBinding
-from .models import normalize_platform
+from .models import AdapterRef, AgentConfigBinding, ReleaseTests, normalize_platform
 
 #: Canonical native platform ids. ``arm64`` is the single canonical spelling for
 #: the 64-bit ARM architecture (``aarch64`` is normalised to it at the boundary).
@@ -95,6 +94,7 @@ class AgentInput(BaseModel):
     agent_command: str | None = None
     agent_command_args: list[str] = Field(default_factory=list)
     byoa_config: list[AgentConfigBinding] = Field(default_factory=list)
+    tests: list[ReleaseTests] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def explicit_identity(self):
@@ -105,6 +105,8 @@ class AgentInput(BaseModel):
                 raise ValueError("installed agents need an explicit ACP command")
         elif self.agent_command or self.agent_command_args or self.byoa_config:
             raise ValueError("the managed runtime uses its packaged --managed entrypoint")
+        if len({(test.os, test.arch) for test in self.tests}) != len(self.tests):
+            raise ValueError("duplicate test platform")
         return self
 
 
@@ -162,32 +164,11 @@ class ParticipantRecipe(BaseModel):
         return self
 
 
-def _normalize_tests(tests: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """A recipe is only produced from a passing self-check."""
-    if not isinstance(tests, dict):
-        raise ValueError("a recipe requires the agent self-check result")
-    if str(tests.get("status", "")).strip().upper() != "PASS":
-        raise ValueError("the agent self-check did not pass; no recipe is produced")
-    cases = tests.get("cases")
-    if cases is not None and (
-        not isinstance(cases, list)
-        or not all(isinstance(case, dict) for case in cases)
-    ):
-        raise ValueError("self-check cases must be an array of objects")
-    approval = tests.get("approval_options")
-    if approval is not None and (
-        not isinstance(approval, list) or not all(isinstance(o, str) for o in approval)
-    ):
-        raise ValueError("self-check approval_options must be an array of strings")
-    return dict(tests)
-
-
 def prepare(
     recipe: ParticipantRecipe,
     inputs: Path,
     output: Path,
     platforms: Sequence[str] = PLATFORMS,
-    tests: Optional[dict[str, Any]] = None,
 ) -> dict:
     """Prepare one recipe document in a new directory.
 
@@ -199,7 +180,6 @@ def prepare(
     requested = tuple(canonical_platform(p) for p in platforms)
     if not requested or len(set(requested)) != len(requested):
         raise ValueError("platforms must be a non-empty unique subset of the supported native platforms")
-    verified_tests = _normalize_tests(tests)
 
     runtime_manifest = input_path(inputs, recipe.runtime.manifest)
     if file_sha256(runtime_manifest) != recipe.runtime.sha256:
@@ -250,6 +230,7 @@ def prepare(
                 or ("code4me2-agent.exe" if os_name == "windows" else "code4me2-agent")
             ),
             "managed_protocol": "1",
+            "tests": projected.get("tests"),
         })
 
     agents: list[dict[str, Any]] = []
@@ -263,6 +244,7 @@ def prepare(
             "agent_command": agent.agent_command,
             "agent_command_args": agent.agent_command_args,
             "byoa_config": [b.model_dump(mode="json") for b in agent.byoa_config],
+            "tests": [t.model_dump(mode="json") for t in agent.tests],
         })
 
     profiles = []
@@ -281,11 +263,13 @@ def prepare(
         "plugin_commit": recipe.plugin_commit,
         "server_commit": recipe.server_commit,
         "adapter": managed.adapter.model_dump(mode="json"),
-        "tests": verified_tests,
         "artifacts": artifacts,
         "agents": agents,
         "profiles": profiles,
     }
+    from .manifest_import import build_manifest_release
+
+    build_manifest_release(document, archives={a["archive"]: resources / a["archive"] for a in artifacts})
     document["recipe_digest"] = "sha256:" + hashlib.sha256(
         json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     ).hexdigest()
@@ -306,3 +290,112 @@ def load_prepared(output: Path) -> dict:
         if file_sha256(input_path(output, name)) != expected:
             raise ValueError(f"prepared input changed: {name}; prepare into a new directory")
     return json.loads((output / "recipe.json").read_text())
+
+
+def main() -> None:
+    """The native producer and CI aggregation share the server import contract."""
+    import argparse
+    import platform
+    import subprocess
+    import sys
+    import tempfile
+    import zipfile
+    from datetime import datetime, timezone
+
+    from .manifest_import import build_manifest_release
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    native = commands.add_parser("native", help="build, test and emit one native manifest")
+    native.add_argument("--version", required=True)
+    native.add_argument("--platform", required=True)
+    native.add_argument("--server-commit", required=True)
+    native.add_argument("--bundle", type=Path, default=Path("dist/code4me2-agent"))
+    native.add_argument("--output", type=Path, required=True)
+    native.add_argument("--skip-build", action="store_true", help="use an already built/signed bundle")
+    merge = commands.add_parser("merge", help="verify and combine native CI artifacts")
+    merge.add_argument("--directory", type=Path, required=True)
+    merge.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+
+    if args.command == "merge":
+        documents = [json.loads(path.read_text()) for path in sorted(args.directory.glob("native-*.json"))]
+        if not documents:
+            raise ValueError("no native manifests")
+        document = dict(documents[0])
+        for item in documents:
+            if any(item[key] != document[key] for key in ("runtime_version", "server_commit", "managed_protocol_version")):
+                raise ValueError("native manifests describe different builds")
+        document["artifacts"] = [artifact for item in documents for artifact in item["artifacts"]]
+        if {f"{a['platform']}-{a['architecture']}" for a in document["artifacts"]} != set(PLATFORMS):
+            raise ValueError("published runtime must cover all four native platforms")
+        archives = {a["archive"]: input_path(args.directory, a["archive"]) for a in document["artifacts"]}
+        if set(archives) != {p.name for p in args.directory.glob("*.zip")}:
+            raise ValueError("archives must exactly match the manifest")
+        build_manifest_release(document, archives=archives)
+        write_json(args.output, document)
+    else:
+        target = canonical_platform(args.platform)
+        host = canonical_platform(f"{platform.system()}-{platform.machine()}")
+        if target != host:
+            raise ValueError(f"native tests require {target}, current host is {host}")
+        if not re.fullmatch(SEMVER, args.version) or not re.fullmatch(r"[0-9a-f]{40}", args.server_commit):
+            raise ValueError("explicit semantic version and full server commit are required")
+        if args.output.exists():
+            raise ValueError("use a new output directory for an immutable release")
+        if not args.skip_build:
+            subprocess.run([sys.executable, "packaging/stamp_runtime_version.py", "--version", args.version], check=True, stdout=sys.stderr)
+            subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/code4me2_agent"], check=True, stdout=sys.stderr)
+            subprocess.run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", "packaging/code4me2-agent.spec"], check=True, stdout=sys.stderr)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="code4me-native-", dir=args.output.parent) as temporary:
+            stage = Path(temporary)
+            archive = stage / f"code4me-agent-{target}.zip"
+            subprocess.run([sys.executable, "packaging/archive_runtime.py", "--root", str(args.bundle), "--platform", target, "--output", str(archive)], check=True, stdout=sys.stderr)
+            extracted = stage / "runtime"
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(extracted)
+            executable = "code4me2-agent.exe" if target.startswith("windows") else "code4me2-agent"
+            binary = (extracted / executable).resolve()
+            binary.chmod(0o755)
+            version = subprocess.run([str(binary), "--version"], check=True, capture_output=True, text=True, timeout=60).stdout.strip()
+            if version != args.version:
+                raise ValueError("packaged executable version does not match the release")
+            checked = subprocess.run([str(binary), "--self-check"], check=True, capture_output=True, text=True, timeout=60)
+            if json.loads(checked.stdout).get("status") != "ok":
+                raise ValueError("packaged self-check failed")
+            request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "code4me-release-test", "version": "1"}}}) + "\n"
+            process = subprocess.Popen([str(binary), "--managed"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=extracted)
+            try:
+                stdout, stderr = process.communicate(request, timeout=60)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise ValueError("packaged ACP initialize timed out") from None
+            responses = [json.loads(line) for line in stdout.splitlines() if line.strip()]
+            response = next((item for item in responses if item.get("id") == 1), {})
+            if process.returncode or response.get("result", {}).get("protocolVersion") != 1 or "error" in response:
+                raise ValueError("packaged ACP initialize failed")
+            os_name, arch = target.split("-")
+            document = {
+                "manifest_version": 1,
+                "runtime_version": args.version,
+                "managed_protocol_version": "1",
+                "server_commit": args.server_commit,
+                "artifacts": [{
+                    "runtime_id": "code4me-agent", "version": args.version,
+                    "platform": os_name, "architecture": arch,
+                    "archive": archive.name, "sha256": file_sha256(archive),
+                    "size": archive.stat().st_size, "executable": executable,
+                    "tests": {"self_check": "PASS", "acp_initialize": "PASS", "ran_at": datetime.now(timezone.utc).isoformat()},
+                }],
+            }
+            build_manifest_release(document, archives={archive.name: archive})
+            write_json(stage / f"native-{target}.json", document)
+            shutil.rmtree(extracted)
+            stage.rename(args.output)
+    print(json.dumps(document))
+
+
+if __name__ == "__main__":
+    main()

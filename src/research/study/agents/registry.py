@@ -10,12 +10,8 @@ Key invariants:
 * A release's identity is ``(agent_id, release_id, source_manifest_digest)``. A
   changed digest requires a distinct release record; an exact duplicate is
   rejected with ``DUPLICATE_RELEASE``.
-* Qualification is **derived** from the imported recipe's self-check verdict
-  (``tests.status == "PASS"``), never supplied by a caller. There is no separate
-  approval or conformance-receipt step; an administrator may only disable a
-  release one-way.
-* Artifact identity is the ZIP fingerprint (``sha256``) plus the adapter name,
-  never an extracted-file inventory (see :func:`qualified_artifact_keys`).
+* Qualification is derived from per-platform producer tests.
+  A terminal operator disable overrides passing tests.
 * Platform resolution is exact and never falls back to another platform.
 * Declared and observed capabilities are stored in separate maps and unknown or
   unavailable measurements stay visible (``value`` stays ``None``).
@@ -52,29 +48,6 @@ from .models import (
 )
 
 _BASE_CONFIG = ConfigDict(extra="forbid")
-
-#: Recipe self-check status that backs a derived ``QUALIFIED``.
-_PASSED_CONFORMANCE = "PASS"
-
-#: One qualified artifact identity: ``(os, arch, digest, adapter_digest)``.
-#:
-#: ``os``/``arch`` are normalised by :func:`normalize_platform`; a BYOA identity
-#: may carry empty platform values because a participant-installed agent is not
-#: platform-pinned. ``digest`` is the release artifact digest for a PACKAGED
-#: release and the ``source_manifest_digest`` for a BYOA release.
-ArtifactKey = tuple[str, str, str, str]
-
-
-def _normalize_digest(value: Any) -> Optional[str]:
-    text = str(value or "").strip().lower()
-    if not text:
-        return None
-    return text[7:] if text.startswith("sha256:") else text
-
-
-def _same_digest(left: Any, right: Any) -> bool:
-    normalized = _normalize_digest(left)
-    return normalized is not None and normalized == _normalize_digest(right)
 
 # Qualification states that may be selected by a study condition.
 SELECTABLE_STATUSES = frozenset({QualificationStatus.QUALIFIED})
@@ -181,164 +154,40 @@ def _distribution_issue(release: AgentReleaseV1) -> Optional[RegistryIssue]:
     return None
 
 
-def derive_qualification_status(
-    release_json: Optional[Mapping[str, Any]],
-) -> QualificationStatus:
-    """Derive a release's usability from the imported recipe's self-check.
+def derive_qualification_status(release_json: Optional[Mapping[str, Any]]) -> QualificationStatus:
+    """Usability comes from complete platform test results; disable is terminal."""
+    from pydantic import ValidationError
 
-    There is no separate approval or conformance-receipt step: the producer
-    (the participant-release CLI / CI) runs the agent self-check and writes the
-    result into the single recipe document, and the import records that verdict
-    on the release. A release is ``QUALIFIED`` (usable) exactly when its stored
-    recipe declares ``tests.status == "PASS"``. An administrator may disable a
-    release one-way, which is ``DISABLED`` and terminal. Anything else is
-    ``UNQUALIFIED``: a caller-supplied status or an unrelated status can never
-    make a release usable.
-    """
+    from .models import ReleaseTests
+
     if not isinstance(release_json, Mapping):
         return QualificationStatus.UNQUALIFIED
-    if release_json.get("disabled") is True:
-        return QualificationStatus.DISABLED
-    if _recipe_tests_passed(release_json):
-        return QualificationStatus.QUALIFIED
-    return QualificationStatus.UNQUALIFIED
-
-
-def _recipe_tests(release_json: Mapping[str, Any]) -> Mapping[str, Any]:
-    tests = release_json.get("tests")
-    return tests if isinstance(tests, Mapping) else {}
-
-
-def _recipe_tests_passed(release_json: Mapping[str, Any]) -> bool:
-    return (
-        str(_recipe_tests(release_json).get("status", "")).strip().upper()
-        == _PASSED_CONFORMANCE
-    )
-
-
-def _declared_identity_components(
-    release_json: Mapping[str, Any],
-) -> list[Mapping[str, Any]]:
-    """The artifact-like identities a packaged release declares.
-
-    Release ``artifacts`` are authoritative; for a legacy/package-only release
-    the package manifest's components carry the same ``(os, arch, sha256)``
-    identity and are used instead. A BYOA release declares none.
-    """
-    artifacts = [
-        item for item in (release_json.get("artifacts") or []) if isinstance(item, Mapping)
-    ]
-    if artifacts:
-        return artifacts
-    manifest = release_json.get("package_json")
-    if not isinstance(manifest, Mapping):
-        return []
-    return [
-        item for item in (manifest.get("components") or []) if isinstance(item, Mapping)
-    ]
-
-
-def _artifact_key(
-    os_name: Any, arch: Any, digest: Any, adapter_digest: Any
-) -> ArtifactKey:
-    canonical_os, canonical_arch = normalize_platform(
-        str(os_name or ""), str(arch or "")
-    )
-    return (
-        canonical_os,
-        canonical_arch,
-        _normalize_digest(digest) or "",
-        _normalize_digest(adapter_digest) or "",
-    )
-
-
-def artifact_key(
-    os_name: Any, arch: Any, digest: Any, adapter_digest: Any = None
-) -> ArtifactKey:
-    """Normalise one artifact identity into its comparison key."""
-    return _artifact_key(os_name, arch, digest, adapter_digest)
-
-
-def qualified_artifact_keys(
-    release_json: Optional[Mapping[str, Any]],
-) -> set[ArtifactKey]:
-    """The exact artifact identities a usable release pins.
-
-    Every key is ``(os, arch, digest, adapter_digest)``. Identity is the ZIP
-    fingerprint (``sha256``) plus the adapter name; there is no separate
-    extracted-file inventory. A release that is not ``QUALIFIED`` pins nothing.
-
-    * ``PACKAGED`` releases pin each declared platform artifact by its own
-      ``sha256`` and ``(os, arch)``.
-    * ``BYOA_EXTERNAL`` releases have no artifact, so the identity is the
-      release's own ``source_manifest_digest``; both platform values are empty.
-    """
-    if derive_qualification_status(release_json) is not QualificationStatus.QUALIFIED:
-        return set()
-    adapter = release_json.get("adapter")
-    declared_adapter_digest = (
-        _normalize_digest(adapter.get("digest")) if isinstance(adapter, Mapping) else None
-    )
-    components = _declared_identity_components(release_json)
-    if components:
-        return {
-            _artifact_key(
-                component.get("os"),
-                component.get("arch"),
-                component.get("sha256"),
-                declared_adapter_digest,
-            )
-            for component in components
-        }
-    return {
-        _artifact_key(
-            None,
-            None,
-            release_json.get("source_manifest_digest"),
-            declared_adapter_digest,
-        )
-    }
-
-
-def artifact_qualified(
-    release_json: Optional[Mapping[str, Any]],
-    *,
-    os_name: Any,
-    arch: Any,
-    digest: Any,
-    adapter_digest: Any = None,
-) -> bool:
-    """Whether the exact platform artifact is covered by passing evidence."""
-    return (
-        artifact_key(os_name, arch, digest, adapter_digest)
-        in qualified_artifact_keys(release_json)
-    )
-
-
-def byoa_identity_qualified(release_json: Optional[Mapping[str, Any]]) -> bool:
-    """Whether a BYOA release's own manifest identity is usable.
-
-    A participant-installed agent has no platform artifact, so it is usable when
-    the release is ``QUALIFIED`` (its recipe self-check passed) and it declares
-    no packaged artifacts.
-    """
-    if not isinstance(release_json, Mapping):
-        return False
-    if derive_qualification_status(release_json) is not QualificationStatus.QUALIFIED:
-        return False
-    return not _declared_identity_components(release_json)
+    if release_json.get("qualification_status") in {"DISABLED", "BLOCKED", "RETIRED"}:
+        return QualificationStatus(release_json["qualification_status"])
+    try:
+        tests = [ReleaseTests.model_validate(item) for item in release_json.get("tests", [])]
+    except (ValidationError, TypeError):
+        return QualificationStatus.UNQUALIFIED
+    platforms = {(item.os, item.arch) for item in tests}
+    if not platforms or len(platforms) != len(tests):
+        return QualificationStatus.UNQUALIFIED
+    if release_json.get("distribution_mode") != "BYOA_EXTERNAL":
+        artifacts = release_json.get("artifacts") or []
+        expected = {normalize_platform(a.get("os", ""), a.get("arch", "")) for a in artifacts}
+        if not expected or not platforms <= expected:
+            return QualificationStatus.UNQUALIFIED
+    return QualificationStatus.QUALIFIED
 
 
 # ---------------------------------------------------------------------------
-# Per-release approval options (phase 04; folded from approvals.py)
+# Approval policy vocabulary (phase 04; folded from approvals.py)
 # ---------------------------------------------------------------------------
 #
-# An agent profile selects an approval policy. The producer's recipe declares
-# which options its self-check actually exercised; the editor must not offer an
-# option the recipe does not declare. The baseline ``auto`` policy needs no host
-# permission gate, so it is always available. The ``auto``/``per_step``/
-# ``suggestion_only`` vocabulary has one owner:
-# ``backend.routers.agent.profiles`` validates the same values.
+# An agent profile selects one of a small, closed set of approval policies. The
+# ``auto``/``per_step``/``suggestion_only`` vocabulary has one owner:
+# ``backend.routers.agent.profiles`` validates the same values. With the
+# conformance-receipt machinery retired there is no per-release evidence to
+# narrow the set, so every supported option is selectable.
 
 APPROVAL_AUTO = "auto"
 APPROVAL_PER_STEP = "per_step"
@@ -351,40 +200,21 @@ ALL_APPROVAL_OPTIONS: tuple[str, ...] = (
 )
 
 
-def _declared_approval_options(
-    release_json: Optional[Mapping[str, Any]],
-) -> set[str]:
-    if not isinstance(release_json, Mapping):
-        return set()
-    declared = release_json.get("approval_options")
-    if declared is None:
-        declared = _recipe_tests(release_json).get("approval_options")
-    if not isinstance(declared, (list, tuple)):
-        return set()
-    return {
-        str(option).strip().lower()
-        for option in declared
-        if str(option).strip().lower() in ALL_APPROVAL_OPTIONS
-    }
+def verified_approval_options(release_json: Optional[Mapping[str, Any]] = None) -> list[str]:
+    """Return the approval options selectable for a release.
 
-
-def verified_approval_options(release_json: Optional[Mapping[str, Any]]) -> list[str]:
-    """Return the approval options the release's recipe verifies.
-
-    Always includes ``auto``. ``per_step`` and ``suggestion_only`` are included
-    only when the recipe declares the corresponding option as exercised, so an
-    unsupported option is never offered to the editor.
+    Kept as a release-facing helper (the profile editor and catalogue read it),
+    but it no longer inspects conformance evidence: every supported option is
+    available.
     """
-    declared = _declared_approval_options(release_json)
-    declared.add(APPROVAL_AUTO)
-    return [option for option in ALL_APPROVAL_OPTIONS if option in declared]
+    return list(ALL_APPROVAL_OPTIONS)
 
 
 def approval_option_verified(
     release_json: Optional[Mapping[str, Any]], option: str
 ) -> bool:
-    """Whether ``option`` is verified for the release described by ``release_json``."""
-    return (option or "").strip().lower() in verified_approval_options(release_json)
+    """Whether ``option`` is a supported approval policy."""
+    return (option or "").strip().lower() in ALL_APPROVAL_OPTIONS
 
 
 def _coerce_entry(value: EntryInput, default_state: SnapshotCapabilityState) -> CapabilityEntry:
@@ -720,32 +550,17 @@ class AgentRegistry:
                         )
                     )
 
+        # The adapter is optional release metadata: a manifest that declares no
+        # adapter identity keeps ``adapter=None`` and is never gated on it.
         adapter: Optional[AdapterRef] = release.adapter
-        if adapter is None:
+        if adapter is not None and not adapter.version.strip():
             blockers.append(
                 _issue(
                     RegistryReasonCode.ADAPTER_INCOMPATIBLE,
-                    "a qualified release must declare an adapter",
-                    "adapter",
+                    "adapter version must be non-empty",
+                    "adapter.version",
                 )
             )
-        else:
-            if not adapter.version.strip():
-                blockers.append(
-                    _issue(
-                        RegistryReasonCode.ADAPTER_INCOMPATIBLE,
-                        "adapter version must be non-empty",
-                        "adapter.version",
-                    )
-                )
-            if not (adapter.digest or "").strip():
-                blockers.append(
-                    _issue(
-                        RegistryReasonCode.ADAPTER_INCOMPATIBLE,
-                        "adapter digest must be non-empty",
-                        "adapter.digest",
-                    )
-                )
 
         minimum = release.min_protocol_version
         maximum = release.max_protocol_version

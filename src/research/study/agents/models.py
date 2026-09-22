@@ -60,7 +60,7 @@ def normalize_platform(os_name: str, arch: str) -> tuple[str, str]:
     artifact tuple are normalised before comparison instead of blocking on a
     cosmetic string mismatch.
     """
-    lowered_os = (os_name or "").lower()
+    lowered_os = (os_name or "").strip().lower()
     if "mac" in lowered_os or lowered_os == "darwin":
         canonical_os = "macos"
     elif lowered_os.startswith("win"):
@@ -70,9 +70,9 @@ def normalize_platform(os_name: str, arch: str) -> tuple[str, str]:
     else:
         canonical_os = lowered_os
 
-    lowered_arch = (arch or "").lower()
+    lowered_arch = (arch or "").strip().lower()
     if lowered_arch in _AARCH64_ARCHS:
-        canonical_arch = "aarch64"
+        canonical_arch = "arm64"
     elif lowered_arch in _X64_ARCHS:
         canonical_arch = "x64"
     else:
@@ -90,6 +90,27 @@ class ReleaseDisplay(BaseModel):
     vendor: Optional[str] = None
     description: Optional[str] = None
     homepage: Optional[str] = None
+
+
+class ReleaseTests(BaseModel):
+    """Producer results for one native platform, bound by the manifest digest."""
+
+    model_config = _BASE_CONFIG
+
+    os: str
+    arch: str
+    self_check: Literal["PASS"]
+    acp_initialize: Literal["PASS"]
+    ran_at: datetime
+
+    @model_validator(mode="after")
+    def canonical_platform(self):
+        self.os, self.arch = normalize_platform(self.os, self.arch)
+        if self.os not in {"macos", "linux", "windows"} or self.arch not in {"arm64", "x64"}:
+            raise ValueError("unsupported test platform")
+        if self.ran_at.tzinfo is None:
+            raise ValueError("ran_at must include a timezone")
+        return self
 
 
 class DistributionArtifact(BaseModel):
@@ -228,9 +249,7 @@ class AgentReleaseV1(BaseModel):
     # Negotiated ACP protocol range the release is compatible with.
     min_protocol_version: Optional[str] = None
     max_protocol_version: Optional[str] = None
-    # Derived server-side from verified conformance evidence
-    # (``release_json.conformance[]``); callers can never supply it. Absent a
-    # passing receipt a release is ``UNQUALIFIED``.
+    tests: list[ReleaseTests] = Field(default_factory=list)
     qualification_status: QualificationStatus = QualificationStatus.UNQUALIFIED
     created_at: Optional[datetime] = None
 

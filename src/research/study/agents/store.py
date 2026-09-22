@@ -9,7 +9,7 @@ responsible for session lifecycle (``App.get_db_session`` / ``rollback`` /
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from sqlalchemy import select
 
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 from database.research_schemas import AgentRelease, ResearchAgentRun
 
+from .enums import QualificationStatus
 from .registry import derive_qualification_status
 
 
@@ -29,83 +30,28 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def upsert_release(
-    session: Session,
-    release: AgentReleaseV1,
-    *,
-    evidence: Optional[Mapping[str, Any]] = None,
-) -> AgentRelease:
-    """Insert or update one release row.
-
-    A release's artifacts and adapter are part of ``release_json`` (its
-    canonical content), so no child rows are written. Identity conflicts (same
-    release bytes) are left to the database's unique
-    ``(agent_id, source_manifest_digest)`` constraint; callers decide whether
-    that is a conflict or an idempotent retry.
-
-    ``evidence`` carries the import-time recipe verdict (its ``tests`` block)
-    into ``release_json``. Qualification is **never** taken from the incoming
-    model: it is derived from that stored evidence, so re-registering a release
-    cannot promote or downgrade it. A one-way ``disabled`` flag is preserved
-    across re-imports.
-    """
+def upsert_release(session: Session, release: AgentReleaseV1, *, commit: bool = True) -> AgentRelease:
+    """Persist verified import results without overwriting an existing release."""
     row = session.get(AgentRelease, release.release_id)
-    release_json = release.model_dump(mode="json")
-
-    if row is None:
-        merged = dict(release_json)
-    else:
-        merged = dict(row.release_json or {})
-        # Import-time evidence shares release_json with the release model, so a
-        # re-registration must not drop those sibling keys or the disabled flag.
-        merged.update(release_json)
-        row.agent_id = release.agent_id
-        row.source_manifest_digest = release.source_manifest_digest
-
-    for key, value in (evidence or {}).items():
-        merged[key] = value
-
-    status = derive_qualification_status(merged)
-    merged["qualification_status"] = status.value
-
-    if row is None:
-        row = AgentRelease(
-            release_id=release.release_id,
-            agent_id=release.agent_id,
-            source_manifest_digest=release.source_manifest_digest,
-            status=status.value,
-            release_json=merged,
-            created_at=release.created_at or _now(),
-        )
-        session.add(row)
-    else:
-        row.status = status.value
-        row.release_json = merged
-
-    session.commit()
-    session.refresh(row)
-    return row
-
-
-def disable_release(session: Session, release_id: str) -> Optional[AgentRelease]:
-    """Disable a release one-way, or ``None`` when it does not exist.
-
-    Disabling is idempotent and terminal: the stored ``disabled`` flag is what
-    :func:`derive_qualification_status` reads, and re-importing the same recipe
-    preserves it (the release can never be re-enabled through this path).
-    """
-    row = session.get(AgentRelease, release_id)
-    if row is None:
-        return None
-    data = dict(row.release_json or {})
-    data["disabled"] = True
-    status = derive_qualification_status(data)
-    data["qualification_status"] = status.value
-    row.status = status.value
-    row.release_json = data
+    if row is not None:
+        if (row.agent_id, row.source_manifest_digest) != (release.agent_id, release.source_manifest_digest):
+            raise ValueError("release identity is immutable")
+        return row
+    payload = release.model_dump(mode="json")
+    status = derive_qualification_status(payload)
+    payload["qualification_status"] = status.value
+    row = AgentRelease(
+        release_id=release.release_id,
+        agent_id=release.agent_id,
+        source_manifest_digest=release.source_manifest_digest,
+        status=status.value,
+        release_json=payload,
+        created_at=release.created_at or _now(),
+    )
     session.add(row)
-    session.commit()
-    session.refresh(row)
+    if commit:
+        session.commit()
+        session.refresh(row)
     return row
 
 
@@ -183,19 +129,21 @@ def list_snapshots(
 def row_to_release(row: AgentRelease) -> AgentReleaseV1:
     """Rehydrate a stored release row into the versioned model.
 
-    ``release_json`` also carries packaging/conformance evidence that is not
-    part of the release model, so only the model's own fields are validated; the
-    derived qualification status is then applied (never the stored raw value).
+    ``release_json`` also carries packaging evidence that is not part of the
+    release model, so only the model's own fields are validated; the
+    producer test results determine usability. Terminal operator status wins.
     """
     from .models import AgentReleaseV1 as AgentReleaseV1Model
 
     payload = dict(row.release_json or {})
     model_fields = set(AgentReleaseV1Model.model_fields)
     filtered = {key: value for key, value in payload.items() if key in model_fields}
+    if not isinstance(filtered.get("tests", []), list):
+        filtered["tests"] = []  # Old aggregate verdicts do not qualify any platform.
     release = AgentReleaseV1Model.model_validate(filtered)
-    return release.model_copy(
-        update={"qualification_status": derive_qualification_status(payload)}
-    )
+    if row.status in {"DISABLED", "RETIRED", "BLOCKED"}:
+        payload["qualification_status"] = row.status
+    return release.model_copy(update={"qualification_status": derive_qualification_status(payload)})
 
 
 def row_to_snapshot(row: ResearchAgentRun) -> CapabilitySnapshotV1:
@@ -205,20 +153,27 @@ def row_to_snapshot(row: ResearchAgentRun) -> CapabilitySnapshotV1:
     return CapabilitySnapshotV1Model.model_validate(row.snapshot_json)
 
 
+def disable_release(session: Session, release_id: str) -> Optional[AgentRelease]:
+    """Irreversibly disable a release, including subsequent identical imports."""
+    row = session.get(AgentRelease, release_id)
+    if row is None:
+        return None
+    row.status = QualificationStatus.DISABLED.value
+    row.release_json = dict(row.release_json or {}, qualification_status=row.status)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
 def release_summary(row: AgentRelease) -> dict[str, Any]:
-    """Return a compact, non-secret release summary safe for list responses."""
-    created_at = row.created_at
-    # The read path reports the derived status; the stored column is a cache of
-    # it, so recomputing from release_json keeps legacy rows truthful.
-    derived = derive_qualification_status(row.release_json)
+    release = row_to_release(row)
     return {
         "release_id": row.release_id,
         "agent_id": row.agent_id,
         "source_manifest_digest": row.source_manifest_digest,
-        "status": derived.value,
-        "created_at": (
-            created_at.isoformat() if isinstance(created_at, datetime) else None
-        ),
+        "status": release.qualification_status.value,
+        "tests": [item.model_dump(mode="json") for item in release.tests],
+        "created_at": row.created_at.isoformat() if isinstance(row.created_at, datetime) else None,
     }
 
 

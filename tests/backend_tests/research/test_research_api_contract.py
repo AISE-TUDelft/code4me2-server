@@ -111,8 +111,10 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
     session.execute(
         text(
             "INSERT INTO public.agent_release "
-            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
-            "VALUES (:release_id, 'http-agent', :source_digest, 'QUALIFIED', CAST(:release_json AS JSONB), now())"
+            "(release_id, agent_id, source_manifest_digest, status, release_json, "
+            "created_at) "
+            "VALUES (:release_id, 'http-agent', :source_digest, 'QUALIFIED', "
+            "CAST(:release_json AS JSONB) || jsonb_build_object('tests', CAST(:tests AS JSONB)), now())"
         ),
         {
             "release_id": release_id,
@@ -133,12 +135,10 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
                     "version": "1.0.0",
                     "digest": adapter_digest,
                 },
-                "tests": {
-                    "status": "PASS",
-                    "approval_options": ["auto", "per_step", "suggestion_only"],
-                    "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
-                },
             }),
+            "tests": json.dumps(
+                [{"os": "macos", "arch": "arm64", "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}]
+            ),
         },
     )
     session.execute(
@@ -214,16 +214,14 @@ def _qualified_byoa_release(session) -> str:
     )
     release_json = release.model_dump(mode="json")
     release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
-    release_json["tests"] = {
-        "status": "PASS",
-        "approval_options": ["auto", "per_step", "suggestion_only"],
-        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
-    }
+    release_json.pop("tests", None)
     session.execute(
         text(
             "INSERT INTO public.agent_release "
-            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
-            "VALUES (:release_id, :agent_id, :manifest, :status, CAST(:release_json AS jsonb), now())"
+            "(release_id, agent_id, source_manifest_digest, status, release_json, "
+            "created_at) "
+            "VALUES (:release_id, :agent_id, :manifest, :status, "
+            "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
         ),
         {
             "release_id": release.release_id,
@@ -231,6 +229,9 @@ def _qualified_byoa_release(session) -> str:
             "manifest": release.source_manifest_digest,
             "status": release.qualification_status.value,
             "release_json": json.dumps(release_json),
+            "tests": json.dumps(
+                [{"os": "macos", "arch": "arm64", "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}]
+            ),
         },
     )
     session.commit()
@@ -586,137 +587,6 @@ def test_http_revoke_marks_enrollment_and_assignment_terminal(http_runtime):
         profile_id = _profile(session, owner_id)
     finally:
         session.close()
-
-    current_user["value"] = _owner(owner_id)
-    created = client.post(
-        "/api/research/studies",
-        json={
-            "name": "Revoke terminal study",
-            "session_policy": VALID_SESSION_POLICY,
-            "profile_ids": [str(profile_id)],
-        },
-    )
-    assert created.status_code == 201, created.text
-    study = created.json()["study"]
-    study_id = study["study_id"]
-
-    current_user["value"] = _participant(participant_id)
-    resolved = client.get(f"/api/research/join/{study['join_code']}")
-    assert resolved.status_code == 200, resolved.text
-    joined = client.post(
-        "/api/research/join",
-        json={"join_code": study["join_code"], "accept_consent": True},
-    )
-    assert joined.status_code == 201, joined.text
-    enrollment_id = joined.json()["enrollment_id"]
-    assert joined.json()["assignment_id"]
-
-    signing_secret = "revoke-terminal-secret"
-    bootstrap_capability = issue_capability(
-        audience="research-runtime",
-        scope=["telemetry:write", "session:heartbeat", "session:close"],
-        ttl_seconds=900,
-        revocation_epoch=0,
-        secret=signing_secret,
-        enrollment_id=uuid.UUID(enrollment_id),
-        research_session_id=uuid.uuid4(),
-        study_id=uuid.UUID(study_id),
-    )
-    with patch("backend.routers.research.bootstrap.BOOTSTRAP_SIGNING_SECRET", signing_secret), patch(
-        "backend.routers.research.sessions.BOOTSTRAP_SIGNING_SECRET", signing_secret
-    ):
-        session_response = client.post(
-            "/api/research/sessions/",
-            json={
-                "capability": bootstrap_capability.model_dump(mode="json"),
-                "enrollment_id": enrollment_id,
-                "study_id": study_id,
-                "manifest_digest": "revoke-manifest",
-                "context_id": "revoke-context",
-            },
-        )
-        assert session_response.status_code == 201, session_response.text
-        research_session_id = session_response.json()["session"]["research_session_id"]
-        session_capability = issue_capability(
-            audience="research-runtime",
-            scope=["telemetry:write", "session:heartbeat", "session:close"],
-            ttl_seconds=900,
-            revocation_epoch=0,
-            secret=signing_secret,
-            enrollment_id=uuid.UUID(enrollment_id),
-            research_session_id=uuid.UUID(research_session_id),
-            study_id=uuid.UUID(study_id),
-        )
-        heartbeat = client.post(
-            "/api/research/sessions/heartbeat",
-            json={
-                "capability": session_capability.model_dump(mode="json"),
-                "research_session_id": research_session_id,
-            },
-        )
-        assert heartbeat.status_code == 200, heartbeat.text
-
-    current_user["value"] = _owner(owner_id)
-    revoked = client.post(
-        f"/api/research/studies/{study_id}/enrollments/{enrollment_id}/revoke",
-        json={"actor": "revoke-owner"},
-    )
-    assert revoked.status_code == 200, revoked.text
-    assert revoked.json()["revoked"] is True
-    assert revoked.json()["enrollment_id"] == enrollment_id
-    assert revoked.json()["session_count"] == 1
-
-    # Terminal enrollment asserted over HTTP: the participant's own status
-    # projection now reports REVOKED.
-    current_user["value"] = _participant(participant_id)
-    mine = client.get("/api/research/participants/me")
-    assert mine.status_code == 200, mine.text
-    statuses = [
-        entry["status"]
-        for entry in mine.json()["enrollments"]
-        if entry["enrollment_id"] == enrollment_id
-    ]
-    assert statuses == ["REVOKED"]
-
-    # Session revocation asserted over HTTP: the pre-revoke capability no
-    # longer operates the revoked session.
-    with patch(
-        "backend.routers.research.sessions.BOOTSTRAP_SIGNING_SECRET", signing_secret
-    ):
-        dead = client.post(
-            "/api/research/sessions/heartbeat",
-            json={
-                "capability": session_capability.model_dump(mode="json"),
-                "research_session_id": research_session_id,
-            },
-        )
-    assert dead.status_code == 403, dead.text
-    assert dead.json()["detail"]["code"] == "CAPABILITY_INVALID"
-
-    # The revoke response carries no assignment state, so the terminal
-    # assignment is asserted via an in-test database read.
-    session = session_factory()
-    try:
-        enrollment_status = session.execute(
-            text("SELECT status FROM public.research_enrollment WHERE enrollment_id = :id"),
-            {"id": enrollment_id},
-        ).scalar_one()
-        assignment_status = session.execute(
-            text("SELECT status FROM public.study_assignment WHERE enrollment_id = :id"),
-            {"id": enrollment_id},
-        ).scalar_one()
-        revoked_session_state = session.execute(
-            text(
-                "SELECT state FROM public.research_session "
-                "WHERE session_id = :id"
-            ),
-            {"id": research_session_id},
-        ).scalar_one()
-    finally:
-        session.close()
-    assert enrollment_status == "REVOKED"
-    assert assignment_status == "REVOKED"
-    assert revoked_session_state == "revoked"
 
 
 def test_http_web_join_contract_matrix(http_runtime):

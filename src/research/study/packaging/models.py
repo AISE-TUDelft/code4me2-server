@@ -1,8 +1,7 @@
 """Pydantic v2 contracts for runtime packaging (Issue 11).
 
 ``RuntimeManifestV2`` is authoritative for the exact contents and integrity of a
-participant runtime package. There is no separate conformance receipt: a
-release's usability comes from the recipe self-check recorded at import time.
+participant runtime package.
 
 Digest convention: component payload digests and the manifest digest are
 ``sha256:<64 lowercase hex>`` so they compare directly with the agent
@@ -287,6 +286,3 @@ class ResolutionResult(BaseModel):
 
     resolved: Optional[ResolvedComponent] = None
     error: Optional[PackageIssue] = None
-
-
-

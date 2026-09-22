@@ -18,14 +18,10 @@ from pydantic import ValidationError as PydanticValidationError
 
 from backend.routers.analytics.auth_utils import AuthenticatedUser
 from backend.routers.research.agents import (
-    DeployedImportRequest,
     ResolveArtifactRequest,
     SnapshotUploadRequest,
     coverage,
-    disable_release,
     get_release,
-    import_release,
-    import_release_deployed,
     list_releases,
     list_snapshots,
     resolve_artifact,
@@ -59,13 +55,10 @@ from research.study.agents.models import (
 )
 from research.study.agents.registry import (
     AgentRegistry,
-    artifact_qualified,
     build_capability_snapshot,
-    byoa_identity_qualified,
     capability_coverage,
     coverage_report,
     derive_qualification_status,
-    qualified_artifact_keys,
 )
 from research.study.agents.resolver import RegistryReleaseResolver
 from research.study.packaging import (
@@ -422,12 +415,12 @@ def test_packages_routes_are_wired():
     for path in (
         "/research/packages",
         "/research/packages/{package_id}",
+        "/research/agents/releases/{release_id}/disable",
     ):
         assert path in paths, path
-    # There is no conformance-receipt or qualification route.
+    # The receipt/coverage machinery is gone.
     assert "/research/packages/receipts" not in paths
     assert "/research/packages/coverage" not in paths
-    assert "/research/packages/{package_id}/qualification" not in paths
 
 
 def test_manifest_rejects_unknown_fields():
@@ -699,131 +692,136 @@ def test_artifact_with_empty_digest_is_blocked():
 
 
 # ---------------------------------------------------------------------------
-# Recipe-derived qualification
+# Qualification transitions and assessment
 # ---------------------------------------------------------------------------
 
 
-def _recipe_document(release: AgentReleaseV1, *, status: str = "PASS", **overrides) -> dict:
-    document = release.model_dump(mode="json")
-    document["tests"] = {
-        "status": status,
-        "cases": [{"case_id": "acp.initialize", "status": status}],
+def agent_registry___approved_release(**overrides) -> AgentReleaseV1:
+    """The fixture release with one approval, hence QUALIFIED."""
+    host = {
+        "os": "macOS",
+        "arch": "aarch64",
+        "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z",
     }
-    document.update(overrides)
-    return document
+    release = agent_registry___release(tests=[host], **overrides)
+    return release.model_copy(update={"qualification_status": QualificationStatus.QUALIFIED})
 
 
-def test_qualification_is_derived_from_the_recipe_self_check():
-    release = agent_registry___single_artifact_release()
-    document = _recipe_document(release)
-
-    assert derive_qualification_status(document) == QualificationStatus.QUALIFIED
-    assert artifact_qualified(
-        document,
-        os_name="macos",
-        arch="aarch64",
-        digest=release.artifacts[0].sha256,
-        adapter_digest=release.adapter.digest,
-    ) is True
-
-    assert (
-        derive_qualification_status({**document, "tests": {"status": "FAIL"}})
-        == QualificationStatus.UNQUALIFIED
-    )
-    assert (
-        derive_qualification_status(
-            {key: value for key, value in document.items() if key != "tests"}
-        )
-        == QualificationStatus.UNQUALIFIED
-    )
-    assert (
-        derive_qualification_status({**document, "disabled": True})
-        == QualificationStatus.DISABLED
-    )
-
-
-def test_qualified_artifact_keys_are_the_zip_fingerprints():
-    release = agent_registry___single_artifact_release()
-    document = _recipe_document(release)
-
-    keys = qualified_artifact_keys(document)
-    assert keys == {
-        ("macos", "aarch64", release.artifacts[0].sha256.removeprefix("sha256:"),
-         release.adapter.digest.removeprefix("sha256:")),
+def _bootstrap_inputs(release: AgentReleaseV1):
+    """Enrollment/study/assignment fakes accepted by ``compose_bootstrap``."""
+    profile_id = uuid.uuid4()
+    enrollment_id = uuid.uuid4()
+    study_id = uuid.uuid4()
+    snapshot = {
+        "profile_id": str(profile_id),
+        "name": "bootstrap-arm",
+        "model": "model",
+        "framework_version": "code4me2-agent",
+        "release_id": release.release_id,
+        "tools_json": "[]",
+        "approval_policy": "auto",
+        "max_steps": 1,
     }
-    # A release that is not qualified pins nothing.
-    assert qualified_artifact_keys({**document, "tests": {"status": "FAIL"}}) == set()
+    enrollment = SimpleNamespace(
+        enrollment_id=enrollment_id,
+        study_id=study_id,
+        status=EnrollmentStatus.ACTIVE,
+        revocation_epoch=0,
+    )
+    study = SimpleNamespace(
+        study_id=study_id,
+        is_research=True,
+        research_status="ACTIVE",
+        is_active=True,
+        starts_at=None,
+        ends_at=None,
+        research_config_json={},
+        research_config_digest="digest",
+    )
+    assignment = SimpleNamespace(
+        assignment_id=uuid.uuid4(),
+        enrollment_id=enrollment_id,
+        study_id=study_id,
+        agent_profile_id=profile_id,
+        strategy="RANDOMIZED",
+        randomization_epoch=1,
+        profile_snapshot_json=snapshot,
+        profile_digest=canonical_hash(snapshot),
+    )
+    return enrollment, study, assignment
 
 
-def test_byoa_qualification_uses_the_release_manifest_identity():
+def _compose_for(release, platform):
+    enrollment, study, assignment = _bootstrap_inputs(release)
+    return compose_bootstrap(
+        enrollment,
+        study,
+        assignment,
+        release,
+        None,
+        EphemeralSessionFactory(),
+        BootstrapSigningContext(secret="bootstrap-test-secret"),
+        platform=platform,
+    )
+
+
+def test_bootstrap_issues_for_an_approved_platform():
+    release = agent_registry___approved_release()
+    macos_artifact = release.artifacts[0]
+    result = _compose_for(release, (macos_artifact.os, macos_artifact.arch))
+
+    assert result.outcome == BootstrapOutcome.ISSUED, result.issue
+    assert result.manifest is not None
+    assert result.manifest.agent_release.artifact_digest == macos_artifact.sha256
+
+
+def test_bootstrap_refuses_a_platform_without_an_approval():
+    release = agent_registry___approved_release()
+    linux_artifact = release.artifacts[1]
+    result = _compose_for(release, (linux_artifact.os, linux_artifact.arch))
+
+    assert result.outcome == BootstrapOutcome.BLOCKED
+    assert result.manifest is None
+    assert result.reason == BootstrapReasonCode.RELEASE_NOT_QUALIFIED
+
+
+def test_bootstrap_refuses_a_release_with_no_approvals():
+    release = agent_registry___release()  # no tests, UNQUALIFIED
+    artifact = release.artifacts[0]
+    result = _compose_for(release, (artifact.os, artifact.arch))
+
+    assert result.outcome == BootstrapOutcome.BLOCKED
+    assert result.manifest is None
+    assert result.reason == BootstrapReasonCode.RELEASE_NOT_QUALIFIED
+
+
+def test_bootstrap_qualifies_a_byoa_release_approved_for_its_host():
+    from research.study.agents.models import ReleaseTests
+
     release = AgentReleaseV1(
         agent_id="codex",
-        release_id="rel-byoa-recipe",
-        version="1.0.0",
+        release_id="rel-byoa-bootstrap",
+        version="1.2.3",
         source_manifest_digest="sha256:" + "2" * 64,
         distribution_mode=DistributionMode.BYOA_EXTERNAL,
         agent_package="codex",
+        tests=[ReleaseTests(os="macos", arch="arm64", self_check="PASS", acp_initialize="PASS", ran_at="2026-09-21T00:00:00Z")],
+        qualification_status=QualificationStatus.QUALIFIED,
     )
-    document = _recipe_document(release)
-    assert derive_qualification_status(document) == QualificationStatus.QUALIFIED
-    assert byoa_identity_qualified(document) is True
-    assert (
-        byoa_identity_qualified({**document, "tests": {"status": "FAIL"}}) is False
+    issued = _compose_for(release, ("macos", "arm64"))
+    assert issued.outcome == BootstrapOutcome.ISSUED, issued.issue
+    assert issued.manifest is not None
+    assert issued.manifest.agent_release.artifact_digest == ""
+    assert issued.manifest.agent_release.distribution_mode == "BYOA_EXTERNAL"
+    assert issued.manifest.agent_release.agent_package == "codex"
+
+    # A BYOA release approved only for another host is refused.
+    other = release.model_copy(
+        update={"tests": [ReleaseTests(os="linux", arch="x64", self_check="PASS", acp_initialize="PASS", ran_at="2026-09-21T00:00:00Z")]}
     )
-
-
-def test_disabled_release_is_never_usable():
-    release = agent_registry___single_artifact_release()
-    document = _recipe_document(release, disabled=True)
-    assert derive_qualification_status(document) == QualificationStatus.DISABLED
-    assert qualified_artifact_keys(document) == set()
-    assert artifact_qualified(
-        document,
-        os_name="macos",
-        arch="aarch64",
-        digest=release.artifacts[0].sha256,
-    ) is False
-
-
-def test_upsert_release_never_trusts_a_caller_supplied_status():
-    release = agent_registry___single_artifact_release()
-    release = release.model_copy(
-        update={"qualification_status": QualificationStatus.QUALIFIED}
-    )
-    session = MagicMock()
-    session.get.return_value = None
-    row = store_module.upsert_release(session, release)
-    assert row.status == QualificationStatus.UNQUALIFIED.value
-
-
-def test_upsert_release_records_the_recipe_verdict_as_evidence():
-    release = agent_registry___single_artifact_release()
-    session = MagicMock()
-    session.get.return_value = None
-    row = store_module.upsert_release(
-        session, release, evidence={"tests": {"status": "PASS", "cases": []}}
-    )
-    assert row.status == QualificationStatus.QUALIFIED.value
-    assert row.release_json["tests"]["status"] == "PASS"
-
-
-def test_qualification_assessment_reports_blockers():
-    incomplete = agent_registry___release(adapter=None)
-    registry = AgentRegistry()
-    assessment = registry.assess_qualification(incomplete)
-    assert assessment.qualifiable is False
-    assert RegistryReasonCode.ADAPTER_INCOMPATIBLE in {
-        blocker.code for blocker in assessment.blockers
-    }
-
-    no_artifacts = agent_registry___release(artifacts=[])
-    assessment = registry.assess_qualification(no_artifacts)
-    assert assessment.qualifiable is False
-    assert RegistryReasonCode.ARTIFACT_MISSING in {
-        blocker.code for blocker in assessment.blockers
-    }
-
-    assert registry.assess_qualification(agent_registry___release()).qualifiable is True
+    refused = _compose_for(other, ("macos", "arm64"))
+    assert refused.outcome == BootstrapOutcome.BLOCKED
+    assert refused.reason == BootstrapReasonCode.RELEASE_NOT_QUALIFIED
 
 
 # ---------------------------------------------------------------------------
@@ -1098,7 +1096,7 @@ def test_row_to_release_round_trips_release_json():
     assert isinstance(restored, AgentReleaseV1)
     assert restored.digest_identity == release.digest_identity
     assert restored.qualification_status == release.qualification_status
-    # No conformance evidence was recorded, so the derived status is UNQUALIFIED.
+    # No approvals were recorded, so the derived status is UNQUALIFIED.
     assert store_module.release_summary(row)["status"] == "UNQUALIFIED"
 
 
@@ -1144,34 +1142,13 @@ def test_agent_registry_routes_are_wired_under_the_research_prefix():
     paths = {route.path for route in api_router.routes}
     assert "/research/agents/releases" in paths
     assert "/research/agents/releases/import" in paths
-    assert "/research/agents/releases/import/deployed" in paths
     assert "/research/agents/releases/{release_id}" in paths
-    assert "/research/agents/releases/{release_id}/disable" in paths
     assert "/research/agents/releases/{release_id}/resolve" in paths
     assert "/research/agents/releases/{release_id}/snapshots" in paths
     assert "/research/agents/releases/{release_id}/coverage" in paths
-    # There is no direct registration, qualification transition or re-approval.
+    # The caller-driven qualification transition endpoint has been removed:
+    # qualification is derived from the release's approved hosts.
     assert "/research/agents/releases/{release_id}/transition" not in paths
-    assert "/research/agents/releases/{release_id}/approve" not in paths
-
-
-def test_import_and_disable_require_admin():
-    app = MagicMock()
-    with pytest.raises(HTTPException) as error:
-        import_release_deployed(
-            DeployedImportRequest(
-                manifest_url="https://example.invalid/recipe.json",
-                archive_urls=["https://example.invalid/code4me-agent-macos-arm64.zip"],
-            ),
-            agent_registry___non_admin(),
-            app,
-        )
-    assert error.value.status_code == 403
-
-    with pytest.raises(HTTPException) as disable_error:
-        disable_release("rel-1", agent_registry___non_admin(), app)
-    assert disable_error.value.status_code == 403
-    app.get_db_session.assert_not_called()
 
 
 def test_list_releases_requires_admin():
@@ -1180,25 +1157,6 @@ def test_list_releases_requires_admin():
         list_releases(current_user=agent_registry___non_admin(), app=app)
     assert error.value.status_code == 403
     app.get_db_session.assert_not_called()
-
-
-def test_disable_release_marks_a_release_one_way():
-    app = MagicMock()
-    release = agent_registry___release()
-    fake_row = agent_registry___release_row(release)
-
-    with patch(
-        "backend.routers.research.agents.store.disable_release", return_value=fake_row
-    ) as disable, patch(
-        "backend.routers.research.agents.store.release_summary",
-        return_value={"release_id": release.release_id, "status": "DISABLED"},
-    ):
-        response = disable_release(release.release_id, agent_registry___admin(), app)
-
-    body = json.loads(response.body)
-    assert response.status_code == 200
-    assert body["release"]["status"] == "DISABLED"
-    disable.assert_called_once()
 
 
 def test_resolve_endpoint_returns_matching_artifact():
@@ -1397,16 +1355,14 @@ def test_list_snapshots_endpoint_returns_summaries():
     assert body["snapshots"][0]["snapshot_id"] == str(snapshot.snapshot_id)
 
 
-def test_adapter_reference_is_required_for_qualified_assessment():
+def test_adapter_digest_is_not_required_for_qualified_assessment():
     release = agent_registry___release(
         adapter=AdapterRef(adapter_id="a", version="1.0.0", digest=None).model_dump()
     )
     registry = AgentRegistry()
-    assessment = registry.assess_qualification(release)
-    assert assessment.qualifiable is False
-    assert RegistryReasonCode.ADAPTER_INCOMPATIBLE in {
-        blocker.code for blocker in assessment.blockers
-    }
+    # The explicit adapter-digest rule is retired: a name/version-only adapter is
+    # valid and nothing gates on the adapter digest.
+    assert registry.assess_qualification(release).qualifiable is True
 
 
 def test_distribution_artifact_platform_property():
@@ -1414,3 +1370,57 @@ def test_distribution_artifact_platform_property():
         os="macOS", arch="aarch64", path="a", sha256="sha256:" + "a" * 64, size=1
     )
     assert artifact.platform == ("macOS", "aarch64")
+
+
+# -- D-1: the manifest carries the enrollment's consent state ---------------
+
+
+def _compose_with_consent(release, consent_accepted_at):
+    artifact = release.artifacts[0]
+    enrollment, study, assignment = _bootstrap_inputs(release)
+    enrollment.consent_accepted_at = consent_accepted_at
+    return compose_bootstrap(
+        enrollment,
+        study,
+        assignment,
+        release,
+        None,
+        EphemeralSessionFactory(),
+        BootstrapSigningContext(secret="bootstrap-test-secret"),
+        platform=(artifact.os, artifact.arch),
+    )
+
+
+def test_bootstrap_manifest_reports_active_consent_from_the_enrollment():
+    release = agent_registry___approved_release()
+    result = _compose_with_consent(release, datetime.now(timezone.utc))
+
+    assert result.outcome == BootstrapOutcome.ISSUED
+    assert result.manifest is not None
+    assert result.manifest.policies.telemetry_policy.consent_active is True
+
+
+def test_bootstrap_manifest_reports_inactive_consent_without_acceptance():
+    release = agent_registry___approved_release()
+    result = _compose_with_consent(release, None)
+
+    assert result.outcome == BootstrapOutcome.ISSUED
+    assert result.manifest is not None
+    assert result.manifest.policies.telemetry_policy.consent_active is False
+
+
+def test_bootstrap_telemetry_policy_consent_is_false_for_a_non_active_enrollment():
+    from research.runtime.bootstrap.service import _policies
+
+    study = SimpleNamespace(
+        research_config_json={"telemetry_policy": {"content_capture": True}}
+    )
+    enrollment = SimpleNamespace(
+        status=EnrollmentStatus.REVOKED,
+        consent_accepted_at=datetime.now(timezone.utc),
+    )
+
+    policies = _policies(study, enrollment)
+
+    assert policies.telemetry_policy is not None
+    assert policies.telemetry_policy.consent_active is False

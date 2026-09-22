@@ -11,7 +11,7 @@ to the real research platform services and stores:
   code, ``open_study_enrollment`` for the atomic web-consent enrollment);
 * ``research.study.agents.store`` (``upsert_release``) with
   ``research.study.agents.models.AgentReleaseV1`` (qualification is derived from
-  conformance evidence, not supplied by the seeder);
+  the release's producer tests, not supplied by the seeder);
 * ``database.crud`` for the login account.
 
 Everything is digest-pinned and deterministic so the script is safe to re-run:
@@ -36,44 +36,27 @@ through web consent; enrollment itself happens there, never in the plugin.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import platform
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 from uuid import UUID
 
 from research.study import lifecycle as study_lifecycle
 from research.study.agents.enums import (
     DistributionMode,
-    DistributionSourceType,
     QualificationStatus,
 )
-from research.study.agents.manifest_import import build_manifest_releases
-from research.study.agents.models import (
-    AdapterRef,
-    AgentReleaseV1,
-    DistributionArtifact,
-    ReleaseDisplay,
-)
+from research.study.agents.manifest_import import build_manifest_release
 from research.study.agents.registry import AgentRegistry
 from research.study.protocol import store as protocol_store
 
-#: Synthetic self-check verdict recorded by the development seeder. A real
-#: release gets its verdict from the producer CLI/CI; the seeder stands in for it.
-SEED_TESTS: dict[str, Any] = {
-    "status": "PASS",
-    "approval_options": ["auto", "per_step", "suggestion_only"],
-    "cases": [
-        {"case_id": "builtin.manifest.smoke", "status": "PASS"},
-        {"case_id": "builtin.permission.request", "status": "PASS"},
-        {"case_id": "builtin.edit.suggestion", "status": "PASS"},
-    ],
-}
+if TYPE_CHECKING:
+    from research.study.agents.models import AgentReleaseV1
 
 # The fixed window is deliberately deterministic (not "now + N days") so the
 # seeded study schedule is identical on every run. ``end_at`` stays far enough
@@ -84,7 +67,6 @@ FIXED_SCHEDULE_END = datetime(2099, 1, 1, tzinfo=timezone.utc)
 DEFAULT_STUDY_NAME = "Synthetic Onboarding Study"
 DEFAULT_AGENT_ID = "code4me-synthetic-agent"
 DEFAULT_RELEASE_VERSION = "1.0.0"
-DEFAULT_EXPECTED_PROTOCOL_VERSION = "0.12.1"
 DEFAULT_ARTIFACT_SIZE = 1024
 
 #: The fresh-DB seeder pins the *built-in* Code4Me runtime distribution and
@@ -176,36 +158,19 @@ class SeedRequest:
 
 
 @dataclass(frozen=True)
-class SeedSummary:
-    """The copy-pasteable result of a seed run."""
-
-    enrollment_id: str
-    enrollment_status: str
-    study_id: str
-    join_code: str
-    agent_id: str
-    release_id: str
-    artifact_digest: str
-    distribution_mode: str
-    account_email: str
-    account_password: Optional[str]
-    account_created: bool
-    agent_profile_id: Optional[str] = None
-    distribution_id: Optional[str] = None
-
-
-@dataclass(frozen=True)
 class FreshDbRequest:
     """The resolved inputs of a "fresh DB immediately usable" seed run.
 
-    It imports the built runtime manifest (never a synthetic digest), records the
-    conformance evidence that makes the release QUALIFIED, pins the built-in
+    It imports the built runtime manifest (never a synthetic digest), approves
+    the release for the built platforms so it is QUALIFIED, pins the built-in
     distribution to that release, marks the participant-installed profiles as
     BYOA, and creates one live study with a working session policy.
     """
 
     manifest: dict[str, Any]
-    manifest_dir: Optional[str] = None
+    #: Directory holding the manifest's declared archives (basenames). The
+    #: ``code4me-runtime/`` resource subdirectory is also searched.
+    archives_dir: Optional[str] = None
     study_name: str = DEFAULT_BUILTIN_STUDY_NAME
     actor: str = "seed-script"
     require_capabilities: bool = False
@@ -244,7 +209,7 @@ class FreshDbSummary:
     study_id: str
     join_code: str
     session_policy: dict[str, Any]
-    skipped_artifacts: list[dict[str, str]]
+    verified_artifacts: list[dict[str, Any]]
     provider_connection_label: str = ""
     provider_connection_models: tuple[str, ...] = ()
     profile_model: str = ""
@@ -253,13 +218,6 @@ class FreshDbSummary:
 # ---------------------------------------------------------------------------
 # Pure planning helpers
 # ---------------------------------------------------------------------------
-
-
-def _sha256_hex(*parts: str) -> str:
-    digest = hashlib.sha256()
-    for part in parts:
-        digest.update(part.encode("utf-8"))
-    return digest.hexdigest()
 
 
 def detect_os() -> str:
@@ -277,79 +235,6 @@ def detect_arch() -> str:
     if machine in ("aarch64", "arm64"):
         return "aarch64"
     return "x64"
-
-
-def synthetic_consent_digest(study_name: str, version: str = "1") -> str:
-    """A stable, non-secret digest standing in for a real consent document."""
-    return "sha256:" + _sha256_hex("code4me2://consent", study_name, version)
-
-
-def build_synthetic_release(request: SeedRequest) -> AgentReleaseV1:
-    """A single-platform synthetic release (no secrets).
-
-    ``PACKAGED`` (the default) pins one digest-pinned distribution artifact;
-    ``BYOA_EXTERNAL`` pins a participant-installed command/package identity and
-    publishes no artifact.
-    """
-    byoa = request.is_byoa
-    identity_digest = (
-        (request.agent_command or "") + "|" + (request.agent_package or "")
-        if byoa
-        else request.artifact_digest
-    )
-    manifest_digest = "sha256:" + _sha256_hex(
-        request.agent_id,
-        request.release_id,
-        request.release_version,
-        request.os_name,
-        request.arch,
-        request.distribution_mode,
-        identity_digest,
-    )
-    adapter_digest = "sha256:" + _sha256_hex(
-        "code4me2://adapter", request.agent_id, request.release_version
-    )
-    return AgentReleaseV1(
-        agent_id=request.agent_id,
-        release_id=request.release_id,
-        version=request.release_version,
-        display=ReleaseDisplay(
-            name="Synthetic research agent",
-            vendor="code4me2",
-            description="Synthetic release for local study onboarding.",
-        ),
-        source_type=DistributionSourceType.RESEARCH_OVERLAY,
-        source_manifest_digest=manifest_digest,
-        distribution_mode=(
-            DistributionMode.BYOA_EXTERNAL if byoa else DistributionMode.PACKAGED
-        ),
-        artifacts=(
-            []
-            if byoa
-            else [
-                DistributionArtifact(
-                    os=request.os_name,
-                    arch=request.arch,
-                    path=request.artifact_path,
-                    sha256=request.artifact_digest,
-                    size=request.artifact_size,
-                )
-            ]
-        ),
-        agent_command=(request.agent_command or request.agent_package) if byoa else None,
-        agent_command_args=list(request.agent_command_args) if byoa else [],
-        agent_package=request.agent_package if byoa else None,
-        adapter=AdapterRef(
-            adapter_id=f"{request.agent_id}-adapter",
-            version="1.0.0",
-            digest=adapter_digest,
-        ),
-        min_protocol_version=DEFAULT_EXPECTED_PROTOCOL_VERSION,
-        max_protocol_version=DEFAULT_EXPECTED_PROTOCOL_VERSION,
-        # A release starts UNQUALIFIED; ``ensure_release`` records a synthetic
-        # passing conformance receipt, which is the only promotion path.
-        qualification_status=QualificationStatus.UNQUALIFIED,
-    )
 
 
 def build_research_config(
@@ -380,55 +265,6 @@ def build_research_config(
 # ---------------------------------------------------------------------------
 
 
-def resolve_account(
-    session: Any,
-    request: SeedRequest,
-) -> tuple[Any, bool]:
-    """Return ``(user, created)`` for the participant login account."""
-    from database import crud
-
-    user = crud.get_user_by_email(session, request.account_email)
-    if user is not None:
-        return user, False
-    if not request.create_account:
-        raise SeedError(
-            f"no account exists for {request.account_email!r}; re-run with "
-            "--create-account (and --account-password) to create it."
-        )
-    if not request.account_password:
-        raise SeedError(
-            "--account-password is required when creating a new participant account."
-        )
-
-    config_id = request.config_id
-    if config_id is None:
-        configs = crud.get_all_configs(session)
-        if not configs:
-            raise SeedError(
-                "no configuration row exists; run the database migrations/init "
-                "before seeding a participant account."
-            )
-        config_id = int(configs[0].config_id)
-
-    import Queries
-
-    user = crud.create_user(
-        session,
-        Queries.CreateUser(
-            email=request.account_email,
-            name=request.account_name,
-            password=request.account_password,
-            config_id=config_id,
-        ),
-    )
-    return user, True
-
-
-# ---------------------------------------------------------------------------
-# Registry / study / lifecycle / enrollment
-# ---------------------------------------------------------------------------
-
-
 def _registry_from_db(session: Any) -> AgentRegistry:
     from research.study.agents import store as agents_store
 
@@ -436,61 +272,6 @@ def _registry_from_db(session: Any) -> AgentRegistry:
     for row in agents_store.list_releases(session):
         registry.register_release(agents_store.row_to_release(row))
     return registry
-
-
-def ensure_release(session: Any, request: SeedRequest) -> AgentReleaseV1:
-    """Register (or resolve) the synthetic release and ensure it is usable.
-
-    Usability is derived from the recorded self-check verdict only, so the
-    release is made usable by recording a passing ``tests`` block (never by a
-    reviewer transition or a request payload).
-    """
-    from research.study.agents import store as agents_store
-
-    desired = build_synthetic_release(request)
-    registry = _registry_from_db(session)
-    existing = registry.get_release(request.agent_id, request.release_id)
-
-    if existing is None:
-        registration = registry.register_release(desired)
-        if not registration.accepted:
-            raise SeedError(
-                "release could not be registered: "
-                f"{registration.issue.message if registration.issue else 'unknown'}"
-            )
-        agents_store.upsert_release(session, desired, evidence={"tests": SEED_TESTS})
-        current = desired
-    else:
-        if existing.digest_identity != desired.digest_identity:
-            raise SeedError(
-                f"release {request.release_id!r} already exists with a different "
-                "digest identity; pass a new --release-id (or --artifact-digest) "
-                "instead of mutating an immutable release."
-            )
-        if desired.is_byoa:
-            if existing.byoa_identity != desired.byoa_identity:
-                raise SeedError(
-                    f"release {request.release_id!r} is registered with a different "
-                    "BYOA command/package; pass a new --release-id instead of "
-                    "mutating an immutable release."
-                )
-        else:
-            artifact = existing.artifact_for(request.os_name, request.arch)
-            if artifact is None or artifact.sha256 != request.artifact_digest:
-                raise SeedError(
-                    f"release {request.release_id!r} is registered with a different "
-                    f"artifact for ({request.os_name}, {request.arch}); pass a new "
-                    "--release-id."
-                )
-        current = existing
-
-    if current.qualification_status != QualificationStatus.QUALIFIED:
-        agents_store.upsert_release(session, desired, evidence={"tests": SEED_TESTS})
-
-    row = agents_store.get_release(session, request.release_id)
-    if row is None:
-        raise SeedError(f"release {request.release_id!r} vanished after registration")
-    return agents_store.row_to_release(row)
 
 
 def ensure_study(
@@ -570,114 +351,55 @@ def activate_study(session: Any, study_id: UUID) -> None:
         raise SeedError(f"seeded study {study_id} has no study row")
 
 
-def ensure_enrollment(
-    session: Any,
-    join_code: str,
-    *,
-    account_id: UUID,
-) -> Any:
-    """Accept web consent for the seeded study (or reuse the live enrollment).
+def resolve_declared_archives(
+    manifest: dict[str, Any], archives_dir: Optional[str]
+) -> dict[str, Any]:
+    """Map every archive the manifest declares to its on-disk bytes.
 
-    This is the same atomic ``open_study_enrollment`` the join route runs, so a
-    re-run never piles up a duplicate enrollment.
+    ``archive`` fields are basenames; the seeder resolves each against the
+    supplied directory (and the ``code4me-runtime/`` resource subdirectory, so
+    the checked-in plugin manifest works too). A declared archive that cannot be
+    found is left out: the planner then rejects the import, exactly like the
+    HTTP route does.
     """
-    try:
-        return study_lifecycle.open_study_enrollment(session, account_id, join_code)
-    except (ValueError, PermissionError) as error:
-        raise SeedError(f"enrollment was rejected: {error}") from error
+    from pathlib import Path
 
-
-def ensure_distribution(
-    session: Any,
-    request: SeedRequest,
-    release: AgentReleaseV1,
-    *,
-    owner_user_id: Any = None,
-) -> UUID:
-    """Ensure a distribution (``AgentProfile``) exists and return its id.
-
-    With ``--profile-id`` the caller pins an existing profile; otherwise the seed
-    mints a deterministic distribution bound to the release it registered, so the
-    study can select a single ``profile_id``.
-    """
-    from database import db_schemas
-
-    distribution_id = request.agent_profile_id or request.distribution_id
-    row = session.get(db_schemas.AgentProfile, distribution_id)
-    if row is None:
-        if request.agent_profile_id is not None:
-            raise SeedError(
-                f"agent profile {request.agent_profile_id} does not exist; create it "
-                "first (POST /api/agent/profiles) or omit --profile-id."
-            )
-        row = db_schemas.AgentProfile(
-            profile_id=distribution_id,
-            owner_user_id=owner_user_id,
-            name=f"seed-distribution:{request.study_name}:{request.release_id}",
-            model="seed-model",
-            framework_version="code4me2-agent",
-            tools_json="[]",
-            approval_policy="suggestion_only",
-            max_steps=1,
-            is_active=True,
-            # The release pin is artifact identity; provider endpoint/secret live
-            # on the administrator-managed connection (unset for this dev seed).
-            release_id=release.release_id,
-            connection_id=None,
-        )
-        session.add(row)
-        session.commit()
-    return distribution_id
-
-
-# ---------------------------------------------------------------------------
-# Fresh-DB seeding: built manifest -> qualified release -> pinned distribution
-# -> live study
-# ---------------------------------------------------------------------------
-
-
-def _verified_from_directory(manifest: dict[str, Any], root: Optional[str]) -> dict[str, tuple[str, int]]:
-    """Recompute ``basename -> (sha256, size)`` for a recipe's archives on disk.
-
-    The archives live next to the recipe document (or in its staged
-    ``resources/code4me-runtime`` directory); there is no separate
-    caller-supplied artifact root or size override. A missing archive fails
-    rather than trusting a recipe that carries bytes it did not receive.
-    """
-    if root is None:
-        raise SeedError("seed import requires the recipe's archives next to --manifest")
-    base = Path(root)
-    verified: dict[str, tuple[str, int]] = {}
+    roots: list[Path] = []
+    if archives_dir:
+        roots.append(Path(archives_dir))
+        roots.append(Path(archives_dir) / "code4me-runtime")
+    found: dict[str, Path] = {}
     for raw in manifest.get("artifacts") or []:
-        name = str(raw.get("archive") or "")
-        candidates = [base / Path(name).name, base / name, base / "resources" / "code4me-runtime" / Path(name).name]
-        candidate = next((item for item in candidates if item.is_file()), None)
-        if candidate is None:
-            raise SeedError(f"declared archive {name!r} is not present under {root!r}")
-        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
-        verified[Path(name).name] = (digest, candidate.stat().st_size)
-    return verified
+        if not isinstance(raw, dict):
+            continue
+        name = Path(str(raw.get("archive") or "")).name
+        if not name or name in found:
+            continue
+        for root in roots:
+            candidate = root / name
+            if candidate.is_file():
+                found[name] = candidate
+                break
+    return found
 
 
 def import_manifest_release(
     session: Any, request: FreshDbRequest
-) -> tuple[AgentReleaseV1, list[dict[str, str]]]:
-    """Register the release the build recipe describes (idempotently).
+) -> tuple[AgentReleaseV1, list[dict[str, Any]]]:
+    """Register the release the build manifest + archives describe (idempotently).
 
-    The recipe is mapped through the same pure planner the import endpoint uses,
-    so the seeder and CI resolve the exact same release identity. The archives
-    beside the recipe are hashed and verified; a mismatch raises rather than
-    silently trusting the recipe.
+    The manifest is mapped through the same pure planner the import endpoint
+    uses, so the seeder and CI resolve the exact same release identity. Every
+    declared archive must be present and match its digest and size; a mismatch
+    raises rather than silently trusting the manifest.
     """
     from research.study.agents import store as agents_store
 
-    manifest = dict(request.manifest)
-    manifest.setdefault("tests", SEED_TESTS)
+    archives = resolve_declared_archives(request.manifest, request.archives_dir)
     try:
-        verified = _verified_from_directory(manifest, request.manifest_dir)
-        plan = build_manifest_releases(manifest, verified=verified)
+        plan = build_manifest_release(request.manifest, archives=archives)
     except Exception as error:  # noqa: BLE001 - re-raise as an operator-facing error
-        raise SeedError(f"build recipe could not be imported: {error}") from error
+        raise SeedError(f"build manifest could not be imported: {error}") from error
 
     desired = plan.release
     registry = _registry_from_db(session)
@@ -689,34 +411,17 @@ def import_manifest_release(
                 "release could not be registered: "
                 f"{registration.issue.message if registration.issue else 'unknown'}"
             )
-        agents_store.upsert_release(session, desired, evidence={"tests": manifest["tests"]})
+        agents_store.upsert_release(session, desired)
     elif existing.digest_identity != desired.digest_identity:
         raise SeedError(
             f"release {desired.release_id!r} already exists with a different digest "
-            "identity; the recipe is immutable -- remove the stale release first."
+            "identity; the manifest is immutable -- remove the stale release first."
         )
 
     row = agents_store.get_release(session, desired.release_id)
     if row is None:  # pragma: no cover - defensive
         raise SeedError(f"release {desired.release_id!r} vanished after registration")
-    return agents_store.row_to_release(row), []
-
-
-def ensure_manifest_tests(session: Any, release: AgentReleaseV1) -> None:
-    """Record the passing self-check verdict that makes ``release`` usable.
-
-    Usability is *derived* from the recorded ``tests`` block; this records the
-    synthetic seed verdict through the release store (it never writes a
-    qualification flag). The case ids name the host behaviours each one stands
-    for, so the derived ``verified_approval_options`` offers the same policies a
-    real producer run would. A production release gets its real verdict from the
-    producer CLI/CI instead.
-    """
-    if release.qualification_status == QualificationStatus.QUALIFIED:
-        return
-    from research.study.agents import store as agents_store
-
-    agents_store.upsert_release(session, release, evidence={"tests": SEED_TESTS})
+    return agents_store.row_to_release(row), plan.verified_artifacts
 
 
 def ensure_dev_provider_connection(
@@ -866,8 +571,9 @@ def pin_builtin_distribution(
 def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary:
     """Make a fresh database immediately usable for research.
 
-    Registers the shipped runtime release, records the conformance evidence that
-    qualifies it, pins ``default-code4me2-agent`` to it (Goose/Codex become BYOA),
+    Registers the shipped runtime release from its producer manifest (the
+    manifest's passing platform tests make it usable),
+    pins ``default-code4me2-agent`` to it (Goose/Codex become BYOA),
     and creates one live study whose ``session_policy`` is fully populated
     so the sessions endpoints can open a session instead of returning
     ``POLICY_MISSING``. Safe to re-run: every step resolves the existing row.
@@ -876,8 +582,7 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
         distribution_supported_platforms,
     )
 
-    release, skipped = import_manifest_release(session, request)
-    ensure_manifest_tests(session, release)
+    release, verified = import_manifest_release(session, request)
 
     owner = ensure_dev_owner(session, request.owner_email)
     connection = ensure_dev_provider_connection(
@@ -895,7 +600,7 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
         model=request.profile_model or request.connection_models[0],
     )
 
-    # Re-read so the derived qualification reflects the recorded receipt.
+    # Re-read the imported test-derived qualification.
     from research.study.agents import store as agents_store
 
     release_row = agents_store.get_release(session, release.release_id)
@@ -945,7 +650,7 @@ def seed_fresh_database(session: Any, request: FreshDbRequest) -> FreshDbSummary
         study_id=str(study.study_id),
         join_code=str(join_code or ""),
         session_policy=dict(research_config["session_policy"]),
-        skipped_artifacts=skipped,
+        verified_artifacts=verified,
         provider_connection_label=connection.label,
         provider_connection_models=tuple(json.loads(connection.models_json or "[]")),
         profile_model=profile.model,
@@ -968,122 +673,48 @@ def format_fresh_db_summary(summary: FreshDbSummary) -> str:
         f"  session_policy:         {summary.session_policy}",
         f"  provider_connection:    {summary.provider_connection_label} {list(summary.provider_connection_models)}",
         f"  profile_model:          {summary.profile_model}",
-        f"  skipped_artifacts:      {summary.skipped_artifacts}",
+        f"  verified_artifacts:     {summary.verified_artifacts}",
     ]
-    return "\n".join(lines)
-
-
-def run_seed(session: Any, request: SeedRequest) -> SeedSummary:
-    """Run the full, idempotent seed against a caller-owned DB session."""
-    user, account_created = resolve_account(session, request)
-
-    release = ensure_release(session, request)
-    profile_id = ensure_distribution(
-        session, request, release, owner_user_id=user.user_id
-    )
-    research_config = build_research_config(request, profile_id=profile_id)
-    study = ensure_study(
-        session,
-        request,
-        research_config,
-        owner_user_id=user.user_id,
-        profile_id=profile_id,
-    )
-    activate_study(session, study.study_id)
-
-    live = protocol_store.get_study(session, request.study_id)
-    join_code = live.join_code if live is not None else None
-    if not join_code:
-        raise SeedError(f"seeded study {request.study_id} has no join code")
-    enrollment = ensure_enrollment(session, join_code, account_id=user.user_id)
-
-    return SeedSummary(
-        enrollment_id=str(enrollment.enrollment_id),
-        enrollment_status="ACTIVE",
-        study_id=str(enrollment.study_id),
-        join_code=str(join_code),
-        agent_id=release.agent_id,
-        release_id=release.release_id,
-        artifact_digest=(
-            str(release.source_manifest_digest)
-            if release.is_byoa
-            else str(
-                release.artifact_for(request.os_name, request.arch).sha256  # type: ignore[union-attr]
-            )
-        ),
-        distribution_mode=release.distribution_mode.value,
-        distribution_id=str(profile_id),
-        account_email=request.account_email,
-        account_password=request.account_password if account_created else None,
-        account_created=account_created,
-        agent_profile_id=(
-            str(request.agent_profile_id) if request.agent_profile_id else None
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-
-def format_summary(summary: SeedSummary) -> str:
-    """Render the copy-pasteable onboarding summary (no hidden secrets)."""
-    lines = [
-        "Synthetic research study seeded and activated.",
-        f"  study join code:         {summary.join_code}",
-        f"  enrollment_id:           {summary.enrollment_id}",
-        f"  enrollment_status:       {summary.enrollment_status}",
-        f"  study_id:                {summary.study_id}",
-        f"  agent_id:                  {summary.agent_id}",
-        f"  release_id:                {summary.release_id}",
-        f"  distribution_mode:         {summary.distribution_mode}",
-        f"  distribution_id:           {summary.distribution_id or '(none)'}",
-        f"  artifact_digest:           {summary.artifact_digest}",
-        f"  agent_profile_id:          {summary.agent_profile_id or '(none)'}",
-        f"  login email:               {summary.account_email}",
-    ]
-    if summary.account_created:
-        lines.append(f"  login password:            {summary.account_password}")
-    else:
-        lines.append("  login password:            (existing account, unchanged)")
-    lines.append(
-        "  participant step:          redeem the study join code through web consent"
-    )
     return "\n".join(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Seed research onboarding state. Two modes: (default) a deterministic "
-            "synthetic release + one enrolled participant; --fresh-db imports the "
-            "built runtime manifest, qualifies its release, pins the built-in "
-            "distribution and creates a live study. Both are safe to re-run; "
-            "no secrets are printed except a password supplied with "
+            "Seed research onboarding state. Imports the built runtime manifest "
+            "with its verified archive bytes, qualifies its release, pins the "
+            "built-in distribution and creates a live study. Safe to re-run; no "
+            "secrets are printed except a password supplied with "
             "--account-password."
         )
     )
     parser.add_argument(
         "--account-email",
         default=None,
-        help="participant login email (required unless --fresh-db is used)",
+        help="participant login email (informational; the study is seeded without it)",
     )
     parser.add_argument(
         "--fresh-db",
         action="store_true",
         help=(
-            "import the built runtime manifest and seed a usable distribution + "
-            "live study (no participant account required)"
+            "accepted for backwards-compatible invocation; the manifest import is "
+            "the only seed path"
         ),
     )
     parser.add_argument(
         "--manifest",
         default=None,
         help=(
-            "path to the build runtime manifest JSON for --fresh-db (use '-' to "
-            "read it from stdin); the recipe's archives must sit beside it or in "
-            "its resources/code4me-runtime directory"
+            "path to the producer runtime manifest JSON (use '-' to read it from "
+            "stdin); basename archives must be present for a successful import"
+        ),
+    )
+    parser.add_argument(
+        "--archives-dir",
+        default=None,
+        help=(
+            "directory holding the manifest's declared archives (basenames); the "
+            "code4me-runtime/ resource subdirectory is also searched"
         ),
     )
     parser.add_argument(
@@ -1209,53 +840,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def request_from_args(args: argparse.Namespace) -> SeedRequest:
-    agent_id = args.agent_id
-    if not args.account_email:
-        raise SystemExit(
-            "--account-email is required unless --fresh-db is used."
-        )
-    os_name = args.os_name or detect_os()
-    arch = args.arch or detect_arch()
-    release_id = args.release_id or f"{agent_id}-synthetic-1"
-    artifact_digest = args.artifact_digest or (
-        "sha256:" + _sha256_hex("code4me2://artifact", agent_id, release_id, os_name, arch)
-    )
-    artifact_path = args.artifact_path or f"agents/{os_name}-{arch}/code4me-agent"
-    distribution_mode = (args.distribution_mode or DistributionMode.PACKAGED.value).strip().upper()
-    if (
-        distribution_mode == DistributionMode.BYOA_EXTERNAL.value
-        and not (args.agent_command or args.agent_package)
-    ):
-        raise SystemExit(
-            "--distribution-mode BYOA_EXTERNAL requires --agent-command or --agent-package."
-        )
-    agent_command_args = tuple((args.agent_command_args or "").split())
-    return SeedRequest(
-        account_email=args.account_email.strip().lower(),
-        account_password=args.account_password,
-        account_name=args.account_name,
-        create_account=args.create_account,
-        config_id=args.config_id,
-        study_name=args.study_name,
-        agent_id=agent_id,
-        release_id=release_id,
-        release_version=args.release_version,
-        artifact_digest=artifact_digest,
-        artifact_path=artifact_path,
-        artifact_size=args.artifact_size,
-        os_name=os_name,
-        arch=arch,
-        actor=args.actor,
-        require_capabilities=args.require_capabilities,
-        distribution_mode=distribution_mode,
-        agent_command=args.agent_command,
-        agent_command_args=agent_command_args,
-        agent_package=args.agent_package,
-        agent_profile_id=args.profile_id,
-    )
-
-
 def _load_manifest(source: str) -> dict[str, Any]:
     """Load a manifest JSON document from a path or ``-`` (stdin)."""
     if source == "-":
@@ -1272,12 +856,9 @@ def fresh_db_request_from_args(args: argparse.Namespace) -> FreshDbRequest:
     """Build the fresh-DB seed request from parsed CLI arguments."""
     if not args.manifest:
         raise SystemExit("--fresh-db requires --manifest PATH (or --manifest -).")
-    manifest_dir = (
-        None if args.manifest == "-" else str(Path(args.manifest).resolve().parent)
-    )
     return FreshDbRequest(
         manifest=_load_manifest(args.manifest),
-        manifest_dir=manifest_dir,
+        archives_dir=args.archives_dir,
         study_name=args.builtin_study_name,
         actor=args.actor,
         require_capabilities=args.require_capabilities,
@@ -1325,14 +906,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     app = App.get_instance()
     session = app.get_db_session()
     try:
-        if args.fresh_db:
-            fresh_request = fresh_db_request_from_args(args)
-            summary = seed_fresh_database(session, fresh_request)
-            print(format_fresh_db_summary(summary))
-        else:
-            request = request_from_args(args)
-            seed_summary = run_seed(session, request)
-            print(format_summary(seed_summary))
+        # There is exactly one seed path: the built runtime manifest + its
+        # verified archive bytes. A synthetic release with an invented digest is
+        # no longer representable.
+        fresh_request = fresh_db_request_from_args(args)
+        summary = seed_fresh_database(session, fresh_request)
+        print(format_fresh_db_summary(summary))
     finally:
         session.close()
     return 0

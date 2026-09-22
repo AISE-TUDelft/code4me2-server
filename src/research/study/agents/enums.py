@@ -26,13 +26,9 @@ __all__ = [
     "SnapshotCapabilityState",
 ]
 
-#: The one agent runtime the managed protocol runs in this release. This is a
-#: readiness default, not a binding ban, and the three concepts stay distinct:
-#: a BYOA release is *usable* when its recipe self-check passed; a BYOA
-#: *distribution* still verifies as unverified at publication (admin WARNING,
-#: non-admin ERROR; ISSUE-004); and a participant host without the installed
-#: agent blocks with AGENT_NOT_FOUND at resolution.
-#: Qualification never implies verification or readiness, or vice versa.
+#: The one agent runtime the managed protocol runs in this release. Goose and
+#: Codex releases exist as BYOA identities but are not participant-ready, so a
+#: study may not bind them until the managed protocol manages them.
 MANAGED_RUNTIME_FRAMEWORK = "code4me2-agent"
 
 
@@ -53,23 +49,18 @@ class DistributionMode(str, Enum):
 
 
 class QualificationStatus(str, Enum):
-    """Review status of one agent release.
+    """Producer tests derive QUALIFIED; DISABLED is an irreversible withdrawal.
 
-    Distribution, protocol capability and observability capability are
-    separate contracts. ``QUALIFIED`` is **derived** from the imported recipe's
-    self-check verdict (``tests.status == "PASS"``); a release without a passing
-    recipe is ``UNQUALIFIED``. ``DISABLED`` is a one-way administrator action.
-    ``DRAFT``, ``CONDITIONALLY_QUALIFIED``, ``RETIRED`` and ``BLOCKED`` remain in
-    the persisted vocabulary for historical rows and for the withdrawal mapping.
+    Older status values remain readable for historical records.
     """
 
     UNQUALIFIED = "UNQUALIFIED"
     DRAFT = "DRAFT"
     QUALIFIED = "QUALIFIED"
     CONDITIONALLY_QUALIFIED = "CONDITIONALLY_QUALIFIED"
+    DISABLED = "DISABLED"
     RETIRED = "RETIRED"
     BLOCKED = "BLOCKED"
-    DISABLED = "DISABLED"
 
 
 class DistributionSourceType(str, Enum):

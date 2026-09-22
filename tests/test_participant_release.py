@@ -26,11 +26,7 @@ from research.study.agents.participant_release import (
     write_json,
 )
 
-PASSING_TESTS = {
-    "status": "PASS",
-    "approval_options": ["auto", "per_step"],
-    "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
-}
+PASSING_TESTS = {"self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}
 
 
 def _make_archive(path: Path, platform: str, *, executable: str) -> None:
@@ -66,6 +62,7 @@ def make_inputs(root: Path) -> ParticipantRecipe:
                 "size": archive.stat().st_size,
                 "executable": executable,
                 "managed_protocol": "1",
+                "tests": PASSING_TESTS,
             }
         )
     write_json(
@@ -91,6 +88,7 @@ def make_inputs(root: Path) -> ParticipantRecipe:
                 {
                     "framework": framework,
                     "version": "1.2.3",
+                    "tests": [dict(PASSING_TESTS, os="macos", arch="arm64")],
                     "adapter": {
                         "adapter_id": framework,
                         "version": "1",
@@ -107,12 +105,12 @@ def make_inputs(root: Path) -> ParticipantRecipe:
 def test_prepare_emits_one_recipe_with_verified_archives(tmp_path):
     inputs = tmp_path / "inputs"
     recipe = make_inputs(inputs)
-    document = prepare(recipe, inputs, tmp_path / "prepared", tests=PASSING_TESTS)
+    document = prepare(recipe, inputs, tmp_path / "prepared")
 
     assert document["manifest_version"] == 1
     assert document["runtime_version"] == "1.2.3"
     assert document["managed_protocol_version"] == "1"
-    assert document["tests"]["status"] == "PASS"
+    assert all(a["tests"]["self_check"] == "PASS" for a in document["artifacts"])
     assert len(document["artifacts"]) == len(PLATFORMS)
     for artifact in document["artifacts"]:
         assert artifact["platform"] in {"macos", "linux", "windows"}
@@ -134,19 +132,17 @@ def test_prepare_emits_one_recipe_with_verified_archives(tmp_path):
         assert file_sha256(staged) == artifact["sha256"]
 
 
-def test_prepare_requires_a_passing_self_check(tmp_path):
+def test_prepare_requires_passing_platform_tests(tmp_path):
     inputs = tmp_path / "inputs"
     recipe = make_inputs(inputs)
-    with pytest.raises(ValueError, match="self-check"):
-        prepare(recipe, inputs, tmp_path / "no-tests")
-    with pytest.raises(ValueError, match="self-check"):
-        prepare(
-            recipe,
-            inputs,
-            tmp_path / "failed-tests",
-            tests={"status": "FAIL", "cases": []},
-        )
-    assert not (tmp_path / "no-tests").exists()
+    path = inputs / "runtime.json"
+    document = json.loads(path.read_text())
+    document["artifacts"][0]["tests"]["self_check"] = "FAIL"
+    write_json(path, document)
+    recipe.runtime.sha256 = file_sha256(path)
+    with pytest.raises(ValueError, match="passing self_check"):
+        prepare(recipe, inputs, tmp_path / "failed-tests")
+    assert not (tmp_path / "failed-tests" / "recipe.json").exists()
 
 
 def test_prepare_rejects_a_tampered_archive(tmp_path):
@@ -154,7 +150,7 @@ def test_prepare_rejects_a_tampered_archive(tmp_path):
     recipe = make_inputs(inputs)
     (inputs / f"code4me-agent-{PLATFORMS[0]}.zip").write_bytes(b"tampered")
     with pytest.raises(ValueError, match="checksum"):
-        prepare(recipe, inputs, tmp_path / "out", tests=PASSING_TESTS)
+        prepare(recipe, inputs, tmp_path / "out")
 
 
 def test_prepare_rejects_a_declared_size_mismatch(tmp_path):
@@ -166,7 +162,7 @@ def test_prepare_rejects_a_declared_size_mismatch(tmp_path):
     write_json(manifest_path, manifest)
     recipe.runtime.sha256 = file_sha256(manifest_path)
     with pytest.raises(ValueError, match="size"):
-        prepare(recipe, inputs, tmp_path / "out", tests=PASSING_TESTS)
+        prepare(recipe, inputs, tmp_path / "out")
 
 
 def test_local_subset_declares_exactly_its_platforms(tmp_path):
@@ -189,7 +185,6 @@ def test_local_subset_declares_exactly_its_platforms(tmp_path):
         inputs,
         tmp_path / "prepared",
         platforms=("macos-aarch64",),
-        tests=PASSING_TESTS,
     )
     assert [
         f"{artifact['platform']}-{artifact['architecture']}"
@@ -202,16 +197,14 @@ def test_local_subset_declares_exactly_its_platforms(tmp_path):
             inputs,
             tmp_path / "other",
             platforms=("macos-arm64", "linux-x64"),
-            tests=PASSING_TESTS,
-        )
+            )
     with pytest.raises(ValueError, match="supported native platform"):
         prepare(
             recipe,
             inputs,
             tmp_path / "bad",
             platforms=("solaris-sparc",),
-            tests=PASSING_TESTS,
-        )
+            )
 
 
 def test_prepare_rejects_a_missing_platform(tmp_path):
@@ -223,13 +216,13 @@ def test_prepare_rejects_a_missing_platform(tmp_path):
     write_json(manifest_path, manifest)
     recipe.runtime.sha256 = file_sha256(manifest_path)
     with pytest.raises(ValueError, match="four"):
-        prepare(recipe, inputs, tmp_path / "out", tests=PASSING_TESTS)
+        prepare(recipe, inputs, tmp_path / "out")
 
 
 def test_changed_prepared_input_cannot_be_loaded(tmp_path):
     inputs = tmp_path / "inputs"
     recipe = make_inputs(inputs)
-    prepare(recipe, inputs, tmp_path / "prepared", tests=PASSING_TESTS)
+    prepare(recipe, inputs, tmp_path / "prepared")
     staged = next((tmp_path / "prepared" / "resources" / "code4me-runtime").iterdir())
     staged.write_bytes(b"changed after preparation")
     with pytest.raises(ValueError, match="prepared input changed"):

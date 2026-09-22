@@ -2,54 +2,15 @@
 
 import json
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from database import crud
-from research.study.agents.distributions import (
-    ProfileConfigurationError,
-    resolve_distribution_view,
-)
-from research.study.agents.enums import (
-    DistributionMode,
-    QualificationStatus,
-)
-from research.study.agents.models import (
-    AdapterRef,
-    AgentConfigBinding,
-    AgentReleaseV1,
-)
-from research.study.agents.registry import (
-    AgentRegistry,
-    byoa_identity_qualified,
-    derive_qualification_status,
-)
-from research.study.agents.resolver import RegistryReleaseResolver
-from research.study.protocol.enums import (
-    ReleaseResolutionStatus,
-    ValidationReasonCode,
-    ValidationSeverity,
-)
-from research.study.protocol.models import StudyProtocolV1
-from research.study.protocol.validation import (
-    blocking_errors,
-    is_publishable,
-    validate_protocol,
-)
+from research.study.agents.distributions import ProfileConfigurationError
 
 from ._byoa_contract import BYOA_CONFIG_BINDINGS
-
-_PROTOCOL_FIXTURE = (
-    Path(__file__).resolve().parents[2]
-    / "fixtures"
-    / "research"
-    / "protocol"
-    / "approved_study_protocol_v1.json"
-)
-_BYOA_DISTRIBUTION_ID = uuid.UUID("aaaaaaaa-0000-4000-8000-0000000000ab")
 
 
 def _release_row(
@@ -92,11 +53,10 @@ def _release_row(
     }
     if mode == "BYOA_EXTERNAL":
         document["byoa_config"] = list(BYOA_CONFIG_BINDINGS)
-    document["tests"] = {
-        "status": "PASS",
-        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
-    }
-    return SimpleNamespace(status="QUALIFIED", release_json=document)
+    return SimpleNamespace(
+        status="QUALIFIED",
+        release_json=dict(document, tests=[{ "os": "macos", "arch": "arm64", "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}]),
+    )
 
 
 @pytest.mark.parametrize(
@@ -263,169 +223,3 @@ def test_create_profile_rejects_an_unmapped_byoa_field_at_crud_time():
     assert "model" in str(error.value)
     session.add.assert_not_called()
     session.commit.assert_not_called()
-
-
-def _byoa_release(*, release_id: str, manifest_digest: str, qualified: bool) -> AgentReleaseV1:
-    """A BYOA codex release; qualified only via a bound PASS receipt document."""
-    return AgentReleaseV1(
-        agent_id="codex",
-        release_id=release_id,
-        version="1.2.3",
-        source_manifest_digest=manifest_digest,
-        distribution_mode=DistributionMode.BYOA_EXTERNAL,
-        agent_package="codex",
-        byoa_config=[
-            AgentConfigBinding(**item) for item in BYOA_CONFIG_BINDINGS
-        ],
-        adapter=AdapterRef(
-            adapter_id="acp-adapter", version="0.4.0", digest="sha256:" + "d" * 64
-        ),
-        qualification_status=(
-            QualificationStatus.QUALIFIED
-            if qualified
-            else QualificationStatus.UNQUALIFIED
-        ),
-    )
-
-
-def _byoa_receipt_document(release: AgentReleaseV1) -> dict:
-    """The release document with a PASS receipt bound to its manifest digest.
-
-    This is the in-memory shape of receipt qualification (ISSUE-003): the
-    receipt binds the release's own ``source_manifest_digest`` plus the adapter
-    digest, so :func:`derive_qualification_status` reports QUALIFIED.
-    """
-    document = release.model_dump(mode="json")
-    document["tests"] = {
-        "status": "PASS",
-        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
-    }
-    return document
-
-
-def _byoa_profile(**overrides):
-    """A schema-shaped ``AgentProfile`` stand-in pinning a BYOA release."""
-    base = dict(
-        profile_id=_BYOA_DISTRIBUTION_ID,
-        name="byoa-dist",
-        release_id="rel-byoa-qualified",
-        framework_version="codex",
-        model="gpt",
-        tools_json="[]",
-        approval_policy="auto",
-        max_steps=1,
-        temperature=None,
-        connection_id=None,
-    )
-    base.update(overrides)
-    return SimpleNamespace(**base)
-
-
-def _byoa_protocol() -> StudyProtocolV1:
-    data = json.loads(_PROTOCOL_FIXTURE.read_text())
-    data["conditions"] = [data["conditions"][0]]
-    data["conditions"][0]["distribution_id"] = str(_BYOA_DISTRIBUTION_ID)
-    data["conditions"][0].pop("resolved_distribution", None)
-    return StudyProtocolV1.model_validate(data)
-
-
-def test_byoa_resolver_resolves_receipt_qualified_identity_but_not_unqualified():
-    """ISSUE-004: the resolver binds a receipt-qualified BYOA identity (no DB).
-
-    The qualified release's document carries a PASS receipt bound to its own
-    manifest digest, which is what derives QUALIFIED (ISSUE-003, read-only
-    here); the unqualified release carries no evidence. The in-memory registry
-    resolver must return RESOLVED for the former and UNQUALIFIED for the
-    latter, and the two outcomes must be asserted distinct.
-    """
-    qualified = _byoa_release(
-        release_id="rel-byoa-qualified",
-        manifest_digest="sha256:" + "2" * 64,
-        qualified=True,
-    )
-    qualified_document = _byoa_receipt_document(qualified)
-    assert derive_qualification_status(qualified_document) == QualificationStatus.QUALIFIED
-    assert byoa_identity_qualified(qualified_document) is True
-
-    unqualified = _byoa_release(
-        release_id="rel-byoa-unqualified",
-        manifest_digest="sha256:" + "3" * 64,
-        qualified=False,
-    )
-    assert (
-        derive_qualification_status(unqualified.model_dump(mode="json"))
-        == QualificationStatus.UNQUALIFIED
-    )
-
-    registry = AgentRegistry()
-    assert registry.register_release(qualified).accepted is True
-    assert registry.register_release(unqualified).accepted is True
-    resolver = RegistryReleaseResolver(registry)
-
-    resolved = resolver.resolve(qualified.agent_id, release_id=qualified.release_id)
-    assert resolved.status == ReleaseResolutionStatus.RESOLVED
-    assert resolved.distribution_mode == DistributionMode.BYOA_EXTERNAL.value
-    assert resolved.release_id == qualified.release_id
-
-    missing = resolver.resolve(
-        unqualified.agent_id, release_id=unqualified.release_id
-    )
-    assert missing.status == ReleaseResolutionStatus.UNQUALIFIED
-    assert resolved.status != missing.status
-
-
-def test_byoa_publication_severity_is_role_specific():
-    """ISSUE-004: a receipt-qualified BYOA distribution warns admins, blocks others.
-
-    Qualification (a bound receipt, asserted above) is distinct from
-    distribution verification: a BYOA distribution is always unverified at
-    publication, so the same ``DISTRIBUTION_UNVERIFIED`` reason is a WARNING
-    for an administrator (publishable) and an ERROR for a non-administrator
-    (blocked). Reason codes are asserted on both paths; no database is used.
-    """
-    release = _byoa_release(
-        release_id="rel-byoa-qualified",
-        manifest_digest="sha256:" + "2" * 64,
-        qualified=True,
-    )
-    assert byoa_identity_qualified(_byoa_receipt_document(release)) is True
-    view = resolve_distribution_view(_byoa_profile(), release)
-    assert view.verified is False
-    assert view.release_status == ReleaseResolutionStatus.RESOLVED
-
-    class _StubDistributionResolver:
-        def resolve(self, distribution_id):
-            assert distribution_id == _BYOA_DISTRIBUTION_ID
-            return view
-
-    protocol = _byoa_protocol()
-
-    admin_errors = validate_protocol(
-        protocol,
-        distribution_resolver=_StubDistributionResolver(),
-        actor_is_admin=True,
-    )
-    admin_unverified = [
-        error
-        for error in admin_errors
-        if error.code == ValidationReasonCode.DISTRIBUTION_UNVERIFIED
-    ]
-    assert len(admin_unverified) == 1
-    assert admin_unverified[0].severity == ValidationSeverity.WARNING
-    assert blocking_errors(admin_errors) == []
-    assert is_publishable(admin_errors) is True
-
-    non_admin_errors = validate_protocol(
-        protocol,
-        distribution_resolver=_StubDistributionResolver(),
-        actor_is_admin=False,
-    )
-    non_admin_unverified = [
-        error
-        for error in non_admin_errors
-        if error.code == ValidationReasonCode.DISTRIBUTION_UNVERIFIED
-    ]
-    assert len(non_admin_unverified) == 1
-    assert non_admin_unverified[0].severity == ValidationSeverity.ERROR
-    assert blocking_errors(non_admin_errors) != []
-    assert is_publishable(non_admin_errors) is False

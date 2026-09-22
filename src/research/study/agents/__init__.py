@@ -39,6 +39,7 @@ from .models import (
     DistributionArtifact,
     EnvironmentRef,
     ReleaseDisplay,
+    ReleaseTests,
     SnapshotFailure,
 )
 from .registry import (
@@ -58,6 +59,7 @@ __all__ = [
     "AdapterRef",
     "AgentRegistry",
     "AgentReleaseV1",
+    "ReleaseTests",
     "ArtifactResolution",
     "CapabilityCoverage",
     "CapabilityCoverageReport",

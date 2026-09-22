@@ -1,13 +1,11 @@
 """Persistence helpers for runtime packages (Issue 11).
 
-A release's ``RuntimeManifestV2`` lives in
-``agent_release.release_json.package_json``. Every helper takes a
-caller-supplied SQLAlchemy ``Session`` and works in domain models
-(:class:`RuntimeManifestV2`), never raw ORM rows. The packaging package itself
-imports no FastAPI/App.
+Packaging evidence is not a table: a release's ``RuntimeManifestV2`` lives in
+``agent_release.release_json.package_json``. Every helper takes a caller-supplied
+SQLAlchemy ``Session`` and works in domain models (:class:`RuntimeManifestV2`),
+never raw ORM rows. The packaging package itself imports no FastAPI/App.
 
-There is no conformance-receipt store: a release's usability comes from the
-recipe self-check recorded on the release at import time.
+Recording package metadata never changes release test results or status.
 """
 
 from __future__ import annotations
@@ -20,7 +18,6 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence
 from sqlalchemy import select
 
 from database.research_schemas import AgentRelease
-from research.study.agents.registry import derive_qualification_status
 
 from .models import RuntimeManifestV2
 
@@ -37,7 +34,7 @@ __all__ = [
     "upsert_package",
 ]
 
-#: ``release_json`` key that carries the packaging evidence.
+#: ``release_json`` keys that carry packaging evidence.
 PACKAGE_KEY = "package_json"
 
 
@@ -103,28 +100,17 @@ def upsert_package(
     """Store a release's package manifest, or return the existing digest view.
 
     The package is folded into ``agent_release.release_json.package_json`` (the
-    release is created in ``UNQUALIFIED`` if it is not registered yet).
-    ``package_id`` is derived from the manifest digest, so it is deterministic.
+    release must already have been imported). ``package_id`` is derived from
+    the manifest digest. Recording metadata cannot create or qualify a release.
     """
     existing = get_package_by_digest(session, manifest.manifest_digest)
     if existing is not None:
         return existing
     row = session.get(AgentRelease, manifest.release_id)
     if row is None:
-        row = AgentRelease(
-            release_id=manifest.release_id,
-            agent_id=manifest.agent_id,
-            source_manifest_digest=manifest.manifest_digest,
-            status="UNQUALIFIED",
-            release_json={},
-            created_at=_now(),
-        )
-        session.add(row)
+        raise ValueError("import the verified release before registering package metadata")
     data = dict(row.release_json or {})
     data[PACKAGE_KEY] = manifest.model_dump(mode="json")
-    derived = derive_qualification_status(data)
-    data["qualification_status"] = derived.value
-    row.status = derived.value
     row.release_json = data
     session.commit()
     session.refresh(row)

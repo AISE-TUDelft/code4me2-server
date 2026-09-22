@@ -118,8 +118,10 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
     session.execute(
         text(
             "INSERT INTO public.agent_release "
-            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
-            "VALUES (:release_id, 'coverage-agent', :source_digest, 'QUALIFIED', CAST(:release_json AS JSONB), now())"
+            "(release_id, agent_id, source_manifest_digest, status, release_json, "
+            "created_at) "
+            "VALUES (:release_id, 'coverage-agent', :source_digest, 'QUALIFIED', "
+            "CAST(:release_json AS JSONB) || jsonb_build_object('tests', CAST(:tests AS JSONB)), now())"
         ),
         {
             "release_id": release_id,
@@ -141,12 +143,10 @@ def _profile(session, owner_id: uuid.UUID) -> uuid.UUID:
                         "version": "1.0.0",
                         "digest": adapter_digest,
                     },
-                    "tests": {
-                        "status": "PASS",
-                        "approval_options": ["auto", "per_step", "suggestion_only"],
-                        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
-                    },
                 }
+            ),
+            "tests": json.dumps(
+                [{"os": "macos", "arch": "arm64", "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}]
             ),
         },
     )

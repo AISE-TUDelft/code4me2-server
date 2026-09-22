@@ -3,7 +3,8 @@
 Public surface:
 
 * :mod:`research.study.packaging.enums` - typed package reason codes.
-* :mod:`research.study.packaging.models` - ``RuntimeManifestV2`` (digest-addressed).
+* :mod:`research.study.packaging.models` - ``RuntimeManifestV2`` and its
+  digest-addressed components.
 * :mod:`research.study.packaging.verifier` - default-deny package verification and
   path containment.
 * :mod:`research.study.packaging.resolver` - exact platform selection with a required
@@ -11,9 +12,8 @@ Public surface:
 * :mod:`research.study.packaging.packager` - synthetic package assembly helper.
 * :mod:`research.study.packaging.store` - Session-supplied persistence helpers.
 
-The core package never imports ``App``, FastAPI, or a session factory. There is
-no separate conformance receipt: a release's usability is the recipe self-check
-recorded at import time.
+The core package never imports ``App``, FastAPI, or a session factory.
+Release usability comes from platform tests owned by :mod:`research.study.agents`.
 """
 
 from .enums import PackageReasonCode
