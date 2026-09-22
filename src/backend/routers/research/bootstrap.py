@@ -394,14 +394,10 @@ def create_research_session(
 
         release_id = allocation.assignment.profile_snapshot_json.get("release_id")
         release = None
-        release_evidence_json = None
         if release_id:
             release_row = registry_store.get_release(db, release_id)
             if release_row is not None:
                 release = registry_store.row_to_release(release_row)
-                # The evidence document is what binds qualification to the exact
-                # artifact/platform selected below (ISSUE-10).
-                release_evidence_json = release_row.release_json
 
         compatibility_result, receipt_ref = _evaluate_compatibility(payload, release, db)
 
@@ -426,7 +422,6 @@ def create_research_session(
                 enrollment_id=enrollment.enrollment_id,
             ),
             context_id=payload.context_id,
-            release_evidence_json=release_evidence_json,
         )
         if result.manifest is None:
             # Nothing is committed yet: a failure here (kill switch, incompatible

@@ -9,14 +9,11 @@ from typing import Any, Callable, Mapping, Optional, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from research.canonical import canonical_hash
 from research.compatibility.enums import CompatibilityDecision
 from research.participants.enums import EnrollmentStatus
-from research.study.agents.registry import (
-    artifact_qualified,
-    byoa_identity_qualified,
-)
+from research.study.agents.models import normalize_platform
 from research.telemetry.enums import CoverageState
-from research.canonical import canonical_hash
 
 from .capability import issue_capability
 from .models import (
@@ -141,16 +138,24 @@ def _study_is_open(study: Any, now: datetime) -> Optional[BootstrapIssue]:
     return None
 
 
-def _policies(study: Any) -> BootstrapPolicies:
+def _policies(study: Any, enrollment: Any) -> BootstrapPolicies:
     config = getattr(study, "research_config_json", None) or {}
     telemetry = config.get("telemetry_policy", {}) or {}
     privacy = config.get("privacy_policy", {}) or {}
     session = config.get("session_policy", {}) or {}
     allowed = telemetry.get("allowed_field_classes", [])
+    # D-1: the server is the consent authority. The manifest mirrors the live
+    # enrollment state so the client never invents consent.
+    consent_active = (
+        enrollment is not None
+        and getattr(enrollment, "status", None) == EnrollmentStatus.ACTIVE
+        and getattr(enrollment, "consent_accepted_at", None) is not None
+    )
     return BootstrapPolicies(
         telemetry_policy=BootstrapTelemetryPolicy(
             allowed_field_classes=[str(value) for value in allowed],
             content_capture=bool(telemetry.get("content_capture", False)),
+            consent_active=consent_active,
         ),
         privacy_policy=BootstrapPrivacyPolicy(
             retention_action=privacy.get("retention_action", "RETAIN_ANONYMIZED"),
@@ -186,6 +191,13 @@ def _profile_projection(snapshot: dict[str, Any]) -> Optional[BootstrapAgentProf
     )
 
 
+def _host_tested(release: Any, platform: Optional[tuple[str, str]]) -> bool:
+    if platform is None:
+        return True
+    requested = normalize_platform(*platform)
+    return any((result.os, result.arch) == requested for result in release.tests)
+
+
 def compose_bootstrap(
     enrollment: Any,
     study: Any,
@@ -201,15 +213,12 @@ def compose_bootstrap(
     agent_profile: Optional[BootstrapAgentProfile] = None,
     kill_switch_check: Optional[Callable[[], bool]] = None,
     context_id: str = "",
-    release_evidence_json: Optional[Mapping[str, Any]] = None,
 ) -> BootstrapResult:
     """Compose a signed, short-lived, secret-free bootstrap manifest.
 
-    ``release_evidence_json`` is the release's stored evidence document
-    (``agent_release.release_json``: artifacts/adapter/conformance). When
-    supplied, the exact artifact selected for ``platform`` must itself be bound
-    to a passing receipt — a release-level ``QUALIFIED`` that only covers a
-    different platform never issues a manifest.
+    The assigned release must be tested for the participant's ``(os, arch)``:
+    a release-level ``QUALIFIED`` that only covers a different platform never
+    issues a manifest.
     """
     timestamp = _now(now)
     if kill_switch_check is not None and kill_switch_check():
@@ -300,6 +309,13 @@ def compose_bootstrap(
             "the assigned release is not qualified",
             "release_id",
         )
+    # Passing tests must cover the participant's exact platform.
+    if not _host_tested(release, platform):
+        return _blocked(
+            BootstrapReasonCode.RELEASE_NOT_QUALIFIED,
+            "the release has no passing producer tests for this platform",
+            "release_id",
+        )
     if not getattr(release, "is_byoa", False):
         if platform is not None:
             artifact = release.artifact_for(platform[0], platform[1])
@@ -312,32 +328,9 @@ def compose_bootstrap(
                 "no artifact is available for this platform",
                 "release.artifacts",
             )
-        # A release-level QUALIFIED is not enough: the *selected* artifact must
-        # itself be covered by a passing receipt bound to its digest, platform
-        # and adapter (ISSUE-10).
-        if release_evidence_json is not None and not artifact_qualified(
-            release_evidence_json,
-            os_name=artifact.os,
-            arch=artifact.arch,
-            digest=artifact.sha256,
-            adapter_digest=getattr(getattr(release, "adapter", None), "digest", None),
-        ):
-            return _blocked(
-                BootstrapReasonCode.ARTIFACT_NOT_QUALIFIED,
-                "the selected artifact is not bound to passing conformance evidence",
-                "release.artifacts",
-            )
         artifact_digest = artifact.sha256
     else:
         artifact_digest = ""
-        if release_evidence_json is not None and not byoa_identity_qualified(
-            release_evidence_json
-        ):
-            return _blocked(
-                BootstrapReasonCode.RELEASE_NOT_QUALIFIED,
-                "the BYOA release identity is not bound to passing conformance evidence",
-                "release_id",
-            )
 
     research_session = session_factory.create_for_enrollment(
         enrollment, study, timestamp, context_id
@@ -394,7 +387,7 @@ def compose_bootstrap(
             ],
         ),
         agent_profile=profile,
-        policies=_policies(study),
+        policies=_policies(study, enrollment),
         compatibility_receipt_ref=compatibility_ref,
         compatibility=BootstrapCompatibility(
             receipt_ref=compatibility_ref,

@@ -215,6 +215,9 @@ class BootstrapTelemetryPolicy(BaseModel):
 
     allowed_field_classes: list[str] = Field(default_factory=list)
     content_capture: bool = False
+    # Whether the participant's consent is currently active, derived server-side
+    # from the enrollment (D-1). The client mirrors it and never invents consent.
+    consent_active: bool = False
 
 
 class BootstrapPrivacyPolicy(BaseModel):
