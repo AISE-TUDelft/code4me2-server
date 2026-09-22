@@ -8,7 +8,7 @@ These tests exercise the seam in isolation (no database, no HTTP):
   falls back to the untouched generic result;
 * enrichment is additive: the generic event type, source and payload win on
   conflict and the adapter version is recorded as provenance;
-* the Codex BYOA fixture is qualified only by conformance evidence bound to its
+* the Codex BYOA fixture's qualification is the administrator approval, not its
   exact artifact/adapter identity.
 """
 
@@ -21,9 +21,8 @@ from typing import Any
 import pytest
 
 from research.study.agents.enums import DistributionMode, QualificationStatus
-from research.study.agents.models import AdapterRef, AgentReleaseV1
+from research.study.agents.models import AdapterRef, AgentReleaseV1, ReleaseTests
 from research.study.agents.registry import (
-    byoa_identity_qualified,
     derive_qualification_status,
 )
 from research.telemetry.enums import CanonicalEventType, EventSource
@@ -303,21 +302,20 @@ def test_every_candidate_of_a_multi_candidate_observation_is_enriched():
 
 
 # ---------------------------------------------------------------------------
-# Codex BYOA fixture and qualification binding
+# Codex BYOA fixture and approval binding
 # ---------------------------------------------------------------------------
 
 
-def test_codex_byoa_fixture_derives_qualified_and_projects_adapter_identity():
+def test_codex_byoa_fixture_projects_adapter_identity_and_approval_status():
     raw = json.loads(
         (AGENTS_FIXTURE_DIR / "release_codex_byoa_v1.json").read_text()
     )
 
     assert raw["distribution_mode"] == "BYOA_EXTERNAL"
     assert raw["agent_package"] == "codex"
-    assert derive_qualification_status(raw) == QualificationStatus.QUALIFIED
 
     release = AgentReleaseV1.model_validate(
-        {key: value for key, value in raw.items() if key != "tests"}
+        {key: value for key, value in raw.items() if key != "conformance"}
     )
     assert release.distribution_mode == DistributionMode.BYOA_EXTERNAL
     assert release.is_byoa is True
@@ -326,33 +324,19 @@ def test_codex_byoa_fixture_derives_qualified_and_projects_adapter_identity():
     assert release.adapter.adapter_id == "acp-adapter"
     assert release.adapter.version == "0.4.0"
 
-
-def test_codex_byoa_fixture_is_unqualified_without_a_passing_self_check():
-    raw = json.loads(
-        (AGENTS_FIXTURE_DIR / "release_codex_byoa_v1.json").read_text()
+    # Qualification is the administrator approval, not fixture conformance.
+    assert (
+        derive_qualification_status(release.model_dump(mode="json"))
+        == QualificationStatus.UNQUALIFIED
     )
-
-    missing = {key: value for key, value in raw.items() if key != "tests"}
-    assert derive_qualification_status(missing) == QualificationStatus.UNQUALIFIED
-
-    failing = {**raw, "tests": {**raw["tests"], "status": "FAIL"}}
-    assert derive_qualification_status(failing) == QualificationStatus.UNQUALIFIED
-
-
-def test_codex_byoa_identity_is_usable_only_when_qualified():
-    """A BYOA release is usable from its own manifest identity, never a host pin."""
-    raw = json.loads(
-        (AGENTS_FIXTURE_DIR / "release_codex_byoa_v1.json").read_text()
+    approved = release.model_copy(
+        update={
+            "tests": [
+                ReleaseTests(os="macos", arch="arm64", self_check="PASS", acp_initialize="PASS", ran_at="2026-09-21T00:00:00Z")
+            ]
+        }
     )
-
-    assert byoa_identity_qualified(raw) is True
-    missing = {key: value for key, value in raw.items() if key != "tests"}
-    assert byoa_identity_qualified(missing) is False
-
-    # A packaged release is never a BYOA identity, even when usable.
-    packaged = json.loads(
-        (AGENTS_FIXTURE_DIR / "release_codex_acp_v1.json").read_text()
+    assert (
+        derive_qualification_status(approved.model_dump(mode="json"))
+        == QualificationStatus.QUALIFIED
     )
-    packaged["tests"] = {"status": "PASS", "cases": [{"case_id": "acp", "status": "PASS"}]}
-    assert derive_qualification_status(packaged) == QualificationStatus.QUALIFIED
-    assert byoa_identity_qualified(packaged) is False

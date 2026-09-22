@@ -81,6 +81,32 @@ def _candidate(
     )
 
 
+def _with_turn_id(
+    candidates: list[CanonicalCandidateV1], turn_id: str
+) -> list[CanonicalCandidateV1]:
+    """Attach [turn_id] to candidates that carry no turn of their own.
+
+    Additive only: a candidate whose mapping already set a turn is never
+    overwritten. Events are frozen, so the stamp is a copy.
+    """
+    stamped: list[CanonicalCandidateV1] = []
+    for candidate in candidates:
+        correlations = candidate.correlations
+        if correlations.turn_id is not None:
+            stamped.append(candidate)
+            continue
+        stamped.append(
+            candidate.model_copy(
+                update={
+                    "correlations": correlations.model_copy(
+                        update={"turn_id": turn_id}
+                    )
+                }
+            )
+        )
+    return stamped
+
+
 class AgentAdapter(Protocol):
     """Optional vendor adapter that enriches (never replaces) generic events."""
 
@@ -294,10 +320,85 @@ class GenericAcpNormalizer:
     def __init__(self) -> None:
         #: jsonrpc permission request id -> {"options": {optionId: kind}, "tool_call_id": ...}
         self._pending_permissions: dict[str, dict[str, Any]] = {}
-        #: jsonrpc ``session/prompt`` request ids awaiting their response.
-        self._pending_prompts: set[str] = set()
+        #: jsonrpc ``session/prompt`` request id -> ACP session key awaiting its response.
+        self._pending_prompts: dict[str, str] = {}
+        #: ACP session key -> the native prompt request id of its active turn.
+        self._current_turn: dict[str, str] = {}
+        #: in-flight request id -> the turn it belongs to (settled by its response).
+        self._request_turns: dict[str, str] = {}
         #: tool call ids for which ``tool.created`` was already emitted.
         self._created_tool_calls: set[str] = set()
+
+    @staticmethod
+    def _session_key(message: Mapping[str, Any]) -> Optional[str]:
+        """The ACP session id carried by a frame, if any.
+
+        It keys turn state when one stream multiplexes several ACP sessions. A
+        response may omit it; responses are matched by request id instead.
+        """
+        for container in ("params", "result"):
+            section = message.get(container)
+            if isinstance(section, Mapping):
+                session_id = section.get("sessionId")
+                if isinstance(session_id, str) and session_id:
+                    return session_id
+        return None
+
+    def _current_turn_for(self, message: Mapping[str, Any]) -> Optional[str]:
+        """The active turn for this frame's session, or ``None`` when none.
+
+        A frame without an explicit session association never inherits a turn:
+        no turn id is invented when no prompt is known to be pending.
+        """
+        session_key = self._session_key(message)
+        if session_key is None:
+            return None
+        return self._current_turn.get(session_key)
+
+    def _advance_turn_state(self, message: Any) -> Optional[str]:
+        """Update bounded turn state and return this frame's native turn id.
+
+        The turn id is the JSON-RPC id of the ``session/prompt`` request. It is
+        returned for the prompt itself, for frames observed while it is pending,
+        and for its response; ``None`` means no prompt is pending.
+        """
+        if not isinstance(message, Mapping):
+            return None
+        method = message.get("method")
+        message_id = message.get("id")
+        request_id = str(message_id) if message_id is not None else None
+
+        if method == "session/prompt" and request_id is not None:
+            session_key = self._session_key(message) or ""
+            self._current_turn[session_key] = request_id
+            self._pending_prompts[request_id] = session_key
+            return request_id
+
+        if method is None and request_id is not None:
+            # A response settles any tracked sub-request, else closes the prompt.
+            settled = self._request_turns.pop(request_id, None)
+            if settled is not None:
+                return settled
+            if request_id in self._pending_prompts:
+                return request_id
+            return None
+
+        if method is None:
+            return None
+
+        turn_id = self._current_turn_for(message)
+        if turn_id is not None and request_id is not None:
+            self._request_turns[request_id] = turn_id
+        return turn_id
+
+    def _close_turn(self, prompt_id: str, session_key: str) -> None:
+        """Clear the prompt's active turn and any outstanding sub-requests."""
+        if self._current_turn.get(session_key) == prompt_id:
+            del self._current_turn[session_key]
+        for request_id in [
+            key for key, turn in self._request_turns.items() if turn == prompt_id
+        ]:
+            del self._request_turns[request_id]
 
     def normalize(
         self,
@@ -306,7 +407,33 @@ class GenericAcpNormalizer:
         source_event_id: Optional[str] = None,
         direction: Optional[str] = None,
     ) -> NormalizationResultV1:
-        """Normalize one ACP message (zero or more candidates).
+        """Normalize one ACP message and attach its native turn correlation.
+
+        Turn state advances before mapping: the ``session/prompt`` request opens
+        a turn, frames observed while it is pending inherit its id, and the
+        prompt response closes it. State is per-stream (this instance), keyed by
+        ACP session, so concurrent sessions never share a turn.
+        """
+        turn_id = self._advance_turn_state(message)
+        result = self._normalize_message(
+            message,
+            source_event_id=source_event_id,
+            direction=direction,
+        )
+        if turn_id is None:
+            return result
+        return result.model_copy(
+            update={"candidates": _with_turn_id(result.candidates, turn_id)}
+        )
+
+    def _normalize_message(
+        self,
+        message: Any,
+        *,
+        source_event_id: Optional[str] = None,
+        direction: Optional[str] = None,
+    ) -> NormalizationResultV1:
+        """Map one ACP message (zero or more candidates) to canonical concepts.
 
         ``direction`` is the optional ``host_to_agent`` / ``agent_to_host`` frame
         direction. When provided it disambiguates responses (a permission
@@ -349,9 +476,6 @@ class GenericAcpNormalizer:
                 source_event_id=resolved_source_id,
                 candidates=[self._permission_request(message_id, params)],
             )
-
-        if method == "session/prompt" and message_id is not None:
-            self._pending_prompts.add(str(message_id))
 
         if isinstance(method, str) and method in _METHOD_RULES:
             rule_id, event_type = _METHOD_RULES[method]
@@ -603,7 +727,8 @@ class GenericAcpNormalizer:
         ):
             return self._permission_decided(response_id, message)
         if response_id in self._pending_prompts and direction in (None, "agent_to_host"):
-            self._pending_prompts.discard(response_id)
+            session_key = self._pending_prompts.pop(response_id)
+            self._close_turn(response_id, session_key)
             return self._message_completed(message)
         return None
 
