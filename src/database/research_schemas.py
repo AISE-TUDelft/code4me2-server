@@ -6,8 +6,8 @@ JSON document lives inside that document rather than in a child table:
 
 * capability evidence is ``acp_capability_receipt.receipt_json.evidence[]``;
 * agent artifacts/adapter are ``agent_release.release_json.artifacts[]``/``.adapter``;
-* runtime packaging evidence is ``agent_release.release_json.package_json`` and
-  its conformance receipts are ``agent_release.release_json.conformance[]``;
+* runtime packaging evidence is ``agent_release.release_json.package_json``;
+* release qualification comes from ``agent_release.release_json.tests``;
 * a capability snapshot is ``research_agent_run.snapshot_json``;
 * selected profiles are ``study_agent_profile.profile_snapshot_json``;
 * study identity/configuration is owned by ``study``;
@@ -383,6 +383,9 @@ class ResearchEvent(Base):
         Index("idx_research_event_occurred_at", "occurred_at"),
         Index("idx_research_event_event_type", "event_type"),
         Index("idx_research_event_digest", "digest"),
+        Index("idx_research_event_study_id", "study_id"),
+        Index("idx_research_event_agent_run_id", "agent_run_id"),
+        Index("idx_research_event_retention_state", "retention_state"),
         UniqueConstraint(
             "research_session_id",
             "emitter_id",
@@ -551,8 +554,8 @@ class ResearchRetentionJob(Base):
 # Issue 11: runtime packaging and agent conformance
 #
 # Packaging evidence is not a table: a release's ``RuntimeManifestV2`` lives in
-# ``agent_release.release_json.package_json`` and its immutable conformance
-# receipts live in ``agent_release.release_json.conformance[]``.
+# ``agent_release.release_json.package_json``. Qualification is the release's
+# platform test results; a terminal operator disable overrides them.
 # ---------------------------------------------------------------------------
 
 

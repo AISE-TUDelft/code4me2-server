@@ -402,7 +402,8 @@
     },
     "emitter_sequence": {
       "title": "Emitter Sequence",
-      "type": "integer"
+      "type": "integer",
+      "minimum": 1
     },
     "correlations": {
       "$ref": "#/$defs/Correlations"

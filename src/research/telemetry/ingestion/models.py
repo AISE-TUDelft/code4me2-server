@@ -41,7 +41,6 @@ class TelemetryBatchRequestV1(BaseModel):
     session_capability: SessionCapability
     events: list[CanonicalEventV1] = Field(default_factory=list)
     client_instance_id: str
-    previous_ack_cursor: Optional[str] = None
 
     @property
     def size(self) -> int:

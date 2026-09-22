@@ -34,6 +34,7 @@ from research.runtime.bootstrap.models import (
     SessionCapability,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
 )
 from research.runtime.sessions import store as session_store
+from research.telemetry.ingestion.agent_tasks import ensure_agent_tasks_for_ack
 from research.telemetry.ingestion.models import (
     TelemetryBatchAckV1,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
     TelemetryBatchRequestV1,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
@@ -233,6 +234,10 @@ def submit_telemetry_batch(
             privacy_policy_resolver=_privacy_policy_resolver(db),
         )
         _log_ack(ack)
+        # ACP-proxied runs carry an agent_run_id but no task: materialize the
+        # linkable agent_task the dashboards join on. This is idempotent and
+        # never changes the ack or the accepted facts.
+        ensure_agent_tasks_for_ack(db, payload, ack)
         return JsonResponseWithStatus(
             status_code=200, content=ack.model_dump(mode="json")
         )

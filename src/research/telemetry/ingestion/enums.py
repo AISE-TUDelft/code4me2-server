@@ -38,6 +38,11 @@ class IngestionReasonCode(str, Enum):
     MISSING_PROVENANCE = "MISSING_PROVENANCE"
     MISSING_EVENT_ID = "MISSING_EVENT_ID"
     CONTEXT_MISMATCH = "CONTEXT_MISMATCH"
+    # The event_type/source is not a canonical vocabulary member and no
+    # ``unknown_*`` marker was preserved: it must never be stored as a
+    # known-looking value (TSCH-01/TSCH-02).
+    UNKNOWN_EVENT_TYPE = "UNKNOWN_EVENT_TYPE"
+    UNKNOWN_SOURCE = "UNKNOWN_SOURCE"
     SESSION_OUT_OF_SCOPE = "SESSION_OUT_OF_SCOPE"
     SESSION_TERMINAL = "SESSION_TERMINAL"
     ENROLLMENT_NOT_ACTIVE = "ENROLLMENT_NOT_ACTIVE"
@@ -67,6 +72,8 @@ PERMANENT_REASONS = frozenset(
         IngestionReasonCode.MISSING_PROVENANCE,
         IngestionReasonCode.MISSING_EVENT_ID,
         IngestionReasonCode.CONTEXT_MISMATCH,
+        IngestionReasonCode.UNKNOWN_EVENT_TYPE,
+        IngestionReasonCode.UNKNOWN_SOURCE,
         IngestionReasonCode.SESSION_OUT_OF_SCOPE,
         IngestionReasonCode.SESSION_TERMINAL,
         IngestionReasonCode.ENROLLMENT_NOT_ACTIVE,

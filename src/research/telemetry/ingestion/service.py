@@ -604,13 +604,27 @@ def _ingest_authorized_events(
     diagnostics: dict[str, str] = {}
     candidates: list[tuple[CanonicalEventV1, str]] = []
 
+    # An event id may appear more than once in one request (a producer retry
+    # folded into a batch). The first occurrence wins; the repeats are not a
+    # second fact and are reported as DUPLICATE below, so an id is acknowledged
+    # exactly once and never appears in two ack groups (TI-02).
+    unique_events: list[CanonicalEventV1] = []
+    repeated_ids: set[uuid.UUID] = set()
+    seen_ids: set[uuid.UUID] = set()
+    for event in events:
+        if event.event_id in seen_ids:
+            repeated_ids.add(event.event_id)
+            continue
+        seen_ids.add(event.event_id)
+        unique_events.append(event)
+
     try:
-        stored = store.get_stored_digests([event.event_id for event in events])
+        stored = store.get_stored_digests([event.event_id for event in unique_events])
     except StoreUnavailable:
         return _reject_all(
             store,
             batch_id,
-            events,
+            unique_events,
             server_time,
             IngestionReasonCode.STORE_UNAVAILABLE,
             disposition=EventDisposition.RETRYABLE,
@@ -619,7 +633,7 @@ def _ingest_authorized_events(
             research_session_id=context.research_session_id,
         )
 
-    for event in events:
+    for event in unique_events:
         issues = validate_batch_event(
             event,
             context,
@@ -714,6 +728,21 @@ def _ingest_authorized_events(
             )
         in_batch_last[key] = max(last, event.emitter_sequence)
         sequenced.append((event, digest))
+
+    # A repeated id's single ack is a DUPLICATE: the first occurrence is the
+    # stored fact, the repeats add no second ack (TI-02).
+    if repeated_ids:
+        moved = [ack for ack in accepted if ack.event_id in repeated_ids]
+        accepted = [ack for ack in accepted if ack.event_id not in repeated_ids]
+        duplicate.extend(
+            ack.model_copy(
+                update={
+                    "disposition": EventDisposition.DUPLICATE,
+                    "reason": None,
+                }
+            )
+            for ack in moved
+        )
 
     records = [
         _record_from_event(event, context, digest, server_time)

@@ -106,6 +106,16 @@ class PrivacyPolicy(BaseModel):
             elif value == TelemetryFieldClass.CONTENT.value:
                 content_allowed = True
                 classes.add(FieldClass.CONTENT)
+            else:
+                # Runtime vocabulary name (SYSTEM / BEHAVIORAL / CODE_METADATA /
+                # CONTENT): honour it exactly rather than silently dropping it.
+                try:
+                    runtime_class = FieldClass(value)
+                except ValueError:
+                    continue
+                if runtime_class is FieldClass.CONTENT:
+                    content_allowed = True
+                classes.add(runtime_class)
 
         if not classes:
             classes.update(

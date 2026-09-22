@@ -72,7 +72,11 @@ class EventMetrics(BaseModel):
     model_config = _FROZEN
 
     usage_tokens: Optional[int] = None
-    usage_capability: Coverage = Field(default_factory=Coverage)
+    # A bare event exposes no usage measurement, so the coverage default is
+    # UNAVAILABLE (never the ambiguous UNKNOWN): an unexposed count is ``None``.
+    usage_capability: Coverage = Field(
+        default_factory=lambda: Coverage(state=CoverageState.UNAVAILABLE)
+    )
     latency_ms: Optional[int] = None
     counts: dict[str, int] = Field(default_factory=dict)
 

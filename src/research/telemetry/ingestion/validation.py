@@ -78,10 +78,33 @@ def validate_batch_event(
         )
 
     for finding in validate_canonical_event(event):
+        if finding.code is TelemetryValidationCode.UNKNOWN_EVENT_TYPE:
+            # A preserved marker (``unknown_event_type`` set, event_type
+            # ``unknown_source_event``) stays accepted with NEEDS_REVIEW; a raw
+            # unrecognized type with no marker is permanently rejected (TSCH-01).
+            if event.unknown_event_type is None:
+                issues.append(
+                    _issue(
+                        IngestionReasonCode.UNKNOWN_EVENT_TYPE,
+                        finding.field,
+                        finding.message,
+                    )
+                )
+            continue
+        if finding.code is TelemetryValidationCode.UNKNOWN_SOURCE:
+            # Same rule for the source vocabulary (TSCH-02).
+            if event.unknown_source is None:
+                issues.append(
+                    _issue(
+                        IngestionReasonCode.UNKNOWN_SOURCE,
+                        finding.field,
+                        finding.message,
+                    )
+                )
+            continue
         mapped = _CODE_MAP.get(finding.code)
         if mapped is None:
-            # ``needs_review`` findings (unknown type/source) are preserved, not
-            # rejected; the stored record retains the unknown token and coverage.
+            # Other ``needs_review`` findings are preserved, not rejected.
             continue
         issues.append(_issue(mapped, finding.field, finding.message))
 
@@ -91,6 +114,20 @@ def validate_batch_event(
                 IngestionReasonCode.MISSING_PROVENANCE,
                 "provenance",
                 "provenance is required to persist a canonical event",
+            )
+        )
+    elif (
+        event.provenance.source
+        and event.source
+        and event.provenance.source != event.source
+    ):
+        # The builder always sets the two equal; a divergent wire value is a
+        # consistency failure, not a second source (TSCH-02).
+        issues.append(
+            _issue(
+                IngestionReasonCode.INVALID_SCHEMA,
+                "provenance.source",
+                "provenance.source must match the top-level source",
             )
         )
 

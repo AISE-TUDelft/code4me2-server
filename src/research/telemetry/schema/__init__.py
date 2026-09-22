@@ -49,6 +49,11 @@ def build_canonical_event_v1_schema() -> dict[str, Any]:
     properties = schema.setdefault("properties", {})
     # The envelope version is required and pinned; it is never defaulted.
     properties["schema_version"] = {"const": CANONICAL_SCHEMA_VERSION}
+    # Per-emitter sequence is a strictly positive monotonic counter.
+    properties["emitter_sequence"] = {
+        **properties["emitter_sequence"],
+        "minimum": 1,
+    }
     # The builder guarantees a known canonical type (an unrecognized source
     # construct becomes ``unknown_source_event``), so the wire vocabulary is
     # closed even though the raw model field is a plain string.

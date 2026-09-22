@@ -136,6 +136,9 @@ def upgrade() -> None:
     op.create_index('idx_research_event_event_type', 'research_event', ['event_type'], unique=False, schema='public')
     op.create_index('idx_research_event_occurred_at', 'research_event', ['occurred_at'], unique=False, schema='public')
     op.create_index('idx_research_event_session_id', 'research_event', ['research_session_id'], unique=False, schema='public')
+    op.create_index('idx_research_event_study_id', 'research_event', ['study_id'], unique=False, schema='public')
+    op.create_index('idx_research_event_agent_run_id', 'research_event', ['agent_run_id'], unique=False, schema='public')
+    op.create_index('idx_research_event_retention_state', 'research_event', ['retention_state'], unique=False, schema='public')
     op.create_table('research_participant',
     sa.Column('participant_id', sa.UUID(), nullable=False),
     sa.Column('account_id', sa.UUID(), nullable=False),
@@ -569,6 +572,9 @@ def downgrade() -> None:
     op.drop_index('idx_research_event_enrollment_id', table_name='research_event', schema='public')
     op.drop_index('idx_research_event_emitter_id', table_name='research_event', schema='public')
     op.drop_index('idx_research_event_digest', table_name='research_event', schema='public')
+    op.drop_index('idx_research_event_retention_state', table_name='research_event', schema='public')
+    op.drop_index('idx_research_event_agent_run_id', table_name='research_event', schema='public')
+    op.drop_index('idx_research_event_study_id', table_name='research_event', schema='public')
     op.drop_table('research_event', schema='public')
     op.drop_index('idx_provider_connection_is_active', table_name='provider_connection', schema='public')
     op.drop_table('provider_connection', schema='public')

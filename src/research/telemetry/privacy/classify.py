@@ -30,6 +30,7 @@ __all__ = [
     "CODE_METADATA_TOKENS",
     "SECRET_KEY_PATTERNS",
     "SECRET_VALUE_PATTERNS",
+    "SYSTEM_KEY_EXACT",
     "SYSTEM_TOKENS",
     "BEHAVIORAL_TOKENS",
     "classify_event_payload",
@@ -141,6 +142,11 @@ SYSTEM_TOKENS = frozenset(
         "tokens_used",
     }
 )
+# Exact normalized keys classified as ``SYSTEM``. ``exit_code`` is handled here
+# rather than via a bare ``exit`` token: that token would also reclassify the
+# proxy's ``exit_status`` payload key from BEHAVIORAL to SYSTEM. Mirrors the
+# Kotlin FieldClassifier's ``systemKeyExact``.
+SYSTEM_KEY_EXACT = frozenset({"exit_code"})
 BEHAVIORAL_TOKENS = frozenset(
     {
         "tool",
@@ -170,6 +176,8 @@ BEHAVIORAL_TOKENS = frozenset(
         "kind",
         "reason",
         "method",
+        # ``phase`` -> BEHAVIORAL (parity with the Kotlin FieldClassifier).
+        "phase",
     }
 )
 
@@ -215,6 +223,8 @@ def classify_field(name: Any, value: Any = None) -> FieldClass:
     """Classify a single field by name (and value for secret shapes)."""
     if is_secret_key(name) or looks_secret_value(value):
         return FieldClass.SECRET
+    if _normalize_key(name) in SYSTEM_KEY_EXACT:
+        return FieldClass.SYSTEM
 
     tokens = _tokens(name)
     if tokens & CONTENT_TOKENS:
