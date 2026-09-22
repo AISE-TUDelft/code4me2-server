@@ -286,6 +286,18 @@ def main() -> None:
         or os.environ.get("WEB_CONCURRENCY")
         or "1"
     )
+    # Local development only: ``CODE4ME_DEV_RELOAD=1`` restarts the process when
+    # Python sources change, so a long-running dev stack never serves stale
+    # in-memory code (the failure mode that made a fixed admin route look
+    # broken). Reload requires a single worker and watches only this source
+    # directory, not the mounted repository's data/dist/node_modules trees.
+    dev_reload = os.environ.get("CODE4ME_DEV_RELOAD", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if dev_reload:
+        workers = 1
     uvicorn.run(
         "main:app",
         host=config.server_host,
@@ -293,6 +305,8 @@ def main() -> None:
         log_level="info",
         access_log=True,
         workers=workers if workers > 1 else None,
+        reload=dev_reload,
+        reload_dirs=[os.path.dirname(os.path.abspath(__file__))] if dev_reload else None,
         # loop="uvloop",
         # http="httptools",
     )
