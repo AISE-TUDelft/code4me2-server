@@ -68,8 +68,7 @@ class TestDataValidator:
             'Meta Queries': 'SELECT COUNT(*) as count FROM meta_query',
             'Completion Queries': 'SELECT COUNT(*) as count FROM completion_query',
             'Chat Queries': 'SELECT COUNT(*) as count FROM chat_query',
-            'Generations': 'SELECT COUNT(*) as count FROM had_generation',
-            'Studies': 'SELECT COUNT(*) as count FROM study'
+            'Generations': 'SELECT COUNT(*) as count FROM had_generation'
         }
         
         for name, query in queries.items():
@@ -219,51 +218,6 @@ class TestDataValidator:
                 bar = "█" * bar_length
                 print(f"    {hour:2d}:00 |{bar:<20} {count:3d}")
 
-    def show_study_information(self):
-        """Show A/B testing study information"""
-        print("\n🔬 A/B Testing Studies")
-        print("=" * 40)
-        
-        # List studies
-        self.cursor.execute('''
-            SELECT s.study_id, s.name, s.description, s.is_active,
-                   s.starts_at, s.ends_at,
-                   COUNT(DISTINCT cah.user_id) as assigned_users
-            FROM study s
-            LEFT JOIN config_assignment_history cah ON s.study_id = cah.study_id
-            GROUP BY s.study_id, s.name, s.description, s.is_active, s.starts_at, s.ends_at
-            ORDER BY s.starts_at DESC
-        ''')
-        
-        studies = self.cursor.fetchall()
-        if studies:
-            for study in studies:
-                status = "🟢 Active" if study['is_active'] else "🔴 Inactive"
-                print(f"\n  📋 {study['name']}")
-                print(f"     Status: {status}")
-                print(f"     Users: {study['assigned_users']}")
-                print(f"     Started: {study['starts_at'].date()}")
-                if study['ends_at']:
-                    print(f"     Ended: {study['ends_at'].date()}")
-                
-                # Show config distribution for this study
-                self.cursor.execute('''
-                    SELECT c.config_id, COUNT(*) as user_count
-                    FROM config_assignment_history cah
-                    JOIN config c ON cah.assigned_config_id = c.config_id
-                    WHERE cah.study_id = %s
-                    GROUP BY c.config_id
-                    ORDER BY c.config_id
-                ''', (study['study_id'],))
-                
-                config_dist = self.cursor.fetchall()
-                if config_dist:
-                    print(f"     Config distribution:")
-                    for config in config_dist:
-                        print(f"       Config {config['config_id']}: {config['user_count']} users")
-        else:
-            print("  No studies found")
-
     def show_admin_users(self):
         """Show admin user information"""
         print("\n👑 Admin Users (for testing)")
@@ -329,13 +283,6 @@ class TestDataValidator:
         acceptance_variation = (rates['max_rate'] or 0) - (rates['min_rate'] or 0) if rates['min_rate'] is not None else 0
         checks.append(("Acceptance rate variation", f"{acceptance_variation:.2f}", acceptance_variation >= 0.1))
         
-        # Check for active studies
-        self.cursor.execute('''
-            SELECT COUNT(*) as count FROM study WHERE is_active = true
-        ''')
-        active_studies = self.cursor.fetchone()['count']
-        checks.append(("Active A/B studies", active_studies, active_studies >= 1))
-        
         # Display results
         all_passed = True
         for check_name, value, passed in checks:
@@ -364,7 +311,6 @@ def main():
         validator.validate_data_integrity()
         validator.show_data_distribution()
         validator.show_time_distribution()
-        validator.show_study_information()
         validator.show_admin_users()
         validator.validate_analytics_readiness()
         
@@ -372,7 +318,6 @@ def main():
         print(f"  1. Start your backend server: python src/main.py")
         print(f"  2. Login as an admin user to see all analytics")
         print(f"  3. Test different time windows and filters")
-        print(f"  4. Explore A/B testing study results")
         
     except Exception as e:
         print(f"❌ Error during validation: {e}")

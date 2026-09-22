@@ -21,6 +21,10 @@ services:
     volumes:
       - .:/app
       - ./src/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      # Persisted data directory: without this, `docker compose down` removes
+      # the container and the whole database with it. Reset explicitly with
+      # `docker compose ... down -v` when a fresh database is wanted.
+      - pgdata:/var/lib/postgresql/data
     environment:
       - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
       - POSTGRES_USER=${DB_USER:-postgres}
@@ -163,6 +167,9 @@ services:
       - TRANSFORMERS_CACHE=/app/hf_cache
       - MODEL_CACHE_DIR=/app/hf_cache
       - PRELOAD_MODELS=false
+      # Local dev stack: restart the API process when Python sources change so
+      # the running server never serves stale in-memory code. Set to 0 to opt out.
+      - CODE4ME_DEV_RELOAD=${CODE4ME_DEV_RELOAD:-1}
       # Agent subsystem (ACP) upstream provider config, see .env.example
       - AGENT_UPSTREAM_BASE_URL=${AGENT_UPSTREAM_BASE_URL:-http://host.docker.internal:11434/v1}
       - AGENT_UPSTREAM_API_KEY=${AGENT_UPSTREAM_API_KEY:-}
@@ -200,6 +207,7 @@ services:
       - "${WEBSITE_PORT:-3000}:${WEBSITE_PORT:-3000}"
     volumes:
       - ./src/website:/website
+      - website_node_modules:/website/node_modules
     depends_on:
       backend:
         condition: service_healthy
@@ -242,3 +250,7 @@ services:
       interval: 2s
       timeout: 5s
       retries: 10
+
+volumes:
+  website_node_modules:
+  pgdata:

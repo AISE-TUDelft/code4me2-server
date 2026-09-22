@@ -17,8 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import stack
-from .config import Scenario, redact, sha256_of
+from . import runtime, stack
+from .config import Scenario, redact
 from .http import HttpClient, HttpError, redact_text
 from .stub_provider import StubProvider
 
@@ -49,8 +49,8 @@ STEP_DESCRIPTIONS = {
     "grant_roles": "promote the admin account via SQL (no admin-grant endpoint exists)",
     "enable_researcher": "admin enables the researcher account (can_research)",
     "provider_connection": "admin creates the stub provider connection",
-    "register_release": "admin registers a digest-pinned PACKAGED agent release",
-    "qualify_release": "admin records a passing conformance receipt (derives QUALIFIED)",
+    "register_release": "admin imports the producer manifest and its verified archive",
+    "qualify_release": "the imported release is usable because its producer tests passed",
     "create_profile": "researcher creates an agent profile pinned to the release",
     "create_study": "researcher creates a study with a fixed agent profile",
     "join_code": "researcher reads the study's join code",
@@ -543,55 +543,49 @@ def step_provider_connection(ctx: Ctx) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _release_payload(scenario: Scenario) -> Dict[str, Any]:
-    agent = scenario.agent
-    platform = scenario.platform
-    return {
-        "schema_version": "1",
-        "agent_id": agent.agent_id,
-        "release_id": agent.release_id,
-        "version": agent.release_version,
-        "display": {
-            "name": "Code4Me E2E Agent",
-            "vendor": "code4me2",
-            "description": "Synthetic release registered by code4me-e2e.",
-        },
-        "source_type": "RESEARCH_OVERLAY",
-        "source_manifest_digest": sha256_of(
-            "code4me2://e2e/manifest", agent.agent_id, agent.release_id, agent.release_version
-        ),
-        "distribution_mode": "PACKAGED",
-        "artifacts": [
-            {
-                "os": platform.os,
-                "arch": platform.arch,
-                "path": agent.artifact_path,
-                "sha256": agent.artifact_digest,
-                "size": int(agent.artifact_size),
-            }
-        ],
-        "adapter": {
-            "adapter_id": agent.adapter_id,
-            "version": agent.adapter_version,
-            "digest": agent.adapter_digest,
-        },
-        "min_protocol_version": "1",
-        "max_protocol_version": "1",
-    }
-
-
 def step_register_release(ctx: Ctx) -> Dict[str, Any]:
+    """Import the producer manifest and its archive through the byte-verifying API.
+
+    The producer (``participant_release native``) built the archive and ran the
+    packaged executable's ``--self-check`` and ACP ``initialize``, so the manifest
+    already carries the platform test results. The harness imports exactly that
+    document; it never invents a digest or a test verdict.
+    """
     ctx.require("admin_user_id")
     admin = ctx.client("admin")
-    payload = _release_payload(ctx.scenario)
-    resp = admin.post("/api/research/agents/releases", {"release": payload})
-    if resp.status not in (201, 409):
-        _expect(resp, (201,), "register_release", "registering the agent release failed")
-    ctx.state["release_id"] = payload["release_id"]
+    manifest_path, archive_path = runtime.agent_release(ctx.run_dir)
+    document = manifest_path.read_text(encoding="utf-8")
+    artifact = (json.loads(document).get("artifacts") or [{}])[0]
+    resp = admin.post_multipart(
+        "/api/research/agents/releases/import",
+        fields={"manifest": document},
+        files=[("archives", archive_path.name, archive_path.read_bytes())],
+    )
+    payload = _expect(
+        resp,
+        (200, 201),
+        "register_release",
+        "importing the tested release failed",
+        fix_hint=(
+            "the manifest must declare the uploaded archive by basename and its "
+            "sha256/size must match the bytes; passing producer tests are required"
+        ),
+    )
+    release = (payload or {}).get("release") or {}
+    release_id = release.get("release_id")
+    if not release_id:
+        raise StepFailure("release import returned no release_id", details={"response": payload})
+    ctx.state["release_id"] = release_id
+    # Downstream steps (and the profile they create) must pin the imported
+    # release, not the synthetic scenario defaults.
+    ctx.scenario.agent.release_id = release_id
+    if artifact.get("sha256"):
+        ctx.scenario.agent.artifact_digest = artifact["sha256"]
     return {
-        "release_id": payload["release_id"],
-        "created": resp.status == 201,
-        "artifact_digest": ctx.scenario.agent.artifact_digest,
+        "release_id": release_id,
+        "created": (payload or {}).get("created"),
+        "artifact_digest": artifact.get("sha256"),
+        "verified_artifacts": len((payload or {}).get("verified_artifacts") or []),
     }
 
 
@@ -601,54 +595,23 @@ def step_register_release(ctx: Ctx) -> Dict[str, Any]:
 
 
 def step_qualify_release(ctx: Ctx) -> Dict[str, Any]:
-    scenario = ctx.scenario
+    """Usability is derived from the imported producer tests; only verify it."""
     ctx.require("release_id")
     admin = ctx.client("admin")
-    receipt = {
-        "receipt_id": str(uuid.uuid4()),
-        "artifact_digest": scenario.agent.artifact_digest,
-        "adapter_digest": scenario.agent.adapter_digest,
-        "host": {"os": scenario.platform.os, "arch": scenario.platform.arch},
-        "plugin_version": "e2e-harness",
-        "protocol_version": "1",
-        "fixture_digests": {},
-        "case_results": [
-            {
-                "case_id": "e2e.smoke",
-                "status": "PASS",
-                "host_observations": [],
-                "agent_observations": [],
-                "cleanup_ok": True,
-                "evidence_digest": "e2e-harness",
-                "reason": "synthetic e2e conformance receipt",
-            }
-        ],
-        "status": "PASS",
-        "created_at": _now_iso(),
-    }
-    resp = admin.post("/api/research/packages/receipts", receipt)
-    _expect(
-        resp,
-        (201,),
-        "qualify_release",
-        "recording the conformance receipt failed",
-        fix_hint=(
-            "the receipt's artifact_digest must equal a registered release artifact "
-            "sha256; check agent.artifact_digest"
-        ),
-    )
-    ctx.state["conformance_receipt_id"] = (resp.json or {}).get("receipt_id")
-
-    fetched = admin.get(f"/api/research/agents/releases/{ctx.get('release_id')}")
+    release_id = ctx.get("release_id")
+    fetched = admin.get(f"/api/research/agents/releases/{release_id}")
     payload = _expect(fetched, (200,), "qualify_release", "fetching the release failed")
     derived = ((payload or {}).get("release") or {}).get("status")
     if derived != "QUALIFIED":
         raise StepFailure(
             f"release derived status is {derived!r}, expected 'QUALIFIED'",
-            details={"release": (payload or {}).get("release"), "receipt": resp.json},
-            fix_hint="the conformance receipt must have aggregate status PASS and match the artifact digest",
+            details={"release": (payload or {}).get("release")},
+            fix_hint=(
+                "the imported manifest must carry passing self_check and "
+                "acp_initialize results for the scenario platform"
+            ),
         )
-    return {"release_id": ctx.get("release_id"), "derived_status": derived, "receipt_id": ctx.get("conformance_receipt_id")}
+    return {"release_id": release_id, "derived_status": derived}
 
 
 # ---------------------------------------------------------------------------

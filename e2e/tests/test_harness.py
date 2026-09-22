@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from code4me_e2e import cli, process, report, suite, ui, workflow
+from code4me_e2e import cli, process, report, steps, suite, ui, workflow
 from code4me_e2e.config import ScenarioError, load_scenario
 from code4me_e2e.steps import Ctx, StepResult
 from code4me_e2e.stub_provider import StubProvider
@@ -118,6 +118,60 @@ class HarnessTest(unittest.TestCase):
             pid = int((path / "pid").read_text())
             with self.assertRaises(ProcessLookupError):
                 os.kill(pid, 0)
+
+    def test_multipart_body_carries_the_manifest_and_archive(self):
+        from code4me_e2e.http import encode_multipart
+        body, content_type = encode_multipart(
+            {"manifest": '{"artifacts": []}'}, [("archives", "agent.zip", b"PK\x03\x04agent")]
+        )
+        boundary = content_type.split("boundary=", 1)[1]
+        self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
+        self.assertIn(b'name="manifest"', body)
+        self.assertIn(b'{"artifacts": []}', body)
+        self.assertIn(b'filename="agent.zip"', body)
+        self.assertIn(b"PK\x03\x04agent", body)
+        self.assertTrue(body.rstrip().endswith(f"--{boundary}--".encode()))
+
+    def test_register_release_imports_the_producer_manifest_and_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "native-macos-arm64.json"
+            archive = Path(directory) / "code4me-agent-macos-arm64.zip"
+            manifest.write_text(json.dumps({"artifacts": [{"archive": archive.name, "sha256": "a" * 64}]}))
+            archive.write_bytes(b"PK\x03\x04agent")
+            ctx = Ctx(load_scenario(), {"accounts": {}, "admin_user_id": "admin"}, Path(directory))
+            with patch("code4me_e2e.steps.runtime.agent_release", return_value=(manifest, archive)), \
+                 patch.object(Ctx, "client") as client:
+                client.return_value.post_multipart.return_value = Mock(
+                    status=201,
+                    json={
+                        "created": True,
+                        "release": {"release_id": "code4me-agent-1.0.0-abc"},
+                        "verified_artifacts": [{"verified": True}],
+                    },
+                )
+                result = steps.step_register_release(ctx)
+        self.assertEqual("code4me-agent-1.0.0-abc", result["release_id"])
+        self.assertEqual("code4me-agent-1.0.0-abc", ctx.state["release_id"])
+        self.assertEqual("code4me-agent-1.0.0-abc", ctx.scenario.agent.release_id)
+        self.assertEqual("a" * 64, ctx.scenario.agent.artifact_digest)
+        call = client.return_value.post_multipart.call_args
+        self.assertEqual("/api/research/agents/releases/import", call.args[0])
+        self.assertEqual(["archives"], [name for name, _, _ in call.kwargs["files"]])
+        self.assertEqual(archive.name, call.kwargs["files"][0][1])
+        self.assertIn('"archive"', call.kwargs["fields"]["manifest"])
+
+    def test_qualify_release_requires_producer_test_results(self):
+        ctx = Ctx(load_scenario(), {"release_id": "r1", "accounts": {}}, Path("."))
+        with patch.object(Ctx, "client") as client:
+            client.return_value.get.return_value = Mock(
+                status=200, json={"release": {"status": "UNQUALIFIED"}}
+            )
+            with self.assertRaises(steps.StepFailure):
+                steps.step_qualify_release(ctx)
+            client.return_value.get.return_value = Mock(
+                status=200, json={"release": {"status": "QUALIFIED"}}
+            )
+            self.assertEqual("QUALIFIED", steps.step_qualify_release(ctx)["derived_status"])
 
 
 if __name__ == "__main__":

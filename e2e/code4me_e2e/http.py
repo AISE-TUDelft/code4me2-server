@@ -16,8 +16,9 @@ import json
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import is_secret_key, redact
 
@@ -51,6 +52,39 @@ def redact_text(text: str) -> str:
     for pattern, replacement in _REDACT_PATTERNS:
         result = re.sub(pattern, replacement, result)
     return result
+
+
+def encode_multipart(
+    fields: Dict[str, str], files: List[Tuple[str, str, bytes]]
+) -> Tuple[bytes, str]:
+    """Encode one multipart/form-data body using only the standard library.
+
+    ``files`` entries are ``(field_name, filename, payload)``. The release import
+    endpoint takes the manifest as a text field and each archive as a file field,
+    so the harness must speak multipart without adding a dependency.
+    """
+    boundary = "----code4me-e2e-" + uuid.uuid4().hex
+    chunks: List[bytes] = []
+    for name, value in fields.items():
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode("utf-8")
+        )
+    for name, filename, payload in files:
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                "Content-Type: application/octet-stream\r\n\r\n"
+            ).encode("utf-8")
+        )
+        chunks.append(payload)
+        chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
 class HttpClient:
@@ -98,6 +132,9 @@ class HttpClient:
         path: str,
         *,
         json_body: Any = None,
+        body: Optional[bytes] = None,
+        content_type: Optional[str] = None,
+        record_request: Any = None,
         headers: Optional[Dict[str, str]] = None,
         bearer: Optional[str] = None,
         timeout: Optional[float] = None,
@@ -105,7 +142,11 @@ class HttpClient:
         url = self.base_url + (path if path.startswith("/") else "/" + path)
         request_headers = {"Accept": "application/json"}
         data: Optional[bytes] = None
-        if json_body is not None:
+        if body is not None:
+            data = body
+            if content_type:
+                request_headers["Content-Type"] = content_type
+        elif json_body is not None:
             data = json.dumps(json_body).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
         if bearer:
@@ -151,7 +192,11 @@ class HttpClient:
             "path": path,
             "status": status,
             "duration_ms": duration_ms,
-            "request": redact(json_body) if json_body is not None else None,
+            "request": (
+                redact(json_body)
+                if json_body is not None
+                else (redact(record_request) if record_request is not None else None)
+            ),
             "response": (
                 redact(parsed) if parsed is not None else redact_text(raw)[:4000]
             ),
@@ -173,6 +218,25 @@ class HttpClient:
 
     def put(self, path: str, json_body: Any = None, **kwargs: Any) -> HttpResponse:
         return self.request("PUT", path, json_body=json_body, **kwargs)
+
+    def post_multipart(
+        self,
+        path: str,
+        *,
+        fields: Dict[str, str],
+        files: List[Tuple[str, str, bytes]],
+        **kwargs: Any,
+    ) -> HttpResponse:
+        """POST multipart/form-data; the record keeps only field/file names."""
+        body, content_type = encode_multipart(fields, files)
+        return self.request(
+            "POST",
+            path,
+            body=body,
+            content_type=content_type,
+            record_request={"fields": sorted(fields), "files": [name for _, name, _ in files]},
+            **kwargs,
+        )
 
     def head(self, path: str, **kwargs: Any) -> HttpResponse:
         return self.request("HEAD", path, **kwargs)

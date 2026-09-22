@@ -264,18 +264,18 @@ curl -s \
 - **Comprehensive Indexing**: Optimized for high-volume analytics queries
 
 ### Running Migrations
-The agent tables (and any future schema change) are applied via the hybrid migration manager, not automatically on startup:
+The agent/research tables (and any future schema change) are applied via the hybrid migration manager, not automatically on startup:
 ```bash
 # First-time setup (initializes from init.sql + stamps Alembic tracking)
 python src/database/migration/migration_manager.py init
 
-# Apply pending migrations (e.g. the agent tables + seeded default profiles)
+# Apply pending migrations
 python src/database/migration/migration_manager.py migrate
 
 # Check current revision / history
 python src/database/migration/migration_manager.py status
 ```
-The seed migration (`e2b3c4d5f6a8_seed_default_agent_profiles`) only writes `api_key_ref` *names* (e.g. `OPENROUTER_API_KEY`) into the database — it never reads or requires those environment variables at migration time. Only `default-code4me2-agent` is seeded active by default; the Goose/Codex profiles are seeded inactive until you provide those external binaries.
+There is a single consolidated Alembic revision, `8a0084080b46_consolidated_schema.py` (fresh-schema only): it creates the research/agent schema and refuses to run against a database that already holds the previous research tables, so create a new database/volume instead of upgrading in place. Default agent profiles (`default-code4me2-agent`, `default-goose`, `default-codex`) are **not** created by a migration; they are seeded by the development seeder (`scripts/dev/seed_local_dev.sh`, see **Research Platform** below). Only `default-code4me2-agent` is seeded active by default; the Goose/Codex profiles are seeded inactive (BYOA) until you provide those external binaries.
 
 **Current default profile (initial testing config)**: `default-code4me2-agent` points at OpenRouter (`https://openrouter.ai/api/v1`) using the free `cohere/north-mini-code:free` model, with `api_key_ref=OPENROUTER_API_KEY`. Set `OPENROUTER_API_KEY` in `.env` once you have a key — until then, requests are forwarded unauthenticated and OpenRouter will 401. Update the profile via `PUT /api/agent/profiles/{profile_id}` (or the admin UI) to switch models/providers later.
 
@@ -495,7 +495,7 @@ docker-compose logs -f celery-worker
 **Agent Subsystem Issues**
 - **401 from OpenRouter**: the seeded default profile (`default-code4me2-agent`) uses OpenRouter with `api_key_ref=OPENROUTER_API_KEY`. Set `OPENROUTER_API_KEY` in `.env` and restart `backend` — until it's set, calls are forwarded unauthenticated and OpenRouter rejects them.
 - **Agent can't reach Ollama from inside Docker** (only relevant if you switch a profile back to a local Ollama `base_url`): `http://localhost:11434/v1` resolves to the *container*, not your host. Either run the backend outside Docker for agent development, or set that profile's `base_url` (or the `AGENT_UPSTREAM_BASE_URL` fallback) to `http://host.docker.internal:11434/v1` (the `backend` service already maps `host.docker.internal` via `extra_hosts` in `docker-compose.yml`).
-- **Agent tables missing / seed profiles absent**: run `python src/database/migration/migration_manager.py migrate` — the agent tables are not created by `init.sql`, only by Alembic migrations.
+- **Agent tables missing**: run `python src/database/migration/migration_manager.py migrate` — the agent tables are not created by `init.sql`, only by Alembic migrations. **Default profiles absent**: run the development seeder (`scripts/dev/seed_local_dev.sh`); the default agent profiles are not created by a migration.
 - **Agent CLI won't authenticate**: check that the launching process (normally the JetBrains plugin) set `CODE4ME_ACP_BACKEND_URL`, `CODE4ME_ACP_GRANT`, and `CODE4ME_ACP_TOKEN`, or that the workspace handoff file exists — the grant is single-use and short-lived.
 
 ### Debugging Commands
@@ -603,56 +603,57 @@ GET/POST /api/research/operations/...
 
 ### Seed a fresh database from the built runtime
 
-A fresh database is made immediately usable by importing the runtime **build
-manifest** (never a hand-typed digest), recording the conformance receipt that
-qualifies its release, pinning `default-code4me2-agent` to it, marking the
-participant-installed profiles (`default-goose`/`default-codex`) as BYOA, and
-publishing one study revision with a working `session_policy`.
+A fresh database is made immediately usable by importing the runtime **producer
+manifest together with its exact archive bytes** (never a hand-typed digest),
+checking the producer tests for its built platforms, pinning
+`default-code4me2-agent` to it, marking the participant-installed profiles
+(`default-goose`/`default-codex`) as BYOA, and publishing one study revision with
+a working `session_policy`.
 
 ```bash
 cd code4me2-server
 scripts/dev/seed_local_dev.sh
 ```
 
-`seed_local_dev.sh` is a thin driver: it stages the manifest (and any built
-archives next to it) into the running backend container and then invokes the
-canonical seeder, `scripts/dev/seed_research_study.py --fresh-db`. When an
-archive is present its real `sha256`/size are computed and checked against the
-manifest, so no digest or size is ever typed by hand. Override the manifest with
-`MANIFEST=/path/to/manifest.json`; when an archive is not on disk, supply its
-size explicitly with `--artifact-size-override NAME=SIZE` (never guessed).
+`seed_local_dev.sh` is a thin driver: it stages the built archives into the
+running backend container and imports the producer manifest unchanged. Generate
+it first with the [native release command](docs/research-platform/RELEASES.md). Every declared archive's real `sha256`/size are recomputed and checked,
+so no digest or size is ever typed by hand. Override the source manifest with
+`MANIFEST=/path/to/manifest.json`.
 
-The same registration is exposed to CI as an admin JSON endpoint:
+The same verified import is the only way a release enters the catalogue, and is
+exposed to CI as an admin **multipart** endpoint:
 
 ```bash
 curl -X POST http://localhost:8008/api/research/agents/releases/import \
-    -H "Content-Type: application/json" -H "Cookie: auth_token=$TOKEN" \
-    -d '{"manifest": <build manifest>, "artifact_root": "/srv/runtime-staging"}'
+    -H "Cookie: auth_token=$TOKEN" \
+    -F 'manifest=<producer-manifest.json' \
+    -F 'archives=@code4me-agent-macos-arm64.zip'
 ```
 
-It is idempotent: re-importing the same manifest returns the existing release
-(`created: false`) instead of a duplicate.
+Exactly the manifest's declared basenames must be uploaded and match; a missing,
+duplicate, unexpected or mismatched upload rejects the whole import with a typed
+error and creates no release row. Streaming limits are
+`RESEARCH_IMPORT_MAX_ARCHIVE_BYTES` (default 256 MiB) and
+`RESEARCH_IMPORT_MAX_TOTAL_BYTES` (default 1 GiB). It is idempotent: re-importing
+the same manifest returns the existing release (`created: false`).
 
-### Seed a synthetic study (participant enrollment)
+### Seed a study (participant enrollment)
 
 The participant runbook needs a published study and an ACTIVE enrollment before
-the plugin can join. `scripts/dev/seed_research_study.py` mints that onboarding
-state by calling the real research services (protocol publication, agent
-registry, identity enrollment/consent) — it does not re-implement any domain
-logic. It is a development-only tool and refuses to run unless
-`CODE4ME_DEV_SEED=1` (or `TEST_MODE=true`) is set.
+the plugin can join. The same seeder mints that onboarding state by calling the
+real research services (protocol publication, agent registry, identity
+enrollment/consent) — it does not re-implement any domain logic. It is a
+development-only tool and refuses to run unless `CODE4ME_DEV_SEED=1` (or
+`TEST_MODE=true`) is set.
 
 ```bash
 cd code4me2-server
-CODE4ME_DEV_SEED=1 PYTHONPATH=src python scripts/dev/seed_research_study.py \
-    --account-email participant@example.com \
-    --account-password 'Password123' --create-account
+scripts/dev/seed_local_dev.sh --builtin-study-name "My Study"
 ```
 
-Common options: `--study-name`, `--agent-id`, `--release-id`,
-`--artifact-digest sha256:<64 hex>`, `--os <os>`, `--arch <arch>`. Without
-`--artifact-digest`/`--os`/`--arch` a deterministic synthetic release for the
-current host is used.
+Common options: `--builtin-study-name`, `--connection-label`,
+`--connection-base-url`, `--connection-secret-ref`, `--connection-model`.
 
 The command prints a copy-pasteable summary. The `enrollment_id` is the opaque
 "enrollment code" the participant pastes into IntelliJ's **Tools → Join Research

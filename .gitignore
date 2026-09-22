@@ -24,3 +24,7 @@ dist/
 .mypy_cache/
 htmlcov/
 *.md
+!docs/research-platform/RELEASE_SIMPLIFICATION_PLAN.md
+!docs/research-platform/RELEASES.md
+!docs/research-platform/FROM_SCRATCH_SETUP.md
+!docs/research-platform/FROM_SCRATCH_SETUP.tr.md
