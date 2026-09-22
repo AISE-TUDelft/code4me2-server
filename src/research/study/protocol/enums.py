@@ -126,9 +126,8 @@ class ValidationReasonCode(str, Enum):
     # Agent profile references (a condition may pin an existing profile).
     AGENT_PROFILE_NOT_FOUND = "AGENT_PROFILE_NOT_FOUND"
 
-    # A distribution (AgentProfile) is not verified: its release is missing a
-    # passing conformance receipt, or it is a participant-installed BYOA
-    # distribution that has no artifact to bind conformance evidence to.
+    # A distribution (AgentProfile) is not verified: its release has no
+    # passing producer tests or lacks a resolvable distribution identity.
     DISTRIBUTION_UNVERIFIED = "DISTRIBUTION_UNVERIFIED"
 
     # Declared distribution contract on a release pin.

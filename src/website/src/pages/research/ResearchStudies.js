@@ -74,6 +74,51 @@ const ResearchStudies = () => {
   );
   const [telemetryPolicyError, setTelemetryPolicyError] = useState("");
   const [sessionPolicyError, setSessionPolicyError] = useState("");
+
+  // Presets: a researcher should never hand-write policy JSON. The raw editors
+  // stay available under "Advanced". Vocabulary: STRUCTURAL/METRICS/DIAGNOSTICS
+  // are metadata; CONTENT is the sensitive one.
+  const TELEMETRY_PRESETS = {
+    metadata: { allowed_field_classes: ["STRUCTURAL", "METRICS", "DIAGNOSTICS"] },
+    everything: { allowed_field_classes: ["STRUCTURAL", "METRICS", "DIAGNOSTICS", "CONTENT"] },
+  };
+  const TELEMETRY_CLASS_LABELS = {
+    STRUCTURAL: "Agent and session structure (which events and tools ran)",
+    METRICS: "Usage and timings (tokens, durations, counts)",
+    DIAGNOSTICS: "Errors and diagnostics",
+    CONTENT: "Prompts, code and tool output (sensitive)",
+  };
+  const SESSION_PRESETS = {
+    standard: { idle_timeout_seconds: 900, resume_grace_seconds: 300, heartbeat_seconds: 30 },
+    long: { idle_timeout_seconds: 3600, resume_grace_seconds: 900, heartbeat_seconds: 60 },
+  };
+  const [telemetryPreset, setTelemetryPreset] = useState("metadata");
+  const [sessionPreset, setSessionPreset] = useState("standard");
+  const telemetryClasses =
+    (parsePolicyDraft(telemetryPolicyText) || {}).allowed_field_classes || [];
+
+  const applyTelemetryPreset = (preset) => {
+    setTelemetryPreset(preset);
+    if (TELEMETRY_PRESETS[preset]) {
+      setTelemetryPolicyText(JSON.stringify(TELEMETRY_PRESETS[preset]));
+      setTelemetryPolicyError("");
+    }
+  };
+  const toggleTelemetryClass = (name) => {
+    const current = parsePolicyDraft(telemetryPolicyText) || {};
+    const list = Array.isArray(current.allowed_field_classes) ? current.allowed_field_classes : [];
+    const next = list.includes(name) ? list.filter((item) => item !== name) : [...list, name];
+    setTelemetryPolicyText(JSON.stringify({ ...current, allowed_field_classes: next }));
+    setTelemetryPolicyError("");
+    setTelemetryPreset("custom");
+  };
+  const applySessionPreset = (preset) => {
+    setSessionPreset(preset);
+    if (SESSION_PRESETS[preset]) {
+      setSessionPolicyText(JSON.stringify(SESSION_PRESETS[preset]));
+      setSessionPolicyError("");
+    }
+  };
   // Non-null while the create form is acting as the clone submission step.
   const [cloneSource, setCloneSource] = useState(null);
   const [profiles, setProfiles] = useState([]);
@@ -355,30 +400,107 @@ const ResearchStudies = () => {
               </label>
               <label>Starts at<input type="datetime-local" value={form.startsAt} onChange={(event) => setForm({ ...form, startsAt: event.target.value })} disabled={isBusy} /></label>
               <label>Ends at<input type="datetime-local" value={form.endsAt} onChange={(event) => setForm({ ...form, endsAt: event.target.value })} disabled={isBusy} /></label>
-              <label>
-                Telemetry policy (JSON)
-                <textarea
-                  value={telemetryPolicyText}
-                  onChange={applyPolicyDraft("telemetryPolicy", setTelemetryPolicyText, setTelemetryPolicyError)}
-                  rows={2}
-                  disabled={isBusy}
-                  aria-invalid={Boolean(telemetryPolicyError)}
-                  aria-describedby={telemetryPolicyError ? "telemetry-policy-error" : undefined}
-                />
-              </label>
-              {telemetryPolicyError && <p id="telemetry-policy-error" className="research-error" role="alert">{telemetryPolicyError}</p>}
-              <label>
-                Session policy (JSON)
-                <textarea
-                  value={sessionPolicyText}
-                  onChange={applyPolicyDraft("sessionPolicy", setSessionPolicyText, setSessionPolicyError)}
-                  rows={2}
-                  disabled={isBusy}
-                  aria-invalid={Boolean(sessionPolicyError)}
-                  aria-describedby={sessionPolicyError ? "session-policy-error" : undefined}
-                />
-              </label>
-              {sessionPolicyError && <p id="session-policy-error" className="research-error" role="alert">{sessionPolicyError}</p>}
+              <fieldset className="research-policy">
+                <legend>Telemetry policy</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name="telemetry-preset"
+                    checked={telemetryPreset === "metadata"}
+                    onChange={() => applyTelemetryPreset("metadata")}
+                    disabled={isBusy}
+                  />
+                  Metadata only — how the agent ran, timings and errors. No prompts or code. (default)
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="telemetry-preset"
+                    checked={telemetryPreset === "everything"}
+                    onChange={() => applyTelemetryPreset("everything")}
+                    disabled={isBusy}
+                  />
+                  Everything — also collect prompts, code and tool output.
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="telemetry-preset"
+                    checked={telemetryPreset === "custom"}
+                    onChange={() => setTelemetryPreset("custom")}
+                    disabled={isBusy}
+                  />
+                  Custom — choose exactly what is collected.
+                </label>
+                {telemetryPreset === "custom" && (
+                  <div className="research-policy-classes">
+                    {Object.entries(TELEMETRY_CLASS_LABELS).map(([name, label]) => (
+                      <label key={name}>
+                        <input
+                          type="checkbox"
+                          checked={telemetryClasses.includes(name)}
+                          onChange={() => toggleTelemetryClass(name)}
+                          disabled={isBusy}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                    <p className="research-hint">
+                      Prompts, code and outputs are collected only if you select the
+                      sensitive category. Provider credentials are never collected.
+                    </p>
+                  </div>
+                )}
+                {telemetryPolicyError && (
+                  <p id="telemetry-policy-error" className="research-error" role="alert">
+                    {telemetryPolicyError}
+                  </p>
+                )}
+                <details className="research-advanced">
+                  <summary>Advanced: raw JSON</summary>
+                  <textarea
+                    aria-label="Telemetry policy (JSON)"
+                    value={telemetryPolicyText}
+                    onChange={applyPolicyDraft("telemetryPolicy", setTelemetryPolicyText, setTelemetryPolicyError)}
+                    rows={2}
+                    disabled={isBusy}
+                    aria-invalid={Boolean(telemetryPolicyError)}
+                    aria-describedby={telemetryPolicyError ? "telemetry-policy-error" : undefined}
+                  />
+                </details>
+              </fieldset>
+              <fieldset className="research-policy">
+                <legend>Session policy</legend>
+                <label>
+                  Session length
+                  <select
+                    value={sessionPreset}
+                    onChange={(event) => applySessionPreset(event.target.value)}
+                    disabled={isBusy}
+                  >
+                    <option value="standard">Standard — stop after 15 min idle, resume within 5 min</option>
+                    <option value="long">Long — stop after 60 min idle, resume within 15 min</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </label>
+                {sessionPolicyError && (
+                  <p id="session-policy-error" className="research-error" role="alert">
+                    {sessionPolicyError}
+                  </p>
+                )}
+                <details className="research-advanced" open={sessionPreset === "custom"}>
+                  <summary>Advanced: raw JSON</summary>
+                  <textarea
+                    aria-label="Session policy (JSON)"
+                    value={sessionPolicyText}
+                    onChange={applyPolicyDraft("sessionPolicy", setSessionPolicyText, setSessionPolicyError)}
+                    rows={2}
+                    disabled={isBusy}
+                    aria-invalid={Boolean(sessionPolicyError)}
+                    aria-describedby={sessionPolicyError ? "session-policy-error" : undefined}
+                  />
+                </details>
+              </fieldset>
             </>
           )}
           <fieldset className="research-profile-selection">

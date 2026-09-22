@@ -545,13 +545,11 @@ def _unverified_error(
     mode = str(distribution.distribution_mode or "PACKAGED").strip().upper()
     if mode == "BYOA_EXTERNAL":
         message = (
-            "a BYOA_EXTERNAL distribution is always unverified: it has no "
-            "artifact to bind conformance evidence to"
+            "the BYOA release lacks passing tests or a supported agent identity"
         )
     else:
         message = (
-            "the distribution's release is not qualified by a passing "
-            "conformance receipt (unverified)"
+            "the distribution's release has no passing producer tests (unverified)"
         )
     return ValidationError(
         code=ValidationReasonCode.DISTRIBUTION_UNVERIFIED,
@@ -685,7 +683,7 @@ def _check_distributions(
                 )
             )
         elif not distribution.verified:
-            # The release exists but carries no passing conformance receipt.
+            # The release exists but lacks passing producer tests.
             errors.append(
                 _unverified_error(
                     field, distribution=distribution, actor_is_admin=actor_is_admin

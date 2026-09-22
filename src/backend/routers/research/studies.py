@@ -133,6 +133,11 @@ def _validated_telemetry_policy(telemetry_policy: dict[str, Any]) -> dict[str, A
     must be a boolean and the field-class allowlist must contain only the
     known policy vocabulary.
     """
+    # The study-facing policy vocabulary is ``TelemetryFieldClass``
+    # (STRUCTURAL / METRICS / DIAGNOSTICS / CONTENT). The runtime privacy
+    # vocabulary (SYSTEM / BEHAVIORAL / CODE_METADATA / CONTENT) is derived from
+    # it by the privacy engine, so it must not be what a researcher authors.
+    from research.study.protocol.enums import TelemetryFieldClass
     from research.telemetry.enums import FieldClass
 
     if not isinstance(telemetry_policy, dict):
@@ -161,10 +166,18 @@ def _validated_telemetry_policy(telemetry_policy: dict[str, Any]) -> dict[str, A
                 status_code=422,
                 detail={
                     "code": "TELEMETRY_POLICY_INVALID",
-                    "message": "allowed_field_classes must be a list of field-class names",
+                    "message": (
+                        "allowed_field_classes must be a list of field-class names "
+                        f"({', '.join(sorted({c.value for c in TelemetryFieldClass}))})"
+                    ),
                 },
             )
-        known = {field_class.value for field_class in FieldClass}
+        # Accept both vocabularies: the study-facing authoring names
+        # (STRUCTURAL/METRICS/DIAGNOSTICS/CONTENT) and the runtime privacy names
+        # (SYSTEM/BEHAVIORAL/CODE_METADATA/CONTENT) used by older callers.
+        known = {field_class.value for field_class in TelemetryFieldClass} | {
+            field_class.value for field_class in FieldClass
+        }
         unknown = sorted(set(allowed) - known)
         if unknown:
             raise HTTPException(
