@@ -331,7 +331,7 @@ class TestDatabaseConnection:
             current_db = result.scalar()
 
             expected_db = (
-                "test_db"
+                database_engine.url.database
                 if TestConfig.is_using_test_db()
                 else os.getenv("DB_NAME", "code4meV2")
             )
@@ -417,7 +417,7 @@ class TestMigrationManagerUnit:
         assert url == expected_url, f"Expected {expected_url}, got {url}"
 
         if use_test_db:
-            assert "test_db" in url
+            assert url == os.getenv("TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/test_db")
         else:
             expected_db = os.getenv("DB_NAME", "code4meV2")
             assert expected_db in url

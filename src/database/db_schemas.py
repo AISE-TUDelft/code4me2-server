@@ -681,17 +681,17 @@ class Documentation(Base):
 
 class Study(Base):
     """
-    Shared study identity for both completion A/B studies and research studies.
+    Shared study identity for research studies (plus pre-existing legacy rows).
 
-    Completion studies (``is_research == False``) keep the completion-specific
-    required ``default_config_id`` — validated in code, not by a NOT NULL column,
-    because a research study must not fabricate a completion config. Research
-    studies set ``is_research`` True and are owner-scoped; their lifecycle and
-    fixed configuration live in the research-only columns below. ``is_active``
-    mirrors the ``research_status`` lifecycle projection (``ACTIVE`` ↔ True) and
-    is not an owner-level publication slot, so an owner may hold several active
-    research studies at once. Legacy completion rows leave those research
-    columns nullable and continue using the existing completion fields.
+    Research studies set ``is_research`` True and are owner-scoped; their
+    lifecycle and fixed configuration live in the research-only columns below.
+    ``default_config_id`` is nullable and not fabricated for a research study
+    (validated in code, not by a NOT NULL column). ``is_active`` mirrors the
+    ``research_status`` lifecycle projection (``ACTIVE`` ↔ True) and is not an
+    owner-level publication slot, so an owner may hold several active research
+    studies at once. Pre-existing legacy completion rows leave those research
+    columns nullable and continue using the existing completion fields; no new
+    completion A/B studies are created.
     """
 
     __tablename__ = "study"

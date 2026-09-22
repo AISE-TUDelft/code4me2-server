@@ -90,4 +90,4 @@ def test_missing_usage_is_unavailable_never_zero():
     )
     (event,) = build_legacy_events(_task(), [fact])
     assert event.metrics.usage_tokens is None
-    assert event.metrics.usage_capability.state.value == "UNKNOWN"
+    assert event.metrics.usage_capability.state.value == "UNAVAILABLE"

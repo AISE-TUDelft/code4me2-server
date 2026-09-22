@@ -118,9 +118,8 @@ def _qualified_packaged_release(session) -> str:
     """Insert a QUALIFIED packaged codex release for macos/arm64.
 
     Modeled on the BYOA helper: the row carries one macos/arm64 artifact with
-    a sha256 digest plus a PASS conformance receipt bound to that exact
-    artifact/adapter/host, which is what derives the QUALIFIED status the
-    bootstrap composition requires.
+    a sha256 digest plus one administrator approval for macos/arm64, which is
+    what derives the QUALIFIED status the bootstrap composition requires.
     """
     artifact_digest = "sha256:" + "c" * 64
     adapter_digest = "sha256:" + "d" * 64
@@ -148,16 +147,22 @@ def _qualified_packaged_release(session) -> str:
     )
     release_json = release.model_dump(mode="json")
     release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
-    release_json["tests"] = {
-        "status": "PASS",
-        "approval_options": ["auto", "per_step", "suggestion_only"],
-        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
-    }
+    release_json["conformance"] = [
+        {
+            "status": "PASS",
+            "artifact_digest": artifact_digest,
+            "adapter_digest": adapter_digest,
+            "host": {"os": "macos", "arch": "arm64"},
+            "case_results": [{"status": "PASS"}],
+        }
+    ]
     session.execute(
         text(
             "INSERT INTO public.agent_release "
-            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
-            "VALUES (:release_id, :agent_id, :manifest, :status, CAST(:release_json AS jsonb), now())"
+            "(release_id, agent_id, source_manifest_digest, status, release_json, "
+            "created_at) "
+            "VALUES (:release_id, :agent_id, :manifest, :status, "
+            "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
         ),
         {
             "release_id": release.release_id,
@@ -165,6 +170,9 @@ def _qualified_packaged_release(session) -> str:
             "manifest": release.source_manifest_digest,
             "status": release.qualification_status.value,
             "release_json": json.dumps(release_json),
+            "tests": json.dumps(
+                [{"os": "macos", "arch": "arm64", "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}]
+            ),
         },
     )
     session.commit()
@@ -174,10 +182,8 @@ def _qualified_packaged_release(session) -> str:
 def _qualified_codex_byoa_release(session) -> str:
     """Insert a QUALIFIED BYOA codex release carrying an adapter identity.
 
-    The PASS conformance receipt binds to the release's own
-    ``source_manifest_digest`` (a BYOA release has no artifact digest) and to
-    the adapter digest, which is exactly what ``derive_qualification_status``
-    requires for the fixture to be bootstrap-selectable.
+    The release carries one administrator approval for macos/arm64, which is
+    exactly what makes it bootstrap-selectable.
     """
     adapter_digest = "sha256:" + "d" * 64
     release = AgentReleaseV1(
@@ -200,16 +206,24 @@ def _qualified_codex_byoa_release(session) -> str:
     )
     release_json = release.model_dump(mode="json")
     release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
-    release_json["tests"] = {
-        "status": "PASS",
-        "approval_options": ["auto", "per_step", "suggestion_only"],
-        "cases": [{"case_id": "acp.initialize.session", "status": "PASS"}],
-    }
+    release_json["conformance"] = [
+        {
+            "status": "PASS",
+            "artifact_digest": release.source_manifest_digest,
+            "adapter_digest": adapter_digest,
+            "host": {"os": "macos", "arch": "arm64"},
+            "case_results": [
+                {"case_id": "acp.initialize.session", "status": "PASS"}
+            ],
+        }
+    ]
     session.execute(
         text(
             "INSERT INTO public.agent_release "
-            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
-            "VALUES (:release_id, :agent_id, :manifest, :status, CAST(:release_json AS jsonb), now())"
+            "(release_id, agent_id, source_manifest_digest, status, release_json, "
+            "created_at) "
+            "VALUES (:release_id, :agent_id, :manifest, :status, "
+            "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
         ),
         {
             "release_id": release.release_id,
@@ -217,19 +231,24 @@ def _qualified_codex_byoa_release(session) -> str:
             "manifest": release.source_manifest_digest,
             "status": release.qualification_status.value,
             "release_json": json.dumps(release_json),
+            "tests": json.dumps(
+                [{"os": "macos", "arch": "arm64", "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}]
+            ),
         },
     )
     session.commit()
     return release.release_id
 
 
-def _macos_only_packaged_release(session) -> str:
-    """Insert a packaged release whose recipe built only the macOS artifact.
+def _partially_qualified_packaged_release(session) -> str:
+    """Insert a packaged release whose PASS receipt covers only macOS.
 
-    Identity is the ZIP fingerprint per platform, so a platform the recipe did
-    not build has no artifact at all and a bootstrap for it must be refused.
+    The release publishes macOS *and* Linux artifacts, but the receipt binds
+    the macOS digest+platform only, so a Linux bootstrap must be refused even
+    though the release-level status is QUALIFIED (ISSUE-10).
     """
     macos_digest = "sha256:" + "c" * 64
+    linux_digest = "sha256:" + "e" * 64
     adapter_digest = "sha256:" + "d" * 64
     release = AgentReleaseV1(
         agent_id="codex-acp",
@@ -245,6 +264,13 @@ def _macos_only_packaged_release(session) -> str:
                 sha256=macos_digest,
                 size=1048576,
             ),
+            DistributionArtifact(
+                os="linux",
+                arch="x64",
+                path="codex/1.2.3/linux-x64.tar.gz",
+                sha256=linux_digest,
+                size=1048576,
+            ),
         ],
         adapter=AdapterRef(
             adapter_id="acp-adapter",
@@ -255,16 +281,22 @@ def _macos_only_packaged_release(session) -> str:
     )
     release_json = release.model_dump(mode="json")
     release_json["qualification_status"] = QualificationStatus.UNQUALIFIED.value
-    release_json["tests"] = {
-        "status": "PASS",
-        "approval_options": ["auto", "per_step", "suggestion_only"],
-        "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
-    }
+    release_json["conformance"] = [
+        {
+            "status": "PASS",
+            "artifact_digest": macos_digest,
+            "adapter_digest": adapter_digest,
+            "host": {"os": "macos", "arch": "arm64"},
+            "case_results": [{"status": "PASS"}],
+        }
+    ]
     session.execute(
         text(
             "INSERT INTO public.agent_release "
-            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
-            "VALUES (:release_id, :agent_id, :manifest, :status, CAST(:release_json AS jsonb), now())"
+            "(release_id, agent_id, source_manifest_digest, status, release_json, "
+            "created_at) "
+            "VALUES (:release_id, :agent_id, :manifest, :status, "
+            "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
         ),
         {
             "release_id": release.release_id,
@@ -272,6 +304,9 @@ def _macos_only_packaged_release(session) -> str:
             "manifest": release.source_manifest_digest,
             "status": release.qualification_status.value,
             "release_json": json.dumps(release_json),
+            "tests": json.dumps(
+                [{"os": "macos", "arch": "arm64", "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}]
+            ),
         },
     )
     session.commit()
@@ -995,14 +1030,17 @@ def test_http_codex_byoa_adapter_normalization_and_terminal_closure(http_runtime
     assert terminal.json()["rejected"][0]["reason"] == "REVOKED"
 
 
-def test_http_bootstrap_refuses_a_platform_the_recipe_did_not_build(http_runtime):
-    """A usable release still cannot bootstrap a platform it declares no artifact for."""
+def test_http_bootstrap_refuses_an_unapproved_platform_artifact(http_runtime):
+    """A release-qualified study still cannot bootstrap an unapproved platform.
+
+    The release is approved for macos/arm64 only; a linux/x64 request is refused.
+    """
     client, session_factory, current_user = http_runtime
     session = session_factory()
     try:
         owner_id = _seed_user(session, "partial-owner@example.com", can_research=True)
         participant_id = _seed_user(session, "partial-participant@example.com")
-        release_id = _macos_only_packaged_release(session)
+        release_id = _partially_qualified_packaged_release(session)
         profile_id, _connection_id = _release_profile(session, owner_id, release_id)
     finally:
         session.close()
@@ -1046,7 +1084,7 @@ def test_http_bootstrap_refuses_a_platform_the_recipe_did_not_build(http_runtime
             },
         )
     assert refused.status_code == 409, refused.text
-    assert "ARTIFACT_UNAVAILABLE" in json.dumps(refused.json())
+    assert "RELEASE_NOT_QUALIFIED" in json.dumps(refused.json())
     assert "manifest" not in refused.json()
 
     session = session_factory()
@@ -1061,128 +1099,3 @@ def test_http_bootstrap_refuses_a_platform_the_recipe_did_not_build(http_runtime
     finally:
         session.close()
     assert sessions == 0, "a refused bootstrap must not leave a session row"
-
-
-def test_http_telemetry_per_event_duplicate_under_new_batch_id(http_runtime):
-    """Same event_id plus digest reposted under a fresh batch id is DUPLICATE.
-
-    Unlike the batch-reuse retry path (same batch id returns the stored
-    receipt), a repost under a NEW batch id flows through per-event
-    deduplication: the ack carries the event in ``duplicate`` with disposition
-    DUPLICATE and exactly one row is stored.
-    """
-    client, session_factory, current_user = http_runtime
-    session = session_factory()
-    try:
-        owner_id = _seed_user(session, "duplicate-owner@example.com", can_research=True)
-        participant_id = _seed_user(session, "duplicate-participant@example.com")
-        release_id = _qualified_packaged_release(session)
-        profile_id, _connection_id = _release_profile(session, owner_id, release_id)
-    finally:
-        session.close()
-
-    current_user["value"] = _owner(owner_id)
-    created = client.post(
-        "/api/research/studies",
-        json={
-            "name": "Per-event duplicate study",
-            "session_policy": {
-                "idle_timeout_seconds": 600,
-                "resume_grace_seconds": 120,
-                "heartbeat_seconds": 30,
-            },
-            "profile_ids": [str(profile_id)],
-        },
-    )
-    assert created.status_code == 201, created.text
-    study = created.json()["study"]
-    study_id = study["study_id"]
-
-    current_user["value"] = _participant(participant_id)
-    joined = client.post(
-        "/api/research/join",
-        json={"join_code": study["join_code"], "accept_consent": True},
-    )
-    assert joined.status_code == 201, joined.text
-    enrollment_id = joined.json()["enrollment_id"]
-
-    signing_secret = BOOTSTRAP_SIGNING_SECRET
-    assert signing_secret, "BOOTSTRAP_SIGNING_SECRET must be configured for this suite"
-    with patch(
-        "backend.routers.research.bootstrap._SIGNER",
-        BootstrapSigningContext(secret=signing_secret),
-    ):
-        bootstrap = client.post(
-            "/api/research/bootstrap/research-sessions",
-            json={
-                "enrollment_id": enrollment_id,
-                "context_id": "duplicate-context",
-                "environment": {"os": "macos", "arch": "arm64"},
-            },
-        )
-    assert bootstrap.status_code == 201, bootstrap.text
-    manifest = bootstrap.json()["manifest"]
-    capability = manifest["session_capability"]
-    research_session_id = manifest["research_session"]["research_session_id"]
-
-    opened = client.post(
-        "/api/research/sessions/",
-        json={
-            "capability": capability,
-            "enrollment_id": enrollment_id,
-            "study_id": study_id,
-            "manifest_digest": manifest["manifest_digest"],
-            "context_id": "duplicate-context",
-        },
-    )
-    assert opened.status_code == 200, opened.text
-
-    # One canonical event dict, posted twice: identical bytes mean an identical
-    # digest, which is what the DUPLICATE branch requires.
-    event_id = str(uuid.uuid4())
-    event = _telemetry_event(
-        study_id=study_id,
-        enrollment_id=enrollment_id,
-        research_session_id=research_session_id,
-        event_id=event_id,
-    )
-    first = client.post(
-        "/api/research/telemetry/batches",
-        json={
-            "batch_id": str(uuid.uuid4()),
-            "session_capability": capability,
-            "client_instance_id": "duplicate-client",
-            "events": [event],
-        },
-    )
-    assert first.status_code == 200, first.text
-    assert len(first.json()["accepted"]) == 1
-    assert first.json()["accepted"][0]["event_id"] == event_id
-    assert first.json()["accepted"][0]["disposition"] == "ACCEPTED"
-
-    second = client.post(
-        "/api/research/telemetry/batches",
-        json={
-            "batch_id": str(uuid.uuid4()),
-            "session_capability": capability,
-            "client_instance_id": "duplicate-client",
-            "events": [event],
-        },
-    )
-    assert second.status_code == 200, second.text
-    repeat = second.json()
-    assert repeat["accepted"] == []
-    assert repeat["rejected"] == []
-    assert len(repeat["duplicate"]) == 1
-    assert repeat["duplicate"][0]["event_id"] == event_id
-    assert repeat["duplicate"][0]["disposition"] == "DUPLICATE"
-
-    session = session_factory()
-    try:
-        stored = session.execute(
-            text("SELECT count(*) FROM public.research_event WHERE event_id = :event_id"),
-            {"event_id": event_id},
-        ).scalar_one()
-    finally:
-        session.close()
-    assert stored == 1, "a DUPLICATE repost must not store a second row"

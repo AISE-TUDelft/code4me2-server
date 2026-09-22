@@ -29,13 +29,23 @@ from research.study.protocol import store as study_store
 from research.canonical import canonical_hash
 
 
-def _qualified_release_json(release_id: str, *, agent_id: str) -> str:
-    """A PACKAGED release whose recipe self-check passed.
+def _tests_json() -> str:
+    """One administrator approval for macos/arm64 (the qualification source)."""
+    return json.dumps(
+        [
+            {
+                "os": "macos",
+                "arch": "arm64",
+                "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z",
+                }
+        ]
+    )
 
-    Minimal seed rows with an empty ``release_json`` can no longer be selected:
-    qualification is derived from the recorded recipe self-check.
-    """
+
+def _qualified_release_json(release_id: str, *, agent_id: str) -> str:
+    """A PACKAGED release that declares an artifact and an adapter."""
     digest = "a" * 64
+    adapter_digest = "b" * 64
     return json.dumps(
         {
             "agent_id": agent_id,
@@ -52,12 +62,14 @@ def _qualified_release_json(release_id: str, *, agent_id: str) -> str:
                     "size": 1,
                 }
             ],
-            "tests": {
-                "status": "PASS",
-                "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+            "adapter": {
+                "adapter_id": f"{agent_id}-adapter",
+                "version": "1.0.0",
+                "digest": "sha256:" + adapter_digest,
             },
         }
     )
+
 
 load_dotenv()
 
@@ -471,15 +483,17 @@ def test_study_creation_freezes_owned_profiles_and_rejects_foreign_profiles():
         session.execute(
             text(
                 "INSERT INTO public.agent_release "
-                "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+                "(release_id, agent_id, source_manifest_digest, status, release_json, "
+                "created_at) "
                 "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', "
-                "CAST(:release_json AS jsonb), now())"
+                "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
             ),
             {
                 "release_id": release_id,
                 "release_json": _qualified_release_json(
                     release_id, agent_id="test-agent"
                 ),
+                "tests": _tests_json(),
             },
         )
         session.execute(
@@ -530,15 +544,17 @@ def test_active_study_locks_profile_edits_until_stop_and_keeps_digest():
         session.execute(
             text(
                 "INSERT INTO public.agent_release "
-                "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+                "(release_id, agent_id, source_manifest_digest, status, release_json, "
+                "created_at) "
                 "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', "
-                "CAST(:release_json AS jsonb), now())"
+                "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
             ),
             {
                 "release_id": release_id,
                 "release_json": _qualified_release_json(
                     release_id, agent_id="test-agent"
                 ),
+                "tests": _tests_json(),
             },
         )
         session.execute(
@@ -586,15 +602,17 @@ def test_profile_stays_locked_until_last_active_study_stops():
         session.execute(
             text(
                 "INSERT INTO public.agent_release "
-                "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+                "(release_id, agent_id, source_manifest_digest, status, release_json, "
+                "created_at) "
                 "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', "
-                "CAST(:release_json AS jsonb), now())"
+                "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
             ),
             {
                 "release_id": release_id,
                 "release_json": _qualified_release_json(
                     release_id, agent_id="test-agent"
                 ),
+                "tests": _tests_json(),
             },
         )
         session.execute(
@@ -916,15 +934,17 @@ def test_metadata_locks_after_consent_and_clone_requires_stop():
         session.execute(
             text(
                 "INSERT INTO public.agent_release "
-                "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+                "(release_id, agent_id, source_manifest_digest, status, release_json, "
+                "created_at) "
                 "VALUES (:release_id, 'test-agent', 'manifest-digest', 'QUALIFIED', "
-                "CAST(:release_json AS jsonb), now())"
+                "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
             ),
             {
                 "release_id": release_id,
                 "release_json": _qualified_release_json(
                     release_id, agent_id="test-agent"
                 ),
+                "tests": _tests_json(),
             },
         )
         session.execute(

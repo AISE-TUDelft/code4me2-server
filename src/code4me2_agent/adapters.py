@@ -606,7 +606,12 @@ class OpenAICompatibleProvider:
         self._api_key_env = api_key_env
         self._timeout_seconds = timeout_seconds
         self._auth_headers = dict(auth_headers or {})
-        self._tool_definitions = list(tool_definitions or _tool_definitions())
+        # An empty list is an explicit server-assigned policy: do not replace it
+        # with the local default tools, which would make the backend reject the
+        # managed request as broader than the frozen profile.
+        self._tool_definitions = (
+            _tool_definitions() if tool_definitions is None else list(tool_definitions)
+        )
         self._temperature = temperature
         self._session_id = session_id
         self._managed_request = managed_request

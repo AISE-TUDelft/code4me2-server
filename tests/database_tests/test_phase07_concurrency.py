@@ -31,12 +31,9 @@ from research.study.protocol import store as study_store
 
 
 def _qualified_release_json(release_id: str, *, agent_id: str) -> str:
-    """A PACKAGED release whose recipe self-check passed.
-
-    Minimal seed rows with an empty ``release_json`` can no longer be selected:
-    qualification is derived from the recorded recipe self-check.
-    """
+    """A PACKAGED release that declares an artifact and an adapter."""
     digest = "a" * 64
+    adapter_digest = "b" * 64
     return json.dumps(
         {
             "agent_id": agent_id,
@@ -53,12 +50,14 @@ def _qualified_release_json(release_id: str, *, agent_id: str) -> str:
                     "size": 1,
                 }
             ],
-            "tests": {
-                "status": "PASS",
-                "cases": [{"case_id": "acp.initialize", "status": "PASS"}],
+            "adapter": {
+                "adapter_id": f"{agent_id}-adapter",
+                "version": "1.0.0",
+                "digest": "sha256:" + adapter_digest,
             },
         }
     )
+
 
 load_dotenv()
 
@@ -109,14 +108,18 @@ def _create_study_with_profile(session, owner_id: uuid.UUID):
     session.execute(
         text(
             "INSERT INTO public.agent_release "
-            "(release_id, agent_id, source_manifest_digest, status, release_json, created_at) "
+            "(release_id, agent_id, source_manifest_digest, status, release_json, "
+            "created_at) "
             "VALUES (:release_id, 'phase07-agent', 'manifest-digest', 'QUALIFIED', "
-            "CAST(:release_json AS jsonb), now())"
+            "CAST(:release_json AS jsonb) || jsonb_build_object('tests', CAST(:tests AS jsonb)), now())"
         ),
         {
             "release_id": release_id,
             "release_json": _qualified_release_json(
                 release_id, agent_id="phase07-agent"
+            ),
+            "tests": json.dumps(
+                [{"os": "macos", "arch": "arm64", "self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}]
             ),
         },
     )
