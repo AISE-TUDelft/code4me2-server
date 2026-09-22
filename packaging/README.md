@@ -4,13 +4,12 @@ Build on each target operating system and architecture; PyInstaller does not
 cross-compile. From the repository root:
 
 ```bash
-python packaging/stamp_runtime_version.py --version 1.2.0
 python -m pip install -r packaging/requirements-runtime.lock -r packaging/requirements-build.lock
 python -m pip install -r packaging/requirements-test.lock
 python -m pip install --no-deps .
-PYTHONPATH=src python -m pytest tests/agent_runtime
-python -m PyInstaller --clean --noconfirm packaging/code4me2-agent.spec
-dist/code4me2-agent/code4me2-agent --self-check
+PYTHONPATH=src python -m research.study.agents.participant_release native \
+  --version 1.2.0 --platform macos-arm64 \
+  --server-commit "$(git rev-parse HEAD)" --output dist/release-1.2.0
 ```
 
 The version is embedded in the executable and must match the immutable runtime
@@ -48,3 +47,5 @@ participant binaries.
 
 Existing Goose and Codex developer integrations remain supported while these
 participant distribution tasks are pending.
+
+See [release import and plugin integration](../docs/research-platform/RELEASES.md).
