@@ -31,6 +31,7 @@ from typing import Any, Optional, Sequence
 
 from research.participants import identity as identity_store
 from research.runtime.sessions import store as session_store
+from database import crud
 from research.telemetry.builder import EventBuilder
 from research.telemetry.content_policy import resolve_study_content_policy
 from research.telemetry.enums import CanonicalEventType, EventSource
@@ -146,10 +147,36 @@ def research_bound(task: Any) -> bool:
     )
 
 
-def build_legacy_events(task: Any, facts: Sequence[LegacyFact]) -> list:
-    """Build canonical events for a research-bound task, in order."""
+def build_legacy_events(
+    task: Any, facts: Sequence[LegacyFact], *, first_sequence: Optional[int] = None
+) -> list:
+    """Build canonical events for a research-bound task, in order.
+
+    ``(research_session_id, emitter_id, emitter_sequence)`` is a unique key in
+    the store, so sequences must never be reused within a session+emitter.
+    Callers that persist must reserve ``len(facts)`` indexes up front (see
+    ``record_legacy_facts``) and pass the reserved base as ``first_sequence``;
+    deriving from ``task.next_event_index`` without reserving replays the same
+    sequences on every call and every later batch is rejected as an integrity
+    conflict. When ``first_sequence`` is omitted the legacy counter-derived
+    numbering is kept for backward compatibility (tests, dry runs).
+
+    The relay adapts spans from many tasks in one session, but the store's
+    uniqueness key is ``(session, emitter, sequence)``: sharing one emitter
+    across tasks would collide independent streams. Each task's facts are
+    therefore their own emitter namespace (``"<emitter>:<task_id>"``), matching
+    the documented model that independent emitters each own their sequence.
+    """
     builder = EventBuilder()
-    sequence = int(getattr(task, "next_event_index", 0) or 0)
+    task_namespace = str(getattr(task, "task_id", "unbound"))
+    if first_sequence is None:
+        sequence = int(getattr(task, "next_event_index", 0) or 0)
+    else:
+        # The reserved base is the 0-based legacy event index; canonical
+        # emitter sequences are 1-based continuations of the same counter,
+        # matching the historical counter-derived numbering (first event of a
+        # fresh task is sequence 1, never 0 which validation rejects).
+        sequence = int(first_sequence)
     events = []
     for fact in facts:
         sequence += 1
@@ -158,7 +185,7 @@ def build_legacy_events(task: Any, facts: Sequence[LegacyFact]) -> list:
         )
         events.append(
             builder.build(
-                emitter_id=fact.emitter_id,
+                emitter_id=f"{fact.emitter_id}:{task_namespace}",
                 event_type=event_type,
                 source=EventSource.RELAY,
                 occurred_at=fact.occurred_at,
@@ -243,7 +270,14 @@ def record_legacy_facts(
             research_session_id=task.research_session_id,
             revocation_epoch=enrollment.revocation_epoch,
         )
-        events = build_legacy_events(task, facts)
+        # Reserve the emitter sequences atomically before building: without
+        # this, every call replays sequences from the (never advanced) task
+        # counter and every batch after the first is rejected as an integrity
+        # conflict. Burned indexes on failed writes surface as ordinary gaps.
+        first_sequence = crud.reserve_agent_event_indexes(
+            db, getattr(task, "task_id", None), len(facts)
+        )
+        events = build_legacy_events(task, facts, first_sequence=first_sequence)
         ack = ingest_events_for_context(
             context=context,
             enrollment=enrollment,

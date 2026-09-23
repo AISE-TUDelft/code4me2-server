@@ -66,7 +66,15 @@ def request_chat_completion(
     We don't want to be generating a completion based on the old state of the chat.
     """
     overall_start = time.perf_counter()
-    logging.info(f"Chat completion request: {chat_completion_request.dict()}")
+    logging.info(
+        "Chat completion request: chat_id=%s models=%s messages=%d "
+        "prefix_chars=%d suffix_chars=%d",
+        chat_completion_request.chat_id,
+        chat_completion_request.model_ids,
+        len(chat_completion_request.messages),
+        len(chat_completion_request.context.prefix or ""),
+        len(chat_completion_request.context.suffix or ""),
+    )
 
     db_auth = app.get_db_session()
     redis_manager = app.get_redis_manager()

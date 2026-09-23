@@ -934,7 +934,24 @@ def delete_session_cascade(db: Session, session_id: uuid.UUID) -> bool:
 def create_ground_truth(
     db: Session, ground_truth: Queries.CreateGroundTruth
 ) -> db_schemas.GroundTruth:
-    """Create a ground truth record"""
+    """Create a ground truth record.
+
+    Idempotent for retried feedback submissions: an identical
+    (completion_query_id, ground_truth) snapshot is stored only once, so a
+    retried POST never double-saves the same collected telemetry. Distinct
+    snapshots (e.g. the 15/45/90s captures) are still stored as separate rows.
+    """
+    existing = (
+        db.query(db_schemas.GroundTruth)
+        .filter(
+            db_schemas.GroundTruth.completion_query_id
+            == ground_truth.completion_query_id,
+            db_schemas.GroundTruth.ground_truth == ground_truth.ground_truth,
+        )
+        .first()
+    )
+    if existing is not None:
+        return existing
     db_ground_truth = db_schemas.GroundTruth(
         completion_query_id=ground_truth.completion_query_id,
         truth_timestamp=datetime.now(),
@@ -1576,6 +1593,11 @@ def create_agent_task(
     research_session_id: Optional[uuid.UUID] = None,
     enrollment_id: Optional[uuid.UUID] = None,
 ) -> db_schemas.AgentTask:
+    # Dashboards join research_event.agent_run_id to external_run_id, so a task
+    # without a runtime-supplied run id still needs a stable correlation id.
+    # Otherwise its canonical events are orphaned and invisible to researchers.
+    # Callers with a real external run (ACP/managed/proxy flows) pass it
+    # explicitly and it is preserved; uuid4 can never collide with those ids.
     task = db_schemas.AgentTask(
         task_id=task_id or uuid.uuid4(),
         agent_profile=agent_profile,
@@ -1590,7 +1612,7 @@ def create_agent_task(
         owner_user_id=owner_user_id,
         funding_owner_user_id=funding_owner_user_id,
         owner_project_id=owner_project_id,
-        external_run_id=external_run_id,
+        external_run_id=external_run_id or uuid.uuid4().hex,
         agent_session_id=agent_session_id,
         study_id=study_id,
         study_assignment_id=study_assignment_id,

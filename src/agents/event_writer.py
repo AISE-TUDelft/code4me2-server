@@ -79,8 +79,12 @@ def _model_call_fact(
         number = _optional_int(span.get(key))
         if number is not None:
             payload[key] = number
-    if isinstance(extra, dict):
-        payload["extra"] = extra
+    # NOTE: the free-form ``extra`` bag (wire_api, upstream_base_url,
+    # requested_model, ...) is deliberately NOT copied into the canonical
+    # payload. Its keys don't classify under the privacy vocabulary, so one
+    # unclassified leaf (e.g. ``wire_api``) rejects the whole event; worse,
+    # ``upstream_base_url`` is admin-only and must never reach researcher-
+    # visible events. The legacy row keeps it in ``extra_json``.
     return LegacyFact(
         kind="model_call",
         occurred_at=datetime.now(timezone.utc),

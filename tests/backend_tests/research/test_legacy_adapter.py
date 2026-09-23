@@ -91,3 +91,26 @@ def test_missing_usage_is_unavailable_never_zero():
     (event,) = build_legacy_events(_task(), [fact])
     assert event.metrics.usage_tokens is None
     assert event.metrics.usage_capability.state.value == "UNAVAILABLE"
+
+
+def test_reserved_sequences_continue_across_batches_and_tasks():
+    """Regression: sequence reuse across batches/tasks caused INTEGRITY_CONFLICT.
+
+    A reserved base continues numbering (never restarts at 0/1), and each
+    task's facts are their own emitter namespace so two tasks sharing a
+    session never collide on (session, emitter, sequence).
+    """
+    task = _task()
+    task.task_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    first = build_legacy_events(task, [_fact("model_call")], first_sequence=0)
+    second = build_legacy_events(task, [_fact("tool_call")], first_sequence=1)
+    assert [e.emitter_sequence for e in first] == [1]
+    assert [e.emitter_sequence for e in second] == [2]
+    assert first[0].emitter_id == second[0].emitter_id
+    assert first[0].emitter_id.endswith(str(task.task_id))
+
+    other = _task()
+    other.task_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    third = build_legacy_events(other, [_fact("tool_call")], first_sequence=0)
+    assert third[0].emitter_sequence == 1
+    assert third[0].emitter_id != first[0].emitter_id

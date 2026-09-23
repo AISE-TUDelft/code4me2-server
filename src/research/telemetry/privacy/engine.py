@@ -66,14 +66,35 @@ class PrivacyPolicy(BaseModel):
     def from_study_policy(cls, telemetry_policy: Mapping[str, Any], *, consent_active: bool) -> PrivacyPolicy:
         """Resolve the current manifest policy using the IDE's field defaults.
 
+        Accepts both the study-facing authoring vocabulary (STRUCTURAL /
+        METRICS / DIAGNOSTICS / CONTENT, the same names study creation
+        validates) and the runtime vocabulary (SYSTEM / BEHAVIORAL /
+        CODE_METADATA / CONTENT) — mirroring ``from_revision_policy``. An
+        authored allowlist the resolver doesn't understand must not silently
+        degrade to the default: without this, a researcher writing the
+        documented study vocabulary gets broader capture than they declared.
         Content always needs the explicit content_capture flag and consent.
         Code metadata is allowed when declared (or using the legacy/default
         metadata policy); otherwise clients must upload SHA-256 tokens.
         """
-        declared = {
-            field_class for field_class in FieldClass
-            if field_class.value in telemetry_policy.get("allowed_field_classes", [])
-        }
+        from research.study.protocol.enums import TelemetryFieldClass
+
+        declared: set[FieldClass] = set()
+        for raw in telemetry_policy.get("allowed_field_classes", []) or []:
+            value = str(raw).upper()
+            if value == TelemetryFieldClass.STRUCTURAL.value:
+                declared.update({FieldClass.SYSTEM, FieldClass.BEHAVIORAL})
+            elif value == TelemetryFieldClass.METRICS.value:
+                declared.add(FieldClass.SYSTEM)
+            elif value == TelemetryFieldClass.DIAGNOSTICS.value:
+                declared.add(FieldClass.BEHAVIORAL)
+            elif value == TelemetryFieldClass.CONTENT.value:
+                declared.add(FieldClass.CONTENT)
+            else:
+                try:
+                    declared.add(FieldClass(value))
+                except ValueError:
+                    continue
         allowed = (declared or {FieldClass.SYSTEM, FieldClass.BEHAVIORAL, FieldClass.CODE_METADATA}) - {FieldClass.SECRET}
         return cls(
             allowed_field_classes=sorted(allowed, key=lambda item: item.value),
