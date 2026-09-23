@@ -62,7 +62,17 @@ _KIND_TO_TYPE: dict[str, CanonicalEventType] = {
     "model_call": CanonicalEventType.AGENT_MESSAGE_COMPLETED,
     "tool_call": CanonicalEventType.TOOL_COMPLETED,
     "tool_failed": CanonicalEventType.TOOL_FAILED,
-    "observation": CanonicalEventType.UNKNOWN_SOURCE_EVENT,
+    # NOTE: no "observation" entry on purpose: unmapped kinds keep their raw
+    # name so the builder stamps unknown_event_type instead of a marker-less
+    # unknown.
+    # Request-side counterparts of the completion kinds above. Mapping them to
+    # the matching start/created canonical types (instead of leaving them
+    # unknown) preserves the request→completion pairing without double
+    # counting: token/step aggregation only ever reads the completion side.
+    "model_request": CanonicalEventType.AGENT_MESSAGE_STARTED,
+    "tool_request": CanonicalEventType.TOOL_CREATED,
+    "run_started": CanonicalEventType.AGENT_RUN_STARTED,
+    "run_completed": CanonicalEventType.AGENT_RUN_COMPLETED,
 }
 
 
@@ -169,6 +179,10 @@ def build_legacy_events(
     """
     builder = EventBuilder()
     task_namespace = str(getattr(task, "task_id", "unbound"))
+    # The run scopes the trace for facts that didn't set one explicitly.
+    # Read after the caller-supplied context: record_legacy_facts self-heals
+    # a missing run id before building, so this is never stale there.
+    agent_run_id = getattr(task, "external_run_id", None)
     if first_sequence is None:
         sequence = int(getattr(task, "next_event_index", 0) or 0)
     else:
@@ -180,8 +194,22 @@ def build_legacy_events(
     events = []
     for fact in facts:
         sequence += 1
-        event_type = _KIND_TO_TYPE.get(
-            fact.kind, CanonicalEventType.UNKNOWN_SOURCE_EVENT
+        mapped = _KIND_TO_TYPE.get(fact.kind)
+        # An unmapped kind keeps its raw name so the builder stamps
+        # ``unknown_event_type`` (and NEEDS_REVIEW coverage) instead of a
+        # marker-less unknown that is useless for forensics.
+        event_type = mapped if mapped is not None else fact.kind
+        # Default the trace/span handles when the producer didn't set them:
+        # the run scopes the trace and the source event id is the span.
+        # Anything explicitly reported wins; nothing is invented beyond that.
+        base_corr = fact.correlations or Correlations()
+        corr_update: dict[str, Any] = {}
+        if base_corr.trace_id is None and agent_run_id is not None:
+            corr_update["trace_id"] = agent_run_id
+        if base_corr.span_id is None and fact.source_event_id is not None:
+            corr_update["span_id"] = fact.source_event_id
+        correlations = (
+            base_corr.model_copy(update=corr_update) if corr_update else base_corr
         )
         events.append(
             builder.build(
@@ -251,6 +279,26 @@ def record_legacy_facts(
             )
         enrollment = identity_store.row_to_enrollment(enrollment_row)
         session = session_store.row_to_session(session_row)
+
+        # Self-heal the run correlation: tasks created before run ids were
+        # minted (or through paths that skip them) would otherwise stamp
+        # agent_run_id=None, leaving their events unattributable in every
+        # dashboard join. Minting here is idempotent — tasks that already
+        # have one keep it — and stays inside the same transaction.
+        if getattr(task, "external_run_id", None) in (None, ""):
+            task.external_run_id = uuid.uuid4().hex
+            flush = getattr(db, "flush", None)
+            if callable(flush):
+                try:
+                    flush()
+                except Exception:
+                    db.rollback()
+                    return CanonicalRecordResult(
+                        written=False,
+                        retryable=True,
+                        reason="STORE_UNAVAILABLE",
+                        message="could not persist the task run correlation; retry the batch",
+                    )
 
         # The study policy is the single authority for content storage on this
         # boundary too (ISSUE-01/ISSUE-07). Missing/malformed policy denies

@@ -32,7 +32,7 @@ from database import crud
 from research.analysis.operations import store as operations_store
 from research.telemetry.adapters import LegacyFact, record_legacy_facts
 from research.telemetry.enums import CoverageState
-from research.telemetry.models import Coverage, EventMetrics
+from research.telemetry.models import Correlations, Coverage, EventMetrics
 
 router = APIRouter(tags=["Agent"])
 
@@ -347,8 +347,19 @@ _SPAN_EVENT_TYPE: dict[str, str] = {
 }
 
 
-def _span_fact(span: "SpanPayload", event_type: str) -> "LegacyFact":
-    """Build the canonical fact for one OTel child span (structural only)."""
+def _span_fact(
+    span: "SpanPayload",
+    event_type: str,
+    trace_id: Optional[str] = None,
+    model_call_id: Optional[str] = None,
+) -> "LegacyFact":
+    """Build the canonical fact for one OTel child span (structural only).
+
+    ``trace_id`` scopes the whole upload; ``model_call_id`` links one model
+    invocation with the tool calls it caused (the llm span's own id for model
+    events, the enclosing llm span for tools where the reporter provides it).
+    Both are opaque id strings, never content.
+    """
     attrs = span.attributes or {}
     payload: dict[str, Any] = {}
     model = attrs.get("llm.model") or attrs.get("model")
@@ -364,6 +375,8 @@ def _span_fact(span: "SpanPayload", event_type: str) -> "LegacyFact":
         counts["prompt_tokens"] = prompt
     if completion is not None:
         counts["completion_tokens"] = completion
+    if total is not None:
+        counts["total_tokens"] = total
     return LegacyFact(
         kind=event_type,
         occurred_at=datetime.now(timezone.utc),
@@ -377,11 +390,22 @@ def _span_fact(span: "SpanPayload", event_type: str) -> "LegacyFact":
                     else CoverageState.UNAVAILABLE
                 ),
                 capability="usage",
+                reason=(
+                    None
+                    if total is not None
+                    else "upstream did not report usage"
+                ),
             ),
             latency_ms=span.duration_ms if span.duration_ms > 0 else None,
             counts=counts,
         ),
         coverage=Coverage(state=CoverageState.AVAILABLE, capability="span"),
+        correlations=Correlations(
+            trace_id=trace_id,
+            span_id=span.span_id,
+            parent_span_id=span.parent_span_id,
+            model_call_id=model_call_id,
+        ),
         source_event_id=span.span_id,
         emitter_id="proxy",
     )
@@ -478,10 +502,31 @@ def upload_agent_telemetry(
             )
 
         task_row = crud.get_agent_task(db, task_id)
-        span_facts = [
-            _span_fact(span, _SPAN_EVENT_TYPE.get(span.name, "observation"))
-            for span in child_spans
-        ]
+        span_names = {span.span_id: span.name for span in body.spans}
+        span_facts = []
+        for span in child_spans:
+            event_type = _SPAN_EVENT_TYPE.get(span.name, "observation")
+            # A model invocation is its own call; a tool belongs to the llm
+            # call that caused it when the reporter parents it there,
+            # otherwise the link is left null rather than invented.
+            if event_type == "model_call":
+                model_call_id: Optional[str] = span.span_id
+            elif (
+                event_type == "tool_call"
+                and span.parent_span_id is not None
+                and span_names.get(span.parent_span_id) == "agent.llm.invoke"
+            ):
+                model_call_id = span.parent_span_id
+            else:
+                model_call_id = None
+            span_facts.append(
+                _span_fact(
+                    span,
+                    event_type,
+                    trace_id=body.trace_id,
+                    model_call_id=model_call_id,
+                )
+            )
         if task_row is not None:
             result = record_legacy_facts(db, task=task_row, facts=span_facts)
             if result is not None:

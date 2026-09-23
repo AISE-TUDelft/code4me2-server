@@ -66,6 +66,10 @@ def _model_call_fact(
         if number is not None:
             counts[key] = number
     total = _optional_int(record.total_tokens)
+    # Mirror the total into counts so context accounting can sum one block
+    # without joining usage_tokens; absent when the producer didn't report it.
+    if total is not None:
+        counts["total_tokens"] = total
     payload: dict[str, Any] = {
         "model": record.model,
         "finish_reason": record.finish_reason,

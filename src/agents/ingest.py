@@ -258,6 +258,8 @@ def map_event_to_columns(
         "event_type": event_type,
         "source": SOURCE_SELF_REPORT,
         "schema_version": event.get("schema_version"),
+        "run_id": event.get("run_id"),
+        "message_id": event.get("message_id"),
         "occurred_at": _parse_timestamp(event.get("timestamp")),
         "latency_ms": latency_ms,
         # The runtime's own event id becomes the span id, which is what makes
@@ -316,6 +318,8 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
         if value is not None:
             counts[key] = int(value)
     total = columns.get("total_tokens")
+    if total is not None:
+        counts["total_tokens"] = int(total)
     payload: dict[str, Any] = {}
     for key in ("model", "finish_reason", "tool_name", "request_id"):
         value = columns.get(key)
@@ -343,6 +347,11 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
                     else CoverageState.UNAVAILABLE
                 ),
                 capability="usage",
+                reason=(
+                    None
+                    if total is not None
+                    else "usage not reported by producer"
+                ),
             ),
             latency_ms=columns.get("latency_ms"),
             counts=counts,
@@ -351,6 +360,20 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
         correlations=Correlations(
             correlation_id=columns.get("request_id"),
             tool_call_id=columns.get("tool_call_id"),
+            message_id=columns.get("message_id"),
+            # The run scopes the trace; the runtime's own event id is the
+            # span and its reported parent (if any) the parent link. The
+            # request id links one model invocation with the tools reported
+            # under it; tools without one keep a null link rather than an
+            # invented one.
+            trace_id=columns.get("run_id"),
+            span_id=columns.get("span_id"),
+            parent_span_id=(
+                str(columns["parent_span_id"])
+                if columns.get("parent_span_id") is not None
+                else None
+            ),
+            model_call_id=columns.get("request_id"),
         ),
         source_event_id=columns.get("span_id"),
         emitter_id="self-report",

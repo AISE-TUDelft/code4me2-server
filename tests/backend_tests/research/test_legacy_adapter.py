@@ -114,3 +114,33 @@ def test_reserved_sequences_continue_across_batches_and_tasks():
     third = build_legacy_events(other, [_fact("tool_call")], first_sequence=0)
     assert third[0].emitter_sequence == 1
     assert third[0].emitter_id != first[0].emitter_id
+
+
+def test_request_side_kinds_map_to_start_created_run_types():
+    """R5: request-side legacy kinds normalize instead of staying unknown.
+
+    Completions keep their existing mapping (token/step aggregation reads
+    only the completion side, so pairing them never double-counts).
+    """
+    events = build_legacy_events(
+        _task(),
+        [
+            _fact("model_request"),
+            _fact("tool_request"),
+            _fact("run_started"),
+            _fact("run_completed"),
+        ],
+    )
+    assert [e.event_type for e in events] == [
+        "agent.message.started",
+        "tool.created",
+        "agent.run.started",
+        "agent.run.completed",
+    ]
+
+
+def test_unmapped_kinds_keep_an_explicit_unknown_marker():
+    """Unknowns stay accepted but self-describing for forensics."""
+    (event,) = build_legacy_events(_task(), [_fact("observation")])
+    assert event.event_type == CanonicalEventType.UNKNOWN_SOURCE_EVENT.value
+    assert event.unknown_event_type == "observation"
