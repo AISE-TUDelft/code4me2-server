@@ -32,7 +32,6 @@ from .models import AdapterRef, AgentConfigBinding, ReleaseTests, normalize_plat
 #: Canonical native platform ids. ``arm64`` is the single canonical spelling for
 #: the 64-bit ARM architecture (``aarch64`` is normalised to it at the boundary).
 PLATFORMS = ("macos-arm64", "macos-x64", "linux-x64", "windows-x64")
-FRAMEWORKS = ("code4me2-agent", "goose", "codex")
 SEMVER = r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 
 #: The one architecture spelling accepted in a recipe.
@@ -90,7 +89,7 @@ class AgentInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     framework: Literal["code4me2-agent", "goose", "codex"]
     version: str = Field(min_length=1)
-    adapter: AdapterRef
+    adapter: Optional[AdapterRef] = None
     agent_command: str | None = None
     agent_command_args: list[str] = Field(default_factory=list)
     byoa_config: list[AgentConfigBinding] = Field(default_factory=list)
@@ -103,6 +102,8 @@ class AgentInput(BaseModel):
         if self.framework != "code4me2-agent":
             if not self.agent_command:
                 raise ValueError("installed agents need an explicit ACP command")
+            if self.adapter is None:
+                raise ValueError("installed agents need an explicit adapter")
         elif self.agent_command or self.agent_command_args or self.byoa_config:
             raise ValueError("the managed runtime uses its packaged --managed entrypoint")
         if len({(test.os, test.arch) for test in self.tests}) != len(self.tests):
@@ -128,9 +129,10 @@ class ParticipantRecipe(BaseModel):
     profiles: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def three_agents(self):
-        if sorted(a.framework for a in self.agents) != sorted(FRAMEWORKS):
-            raise ValueError("the recipe must declare Code4Me, Goose and Codex exactly once")
+    def agent_choices(self):
+        frameworks = [agent.framework for agent in self.agents]
+        if frameworks.count("code4me2-agent") != 1 or len(frameworks) != len(set(frameworks)):
+            raise ValueError("the recipe must declare one managed agent and no duplicate agents")
         names = set()
         allowed = {"name", "model", "framework_version", "connection_id", "tools_json",
                    "approval_policy", "max_steps", "is_active", "temperature", "max_context_tokens"}
@@ -138,7 +140,7 @@ class ParticipantRecipe(BaseModel):
         for profile in self.profiles:
             if set(profile) - allowed or required - set(profile):
                 raise ValueError("profile templates must use explicit non-secret profile request fields")
-            if profile["framework_version"] not in FRAMEWORKS or not profile["name"] or profile["name"] in names:
+            if profile["framework_version"] not in frameworks or not profile["name"] or profile["name"] in names:
                 raise ValueError("profile frameworks must match the recipe and names must be unique")
             names.add(profile["name"])
             UUID(str(profile["connection_id"]))
@@ -262,11 +264,12 @@ def prepare(
         "plugin_version": recipe.plugin_version,
         "plugin_commit": recipe.plugin_commit,
         "server_commit": recipe.server_commit,
-        "adapter": managed.adapter.model_dump(mode="json"),
         "artifacts": artifacts,
         "agents": agents,
         "profiles": profiles,
     }
+    if managed.adapter is not None:
+        document["adapter"] = managed.adapter.model_dump(mode="json")
     from .manifest_import import build_manifest_release
 
     build_manifest_release(document, archives={a["archive"]: resources / a["archive"] for a in artifacts})

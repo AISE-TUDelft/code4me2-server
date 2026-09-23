@@ -23,7 +23,7 @@ UI_TEST_STEP_ID = "ui_test"
 UI_TEST_TASK = ":ui-tests:test"
 UI_TEST_CLASS = "ui.Code4MeUiNavigationTest"
 EXPECTED_UI_STEPS = {"plugin_loaded", "settings_navigation", "sign_in", "enrollment_activation",
-                     "status_surface", "acp_registration", "prepare_agent"}
+                     "status_surface", "acp_registration", "prepare_agent", "model_response"}
 
 def parse_results_json(path: Path) -> Dict[str, Any]:
     try:
@@ -201,7 +201,9 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
                "CODE4ME_E2E_JOIN_CODE": state["join_code"],
                "CODE4ME_UI_ROBOT_URL": robot_url, "CODE4ME_UI_ROBOT_PORT": str(port),
                "CODE4ME_UI_PROJECT_DIR": str(run_path / "ui-project"),
-               "CODE4ME_UI_RESULT_FILE": str(results_file)}
+               "CODE4ME_UI_RESULT_FILE": str(results_file),
+               "CODE4ME_UI_EXPECTED_RESPONSE": scenario.message.expected_substring or state["stub_token"],
+               "CODE4ME_UI_MODEL_PROMPT": scenario.message.prompt}
         stage = "ide_startup"
         with (run_path / "ui-ide.log").open("w") as log:
             child = subprocess.Popen([str(plugin / "gradlew"), ":runIdeForUiTests", *gradle_args,

@@ -210,11 +210,17 @@ python3 -m unittest discover -s tests -v
 
 ## Continuous integration
 
-`.github/workflows/e2e.yml` runs the harness unit tests and the `backend` layer
-on demand and on a nightly schedule. Both repositories must be checked out side
-by side; the workflow sets `CODE4ME_E2E_WORKSPACE` to the directory holding
-them. The IDE/UI layer needs a graphical runner and is not part of the default
-CI job; select it with the workflow's `layer` input on a self-hosted runner.
+`.github/workflows/e2e.yml` runs harness unit tests and the `backend` layer on
+relevant server pushes. A manual run can select `backend`, `browser`, `plugin`,
+or `all`. For `plugin` and `all`, provide `pluginRef` as the exact plugin commit
+SHA; CI checks both repositories out side by side, builds the disposable backend,
+and runs the IDE/fixture layer under Xvfb on Linux. The provider is the local
+stub, so no external model API key is required. A passing `all` run tests the
+selected server and plugin source revisions; the release workflows separately
+test their final ZIPs on the native runners. A successful `all` run uploads
+`code4me-e2e-evidence` with both commit SHAs. Pass that run ID as `e2eRunId`
+when publishing the plugin; its publish job verifies the E2E run and both SHAs
+before creating the release.
 
 The browser scripts are vendored at `browser/` next to the harness. A developer
 checkout may still keep them at `<workspace>/task07-browser/`; the harness uses
