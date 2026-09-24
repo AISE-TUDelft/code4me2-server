@@ -10,10 +10,11 @@ everything into **one recipe document**:
 * the BYOA agent declarations (Goose, Codex, ...);
 * the self-check verdict (``tests``).
 
-The recipe is the single source of truth: the plugin embeds it as its runtime
-manifest and the server imports it, verifying the recipe's bytes against the
-archives. There is no extracted-file inventory and no separate manifest copy to
-keep in sync. A self-check that did not pass produces no recipe.
+The recipe is the single source of truth: the server imports it, verifying its
+declared ZIPs against the archives. The plugin receives a package-path
+projection of the recipe whose archive names point at its bundled resources.
+There is no extracted-file inventory. A self-check that did not pass produces
+no recipe.
 """
 from __future__ import annotations
 
@@ -277,7 +278,16 @@ def prepare(
         json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     ).hexdigest()
     write_json(output / "recipe.json", document)
-    write_json(resources / "manifest.json", document)
+    # The admin-import recipe uses bare ZIP names. The plugin resource manifest
+    # names the same payloads relative to the root of the packaged JAR.
+    resource_manifest = dict(
+        document,
+        artifacts=[
+            dict(artifact, archive=f"code4me-runtime/{artifact['archive']}")
+            for artifact in artifacts
+        ],
+    )
+    write_json(resources / "manifest.json", resource_manifest)
     write_json(output / "prepared-inputs.json", {
         file.relative_to(output).as_posix(): file_sha256(file)
         for file in sorted(output.rglob("*")) if file.is_file()
