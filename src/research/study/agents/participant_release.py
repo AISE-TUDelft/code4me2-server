@@ -277,6 +277,7 @@ def prepare(
         json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     ).hexdigest()
     write_json(output / "recipe.json", document)
+    write_json(resources / "manifest.json", document)
     write_json(output / "prepared-inputs.json", {
         file.relative_to(output).as_posix(): file_sha256(file)
         for file in sorted(output.rglob("*")) if file.is_file()

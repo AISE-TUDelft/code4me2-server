@@ -185,6 +185,10 @@ def test_prepare_emits_one_recipe_with_verified_archives(tmp_path):
 
     written = json.loads((tmp_path / "prepared" / "recipe.json").read_text())
     assert written == document
+    runtime_manifest = json.loads(
+        (tmp_path / "prepared" / "resources" / "code4me-runtime" / "manifest.json").read_text()
+    )
+    assert runtime_manifest == document
     assert written["recipe_digest"].startswith("sha256:")
     # The prepared inputs are re-checkable and the recipe is the single document.
     assert load_prepared(tmp_path / "prepared") == document

@@ -55,6 +55,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            packaging/requirements-runtime.lock
+            packaging/requirements-build.lock
+            packaging/requirements-test.lock
       - name: Verify native runner architecture
         shell: bash
         env:
@@ -179,6 +184,7 @@ jobs:
           name: code4me-agent-${{ matrix.platform }}
           path: native-release/*
           if-no-files-found: error
+          retention-days: 1
 
   assemble:
     needs: build
@@ -193,6 +199,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: packaging/requirements-runtime.lock
       - run: python -m pip install -r packaging/requirements-runtime.lock
       - name: Create pinned release metadata
         run: |
@@ -204,6 +212,7 @@ jobs:
           name: code4me-managed-runtime-release
           path: release-assets/*
           if-no-files-found: error
+          retention-days: 3
 
   publish:
     if: github.event_name == 'workflow_dispatch' && inputs.publishRelease
