@@ -163,6 +163,11 @@ def test_run_detail_uses_canonical_events_joined_by_run_binding():
                     upstream_status=None, tool_name="read", model=None,
                     total_tokens=None, occurred_at=NOW, tool_call_id="t-1",
                     canonical_event_type="tool.completed",
+                    prompt_tokens=None, completion_tokens=None,
+                    finish_reason=None, step_index=None,
+                    trace_id="trace-1", span_id="span-1",
+                    parent_span_id="span-0", model_call_id="llm-1",
+                    message_id=None, request_id="req-1",
                 ),
             ]
         else:
@@ -176,6 +181,12 @@ def test_run_detail_uses_canonical_events_joined_by_run_binding():
     assert content is not None
     assert content["events"][0]["event_type"] == "tool_call"
     assert content["events"][0]["source"] == "relay"
+    # Trace/linkage fields are surfaced, not hardcoded null.
+    assert content["events"][0]["trace_id"] == "trace-1"
+    assert content["events"][0]["span_id"] == "span-1"
+    assert content["events"][0]["parent_span_id"] == "span-0"
+    assert content["events"][0]["model_call_id"] == "llm-1"
+    assert content["events"][0]["request_id"] == "req-1"
     # The join is by the explicit run binding, not an ACP session id.
     event_sql = [
         str(call.args[0])
