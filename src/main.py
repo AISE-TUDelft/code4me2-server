@@ -31,6 +31,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from App import App
+from backend.classic_models_gate import ClassicModelsGate
 from backend.Responses import JsonResponseWithStatus, TooManyRequests
 from backend.routers import router
 from Code4meV2Config import Code4meV2Config
@@ -225,6 +226,12 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
     )
+
+    # Refuse the classic model endpoints when they are switched off (e.g. the no-GPU dev
+    # stack). Added first so it runs innermost, behind CORS and rate limiting.
+    if not config.classic_models_enabled:
+        app.add_middleware(ClassicModelsGate)
+        logging.info("Classic completion/chat models disabled (CLASSIC_MODELS_ENABLED=false)")
 
     # Configure CORS middleware
     # IMPORTANT: When allow_credentials=True, Access-Control-Allow-Origin cannot be '*'.
