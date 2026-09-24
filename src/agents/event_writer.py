@@ -83,6 +83,13 @@ def _model_call_fact(
         number = _optional_int(span.get(key))
         if number is not None:
             payload[key] = number
+    # ``tool_schema_bytes`` is computed by the relay into the ``extra`` bag;
+    # promote just this structural integer (never the endpoint- or
+    # secret-adjacent keys beside it) so context accounting can see it.
+    if isinstance(extra, dict):
+        schema_bytes = _optional_int(extra.get("tool_schema_bytes"))
+        if schema_bytes is not None:
+            payload["tool_schema_bytes"] = schema_bytes
     # NOTE: the free-form ``extra`` bag (wire_api, upstream_base_url,
     # requested_model, ...) is deliberately NOT copied into the canonical
     # payload. Its keys don't classify under the privacy vocabulary, so one
