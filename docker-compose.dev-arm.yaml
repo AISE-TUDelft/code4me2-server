@@ -7,6 +7,10 @@
 #     model on CPU is impractical for local testing and unnecessary for
 #     exercising the agent subsystem (which calls an external OpenAI-compatible
 #     upstream such as OpenRouter, not a locally loaded model)
+#   - serves the classic completion/chat endpoints from the seeded
+#     provider-backed rows (OpenRouter, OPENROUTER_API_KEY in .env); a local
+#     HuggingFace model loads only for a row explicitly configured as local.
+#     CLASSIC_MODELS_ENABLED=false switches the classic endpoints off.
 #
 # Usage: docker compose -f docker-compose.dev-arm.yaml up -d --build
 
@@ -115,6 +119,7 @@ services:
       - MODEL_CACHE_DIR=/app/hf_cache
       - CELERY_WORKER=true
       - PRELOAD_MODELS=false
+      - CLASSIC_MODELS_ENABLED=${CLASSIC_MODELS_ENABLED:-true}
     volumes:
       - .:/app
       - ${DATA_DIR:-./data}/hf:/app/hf_cache
@@ -167,6 +172,7 @@ services:
       - TRANSFORMERS_CACHE=/app/hf_cache
       - MODEL_CACHE_DIR=/app/hf_cache
       - PRELOAD_MODELS=false
+      - CLASSIC_MODELS_ENABLED=${CLASSIC_MODELS_ENABLED:-true}
       # Local dev stack: restart the API process when Python sources change so
       # the running server never serves stale in-memory code. Set to 0 to opt out.
       - CODE4ME_DEV_RELOAD=${CODE4ME_DEV_RELOAD:-1}

@@ -70,6 +70,9 @@ services:
       MODEL_USE_COMPILE: "false"
       BOOTSTRAP_SIGNING_SECRET: ${E2E_BOOTSTRAP_SIGNING_SECRET:-e2e-bootstrap-secret}
       E2E_STUB_API_KEY: ${E2E_STUB_API_KEY:-e2e-stub-secret-value}
+      # Read by the provider-backed classic rows (seeded rows 1 and 3); empty
+      # unless the caller exports it (tests/test_classic_provider_e2e.py does).
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

@@ -27,6 +27,16 @@ Data
 
 data/
 
+# Build and test outputs. The e2e harness runs on the host; e2e/runs alone
+# used to add ~4 GB to every image.
+build/
+dist/
+e2e/runs/
+e2e/.cache/
+e2e/.browser-venv/
+**/.pytest_cache
+**/.ruff_cache
+
 # Docker files
 Dockerfile*
 docker-compose*.yml

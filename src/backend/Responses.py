@@ -378,6 +378,12 @@ class TooManyRequests(ErrorResponse):
     message: str = Field(default="Too many requests. Please try again later.")
 
 
+class ClassicModelsDisabled(ErrorResponse):
+    message: str = Field(
+        default="Classic completion and chat models are disabled on this server."
+    )
+
+
 # /api/chat/delete
 class DeleteChatError(ErrorResponse):
     """Error response for chat deletion failure."""

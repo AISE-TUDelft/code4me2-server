@@ -315,6 +315,16 @@ class Code4meV2Config(BaseSettings):
         description="Perform model warmup runs to optimize performance",
     )
 
+    classic_models_enabled: bool = Field(
+        alias="CLASSIC_MODELS_ENABLED",
+        default=True,
+        frozen=True,
+        description=(
+            "Serve the classic completion/chat model endpoints; when false they are "
+            "refused and no model is preloaded or loaded"
+        ),
+    )
+
     # -----------------------
     # Thread Pool Configuration
     # -----------------------

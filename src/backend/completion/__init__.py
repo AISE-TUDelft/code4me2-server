@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-import logging
-from typing import Optional, Union
-
+import hashlib
 import json
+import logging
+from typing import TYPE_CHECKING, Optional, Union
 
-from Code4meV2Config import Code4meV2Config
+from pydantic import ValidationError
+
+from backend.completion.OpenAICompatibleModel import (
+    OpenAICompatibleChatModel,
+    OpenAICompatibleCompletionModel,
+    OpenAICompatibleConfig,
+)
+
+if TYPE_CHECKING:
+    from Code4meV2Config import Code4meV2Config
 
 try:
     import torch
@@ -35,6 +44,44 @@ else:
 
     ChatCompletionModel = _TorchRequiredModel  # type: ignore[assignment,misc]
     TemplateCompletionModel = _TorchRequiredModel  # type: ignore[assignment,misc]
+
+# Accepted model types for `POST /api/chat/request`. Defined from the names above
+# so it resolves in both torch-present and torch-free images.
+CLASSIC_CHAT_MODEL_TYPES = (ChatCompletionModel, OpenAICompatibleChatModel)
+
+
+def _provider_config_for(
+    model_parameters: str, model_name: str
+) -> Optional[OpenAICompatibleConfig]:
+    """Return the provider config for a row that opts in, else ``None`` (local row).
+
+    A row with ``"provider": "openai_compatible"`` is validated eagerly. Invalid
+    configuration raises a sanitized ``RuntimeError`` that names the model and the
+    offending fields but never echoes raw parameter values (which could contain a
+    mistakenly pasted secret).
+    """
+    try:
+        params = json.loads(model_parameters)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(params, dict) or "provider" not in params:
+        return None
+    if params.get("provider") != "openai_compatible":
+        # A typo'd provider value must not silently fall back to a local model.
+        raise RuntimeError(
+            f"unsupported 'provider' value for model {model_name!r}; "
+            "only 'openai_compatible' is supported"
+        )
+    try:
+        return OpenAICompatibleConfig(**params)
+    except ValidationError as exc:
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in exc.errors()
+        )
+        raise RuntimeError(
+            f"invalid openai_compatible configuration for model {model_name!r}: {details}"
+        ) from None
 
 
 class CompletionModels:
@@ -67,6 +114,38 @@ class CompletionModels:
         self.__models = {}  # Dictionary to store loaded models keyed by name/template.
         self._initialized = True
 
+    @staticmethod
+    def _model_cache_key(
+        model_name: str, prompt_templates: str, model_parameters: str
+    ) -> tuple[Optional[str], Optional[OpenAICompatibleConfig]]:
+        """Return ``(cache key, provider config)`` for a row.
+
+        Provider rows use a key that includes kind, base_url and provider model so
+        distinct provider rows never collide. Returns ``(None, None)`` when the row
+        opts in but its configuration is invalid (the error is logged here).
+        """
+        try:
+            provider_config = _provider_config_for(model_parameters, model_name)
+        except RuntimeError as exc:
+            logging.error(exc)
+            return None, None
+        if provider_config is not None:
+            fingerprint = hashlib.sha256(
+                provider_config.model_dump_json().encode("utf-8")
+            ).hexdigest()[:16]
+            key = (
+                f"{model_name}:provider:{provider_config.resolved_kind(model_name)}:"
+                f"{provider_config.base_url}:{provider_config.resolved_model(model_name)}:"
+                f"{fingerprint}"
+            )
+        else:
+            key = (
+                f"{model_name}:instruct"
+                if "instruct" in model_name.lower()
+                else f"{model_name}:{prompt_templates}"
+            )
+        return key, provider_config
+
     def load_model(
         self,
         model_name: str,
@@ -80,17 +159,32 @@ class CompletionModels:
             model_name (str): Name of the model to load.
             prompt_template (Template): Prompt formatting template (used for non-instruct models).
         """
-        key = (
-            f"{model_name}:instruct"
-            if "instruct" in model_name.lower()
-            else f"{model_name}:{prompt_templates}"
+        key, provider_config = self._model_cache_key(
+            model_name, prompt_templates, model_parameters
         )
+        if key is None:
+            return
 
         if key in self.__models:
             logging.info(f"Model {key} is already loaded, skipping loading process.")
             return
 
         try:
+            if provider_config is not None:
+                # Provider-backed row: served over HTTP, no local ML stack needed.
+                if provider_config.resolved_kind(model_name) == "chat":
+                    self.__models[key] = OpenAICompatibleChatModel(
+                        model_name=model_name, config=provider_config
+                    )
+                else:
+                    self.__models[key] = OpenAICompatibleCompletionModel(
+                        model_name=model_name,
+                        prompt_templates=json.loads(prompt_templates),
+                        config=provider_config,
+                    )
+                logging.info(f"Provider model {key} is ready.")
+                return
+
             if torch is None:
                 raise RuntimeError(
                     "Local model loading requires the optional ML dependencies "
@@ -98,9 +192,8 @@ class CompletionModels:
                 )
             from backend.completion.ChatCompletionModel import ChatCompletionModel
             from backend.completion.TemplateCompletionModel import TemplateCompletionModel
-            logging.info(
-                f"Loading model with cache directory: {self.__config.model_cache_dir}"
-            )
+
+            logging.info(f"Loading model with cache directory: {self.__config.model_cache_dir}")
 
             model_parameters = json.loads(model_parameters)
             if "instruct" in model_name.lower():
@@ -132,18 +225,21 @@ class CompletionModels:
             del model_parameters[
                 "tokenizer"
             ]  # Remove the tokenizer from the model parameters for better logging
-            logging.log(
-                logging.INFO, f"Model {key} is loaded successfully: {model_parameters}"
-            )
+            logging.log(logging.INFO, f"Model {key} is loaded successfully: {model_parameters}")
         except Exception as e:
             logging.error(e)
             logging.error(
                 f"Failed to load model '{model_name}' with prompt templates'{prompt_templates}' and model parameters'{model_parameters}'"
             )
 
-    def get_model(
-        self, model_name: str, prompt_templates: str, model_parameters: str
-    ) -> Optional[Union[TemplateCompletionModel, ChatCompletionModel]]:
+    def get_model(self, model_name: str, prompt_templates: str, model_parameters: str) -> Optional[
+        Union[
+            TemplateCompletionModel,
+            ChatCompletionModel,
+            OpenAICompatibleChatModel,
+            OpenAICompatibleCompletionModel,
+        ]
+    ]:
         """
         Retrieves a model instance. Loads and caches it if not already loaded.
 
@@ -152,13 +248,11 @@ class CompletionModels:
             prompt_template (Template): Prompt formatting template.
 
         Returns:
-            Optional[Union[TemplateCompletionModel, ChatCompletionModel]]: The model instance if loaded successfully.
+            Optional[Union[...]]: The model instance if loaded successfully.
         """
-        key = (
-            f"{model_name}:instruct"
-            if "instruct" in model_name.lower()
-            else f"{model_name}:{prompt_templates}"
-        )
+        key, _ = self._model_cache_key(model_name, prompt_templates, model_parameters)
+        if key is None:
+            return None
 
         if key in self.__models:
             return self.__models[key]
