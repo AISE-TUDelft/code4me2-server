@@ -189,7 +189,7 @@ def request_chat_completion(
 
             # Invoke the chat model with messages
             # ensure that the chat_completion_model is of type ChatCompletionModel
-            if not isinstance(chat_completion_model, completion.ChatCompletionModel):
+            if not isinstance(chat_completion_model, completion.CLASSIC_CHAT_MODEL_TYPES):
                 return ChatCompletionErrorItem(
                     model_name=str(model.model_name),
                     message="Model is not a ChatCompletionModel",

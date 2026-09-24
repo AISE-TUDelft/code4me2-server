@@ -138,6 +138,54 @@ The `backend` service is also a relay + telemetry sink for an autonomous coding 
 - Provider API keys are never stored in the database — a profile stores only the *name* of an environment variable (`api_key_ref`), resolved from the backend's own environment at request time. See [`.env.example`](.env.example).
 - Installing and running the local `code4me2-agent` CLI is a separate, standalone step — see "Running the Agent CLI (`code4me2-agent`)" under Development below.
 
+#### 🧩 Provider-backed classic chat/completion models
+
+The classic endpoints (`POST /api/chat/request`, `POST /api/completion/request`) can be served by an OpenAI-compatible provider (OpenRouter, Ollama, OpenAI, Groq, vLLM) instead of a local HuggingFace model. A `model_name` row opts in through its `model_parameters` JSON; every other row keeps the local path unchanged. **No plugin change is required** — the plugin keeps sending `model_ids` and the server resolves the row.
+
+**Default:** the rows the plugin uses by default are seeded provider-backed through OpenRouter (key from `OPENROUTER_API_KEY`): id 1 `deepseek-ai/deepseek-coder-1.3b-base` (completion) is answered by `mistralai/codestral-2508`, and id 3 `mistralai/Ministral-8B-Instruct-2410` (chat) by `mistralai/ministral-8b-2512`. Rows keep their names; `provider_model` records the model that answers. The other rows (StarCoder2, Mellum) run locally and are used only when explicitly chosen. `CLASSIC_MODELS_ENABLED=false` refuses the classic endpoints entirely (HTTP 503) without loading anything.
+
+```json
+{
+  "provider": "openai_compatible",
+  "kind": "chat",                          // "chat" | "completion"; default: "chat" for *instruct* model names, else "completion"
+  "base_url": "https://openrouter.ai/api/v1",
+  "api_key_ref": "OPENROUTER_API_KEY",     // optional; name of the env var holding the key (never the key itself)
+  "provider_model": "mistralai/ministral-8b-2512",  // optional; default = model_name
+  "endpoint": "chat",                      // "chat" (chat-completions) | "completions" (legacy /completions); default "chat"
+  "max_new_tokens": 256,
+  "temperature": 0.2,
+  "top_p": 0.95,
+  "timeout_seconds": 60
+}
+```
+
+- `base_url` is required. `api_key_ref` is optional (a local Ollama needs no key), and like agent profiles it stores only the environment-variable *name*: the value is read from the backend's environment at request time and is never stored or logged. A referenced variable that is missing is a hard error — there is no unauthenticated fallback.
+- `kind` selects the model class (chat vs. FIM completion) and defaults from the model name. `endpoint` selects the wire format for completion rows: `chat` sends one system message plus the formatted FIM prompt as a user message, `completions` posts the formatted prompt to `/completions` with `stop` sequences.
+- Provider rows report `confidence: 0.0` and empty `logprobs` (token logprobs exist only on the local path).
+- Unknown `model_parameters` keys are rejected, so a typo cannot silently change the wire shape.
+
+A database seeded before this default keeps local rows; adopt the default once with:
+
+```sql
+UPDATE model_name
+SET model_parameters = '{"provider": "openai_compatible", "kind": "completion", "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "OPENROUTER_API_KEY", "provider_model": "mistralai/codestral-2508", "max_new_tokens": 64}'
+WHERE model_name = 'deepseek-ai/deepseek-coder-1.3b-base';
+UPDATE model_name
+SET model_parameters = '{"provider": "openai_compatible", "kind": "chat", "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "OPENROUTER_API_KEY", "provider_model": "mistralai/ministral-8b-2512", "max_new_tokens": 256}'
+WHERE model_name = 'mistralai/Ministral-8B-Instruct-2410';
+```
+
+To host a row locally instead (a HuggingFace model on this server; practical only with a GPU), set it back explicitly:
+
+```sql
+UPDATE model_name SET model_parameters = '{"max_new_tokens": 64}'
+WHERE model_name = 'deepseek-ai/deepseek-coder-1.3b-base';
+UPDATE model_name SET model_parameters = '{"max_new_tokens": 256}'
+WHERE model_name = 'mistralai/Ministral-8B-Instruct-2410';
+```
+
+Set the referenced variable in `.env` (e.g. `OPENROUTER_API_KEY=...`) and restart the `backend` service. The `backend` container must be able to reach `base_url`; a host-run Ollama is `http://host.docker.internal:11434/v1` from inside Docker. The live end-to-end check is `E2E_CLASSIC_PROVIDER=1 python3 -m unittest tests.test_classic_provider_e2e -v`, run from `e2e/`.
+
 #### 📊 Analytics & Telemetry
 - **Behavioral Analytics**: Typing patterns, acceptance rates, interaction timings
 - **Performance Metrics**: Model response times, accuracy measurements
