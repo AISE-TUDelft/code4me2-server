@@ -620,6 +620,8 @@ def test_personal_dashboard_owner_scope_is_unchanged():
                 tool_result_bytes=None,
                 avg_model_latency_ms=None,
                 p95_model_latency_ms=None,
+                permission_decisions=0,
+                permission_accepted=0,
             )
         else:
             result.fetchall.return_value = []

@@ -66,6 +66,8 @@ EVENT_TYPE_MAP: dict[str, str] = {
     "agent.tool.completed": "tool_call",
     "agent.tool.denied": "tool_denied",
     "agent.tool.failed": "tool_failed",
+    "agent.permission.requested": "permission_requested",
+    "agent.permission.decided": "permission_decided",
     "agent.adapter.loop_failed": "error",
     "agent.adapter.parse_failed": "error",
     "agent.request.received": "observation",
@@ -267,6 +269,18 @@ def map_event_to_columns(
         "span_id": str(event["event_id"]) if event.get("event_id") else None,
         "parent_span_id": _as_uuid(event.get("parent_event_id")),
         "request_id": str(request_id) if request_id else None,
+        # tool_call identity for tool/permission events (structural ids).
+        "tool_call_id": (
+            str(payload.get("tool_call_id"))
+            if payload.get("tool_call_id") is not None
+            else None
+        ),
+        # permission decision metadata: outcome and scope are structural
+        # (BEHAVIORAL-classified), never content, so they persist under
+        # metadata-only policies.
+        "decision": payload.get("decision"),
+        "decision_scope": payload.get("decision_scope"),
+        "tool_kind": payload.get("kind"),
         # model_call fields
         "model": payload.get("model"),
         "message_count": merged.get("message_count"),
@@ -322,6 +336,11 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
         counts["total_tokens"] = int(total)
     payload: dict[str, Any] = {}
     for key in ("model", "finish_reason", "tool_name", "request_id"):
+        value = columns.get(key)
+        if value is not None:
+            payload[key] = value
+    # Permission decision metadata (structural, never content).
+    for key in ("tool_kind", "decision", "decision_scope"):
         value = columns.get(key)
         if value is not None:
             payload[key] = value

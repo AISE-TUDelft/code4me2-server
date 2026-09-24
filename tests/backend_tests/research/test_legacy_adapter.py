@@ -144,3 +144,32 @@ def test_unmapped_kinds_keep_an_explicit_unknown_marker():
     (event,) = build_legacy_events(_task(), [_fact("observation")])
     assert event.event_type == CanonicalEventType.UNKNOWN_SOURCE_EVENT.value
     assert event.unknown_event_type == "observation"
+
+
+def test_permission_kinds_map_to_permission_types_with_metadata():
+    """Permission request/decision outcomes canonicalize with their metadata."""
+    requested = LegacyFact(
+        kind="permission_requested",
+        occurred_at=NOW,
+        payload={"tool_name": "write_file", "tool_call_id": "tc-1", "kind": "edit"},
+        metrics=EventMetrics(),
+        coverage=Coverage(),
+    )
+    decided = LegacyFact(
+        kind="permission_decided",
+        occurred_at=NOW,
+        payload={
+            "tool_name": "write_file",
+            "tool_call_id": "tc-1",
+            "kind": "edit",
+            "decision": "accepted",
+            "decision_scope": "once",
+        },
+        metrics=EventMetrics(),
+        coverage=Coverage(),
+    )
+    req_event, dec_event = build_legacy_events(_task(), [requested, decided])
+    assert req_event.event_type == "permission.requested"
+    assert dec_event.event_type == "permission.decided"
+    assert dec_event.payload["decision"] == "accepted"
+    assert dec_event.payload["decision_scope"] == "once"

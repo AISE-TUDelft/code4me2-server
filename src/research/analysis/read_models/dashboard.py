@@ -154,6 +154,9 @@ def agent_overview(
                 SUM({_TOOL_SCHEMA_BYTES}) AS tool_schema_bytes,
                 SUM({_CONTEXT_BYTES}) AS conversation_context_bytes,
                 SUM({_TOOL_RESULT_LENGTH}) AS tool_result_bytes,
+                COUNT(*) FILTER (WHERE e.event_type = 'permission.decided') AS permission_decisions,
+                COUNT(*) FILTER (WHERE e.event_type = 'permission.decided'
+                    AND e.envelope_json -> 'payload' ->> 'decision' = 'accepted') AS permission_accepted,
                 AVG({_LATENCY}) FILTER (WHERE {_LEGACY_KIND} = 'model_call')
                     AS avg_model_latency_ms,
                 PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {_LATENCY})
@@ -362,11 +365,19 @@ def agent_overview(
                 if events.tool_result_bytes is not None
                 else None
             ),
-            # There is no canonical producer for edit acceptance (per the
-            # contract, it may only be recorded "when truly exposed"); the
-            # dashboard renders it unavailable rather than computing a ratio.
-            "edit_acceptance_rate": None,
-            "total_edits": None,
+            # Edit acceptance is computed from recorded permission decisions:
+            # accepted tool executions over all decided ones. With no observed
+            # decisions both stay null and the dashboard renders unavailable
+            # rather than a fabricated ratio.
+            "edit_acceptance_rate": (
+                (num(events.permission_accepted, integer=True) or 0)
+                / (num(events.permission_decisions, integer=True) or 0)
+                if (num(events.permission_decisions, integer=True) or 0) > 0
+                else None
+            ),
+            "total_edits": (
+                num(events.permission_decisions, integer=True) or None
+            ),
         },
         "profiles": [
             {

@@ -55,6 +55,8 @@ def _overview_db(
     tool_failures=1,
     provider_tokens=None,
     latency=None,
+    permission_decisions=0,
+    permission_accepted=0,
 ):
     db = MagicMock()
 
@@ -75,6 +77,8 @@ def _overview_db(
                 model_output_tokens=None, tool_schema_bytes=None,
                 conversation_context_bytes=None, tool_result_bytes=None,
                 avg_model_latency_ms=latency, p95_model_latency_ms=latency,
+                permission_decisions=permission_decisions,
+                permission_accepted=permission_accepted,
             )
         else:
             result.fetchall.return_value = []
@@ -180,3 +184,12 @@ def test_run_detail_uses_canonical_events_joined_by_run_binding():
     ]
     assert event_sql
     assert "session_id" not in event_sql[0]
+
+
+def test_edit_acceptance_computes_from_decided_rows():
+    content = agent_overview(
+        _overview_db(permission_decisions=4, permission_accepted=3),
+        _owner(), time_window="7d", now=NOW)
+    summary = content["summary"]
+    assert summary["edit_acceptance_rate"] == 0.75
+    assert summary["total_edits"] == 4

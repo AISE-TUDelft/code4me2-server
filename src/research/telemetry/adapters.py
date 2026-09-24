@@ -73,6 +73,11 @@ _KIND_TO_TYPE: dict[str, CanonicalEventType] = {
     "tool_request": CanonicalEventType.TOOL_CREATED,
     "run_started": CanonicalEventType.AGENT_RUN_STARTED,
     "run_completed": CanonicalEventType.AGENT_RUN_COMPLETED,
+    # Permission request/decision outcomes. The decision value (accepted /
+    # rejected / cancelled / unavailable) rides in the payload; the kind
+    # mapping itself never invents it.
+    "permission_requested": CanonicalEventType.PERMISSION_REQUESTED,
+    "permission_decided": CanonicalEventType.PERMISSION_DECIDED,
 }
 
 
