@@ -310,12 +310,17 @@ def request_completion(
             )
         )
 
-        # Chain Celery tasks: store context/telemetry -> add query -> add generations
-        chain(
-            group(*pre_query_tasks) if pre_query_tasks else None,
-            add_query_task,
-            group(*add_generation_tasks),
-        ).apply_async(queue="db")
+        # Chain Celery tasks: store context/telemetry -> add query -> add generations.
+        # Any stage may be absent (all store_* flags off, or every model
+        # errored): chain only the present stages, since chain(None, ...)
+        # raises TypeError and would 500 an otherwise successful request.
+        chain_steps = []
+        if pre_query_tasks:
+            chain_steps.append(group(*pre_query_tasks))
+        chain_steps.append(add_query_task)
+        if add_generation_tasks:
+            chain_steps.append(group(*add_generation_tasks))
+        chain(*chain_steps).apply_async(queue="db")
 
         t6 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t6 - t5) * 1000:.2f}ms")
