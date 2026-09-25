@@ -2582,10 +2582,27 @@ class OpenAICompatibleReactAdapter:
             else ""
         )
         tool_list = ", ".join(tool_names) if tool_names else "none"
+        # A researcher-authored profile prompt replaces the persona paragraph
+        # (ported from origin/sys_prompt). The operational instructions that
+        # follow (tools, approval policy, budget, how to work) are kept: the
+        # runtime cannot call tools correctly without them.
+        researcher_prompt = (config.adapter.system_prompt or "").strip()
+        if researcher_prompt:
+            persona = [
+                researcher_prompt,
+                "",
+                "You are working inside the user's JetBrains IDE on the project at "
+                f"{workspace_root} (host OS: {os_name}; today: {today}). You act by calling tools; "
+                "the user sees your text and a card for every tool call.",
+            ]
+        else:
+            persona = [
+                "You are Code4Me, a coding agent working inside the user's JetBrains IDE on the project at "
+                f"{workspace_root} (host OS: {os_name}; today: {today}). You act by calling tools; the user "
+                "sees your text and a card for every tool call.",
+            ]
         lines = [
-            "You are Code4Me, a coding agent working inside the user's JetBrains IDE on the project at "
-            f"{workspace_root} (host OS: {os_name}; today: {today}). You act by calling tools; the user "
-            "sees your text and a card for every tool call.",
+            *persona,
             "",
             f"Tools available in this session: {tool_list}.",
             commands_line,

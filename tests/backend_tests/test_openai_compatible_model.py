@@ -213,7 +213,7 @@ def test_completion_single_file_prompt_and_chat_endpoint(post_recorder):
     assert calls[0]["json"]["stop"] == ["\nclass ", "\n\n"]
     assert result["completion"] == "    return 1"
     assert isinstance(result["generation_time"], int)
-    assert result["confidence"] == 0.0
+    assert result["confidence"] is None
     assert result["logprobs"] == []
 
 
@@ -246,7 +246,7 @@ def test_completion_multi_file_prompt_and_completions_endpoint(post_recorder):
     assert calls[0]["json"]["max_tokens"] == 32
     assert calls[0]["json"]["stop"] == ["\n\n"]
     assert result["completion"] == "return x"
-    assert result["confidence"] == 0.0
+    assert result["confidence"] is None
     assert result["logprobs"] == []
 
 

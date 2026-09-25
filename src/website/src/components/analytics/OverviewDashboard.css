@@ -65,6 +65,9 @@
 }
 
 .stat-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent, currentColor);
   font-size: 20px;
 }
 

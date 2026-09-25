@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS public.had_generation
     generation_time integer NOT NULL,
     shown_at timestamp with time zone[] NOT NULL,
     was_accepted boolean NOT NULL,
-    confidence double precision NOT NULL,
+    confidence double precision,
     logprobs double precision[] NOT NULL,
     PRIMARY KEY (meta_query_id, model_id)
 );

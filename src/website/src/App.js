@@ -26,6 +26,9 @@ const RESEARCH_JOIN_INTENT_KEY = "code4me.research.join.intent";
 // fields are cached locally: the login response also carries the live auth
 // token (and a masked password), which must never be copied into
 // localStorage where any script on the origin could read it.
+// React Router 6.26 warns about its v7 behaviours until they are opted in.
+const ROUTER_FUTURE = { v7_startTransition: true, v7_relativeSplatPath: true };
+
 const PUBLIC_USER_FIELDS = ["user_id", "email", "name", "is_admin", "can_research", "verified", "joined_at"];
 
 export const sanitizeUser = (user) => {
@@ -166,7 +169,7 @@ function App() {
   return (
     <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}>
       <ThemeProvider>
-        <BrowserRouter>
+        <BrowserRouter future={ROUTER_FUTURE}>
           <div className="App">
             <Routes>
               <Route

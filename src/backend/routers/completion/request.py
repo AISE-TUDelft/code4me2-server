@@ -28,6 +28,11 @@ from response_models import (
 )
 from utils import create_uuid, extract_secrets, redact_secrets
 
+
+def _wire_confidence(value):
+    """A number for the plugin's generated client; NULL is stored, not sent."""
+    return float(value) if value is not None else 0.0
+
 router = APIRouter()
 
 """
@@ -207,16 +212,24 @@ def request_completion(
             if completion_model is None:
                 return CompletionErrorItem(model_name=str(model.model_name))
             local_t2 = time.perf_counter()
-            # Invoke the model with redacted prefix and suffix
-            completion_result = completion_model.invoke(
-                {
-                    "prefix": completion_request.context.prefix,
-                    "suffix": completion_request.context.suffix,
-                    "multi_file_context": multi_file_contexts,
-                    "file_name": completion_request.context.file_name,
-                },
-                stop_sequences=completion_request.stop_sequences,
-            )
+            # Invoke the model with redacted prefix and suffix. A provider
+            # outage costs this model's item, not the whole request.
+            try:
+                completion_result = completion_model.invoke(
+                    {
+                        "prefix": completion_request.context.prefix,
+                        "suffix": completion_request.context.suffix,
+                        "multi_file_context": multi_file_contexts,
+                        "file_name": completion_request.context.file_name,
+                    },
+                    stop_sequences=completion_request.stop_sequences,
+                )
+            except Exception as error:
+                logging.warning(
+                    f"Completion model {model_id} ({model.model_name}) failed: {error}",
+                    exc_info=True,
+                )
+                return CompletionErrorItem(model_name=str(model.model_name))
             local_t3 = time.perf_counter()
 
             logging.info(
@@ -255,7 +268,9 @@ def request_completion(
                 model_name=str(model.model_name),
                 completion=completion_result["completion"],
                 generation_time=completion_result["generation_time"],
-                confidence=completion_result["confidence"],
+                # The plugin client reads a number; the stored value stays
+                # NULL for provider models so analytics leave it out.
+                confidence=_wire_confidence(completion_result["confidence"]),
             )
 
         # Execute completion calls concurrently using thread pool

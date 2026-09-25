@@ -8,7 +8,7 @@ jest.mock("../../../utils/api");
 
 beforeEach(() => {
   jest.clearAllMocks();
-  api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: false } });
+  api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: false, can_research: true } });
   api.getStudyParticipants.mockResolvedValue({
     ok: true,
     data: { study_id: "study-1", arms: [], participants: [] },
@@ -38,7 +38,7 @@ const VALID_SESSION_POLICY = {
 
 const renderPage = () =>
   render(
-    <MemoryRouter initialEntries={["/research/studies"]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={["/research/studies"]}>
       <ResearchStudies />
     </MemoryRouter>,
   );
@@ -609,7 +609,7 @@ test("shows the kill-switch control to admins and calls the operations API", asy
 test("a deep link loads each dataset once, only for the tab it opens", async () => {
   api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
   render(
-    <MemoryRouter initialEntries={["/research/studies/study-1"]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={["/research/studies/study-1"]}>
       <Routes>
         <Route path="/research/studies/:studyId" element={<ResearchStudies />} />
       </Routes>
@@ -644,7 +644,7 @@ test("returning to a study reloads its summary", async () => {
     return null;
   };
   render(
-    <MemoryRouter initialEntries={["/research/studies/study-1"]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={["/research/studies/study-1"]}>
       <Navigator />
       <Routes>
         <Route path="/research/studies" element={<ResearchStudies />} />
@@ -714,7 +714,7 @@ test("browser navigation follows the study and tab in the URL", async () => {
     return null;
   };
   render(
-    <MemoryRouter initialEntries={["/research/studies/study-1?tab=participants"]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={["/research/studies/study-1?tab=participants"]}>
       <Navigator />
       <Routes>
         <Route path="/research/studies" element={<ResearchStudies />} />

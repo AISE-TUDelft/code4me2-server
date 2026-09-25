@@ -160,7 +160,7 @@ ACTIVE_WINDOW = timedelta(days=7)
 #: Mirrors ``FALLBACK_MAX_CONTEXT_TOKENS`` in ``src/backend/routers/acp/__init__.py``
 #: (the managed runtime's context budget when a profile sets none). Kept local:
 #: importing the ACP router module would drag in the whole ACP surface.
-FALLBACK_MAX_CONTEXT_TOKENS = 16_000
+FALLBACK_MAX_CONTEXT_TOKENS = 32_000
 
 TOP_TOOLS_PARTICIPANT = 15
 TOP_TOOLS_STUDY = 20

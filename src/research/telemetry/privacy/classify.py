@@ -135,13 +135,13 @@ SYSTEM_TOKENS = frozenset(
         "host",
         "os",
         "arch",
-    "trace",
-    "span",
-    # Protocol metadata: the relay's ``streaming`` flag describes how the call
-    # was transported, not content. Without this the fail-closed default
-    # classifies it CONTENT and the whole relay fact is rejected.
-    "streaming",
-    "level",
+        "trace",
+        "span",
+        # Protocol metadata: the relay's ``streaming`` flag describes how the
+        # call was transported, not content. Without this the fail-closed
+        # default classifies it CONTENT and the whole relay fact is rejected.
+        "streaming",
+        "level",
         "tokens",
         "tokens_used",
     }
@@ -150,7 +150,19 @@ SYSTEM_TOKENS = frozenset(
 # rather than via a bare ``exit`` token: that token would also reclassify the
 # proxy's ``exit_status`` payload key from BEHAVIORAL to SYSTEM. Mirrors the
 # Kotlin FieldClassifier's ``systemKeyExact``.
-SYSTEM_KEY_EXACT = frozenset({"exit_code"})
+SYSTEM_KEY_EXACT = frozenset(
+    {
+        "exit_code",
+        # Markers the server stamps on its own relay/self-report observations:
+        # which legacy fact a row is and the HTTP status of the server's own
+        # upstream call. They describe the relay's bookkeeping, never the
+        # participant; the dashboards read ``legacy_kind`` to find model and
+        # tool calls and reported zero under a METRICS-only policy while the
+        # ``kind``/``status`` tokens made them BEHAVIORAL.
+        "legacy_kind",
+        "upstream_status",
+    }
+)
 BEHAVIORAL_TOKENS = frozenset(
     {
         "tool",

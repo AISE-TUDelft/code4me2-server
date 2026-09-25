@@ -291,7 +291,9 @@ class OpenAICompatibleCompletionModel:
 
         Returns ``completion``, ``generation_time``, ``confidence`` and
         ``logprobs``. The provider path has no token logprobs, so ``confidence``
-        is ``0.0`` and ``logprobs`` is empty (the router persists both).
+        is ``None`` (stored as NULL and left out of the calibration and model
+        analytics, which filter on ``confidence IS NOT NULL``) and ``logprobs``
+        is empty. A fabricated ``0.0`` would skew every calibration chart.
         """
         t0 = time.perf_counter()
         formatted_prompt = self._format_prompt_from_dict(prompt)
@@ -332,6 +334,6 @@ class OpenAICompatibleCompletionModel:
         return {
             "completion": completion,
             "generation_time": int((t1 - t0) * 1000),
-            "confidence": 0.0,
+            "confidence": None,
             "logprobs": [],
         }

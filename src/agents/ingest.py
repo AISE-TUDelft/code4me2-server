@@ -44,6 +44,8 @@ from research.telemetry.adapters import (
     CanonicalIngestionFailed,
     LegacyFact,
     record_legacy_facts,
+    existing_source_event_ids,
+    research_bound,
 )
 from research.telemetry.enums import CoverageState
 from research.telemetry.models import Correlations, Coverage, EventMetrics
@@ -440,6 +442,11 @@ def ingest_event_batch(
             source_event_ids=source_event_ids,
         )
     )
+    task = crud.get_agent_task(db, task_id)
+    if task is not None and research_bound(task):
+        # Research-bound tasks are written to the canonical store only, so a
+        # retried batch must be checked there or every event is stored twice.
+        already_seen |= existing_source_event_ids(db, task, source_event_ids)
 
     by_request_id, by_tool_call_id = build_correlation_index(ordered)
     skipped: list[str] = []
@@ -462,7 +469,6 @@ def ingest_event_batch(
     # persisted through the one ingestion writer and never also dual-written to
     # the legacy table. A task with no research binding keeps the legacy path.
     if pending:
-        task = crud.get_agent_task(db, task_id)
         facts = []
         for event, source_event_id in pending:
             columns = map_event_to_columns(
@@ -482,6 +488,12 @@ def ingest_event_batch(
                 # Research-bound task: the canonical writer is the only
                 # authority. Never fall back to the legacy table (ISSUE-07).
                 if not result.written:
+                    # Ids and reason codes only (never payloads): why the batch
+                    # was refused is otherwise invisible in the log.
+                    logging.warning(
+                        f"[Agent/ingest] canonical ingestion refused the batch for task {task_id}: "
+                        f"reason={result.reason} ack={result.ack}"
+                    )
                     raise CanonicalIngestionFailed(
                         reason=result.reason,
                         message=result.message,

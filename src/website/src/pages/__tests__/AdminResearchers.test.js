@@ -9,7 +9,7 @@ import AdminResearchers from "../AdminResearchers";
 
 const renderPage = () =>
   render(
-    <MemoryRouter>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AdminResearchers />
     </MemoryRouter>,
   );

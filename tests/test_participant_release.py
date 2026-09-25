@@ -124,6 +124,19 @@ def test_prepare_emits_one_recipe_with_verified_archives(tmp_path):
 
     written = json.loads((tmp_path / "prepared" / "recipe.json").read_text())
     assert written == document
+    # The adapter pin travels per artifact: the plugin checks it there.
+    assert all(a["adapter"]["digest"] == "sha256:" + "c" * 64 for a in document["artifacts"])
+    # The plugin build reads the same recipe from the resource overlay, with
+    # archive paths relative to the resource root.
+    runtime_manifest = json.loads(
+        (tmp_path / "prepared" / "resources" / "code4me-runtime" / "manifest.json").read_text()
+    )
+    assert runtime_manifest["runtime_version"] == document["runtime_version"]
+    assert runtime_manifest["adapter"] == document["adapter"]
+    assert [a["archive"] for a in runtime_manifest["artifacts"]] == [
+        f"code4me-runtime/{a['archive']}" for a in document["artifacts"]
+    ]
+    assert all(a["adapter"] == document["adapter"] for a in runtime_manifest["artifacts"])
     assert written["recipe_digest"].startswith("sha256:")
     # The prepared inputs are re-checkable and the recipe is the single document.
     assert load_prepared(tmp_path / "prepared") == document

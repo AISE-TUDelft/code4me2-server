@@ -152,5 +152,4 @@ def prepare(run_path: Path) -> list[str]:
     serialized = json.dumps(manifest, indent=2) + "\n"
     if not manifest_path.is_file() or manifest_path.read_text() != serialized:
         manifest_path.write_text(serialized)
-    return [f"-PresearchAgentDir={binary.parent}", f"-PresearchAgentBinary={binary}",
-            f"-Pcode4me.localRuntimeDir={overlay}", "--no-configuration-cache"]
+    return [f"-Pcode4me.localRuntimeDir={overlay}", "--no-configuration-cache"]

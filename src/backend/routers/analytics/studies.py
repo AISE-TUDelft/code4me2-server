@@ -911,8 +911,6 @@ def evaluate_study_agents(
 
     except HTTPException:
         raise
-    except HTTPException:
-        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(

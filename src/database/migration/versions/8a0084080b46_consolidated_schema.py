@@ -485,6 +485,9 @@ def upgrade() -> None:
         source_schema='public',
         referent_schema='public',
     )
+    # Provider-backed classic models have no confidence (NULL), matching init.sql.
+    op.alter_column('had_generation', 'confidence', existing_type=sa.Double(),
+                    nullable=True, schema='public')
     # ### end Alembic commands ###
 
 

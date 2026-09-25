@@ -99,6 +99,10 @@ class AdapterConfig:
     provider: OpenAICompatibleProviderConfig = field(
         default_factory=OpenAICompatibleProviderConfig
     )
+    # Researcher-authored system prompt override (ported from origin/sys_prompt).
+    # None = the runtime's built-in prompt; when set it replaces the persona
+    # paragraph, while the operational tool/policy instructions are kept.
+    system_prompt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,9 @@ class ServerAgentConfig:
     max_context_tokens: int | None = None
     approval_policy: str | None = None
     temperature: float | None = None
+    # Researcher-authored system prompt for the assigned arm (agent-config and
+    # the managed run policy both carry it). None = built-in default.
+    system_prompt: str | None = None
     # Advisory: the server enforces content storage itself. Used only to avoid
     # transmitting content that would be discarded anyway — never to enable
     # capture, which the agent has no power to do.
@@ -169,6 +176,10 @@ class ServerAgentConfig:
                 )
             )
             or not isinstance(merged.get("store_agent_content"), bool)
+            or (
+                merged.get("system_prompt") is not None
+                and not isinstance(merged.get("system_prompt"), str)
+            )
         ):
             raise ValueError("Managed agent policy contains invalid executable settings.")
         return cls.from_payload(merged)
@@ -222,6 +233,7 @@ class ServerAgentConfig:
             max_context_tokens=_clean_positive_int("max_context_tokens"),
             approval_policy=_clean_str("approval_policy"),
             temperature=float(temperature) if temperature is not None else None,
+            system_prompt=_clean_str("system_prompt"),
             store_agent_content=bool(payload.get("store_agent_content", True)),
         )
 
@@ -239,6 +251,7 @@ class ServerAgentConfig:
                 self.max_context_tokens,
                 self.approval_policy,
                 self.temperature,
+                self.system_prompt,
             )
         )
 
@@ -315,6 +328,11 @@ class AgentConfig:
             provider=provider,
             memory_window=memory_window,
             max_iterations=server.max_iterations or self.adapter.max_iterations,
+            system_prompt=(
+                server.system_prompt
+                if server.system_prompt is not None
+                else self.adapter.system_prompt
+            ),
         )
 
         commands = self.commands

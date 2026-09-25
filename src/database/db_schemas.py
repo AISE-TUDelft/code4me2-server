@@ -620,7 +620,7 @@ class HadGeneration(Base):
     was_accepted = Column(
         Boolean, nullable=False
     )  # Whether user accepted the completion
-    confidence = Column(Double, nullable=False)  # Model confidence score
+    confidence = Column(Double, nullable=True)  # Model confidence score; NULL when the model reports none
     logprobs = Column(ARRAY(Double), nullable=False)  # Log probabilities for tokens
 
 

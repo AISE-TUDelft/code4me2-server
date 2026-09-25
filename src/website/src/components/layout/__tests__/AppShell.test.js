@@ -14,7 +14,7 @@ beforeEach(() => {
 const renderShell = (user, path = "/dashboard?view=overview") =>
   render(
     <ThemeProvider>
-      <MemoryRouter initialEntries={[path]}>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
         <AppShell user={user} onLogout={jest.fn()}>
           <div>PAGE</div>
         </AppShell>

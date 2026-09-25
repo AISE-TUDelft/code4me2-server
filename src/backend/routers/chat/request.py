@@ -30,6 +30,11 @@ from response_models import (
 )
 from utils import create_uuid, extract_secrets, redact_secrets
 
+
+def _wire_confidence(value):
+    """A number for the plugin's generated client; NULL is stored, not sent."""
+    return float(value) if value is not None else 0.0
+
 router = APIRouter()
 
 
@@ -234,12 +239,20 @@ def request_chat_completion(
             original_messages = chat_completion_request.messages
             chat_completion_request.messages = messages_copy
 
-            completion_result = chat_completion_model.invoke(
-                chat_completion_request.to_langchain_messages()
-            )
-
-            # Restore the original messages
-            chat_completion_request.messages = original_messages
+            # A provider outage costs this model's item, not the whole request.
+            try:
+                completion_result = chat_completion_model.invoke(
+                    chat_completion_request.to_langchain_messages()
+                )
+            except Exception as error:
+                logging.warning(
+                    f"Chat model {model_id} ({model.model_name}) failed: {error}",
+                    exc_info=True,
+                )
+                return ChatCompletionErrorItem(model_name=str(model.model_name))
+            finally:
+                # Restore the original messages
+                chat_completion_request.messages = original_messages
 
             local_t3 = time.perf_counter()
 
@@ -265,7 +278,7 @@ def request_chat_completion(
                     generation_time=completion_result["generation_time"],
                     shown_at=[datetime.now().isoformat()],
                     was_accepted=False,
-                    confidence=completion_result.get("confidence", 0.0),
+                    confidence=completion_result.get("confidence"),
                     logprobs=completion_result.get("logprobs", []),
                 ).dict(),
                 created_query_id_provided,
@@ -277,7 +290,9 @@ def request_chat_completion(
                 model_name=str(model.model_name),
                 completion=completion_result["completion"],
                 generation_time=completion_result["generation_time"],
-                confidence=completion_result.get("confidence", 0.0),
+                # The plugin client reads a number; the stored value stays
+                # NULL for provider models so analytics leave it out.
+                confidence=_wire_confidence(completion_result.get("confidence")),
                 was_accepted=False,
             )
 

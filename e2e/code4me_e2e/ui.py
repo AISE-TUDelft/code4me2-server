@@ -23,7 +23,7 @@ UI_TEST_STEP_ID = "ui_test"
 UI_TEST_TASK = ":ui-tests:test"
 UI_TEST_CLASS = "ui.Code4MeUiNavigationTest"
 EXPECTED_UI_STEPS = {"plugin_loaded", "settings_navigation", "sign_in", "enrollment_activation",
-                     "status_surface", "acp_registration", "prepare_agent"}
+                     "status_surface", "acp_registration", "prepare_agent", "model_response"}
 
 def parse_results_json(path: Path) -> Dict[str, Any]:
     try:
@@ -149,6 +149,13 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
     if home.exists():
         home.rename(run_path / f"ide-home-previous-{time.time_ns()}")
     home.mkdir(mode=0o700)
+    # Keep credentials in memory: on macOS the sandbox otherwise shares the
+    # developer's login keychain (and reads their saved Code4Me account).
+    security_xml = ('<application><component name="PasswordSafe">'
+                    '<option name="PROVIDER" value="MEMORY_ONLY" /></component></application>\n')
+    for config in (home / "config", home / "Library/Application Support/JetBrains/IntelliJIdea2026.2"):
+        (config / "options").mkdir(parents=True, exist_ok=True)
+        (config / "options/security.xml").write_text(security_xml)
     started = time.monotonic()
     child = None
     stub = None
@@ -167,9 +174,12 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
         manifest = json.loads((plugin / "build/research-runtime-staging/proxy-manifest.json").read_text())
         bundle = next(p for p in manifest["platforms"]
                       if p["os"] == scenario.platform.os and p["arch"] == scenario.platform.arch)
-        if not bundle["self_contained"] or not bundle.get("agent"):
-            raise RuntimeError("The staged proxy and agent must be self-contained")
-        digest = bundle["agent"]["digest"]
+        if not bundle["self_contained"]:
+            raise RuntimeError("The staged proxy must be self-contained")
+        # Since plugin a003dd5 the packaged agent is the managed runtime from the
+        # code4me-runtime overlay (-Pcode4me.localRuntimeDir), pinned by archive sha256.
+        overlay_manifest = json.loads((E2E_DIR / ".cache/agent/resources/code4me-runtime/manifest.json").read_text())
+        digest = overlay_manifest["artifacts"][0]["sha256"]
         scenario.agent.artifact_digest = digest
         scenario.agent.release_id = "e2e-ui-" + digest[:20]
         scenario.agent.profile_name = "e2e-ui-" + digest[:20]
@@ -201,7 +211,9 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
                "CODE4ME_E2E_JOIN_CODE": state["join_code"],
                "CODE4ME_UI_ROBOT_URL": robot_url, "CODE4ME_UI_ROBOT_PORT": str(port),
                "CODE4ME_UI_PROJECT_DIR": str(run_path / "ui-project"),
-               "CODE4ME_UI_RESULT_FILE": str(results_file)}
+               "CODE4ME_UI_RESULT_FILE": str(results_file),
+               "CODE4ME_UI_EXPECTED_RESPONSE": scenario.message.expected_substring or state["stub_token"],
+               "CODE4ME_UI_MODEL_PROMPT": scenario.message.prompt}
         stage = "ide_startup"
         with (run_path / "ui-ide.log").open("w") as log:
             child = subprocess.Popen([str(plugin / "gradlew"), ":runIdeForUiTests", *gradle_args,

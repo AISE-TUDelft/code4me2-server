@@ -367,6 +367,14 @@ class AcpBackendAuthorization:
                 http_request.full_url,
             )
             failure_type = AcpSessionExpired if exc.code == 401 else AcpAuthorizationFailure
+            if int(exc.code) >= 500:
+                # A provider outage behind the backend is not an authorization
+                # problem; say so instead of "was rejected".
+                raise failure_type(
+                    f"The Code4Me server or its model provider failed (HTTP {exc.code}). "
+                    "Try again shortly.",
+                    status_code=int(exc.code),
+                ) from None
             raise failure_type(
                 "Code4Me ACP authorized request was rejected.",
                 status_code=int(exc.code),

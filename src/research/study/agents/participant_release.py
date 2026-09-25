@@ -230,6 +230,9 @@ def prepare(
                 or ("code4me2-agent.exe" if os_name == "windows" else "code4me2-agent")
             ),
             "managed_protocol": "1",
+            # The plugin verifies the bootstrap's adapter pin per artifact, so
+            # a recipe-built plugin must declare it there, not only top-level.
+            "adapter": managed.adapter.model_dump(mode="json"),
             "tests": projected.get("tests"),
         })
 
@@ -274,11 +277,32 @@ def prepare(
         json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     ).hexdigest()
     write_json(output / "recipe.json", document)
+    # The participant plugin build copies ``resources/code4me-runtime`` into the
+    # plugin and its runtime installer reads ``code4me-runtime/manifest.json``
+    # with archive paths relative to the resource root: the same recipe, in the
+    # plugin's spelling.
+    write_json(resources / "manifest.json", runtime_manifest_for_plugin(document))
     write_json(output / "prepared-inputs.json", {
         file.relative_to(output).as_posix(): file_sha256(file)
         for file in sorted(output.rglob("*")) if file.is_file()
     })
     return document
+
+
+def runtime_manifest_for_plugin(document: dict) -> dict:
+    """The prepared recipe as the plugin's bundled ``code4me-runtime/manifest.json``."""
+    return {
+        "manifest_version": 1,
+        "runtime_version": document["runtime_version"],
+        "managed_protocol_version": document["managed_protocol_version"],
+        "server_commit": document.get("server_commit"),
+        "plugin_commit": document.get("plugin_commit"),
+        "adapter": document.get("adapter"),
+        "artifacts": [
+            {**artifact, "archive": f"code4me-runtime/{artifact['archive']}"}
+            for artifact in document["artifacts"]
+        ],
+    }
 
 
 def load_prepared(output: Path) -> dict:

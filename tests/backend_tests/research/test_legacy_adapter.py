@@ -119,6 +119,18 @@ def test_server_built_payloads_only_lose_plain_metadata_the_policy_drops():
     assert "model" in _policy_payload(payload, blocked)
 
 
+def test_server_markers_survive_a_metrics_only_policy():
+    """``legacy_kind`` and ``upstream_status`` are the relay's bookkeeping, never
+    participant data: the dashboards read them to find model/tool calls and
+    would report zero under a METRICS-only policy if they were stripped."""
+    from research.telemetry.adapters import _policy_payload
+    from research.telemetry.privacy import PrivacyPolicy
+
+    payload = {"legacy_kind": "model_call", "upstream_status": "200", "model": "m1"}
+    metrics_only = PrivacyPolicy.from_study_policy({"allowed_field_classes": ["METRICS"]}, consent_active=True)
+    assert _policy_payload(payload, metrics_only) == {"legacy_kind": "model_call", "upstream_status": "200"}
+
+
 def test_reserved_sequences_continue_across_batches_and_tasks():
     """Regression: sequence reuse across batches/tasks caused INTEGRITY_CONFLICT.
 

@@ -79,6 +79,9 @@ const AdminConnections = () => {
   const [fieldErrors, setFieldErrors] = useState([]);
   const [notice, setNotice] = useState("");
   const editorRef = useRef(null);
+  // A typed conflict on the label (409 "A connection with that label already
+  // exists") belongs on the field, not in the page-level error list.
+  const labelError = (fieldErrors.find((item) => item && item.field === "label") || {}).message || "";
 
   const loadConnections = async () => {
     setIsLoading(true);
@@ -259,12 +262,12 @@ const AdminConnections = () => {
         }
       />
 
-      {error ? (
+      {error && fieldErrors.length === 0 ? (
         <p className="research-error" role="alert">
           {error}
         </p>
       ) : null}
-      <FieldErrors errors={fieldErrors} />
+      <FieldErrors errors={fieldErrors.filter((item) => item.field !== "label")} />
       {notice ? (
         <p className="research-notice" role="status">
           {notice}
@@ -290,7 +293,12 @@ const AdminConnections = () => {
             }
           >
             <div className="ui-form-grid">
-              <Field label="Label" htmlFor="connection-label" hint="Shown to researchers when they pick a connection.">
+              <Field
+                label="Label"
+                htmlFor="connection-label"
+                hint="Shown to researchers when they pick a connection."
+                error={labelError}
+              >
                 <input
                   id="connection-label"
                   className="ui-input"

@@ -474,6 +474,33 @@ async def run_inference(
             upstream_status=upstream_status,
         )
 
+    def _upstream_unreachable(error: Exception) -> Response:
+        """502 for a provider we could not reach; the failure is still a finding."""
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        logging.error(
+            f"[Agent/inference] upstream unreachable request_id={request_id} "
+            f"url={upstream_url}: {type(error).__name__}: {error}"
+        )
+        record = _build_record(None, None, None, "upstream_unreachable", None, latency_ms, 502)
+        _log_record(record)
+        if record_observation_events:
+            write_model_call_event(app, task_uuid, record, latency_ms, span, extra)
+        body = {
+            "error": {
+                "message": (
+                    "The model provider could not be reached "
+                    f"({type(error).__name__}). Try again shortly."
+                ),
+                "type": "upstream_unavailable",
+                "code": 502,
+            }
+        }
+        return Response(
+            content=json.dumps(body),
+            status_code=502,
+            media_type="application/json",
+        )
+
     if streaming:
         sse_buffer: list[bytes] = []
         stream_aborted: list[bool] = [False]
@@ -485,7 +512,11 @@ async def run_inference(
             content=body_bytes,
             headers=upstream_headers,
         )
-        upstream_stream = await stream_client.send(stream_request, stream=True)
+        try:
+            upstream_stream = await stream_client.send(stream_request, stream=True)
+        except httpx.HTTPError as error:
+            await stream_client.aclose()
+            return _upstream_unreachable(error)
 
         # Do not turn an upstream 429 into a successful-looking SSE response.
         # Goose retries when it sees the status and Retry-After; yielding the
@@ -557,10 +588,13 @@ async def run_inference(
 
         return StreamingResponse(_stream(), media_type="text/event-stream")
 
-    async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT_SECONDS) as client:
-        upstream_resp = await client.post(
-            upstream_url, content=body_bytes, headers=upstream_headers
-        )
+    try:
+        async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT_SECONDS) as client:
+            upstream_resp = await client.post(
+                upstream_url, content=body_bytes, headers=upstream_headers
+            )
+    except httpx.HTTPError as error:
+        return _upstream_unreachable(error)
 
     latency_ms = int((time.monotonic() - t0) * 1000)
 

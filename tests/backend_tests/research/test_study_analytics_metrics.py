@@ -639,7 +639,7 @@ def test_context_block_counts_calls_over_and_under_the_cap():
     }
     # A BYOA runtime never uses the relay: nothing to measure.
     assert m.context_block([], m.effective_context_cap(None)) == {
-        "cap_tokens": 16_000,
+        "cap_tokens": 32_000,
         "model_calls": 0,
         "calls_with_prompt_tokens": 0,
         "prompt_tokens_p50": None,
@@ -650,8 +650,8 @@ def test_context_block_counts_calls_over_and_under_the_cap():
         "coverage": "UNAVAILABLE",
     }
     assert m.effective_context_cap(8000) == 8000
-    assert m.effective_context_cap(0) == m.FALLBACK_MAX_CONTEXT_TOKENS == 16_000
-    assert m.effective_context_cap(True) == 16_000
+    assert m.effective_context_cap(0) == m.FALLBACK_MAX_CONTEXT_TOKENS == 32_000
+    assert m.effective_context_cap(True) == 32_000
 
 
 # -- builders -------------------------------------------------------------------------------------------
@@ -730,7 +730,7 @@ def test_summary_aggregates_per_participant_and_reports_context_per_arm():
     assert managed["context"]["cap_tokens"] == 8000
     assert managed["context"]["over_cap_calls"] == 1
     assert managed["context"]["coverage"] == "AVAILABLE"
-    assert codex["context"]["cap_tokens"] == 16_000
+    assert codex["context"]["cap_tokens"] == 32_000
     assert codex["context"]["model_calls"] == 0
     assert codex["context"]["coverage"] == "UNAVAILABLE"
     assert body["totals"]["prompts"] == 3

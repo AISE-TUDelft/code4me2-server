@@ -82,6 +82,19 @@ def test_config_by_id_still_resolves_numeric_ids(config_client):
     assert response.json() == {"config_id": 7, "config_data": {"a": 1}}
 
 
+def test_config_collection_is_served_without_a_trailing_slash(config_client):
+    """The website's fetch wrapper strips the trailing slash; a 307 to the
+    absolute backend URL fails CORS preflight cross-origin, so both spellings
+    answer directly."""
+    rows = [SimpleNamespace(config_id=1, config_data='{"a": 1}')]
+    with patch("database.crud.get_all_configs", return_value=rows):
+        bare = config_client.get("/api/config")
+        slashed = config_client.get("/api/config/")
+    assert bare.status_code == 200 and bare.history == []
+    assert slashed.status_code == 200 and slashed.history == []
+    assert bare.json() == slashed.json() == {"configs": [{"config_id": 1, "config_data": {"a": 1}}]}
+
+
 def test_deleting_a_missing_config_is_404_not_500(config_client):
     with patch("database.crud.delete_config", return_value=False):
         response = config_client.delete("/api/config/999")

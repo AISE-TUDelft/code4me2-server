@@ -37,7 +37,11 @@ _DAY_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _authorize(db: Any, current_user: AuthenticatedUser, study_id: uuid.UUID) -> Any:
-    """404 for an unknown study, 403 ``FORBIDDEN_STUDY`` for a non-owner."""
+    """404 for an unknown study, 403 ``FORBIDDEN_STUDY`` for a non-owner.
+
+    Ownership (owner or administrator) is the whole gate: a participant is never
+    an owner, so ``require_researcher`` would only change the error code the
+    authorization matrix pins."""
     from backend.routers.research.access import require_study_owner
 
     study = study_store.get_study(db, study_id)
@@ -143,7 +147,9 @@ def study_participant_dashboard(
             analytics_store.load_daily_event_counts(
                 db, study_id, enrollment_id=enrollment_id
             ),
-            analytics_store.load_timeline(db, study_id, enrollment_id),
+            # The metrics layer drops permission rows nobody answered before it
+            # cuts to MAX_TIMELINE, so read a margin or the page shows fewer.
+            analytics_store.load_timeline(db, study_id, enrollment_id, limit=analytics.MAX_TIMELINE * 2),
             study_id=str(study_id),
             now=_now(),
         )

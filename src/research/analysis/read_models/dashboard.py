@@ -15,7 +15,7 @@ unknown), never fabricated zeros.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from sqlalchemy import text
@@ -66,6 +66,13 @@ def _seconds_window(time_window: str) -> Optional[int]:
     return days
 
 
+def _local_naive(value: datetime) -> datetime:
+    """``value`` as the naive local time ``agent_task.created_at`` is written in."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone().replace(tzinfo=None)
+
+
 def _filters(
     current_user,
     *,
@@ -113,7 +120,10 @@ def agent_overview(
     days = _seconds_window(time_window)
     if days is None:
         raise ValueError("time_window must be 7d, 30d, or 90d")
-    end_time = now or datetime.now(timezone.utc)
+    # ``agent_task.created_at`` is stored as a naive local timestamp
+    # (``default=datetime.now``); an aware UTC bound is shifted by the server's
+    # UTC offset on the way in, which hid the most recent tasks off-UTC.
+    end_time = _local_naive(now) if now is not None else datetime.now()
     start_time = end_time - timedelta(days=days)
     where, params = _filters(
         current_user,

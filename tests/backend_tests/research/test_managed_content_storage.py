@@ -289,9 +289,38 @@ def test_a_policy_without_agent_activity_keeps_the_reports_without_it(db_runtime
             ),
             {"run_id": task.external_run_id},
         ).scalar_one()
-        # tool_name and legacy_kind are behavioural: excluded by the policy.
+        # tool_name is behavioural: excluded by the policy. legacy_kind is the
+        # server's own marker (SYSTEM): the dashboards read it to find model
+        # and tool calls, and reported zero under this policy while it was
+        # stripped (review 2026-09-25, 80-bughunt M2).
         assert "tool_name" not in envelope["payload"]
-        assert "legacy_kind" not in envelope["payload"]
+        assert envelope["payload"]["legacy_kind"] == "observation"
+    finally:
+        db.close()
+
+
+def test_a_retried_batch_for_a_research_task_is_stored_once(db_runtime):
+    """The runtime retries a batch whose POST timed out. For a research-bound
+    task the events live only in research_event, so the retry must be
+    deduplicated there by the runtime's own event id (review item 33)."""
+    session_factory = db_runtime
+    db = session_factory()
+    try:
+        task = _seed(db, content_capture=False, telemetry_policy={})
+        event = _structural_event()
+        first, first_skipped = ingest_event_batch(
+            db, task_id=task.task_id, events=[event], content_included=False, agent_profile="managed-arm"
+        )
+        second, second_skipped = ingest_event_batch(
+            db, task_id=task.task_id, events=[dict(event)], content_included=False, agent_profile="managed-arm"
+        )
+        assert (first, first_skipped) == (1, [])
+        assert (second, second_skipped) == (0, [str(event["event_id"])])
+        stored = db.execute(
+            text("SELECT count(*) FROM public.research_event WHERE agent_run_id = :run_id"),
+            {"run_id": task.external_run_id},
+        ).scalar_one()
+        assert stored == 1
     finally:
         db.close()
 

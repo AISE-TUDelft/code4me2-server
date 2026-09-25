@@ -199,7 +199,7 @@ const ParticipantDashboard = ({ studyId, participant, color }) => {
 
       <ChartCard
         title="Prompts per day"
-        subtitle={days.length ? `${days.length} active day${days.length === 1 ? "" : "s"}` : "No prompts yet"}
+        subtitle={days.length ? `${days.length} day${days.length === 1 ? "" : "s"} with prompts` : "No prompts yet"}
         table={
           <DataTable
             caption="Daily activity"

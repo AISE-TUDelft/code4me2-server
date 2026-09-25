@@ -42,10 +42,12 @@ const APPROVAL_POLICIES = [
 ];
 
 // Mirrors FALLBACK_MAX_CONTEXT_TOKENS in backend/routers/acp/__init__.py.
-const DEFAULT_CONTEXT_TOKENS = 16000;
+const DEFAULT_CONTEXT_TOKENS = 32000;
 const SYSTEM_PROMPT_MAX_LENGTH = 4000;
 
-// Settings that govern a packaged (built-in) release.
+// Settings that govern a packaged (built-in) release. The system prompt is
+// listed so a profile edited before the release catalogue answers is not
+// blanked (it was then saved as null once the catalogue confirmed support).
 const PACKAGED_FIELDS = [
   "model",
   "temperature",
@@ -53,6 +55,7 @@ const PACKAGED_FIELDS = [
   "tools",
   "approval_policy",
   "max_context_tokens",
+  "system_prompt",
 ];
 // Always set on a profile, so a BYOA release must translate them.
 const ALWAYS_SET_FIELDS = ["model", "max_steps", "approval_policy"];

@@ -17,7 +17,7 @@ const STUDY = {
 
 const renderEditor = () =>
   render(
-    <MemoryRouter initialEntries={["/research/studies/study-1/editor"]}>
+    <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={["/research/studies/study-1/editor"]}>
       <Routes>
         <Route path="/research/studies/:studyId/editor" element={<ResearchStudyEditor />} />
       </Routes>

@@ -1186,7 +1186,7 @@ def test_participant_dashboard_for_a_seeded_participant(analytics_runtime):
     # A BYOA participant without relay traffic: context coverage is UNAVAILABLE.
     byoa = client.get(_url(seeded.study_id, f"participants/{seeded.p3}")).json()
     assert byoa["health"] == "INACTIVE"
-    assert byoa["context"]["cap_tokens"] == 16000
+    assert byoa["context"]["cap_tokens"] == 32000
     assert byoa["context"]["model_calls"] == 0
     assert byoa["context"]["coverage"] == "UNAVAILABLE"
     assert byoa["metrics"]["permission_denial_rate"] is None
@@ -1291,7 +1291,7 @@ def test_study_summary_compares_arms_on_participant_level_values(analytics_runti
     assert byoa["turn_seconds"] == {"p50": 25.0, "p90": 29.0, "n": 2}
     assert byoa["transitions"] == []
     assert byoa["permission_decisions"] == [{"decision": "cancelled", "count": 1}]
-    assert byoa["context"]["cap_tokens"] == 16000
+    assert byoa["context"]["cap_tokens"] == 32000
     assert byoa["context"]["model_calls"] == 0
     assert byoa["context"]["over_cap_share"] is None
     assert byoa["context"]["coverage"] == "UNAVAILABLE"

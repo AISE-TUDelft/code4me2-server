@@ -161,7 +161,7 @@ The classic endpoints (`POST /api/chat/request`, `POST /api/completion/request`)
 
 - `base_url` is required. `api_key_ref` is optional (a local Ollama needs no key), and like agent profiles it stores only the environment-variable *name*: the value is read from the backend's environment at request time and is never stored or logged. A referenced variable that is missing is a hard error — there is no unauthenticated fallback.
 - `kind` selects the model class (chat vs. FIM completion) and defaults from the model name. `endpoint` selects the wire format for completion rows: `chat` sends one system message plus the formatted FIM prompt as a user message, `completions` posts the formatted prompt to `/completions` with `stop` sequences.
-- Provider rows report `confidence: 0.0` and empty `logprobs` (token logprobs exist only on the local path).
+- Provider rows report no `confidence` (stored as NULL and left out of the calibration and model analytics) and empty `logprobs` (token logprobs exist only on the local path). A database created before this change needs `ALTER TABLE had_generation ALTER COLUMN confidence DROP NOT NULL;` once (the schema has a single consolidated revision, so existing databases are not migrated automatically); until then provider generations fail to save.
 - Unknown `model_parameters` keys are rejected, so a typo cannot silently change the wire shape.
 
 A database seeded before this default keeps local rows; adopt the default once with:

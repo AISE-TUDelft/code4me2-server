@@ -39,6 +39,9 @@ def _maybe_parse_json(s: str) -> Any:
         return s
 
 
+# Both spellings are served directly: the website normalizes ``/api/config/`` to
+# ``/api/config`` and a redirect between them fails CORS preflight cross-origin.
+@router.get("", include_in_schema=False)
 @router.get("/", summary="List all configs")
 def list_configs(
     current_user: AuthenticatedUser = Depends(require_admin),
@@ -130,6 +133,7 @@ def get_config(
         db.close()
 
 
+@router.post("", include_in_schema=False)
 @router.post("/", summary="Create a new config")
 def create_config(
     payload: ConfigCreate,

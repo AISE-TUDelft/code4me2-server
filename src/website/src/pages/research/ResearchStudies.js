@@ -14,6 +14,7 @@ import {
   updateResearchStudyMetadata,
 } from "../../utils/api";
 import Icon from "../../components/common/Icon";
+import { isResearcher } from "../../components/layout/AppShell";
 import { CopyButton, EmptyState, Loading, PageHeader, TabPanel, Tabs } from "../../components/common/ui";
 import { formatDate, formatNumber } from "../../utils/format";
 import StudyCreateForm from "./StudyCreateForm";
@@ -88,6 +89,10 @@ const ResearchStudies = () => {
   const [refreshToken, setRefreshToken] = useState(0);
   const selectedRef = useRef(selectedStudyId);
   selectedRef.current = selectedStudyId;
+  // `navigate` changes identity on every navigation outside a data router; an
+  // effect that listed it would re-run the account check after each URL sync.
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
   // Only the latest request of each kind may update the page.
   const participantsRequest = useRef(0);
   const summaryRequest = useRef(0);
@@ -118,21 +123,35 @@ const ResearchStudies = () => {
     setIsLoading(false);
   }, []);
 
+  // The account is resolved first: a participant who lands here (an old link,
+  // a typed URL) gets the forbidden page from this one request instead of a
+  // failing study list, profile list and analytics request each.
   useEffect(() => {
-    loadStudies();
-  }, [loadStudies]);
-
-  useEffect(() => {
-    Promise.resolve(getAgentProfiles()).then((result) => {
-      if (result && result.ok) setProfiles((result.data || []).filter((profile) => profile.is_active !== false));
-    });
-  }, []);
-
-  useEffect(() => {
+    let cancelled = false;
     Promise.resolve(getCurrentUser()).then((result) => {
-      if (result && result.ok && result.user) setIsAdmin(result.user.is_admin === true);
+      if (cancelled) return;
+      const user = result && result.ok ? result.user : null;
+      if (user && !isResearcher(user)) {
+        // Participants have their own page; the forbidden state only shows
+        // until the redirect lands.
+        setIsForbidden(true);
+        setIsLoading(false);
+        navigateRef.current("/research/my-studies", { replace: true });
+        return;
+      }
+      setIsAdmin(Boolean(user && user.is_admin === true));
+      loadStudies();
+      Promise.resolve(getAgentProfiles()).then((profilesResult) => {
+        if (cancelled) return;
+        if (profilesResult && profilesResult.ok) {
+          setProfiles((profilesResult.data || []).filter((profile) => profile.is_active !== false));
+        }
+      });
     });
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadStudies]);
 
   // Follow browser navigation (back/forward) between study URLs, including
   // back to the bare list, and between tabs.

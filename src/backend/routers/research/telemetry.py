@@ -67,7 +67,8 @@ def _log_ack(ack: TelemetryBatchAckV1) -> None:
     retryable_reasons = sorted(
         {event.reason.value for event in ack.retryable if event.reason is not None}
     )
-    logger.warning(
+    log = logger.warning if (ack.rejected or ack.retryable) else logger.info
+    log(
         "telemetry batch %s ack: accepted=%d duplicate=%d rejected=%d retryable=%d "
         "rejected_reasons=%s retryable_reasons=%s",
         ack.batch_id,

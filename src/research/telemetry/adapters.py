@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping, Optional, Sequence
 
+from sqlalchemy import text
+
 from research.participants import identity as identity_store
 from research.runtime.sessions import store as session_store
 from database import crud
@@ -163,6 +165,9 @@ def research_bound(task: Any) -> bool:
 
 
 #: Plain metadata classes a policy may exclude; see ``_policy_payload``.
+#: The server's own markers (``legacy_kind``, ``upstream_status``) are SYSTEM
+#: (``SYSTEM_KEY_EXACT``), so a METRICS-only policy keeps them and the
+#: dashboards that read ``legacy_kind`` do not report zero.
 _EXCLUDABLE_METADATA = frozenset({FieldClass.SYSTEM, FieldClass.BEHAVIORAL})
 
 
@@ -285,6 +290,43 @@ def _kill_switch_check(db: Any, task: Any):
         study_id=getattr(task, "study_id", None),
         enrollment_id=getattr(task, "enrollment_id", None),
     )
+
+
+def existing_source_event_ids(db: Any, task: Any, source_event_ids: Sequence[str]) -> set[str]:
+    """Runtime event ids already stored canonically for ``task``'s run.
+
+    The self-report ingest dedupes retries by the runtime's own event id. For a
+    research-bound task those rows live in ``research_event`` (never in the
+    legacy table), so this is the lookup that makes a retried batch report
+    duplicates instead of storing every event twice. Advisory: a lookup
+    failure returns nothing and the batch proceeds.
+    """
+    run_id = getattr(task, "external_run_id", None)
+    ids = [str(value) for value in source_event_ids if value]
+    if not run_id or not ids:
+        return set()
+    begin_nested = getattr(db, "begin_nested", None)
+    savepoint = begin_nested() if callable(begin_nested) else None
+    try:
+        # The builder stores the runtime's id under ``provenance``.
+        rows = db.execute(
+            text(
+                "SELECT envelope_json -> 'provenance' ->> 'source_event_id' AS source_event_id "
+                "FROM research_event "
+                "WHERE agent_run_id = :run_id "
+                "AND envelope_json -> 'provenance' ->> 'source_event_id' = ANY(:ids)"
+            ),
+            {"run_id": str(run_id), "ids": ids},
+        ).all()
+        if savepoint is not None:
+            savepoint.commit()
+    except Exception:  # noqa: BLE001 - advisory lookup
+        # Roll back only the savepoint, so a failed lookup never aborts the
+        # surrounding ingest transaction.
+        if savepoint is not None:
+            savepoint.rollback()
+        return set()
+    return {str(row.source_event_id) for row in rows if row.source_event_id}
 
 
 def record_legacy_facts(

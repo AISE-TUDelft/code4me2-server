@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Chart from '../visualization/Chart';
+import Icon from '../common/Icon';
+import { PageHeader } from '../common/ui';
 import { getDashboardOverview, getActivityTimeline } from '../../utils/api';
 import './OverviewDashboard.css';
 
@@ -118,6 +120,11 @@ const OverviewDashboard = ({ timeWindow, onTimeWindowChange }) => {
 
   return (
     <div className="overview-dashboard">
+      <PageHeader
+        titleId="overview-title"
+        title="Overview"
+        description="Completion and chat activity across all users for the selected time window."
+      />
       <div className="dashboard-controls">
         <div className="time-window-selector">
           <label>Time Window:</label>
@@ -141,7 +148,7 @@ const OverviewDashboard = ({ timeWindow, onTimeWindowChange }) => {
             change: trends.queries_change_pct || 0
           }}
           description={`${overview.completion_queries || 0} completions, ${overview.chat_queries || 0} chats`}
-          icon="📊"
+          icon={<Icon name="usage" size={20} />}
         />
         
         <StatCard
@@ -152,7 +159,7 @@ const OverviewDashboard = ({ timeWindow, onTimeWindowChange }) => {
             change: trends.users_change_pct || 0
           }}
           description={`${overview.total_sessions || 0} total sessions`}
-          icon="👥"
+          icon={<Icon name="users" size={20} />}
         />
         
         <StatCard
@@ -166,7 +173,7 @@ const OverviewDashboard = ({ timeWindow, onTimeWindowChange }) => {
             change: trends.acceptance_change_pct || 0
           }}
           description={`${overview.total_accepted_generations || 0} accepted generations`}
-          icon="✅"
+          icon={<Icon name="check" size={20} />}
         />
         
         <StatCard
@@ -176,7 +183,7 @@ const OverviewDashboard = ({ timeWindow, onTimeWindowChange }) => {
             '0ms'
           }
           description={`${overview.models_used || 0} models in use`}
-          icon="⚡"
+          icon={<Icon name="zap" size={20} />}
         />
       </div>
 
