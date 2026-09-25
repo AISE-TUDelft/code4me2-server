@@ -174,5 +174,21 @@ class HarnessTest(unittest.TestCase):
             self.assertEqual("QUALIFIED", steps.step_qualify_release(ctx)["derived_status"])
 
 
+    def test_send_message_names_its_research_session(self):
+        # The plugin layer's Kotlin fixture opens a second active session for the
+        # same account; without an explicit id the server refuses to guess.
+        state = {"accounts": {}, "acp_token": "token", "research_session_id": "rs-1"}
+        ctx = Ctx(load_scenario(), state, Path("."))
+        with patch.object(Ctx, "client") as client:
+            client.return_value.post.return_value = Mock(
+                status=409, json={"detail": {"code": "RESEARCH_CONTEXT_AMBIGUOUS"}}, text=""
+            )
+            with self.assertRaises(steps.StepFailure):
+                steps.step_send_message(ctx)
+        path, body = client.return_value.post.call_args.args[:2]
+        self.assertEqual("/api/acp/runs", path)
+        self.assertEqual("rs-1", body["research_session_id"])
+
+
 if __name__ == "__main__":
     unittest.main()

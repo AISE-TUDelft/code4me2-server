@@ -934,9 +934,12 @@ def step_send_message(ctx: Ctx) -> Dict[str, Any]:
     session_id = ctx.get("research_session_id")
     ctx.state["run_id"] = run_id
 
+    # Name the research session explicitly: another client of the same account
+    # (the plugin layer's Kotlin fixture) can hold an active session too, and the
+    # server never guesses between them (RESEARCH_CONTEXT_AMBIGUOUS).
     created = participant.post(
         "/api/acp/runs",
-        {"run_id": run_id, "session_id": session_id},
+        {"run_id": run_id, "session_id": session_id, "research_session_id": session_id},
         bearer=bearer,
     )
     created_payload = _expect(
