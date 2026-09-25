@@ -14,6 +14,7 @@ from research.compatibility.enums import CompatibilityDecision
 from research.participants.enums import EnrollmentStatus
 from research.study.agents.models import normalize_platform
 from research.telemetry.enums import CoverageState
+from research.telemetry.privacy.engine import runtime_field_classes
 
 from .capability import issue_capability
 from .models import (
@@ -153,7 +154,10 @@ def _policies(study: Any, enrollment: Any) -> BootstrapPolicies:
     )
     return BootstrapPolicies(
         telemetry_policy=BootstrapTelemetryPolicy(
-            allowed_field_classes=[str(value) for value in allowed],
+            # Resolved to the runtime vocabulary (SYSTEM/BEHAVIORAL/...): the
+            # plugin and its ACP proxy do not know the study names and would
+            # otherwise drop the metadata those names stand for.
+            allowed_field_classes=runtime_field_classes(allowed),
             content_capture=bool(telemetry.get("content_capture", False)),
             consent_active=consent_active,
         ),

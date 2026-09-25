@@ -78,8 +78,12 @@ class CloneNotAllowedError(PermissionError):
 
 
 def profile_snapshot(profile: Any) -> dict[str, Any]:
-    """Return the non-secret profile configuration frozen into a study."""
-    return {
+    """Return the non-secret profile configuration frozen into a study.
+
+    ``system_prompt`` is included only when set, so a profile without one keeps
+    the snapshot shape (and digest) it had before the field existed.
+    """
+    snapshot = {
         "profile_id": str(profile.profile_id),
         "name": profile.name,
         "model": profile.model,
@@ -92,6 +96,10 @@ def profile_snapshot(profile: Any) -> dict[str, Any]:
         "temperature": profile.temperature,
         "max_context_tokens": profile.max_context_tokens,
     }
+    system_prompt = getattr(profile, "system_prompt", None)
+    if system_prompt is not None:
+        snapshot["system_prompt"] = system_prompt
+    return snapshot
 
 
 def allocate_join_code(session: Session) -> str:

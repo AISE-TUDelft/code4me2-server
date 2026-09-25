@@ -117,6 +117,10 @@ def test_release_catalogue_returns_qualified_release_with_zero_profiles(http_run
         "verified_approval_options",
         "tests",
         "is_byoa",
+        # Additive (UI overhaul): per-release profile configurability.
+        "compatible_frameworks",
+        "configurable_fields",
+        "required_bindings_missing",
     }
     assert entry["release_id"] == release_id
     assert entry["version"] == "2.1.0"

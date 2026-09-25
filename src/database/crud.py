@@ -4,7 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import List, Optional, Tuple, Type, Union
 
-from sqlalchemy import func, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -14,7 +14,11 @@ from database.db_schemas import DEFAULT_USER_PREFERENCE
 from database.embedding_service import encode_text
 from utils import hash_password, verify_password
 from research.canonical import canonical_hash
-from database.research_schemas import AgentRelease
+from database.research_schemas import (
+    AgentRelease,
+    ResearchEnrollment,
+    ResearchParticipant,
+)
 from research.study.agents.distributions import validate_profile_configuration
 from research.study.agents.enums import QualificationStatus
 from research.study.agents.registry import SELECTABLE_STATUSES
@@ -60,6 +64,8 @@ def _validate_profile_configuration(
     model: Optional[str] = None,
     temperature: Optional[float] = None,
     max_steps: Optional[int] = None,
+    max_context_tokens: Optional[int] = None,
+    system_prompt: Optional[str] = None,
 ) -> None:
     """Enforce the shared profile↔release executable contract (ISSUE-03/17).
 
@@ -67,8 +73,9 @@ def _validate_profile_configuration(
     and its stored conformance evidence, so a profile that cannot execute is
     rejected at create/update time with a typed reason. ``model`` /
     ``temperature`` / ``max_steps`` participate in the BYOA field-coverage
-    check; omitting them would let an unmapped field through until study
-    creation.
+    check and ``max_context_tokens`` / ``system_prompt`` in the BYOA
+    unsupported-field check; omitting them would let an ungoverned field
+    through until study creation.
     """
     if release_id is None:
         raise ProfileReleaseError(
@@ -88,6 +95,8 @@ def _validate_profile_configuration(
         model=model,
         temperature=temperature,
         max_steps=max_steps,
+        max_context_tokens=max_context_tokens,
+        system_prompt=system_prompt,
     )
     validate_profile_configuration(
         candidate, row_to_release(row), release_json=row.release_json
@@ -1190,7 +1199,7 @@ class ProfileLockedError(PermissionError):
 
 
 def _agent_profile_configuration(profile: db_schemas.AgentProfile) -> dict:
-    return {
+    configuration = {
         "profile_id": str(profile.profile_id),
         "name": profile.name,
         "model": profile.model,
@@ -1204,6 +1213,12 @@ def _agent_profile_configuration(profile: db_schemas.AgentProfile) -> dict:
         "max_context_tokens": profile.max_context_tokens,
         "is_active": profile.is_active,
     }
+    # Only a set prompt joins the digest input, so every profile without one
+    # keeps the byte-identical configuration digest it had before the column.
+    system_prompt = getattr(profile, "system_prompt", None)
+    if system_prompt is not None:
+        configuration["system_prompt"] = system_prompt
+    return configuration
 
 
 def _refresh_agent_profile_digest(profile: db_schemas.AgentProfile) -> None:
@@ -1247,6 +1262,7 @@ def create_agent_profile(
     is_active: bool = True,
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
 ) -> db_schemas.AgentProfile:
     """Create a researcher-owned profile template.
 
@@ -1264,6 +1280,8 @@ def create_agent_profile(
         model=model,
         temperature=temperature,
         max_steps=max_steps,
+        max_context_tokens=max_context_tokens,
+        system_prompt=system_prompt,
     )
     profile = db_schemas.AgentProfile(
         profile_id=uuid.uuid4(),
@@ -1279,6 +1297,7 @@ def create_agent_profile(
         is_active=is_active,
         max_context_tokens=max_context_tokens,
         temperature=temperature,
+        system_prompt=system_prompt,
     )
     _refresh_agent_profile_digest(profile)
     db.add(profile)
@@ -1322,10 +1341,21 @@ def update_agent_profile(
     is_active: Optional[bool] = None,
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
     update_connection_id: bool = False,
     update_release_id: bool = False,
+    update_temperature: bool = False,
+    update_max_context_tokens: bool = False,
+    update_system_prompt: bool = False,
 ) -> Optional[db_schemas.AgentProfile]:
-    """Update a profile template in place (caller performs ownership checks)."""
+    """Update a profile template in place (caller performs ownership checks).
+
+    ``None`` keeps a field unchanged, except where the matching ``update_*``
+    flag is set: then the supplied value is stored as-is, so ``None`` clears the
+    optional ``temperature`` / ``max_context_tokens`` / ``system_prompt``
+    overrides (a full-replace PUT). The refreshed digest is then exactly that of
+    a profile created with ``NULL`` for the cleared field.
+    """
     profile = (
         db.query(db_schemas.AgentProfile)
         .filter(db_schemas.AgentProfile.profile_id == profile_id)
@@ -1337,6 +1367,21 @@ def update_agent_profile(
     _assert_agent_profile_editable(db, profile_id)
     if update_release_id:
         validate_profile_release(db, release_id)
+    effective_temperature = (
+        temperature
+        if update_temperature or temperature is not None
+        else getattr(profile, "temperature", None)
+    )
+    effective_max_context_tokens = (
+        max_context_tokens
+        if update_max_context_tokens or max_context_tokens is not None
+        else getattr(profile, "max_context_tokens", None)
+    )
+    effective_system_prompt = (
+        system_prompt
+        if update_system_prompt or system_prompt is not None
+        else getattr(profile, "system_prompt", None)
+    )
     # Validate the merged result, not just the supplied fields: changing only
     # the framework (or only the release) must not leave an unexecutable pair.
     _validate_profile_configuration(
@@ -1351,10 +1396,10 @@ def update_agent_profile(
             approval_policy if approval_policy is not None else profile.approval_policy
         ),
         model=model if model is not None else profile.model,
-        temperature=(
-            temperature if temperature is not None else profile.temperature
-        ),
+        temperature=effective_temperature,
         max_steps=max_steps if max_steps is not None else profile.max_steps,
+        max_context_tokens=effective_max_context_tokens,
+        system_prompt=effective_system_prompt,
     )
     if name is not None:
         profile.name = name
@@ -1374,10 +1419,12 @@ def update_agent_profile(
         profile.release_id = release_id
     if is_active is not None:
         profile.is_active = is_active
-    if max_context_tokens is not None:
+    if update_max_context_tokens or max_context_tokens is not None:
         profile.max_context_tokens = max_context_tokens
-    if temperature is not None:
+    if update_temperature or temperature is not None:
         profile.temperature = temperature
+    if update_system_prompt or system_prompt is not None:
+        profile.system_prompt = system_prompt
     _refresh_agent_profile_digest(profile)
     db.commit()
     db.refresh(profile)
@@ -1489,6 +1536,34 @@ def delete_provider_connection(db: Session, connection_id: uuid.UUID) -> bool:
     return True
 
 
+def count_profiles_for_connection(db: Session, connection_id: uuid.UUID) -> int:
+    """Agent profiles (active or archived) that reference one connection.
+
+    Every referencing row blocks deletion: ``agent_profile.connection_id`` is a
+    ``RESTRICT`` foreign key, and archived profiles keep their reference.
+    """
+    return int(
+        db.query(func.count(db_schemas.AgentProfile.profile_id))
+        .filter(db_schemas.AgentProfile.connection_id == connection_id)
+        .scalar()
+        or 0
+    )
+
+
+def count_profiles_by_connection(db: Session) -> dict:
+    """``{connection_id: referencing profile count}`` in one grouped query."""
+    rows = (
+        db.query(
+            db_schemas.AgentProfile.connection_id,
+            func.count(db_schemas.AgentProfile.profile_id),
+        )
+        .filter(db_schemas.AgentProfile.connection_id.isnot(None))
+        .group_by(db_schemas.AgentProfile.connection_id)
+        .all()
+    )
+    return {connection_id: int(count) for connection_id, count in rows}
+
+
 def list_available_provider_connections(
     db: Session, user_id: uuid.UUID
 ) -> List[db_schemas.ProviderConnection]:
@@ -1532,18 +1607,161 @@ def set_user_can_research(
     return user
 
 
-def list_accounts(db: Session, limit: int = 100) -> List[db_schemas.User]:
-    """Every account, newest first, for the administrator account view.
+#: Account role filters of the administrator account view.
+ACCOUNT_ROLE_FILTERS = ("all", "admin", "researcher", "participant")
+#: Account enrollment filters of the administrator account view.
+ACCOUNT_ENROLLMENT_FILTERS = ("any", "enrolled", "not_enrolled")
+
+
+def _account_enrollment_exists(*conditions):
+    """Correlated ``EXISTS`` over the account's enrollments (via its mapping)."""
+    return (
+        select(ResearchEnrollment.enrollment_id)
+        .join(
+            ResearchParticipant,
+            ResearchParticipant.participant_id == ResearchEnrollment.participant_id,
+        )
+        .where(ResearchParticipant.account_id == db_schemas.User.user_id, *conditions)
+        .exists()
+    )
+
+
+def _account_filter_criteria(
+    *,
+    q: Optional[str] = None,
+    role: str = "all",
+    enrollment: str = "any",
+    study_id: Optional[uuid.UUID] = None,
+) -> list:
+    """SQL criteria for the administrator account filters.
+
+    * ``q`` — case-insensitive substring over email and name (``%``/``_`` are
+      matched literally);
+    * ``role`` — ``admin``; ``researcher`` (``can_research`` and not admin);
+      ``participant`` (neither); ``all``;
+    * ``enrollment`` — ``enrolled`` (has an ACTIVE enrollment),
+      ``not_enrolled`` (has none), ``any``;
+    * ``study_id`` — has any enrollment (any status) in that study.
+    """
+    if role not in ACCOUNT_ROLE_FILTERS:
+        raise ValueError(f"unknown account role filter {role!r}")
+    if enrollment not in ACCOUNT_ENROLLMENT_FILTERS:
+        raise ValueError(f"unknown account enrollment filter {enrollment!r}")
+    user = db_schemas.User
+    criteria = []
+    needle = (q or "").strip()
+    if needle:
+        criteria.append(
+            or_(
+                user.email.icontains(needle, autoescape=True),
+                user.name.icontains(needle, autoescape=True),
+            )
+        )
+    is_admin = func.coalesce(user.is_admin, False)
+    can_research = func.coalesce(user.can_research, False)
+    if role == "admin":
+        criteria.append(is_admin.is_(True))
+    elif role == "researcher":
+        criteria.append(and_(can_research.is_(True), is_admin.is_(False)))
+    elif role == "participant":
+        criteria.append(and_(can_research.is_(False), is_admin.is_(False)))
+    if enrollment == "enrolled":
+        criteria.append(_account_enrollment_exists(ResearchEnrollment.status == "ACTIVE"))
+    elif enrollment == "not_enrolled":
+        criteria.append(~_account_enrollment_exists(ResearchEnrollment.status == "ACTIVE"))
+    if study_id is not None:
+        criteria.append(_account_enrollment_exists(ResearchEnrollment.study_id == study_id))
+    return criteria
+
+
+def list_accounts(
+    db: Session,
+    limit: int = 100,
+    *,
+    offset: int = 0,
+    q: Optional[str] = None,
+    role: str = "all",
+    enrollment: str = "any",
+    study_id: Optional[uuid.UUID] = None,
+) -> List[db_schemas.User]:
+    """One page of accounts, newest first, for the administrator account view.
 
     The admin panel toggles ``can_research`` per account, so it needs the full
-    account list rather than only the already-enabled researchers.
+    account list rather than only the already-enabled researchers. The optional
+    filters are :func:`_account_filter_criteria`; ``user_id`` breaks
+    ``joined_at`` ties so paging is stable.
     """
+    criteria = _account_filter_criteria(
+        q=q, role=role, enrollment=enrollment, study_id=study_id
+    )
     return (
         db.query(db_schemas.User)
-        .order_by(db_schemas.User.joined_at.desc())
+        .filter(*criteria)
+        .order_by(db_schemas.User.joined_at.desc(), db_schemas.User.user_id.asc())
+        .offset(offset)
         .limit(limit)
         .all()
     )
+
+
+def count_accounts(
+    db: Session,
+    *,
+    q: Optional[str] = None,
+    role: str = "all",
+    enrollment: str = "any",
+    study_id: Optional[uuid.UUID] = None,
+) -> int:
+    """How many accounts match the filters (before paging)."""
+    criteria = _account_filter_criteria(
+        q=q, role=role, enrollment=enrollment, study_id=study_id
+    )
+    return int(
+        db.query(func.count(db_schemas.User.user_id)).filter(*criteria).scalar() or 0
+    )
+
+
+def list_account_enrollments(db: Session, account_ids) -> dict:
+    """``{account_id: [enrollment rows, newest first]}`` in one query.
+
+    Each row carries the enrollment id/study/status/``enrolled_at`` plus the
+    study's name and ``research_status`` (``None`` when the study row is gone).
+    The participant code and the assigned profile are deliberately not
+    selected: this administrator view must not link an account to its
+    study-local pseudonym or arm.
+    """
+    ids = list(account_ids)
+    grouped: dict = {account_id: [] for account_id in ids}
+    if not ids:
+        return grouped
+    statement = (
+        select(
+            ResearchParticipant.account_id.label("account_id"),
+            ResearchEnrollment.enrollment_id.label("enrollment_id"),
+            ResearchEnrollment.study_id.label("study_id"),
+            ResearchEnrollment.status.label("status"),
+            ResearchEnrollment.enrolled_at.label("enrolled_at"),
+            db_schemas.Study.name.label("study_name"),
+            db_schemas.Study.research_status.label("study_status"),
+        )
+        .select_from(ResearchEnrollment)
+        .join(
+            ResearchParticipant,
+            ResearchParticipant.participant_id == ResearchEnrollment.participant_id,
+        )
+        .outerjoin(
+            db_schemas.Study,
+            db_schemas.Study.study_id == ResearchEnrollment.study_id,
+        )
+        .where(ResearchParticipant.account_id.in_(ids))
+        .order_by(
+            ResearchEnrollment.enrolled_at.desc(),
+            ResearchEnrollment.enrollment_id.asc(),
+        )
+    )
+    for row in db.execute(statement).all():
+        grouped.setdefault(row.account_id, []).append(row)
+    return grouped
 
 
 # ── Agent tasks ─────────────────────────────────────────────────────────────

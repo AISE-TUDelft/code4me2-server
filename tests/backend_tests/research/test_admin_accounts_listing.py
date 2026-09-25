@@ -116,6 +116,9 @@ def test_admin_lists_all_accounts_newest_first(http_runtime):
         "is_admin",
         "can_research",
         "verified",
+        # Additive (UI overhaul): account creation time and enrollment summaries.
+        "joined_at",
+        "enrollments",
     }
     assert by_id[str(middle)]["can_research"] is False
     assert by_id[str(oldest)]["can_research"] is True

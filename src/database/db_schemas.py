@@ -889,6 +889,11 @@ class AgentProfile(Base):
     max_context_tokens = Column(
         Integer, nullable=True
     )  # per-turn rolling window; NULL = model max
+    # Researcher-authored system prompt (managed runtime only; BYOA refuses it).
+    # NULL = no prompt: the runtime keeps its built-in one. It joins the
+    # configuration digest and study snapshots only when set, so profiles
+    # without a prompt keep their existing digests.
+    system_prompt = Column(Text, nullable=True)
     configuration_digest = Column(String, nullable=False, server_default="")
     # Only active profiles are candidates for new study selections. Inactive
     # profiles stay in the table for historical snapshots.

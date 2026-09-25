@@ -55,7 +55,7 @@ def db_runtime():
         engine.dispose()
 
 
-def _seed(db, *, content_capture: bool):
+def _seed(db, *, content_capture: bool, telemetry_policy: dict | None = None):
     config_id = db.execute(
         text("INSERT INTO public.config (config_data) VALUES ('{}') RETURNING config_id")
     ).scalar_one()
@@ -84,7 +84,9 @@ def _seed(db, *, content_capture: bool):
             is_research=True,
             research_status="ACTIVE",
             research_config_json={
-                "telemetry_policy": (
+                "telemetry_policy": telemetry_policy
+                if telemetry_policy is not None
+                else (
                     {"content_capture": True}
                     if content_capture
                     else {"allowed_field_classes": ["SYSTEM", "BEHAVIORAL"]}
@@ -243,5 +245,139 @@ def test_content_enabled_policy_allows_content_capture(db_runtime):
             {"run_id": task.external_run_id},
         ).scalar_one()
         assert CONTENT_SENTINEL in json.dumps(envelope)
+    finally:
+        db.close()
+
+
+def _structural_event() -> dict:
+    event = _content_event()
+    event["payload"] = {"tool_name": "read_file"}
+    event.pop("raw_payload", None)
+    return event
+
+
+def test_a_policy_without_agent_activity_keeps_the_reports_without_it(db_runtime):
+    """Usage and timings only: the built-in agent's report is stored without its
+    behavioural fields instead of being refused outright."""
+    session_factory = db_runtime
+    db = session_factory()
+    try:
+        task = _seed(db, content_capture=False, telemetry_policy={"allowed_field_classes": ["METRICS"]})
+        ingested, _skipped = ingest_event_batch(
+            db,
+            task_id=task.task_id,
+            events=[_structural_event()],
+            content_included=False,
+            agent_profile="managed-arm",
+        )
+        assert ingested == 1
+
+        envelope = db.execute(
+            text(
+                "SELECT envelope_json FROM public.research_event "
+                "WHERE agent_run_id = :run_id"
+            ),
+            {"run_id": task.external_run_id},
+        ).scalar_one()
+        # tool_name and legacy_kind are behavioural: excluded by the policy.
+        assert "tool_name" not in envelope["payload"]
+        assert "legacy_kind" not in envelope["payload"]
+    finally:
+        db.close()
+
+
+def test_forced_content_is_still_refused_when_agent_activity_is_excluded(db_runtime):
+    session_factory = db_runtime
+    db = session_factory()
+    try:
+        task = _seed(db, content_capture=False, telemetry_policy={"allowed_field_classes": ["METRICS"]})
+        with pytest.raises(CanonicalIngestionFailed) as error:
+            ingest_event_batch(
+                db,
+                task_id=task.task_id,
+                events=[_content_event()],
+                content_included=True,
+                agent_profile="managed-arm",
+            )
+        assert error.value.reason == "REJECTED"
+        db.rollback()
+        stored = db.execute(
+            text("SELECT count(*) FROM public.research_event WHERE agent_run_id = :run_id"),
+            {"run_id": task.external_run_id},
+        ).scalar_one()
+        assert stored == 0
+    finally:
+        db.close()
+
+
+def test_relay_model_and_tool_calls_are_stored_under_the_default_policy(db_runtime):
+    """The inference relay's own facts pass the ingestion privacy check.
+
+    Its payload keys must be recognised metadata: an unknown key counts as
+    content, and a study that does not capture content (the default) would
+    refuse every relay model call and tool call.
+    """
+    from agents import event_writer
+    from agents.telemetry import InferenceRecord
+    from research.telemetry.adapters import record_legacy_facts
+
+    session_factory = db_runtime
+    db = session_factory()
+    try:
+        # The default policy: nothing declared, no content capture.
+        task = _seed(db, content_capture=False, telemetry_policy={})
+        record = InferenceRecord(
+            request_id="req-1",
+            model="managed-model",
+            streaming=True,
+            message_count=3,
+            latency_ms=5,
+            upstream_status=200,
+            prompt_tokens=900,
+            completion_tokens=50,
+            total_tokens=950,
+        )
+        extra = {
+            "wire_api": "chat_completions",
+            "upstream_base_url": "https://provider.example/v1",
+            "openai_passthrough": False,
+            "meta_request": False,
+            "requested_model": "managed-model",
+            "tool_schema_bytes": 800,
+        }
+        arguments = '{"path": "src/app.py"}'
+        facts = [
+            event_writer._model_call_fact(
+                record, 5, {"step_index": 2, "span_id": "span-1", "context_window_size_bytes": 12000}, extra
+            ),
+            event_writer._tool_call_fact(
+                {"name": "read_file", "arguments": arguments, "result": "print()", "id": "call-1"}, 7, None
+            ),
+        ]
+        result = record_legacy_facts(db, task=task, facts=facts)
+        assert result is not None and result.written, result
+        db.commit()
+
+        rows = db.execute(
+            text(
+                "SELECT event_type, envelope_json FROM public.research_event "
+                "WHERE agent_run_id = :run_id ORDER BY emitter_sequence"
+            ),
+            {"run_id": task.external_run_id},
+        ).all()
+        assert [row.event_type for row in rows] == ["agent.message.completed", "tool.completed"]
+        model_call, tool_call = (row.envelope_json for row in rows)
+        assert model_call["metrics"]["counts"]["step_index"] == 2
+        assert model_call["metrics"]["counts"]["prompt_tokens"] == 900
+        assert model_call["payload"]["call_mode"] == "streaming"
+        assert model_call["payload"]["api_kind"] == "chat_completions"
+        # The relay reports the tool schema size in ``extra``; the dashboard reads the payload.
+        assert model_call["payload"]["tool_schema_bytes"] == 800
+        assert model_call["payload"]["context_window_size_bytes"] == 12000
+        assert tool_call["metrics"]["counts"]["tool_arguments_length"] == len(arguments)
+        assert tool_call["metrics"]["counts"]["tool_result_length"] == len("print()")
+        serialized = json.dumps([model_call, tool_call])
+        assert "provider.example" not in serialized
+        assert "[REDACTED]" not in serialized
     finally:
         db.close()
