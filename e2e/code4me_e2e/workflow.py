@@ -150,7 +150,8 @@ def run_workflow(
         for role in ("admin", "researcher", "participant"):
             account = getattr(scenario, role)
             local, domain = account.email.rsplit("@", 1)
-            suffix = __import__("hashlib").sha256(run_path.name.encode()).hexdigest()[:10]
+            # The full path: layer state directories share names (browser-state).
+            suffix = __import__("hashlib").sha256(str(run_path).encode()).hexdigest()[:10]
             account.email = f"{local[:38-len(domain)]}+{suffix}@{domain}"
         state["accounts"] = {role: asdict(getattr(scenario, role))
                              for role in ("admin", "researcher", "participant")}
@@ -199,6 +200,10 @@ def run_workflow(
             break
 
     finished_at = report.utc_now_iso()
+    # This invocation passes or fails on the steps it ran. Steps merged from the
+    # run's shared report (another layer's result, the gate's prerequisites
+    # record) stay in the report but must not decide this return code.
+    own_ok = not any(item["status"] in ("FAIL", "BLOCKED") for item in results)
     previous = run_path / "report.json"
     if previous.is_file():
         old = json.loads(previous.read_text()).get("steps", [])
@@ -218,14 +223,14 @@ def run_workflow(
     )
     report.write_report(run_path, built)
 
-    if failed_step or blocked_by:
+    if not own_ok:
         log_path = report.capture_backend_logs(scenario, run_path)
         built["backend_log"] = log_path
         report.write_report(run_path, built)
 
     report.print_summary(built, as_json)
 
-    if not failed_step and not blocked_by and up_started and not keep_stack:
+    if own_ok and up_started and not keep_stack:
         try:
             stack.down(scenario)
         except Exception as error:  # noqa: BLE001
@@ -233,7 +238,7 @@ def run_workflow(
 
     if ctx.stub:
         ctx.stub.stop()
-    return 0 if not (failed_step or blocked_by) else 1
+    return 0 if own_ok else 1
 
 
 def run_single_step(

@@ -33,6 +33,7 @@ build/
 dist/
 e2e/runs/
 e2e/.cache/
+e2e/.venv/
 e2e/.browser-venv/
 **/.pytest_cache
 **/.ruff_cache

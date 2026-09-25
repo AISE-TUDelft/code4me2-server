@@ -10,6 +10,7 @@ import socket
 import subprocess
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -101,6 +102,41 @@ def require_test_evidence(exit_code: int, xml: dict, results: dict | None = None
         overall, reasons = _overall_from_results(results)
         if overall != "PASS":
             raise RuntimeError("; ".join(reasons) or "UI results did not pass")
+
+
+# ---------------------------------------------------------------------------
+# Post-UI registered-entry check
+# ---------------------------------------------------------------------------
+
+
+def verify_registered_entry(run_path: Path) -> Dict[str, Any]:
+    """Post-UI check: the IDE-registered ACP entry is executable and identified.
+
+    A registration that merely exists in ``acp.json`` is not enough (the
+    Kotlin ``acp_registration``/``prepare_agent`` steps already check the file
+    and the bridge). This check resolves the exact command the IDE registered,
+    requires the proxy *and* the wrapped agent binary to be executable files,
+    records both digests and ``--version`` outputs, verifies the declared
+    ``--agent-digest``, and requires the one-time spool capability the proxy
+    needs to deliver this run's telemetry.
+    """
+    try:
+        entry = acp.entry_identity(run_path)
+    except RuntimeError as error:
+        raise RuntimeError(f"registered ACP entry is unusable: {error}") from error
+    if "CODE4ME_RESEARCH_CAPABILITY" not in entry.get("env_keys", []):
+        raise RuntimeError(
+            "registered ACP entry carries no CODE4ME_RESEARCH_CAPABILITY; the proxy "
+            "could not deliver this run's telemetry"
+        )
+    try:
+        uuid.UUID(str(entry.get("research_session_id") or ""))
+    except ValueError as error:
+        raise RuntimeError(
+            "registered ACP entry names no valid CODE4ME_RESEARCH_SESSION_ID; its telemetry "
+            "cannot be attributed to this run's research session"
+        ) from error
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +278,10 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
         xml = parse_gradle_xml(xml_path)
         details["junit"] = xml
         require_test_evidence(rc, xml, results, log_path=run_path / 'ui-test.log')
+        stage = "registered_entry"
+        # A visible registration can still be unusable: resolve the exact entry
+        # command/agent argv, digest and version before launching it.
+        details["registered_entry"] = verify_registered_entry(run_path)
         stage = "acp_conversation"
         print("UI passed; testing registered ACP proxy, model turn and telemetry", file=__import__('sys').stderr)
         details["acp"] = acp.exercise(scenario, run_path, state, stub)
