@@ -25,6 +25,9 @@ from backend.routers.analytics.auth_utils import (
     get_current_user,
     require_admin,
 )
+from backend.routers.research.join import (
+    _collection_policy as consent_collection_policy,
+)
 from research.participants import identity as store
 from research.participants import retention as ret_api
 from research.participants.enums import RetentionJobState
@@ -34,6 +37,48 @@ router = APIRouter()
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _iso(value: Any) -> Optional[str]:
+    return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _my_study_payload(study_row: Any) -> Optional[dict[str, Any]]:
+    """The public study facts a participant saw when joining, or ``None``.
+
+    ``collection`` is the frozen policy the join consent text is composed from
+    (``join.consent_text`` resolves it the way ingestion does). Participants who
+    joined before that text listed tool titles, error messages and code
+    metadata consented to the earlier, shorter notice.
+    """
+    if study_row is None:
+        return None
+    return {
+        "study_id": str(study_row.study_id),
+        "name": study_row.name,
+        "description": study_row.description,
+        "research_status": getattr(study_row, "research_status", None),
+        "starts_at": _iso(getattr(study_row, "starts_at", None)),
+        "ends_at": _iso(getattr(study_row, "ends_at", None)),
+        "collection": consent_collection_policy(study_row),
+    }
+
+
+def _my_enrollment_payload(enrollment: Any, details: dict[str, Any]) -> dict[str, Any]:
+    """The caller's own enrollment: projection fields plus study context.
+
+    Additive over :func:`store.researcher_projection` (the plugin parses
+    ``enrollment_id``/``study_id``/``status``). ``runtime`` names only the
+    runtime kind; the assigned profile, model and digest are never returned,
+    so the participant stays blind to their arm.
+    """
+    payload = store.researcher_projection(enrollment)
+    payload["consent_accepted_at"] = _iso(enrollment.consent_accepted_at)
+    payload["study"] = _my_study_payload(details.get("study_row"))
+    payload["runtime"] = details.get("runtime")
+    payload["sessions"] = details["sessions"]
+    payload["activity"] = details["activity"]
+    return payload
 
 
 def _issue_payload(issue: Any) -> dict[str, Any]:
@@ -63,19 +108,29 @@ def get_my_status(
     current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
-    """Return only study-local enrollment projections for the caller."""
+    """Return the caller's own enrollments with their study context.
+
+    Each entry keeps the study-local projection and adds
+    ``consent_accepted_at``, the public ``study`` facts (with the frozen
+    collection policy), the ``runtime`` kind, and ``sessions``/``activity``
+    summaries. Only the caller's own enrollments are read.
+    """
     db = app.get_db_session()
     try:
         participant_row = store.get_participant_by_account(db, current_user.user_id)
         if participant_row is None:
             return JsonResponseWithStatus(status_code=200, content={"enrollments": []})
         rows = store.list_enrollments(db, participant_row.participant_id)
+        enrollments = [store.row_to_enrollment(row) for row in rows]
+        details = store.participant_enrollment_details(db, enrollments)
         return JsonResponseWithStatus(
             status_code=200,
             content={
                 "enrollments": [
-                    store.researcher_projection(store.row_to_enrollment(row))
-                    for row in rows
+                    _my_enrollment_payload(
+                        enrollment, details[enrollment.enrollment_id]
+                    )
+                    for enrollment in enrollments
                 ]
             },
         )

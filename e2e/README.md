@@ -42,7 +42,7 @@ diagnosis. A nonzero exit code means the gate did not pass.
 | `./test` | 19 steps: real IDE + native ACP + Kotlin fixture + HTTP workflow |
 | `./test --layer backend` | 17 HTTP workflow steps, no IDE or native builds |
 | `./test --layer plugin` | Kotlin IntelliJ fixture + HTTP workflow, no IDE UI |
-| `./test --layer browser` | `browser/` suite: 27 headless Chromium checks |
+| `./test --layer browser` | `browser/` suite: 31 headless Chromium checks |
 | `./test --json` | Same default gate, with a JSON summary on stdout |
 | `./test --keep-stack` | Preserve the disposable backend after success |
 
@@ -61,6 +61,7 @@ automatic enrollment discovery, the status surface, ACP registration and agent
 preparation. The Kotlin fixture independently tests the plugin's login,
 discovery, signed bootstrap validation and durable spool upload. The browser
 suite covers study creation, consent, enrollment handoff, metadata locking,
+the participants/dashboard/analytics tabs, the participant's My studies page,
 stopping/cloning a study and authorization controls.
 
 This does not automate JetBrains AI Assistant's chat panel or JetBrains account

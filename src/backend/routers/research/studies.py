@@ -175,6 +175,15 @@ def _validated_telemetry_policy(telemetry_policy: dict[str, Any]) -> dict[str, A
         # Accept both vocabularies: the study-facing authoring names
         # (STRUCTURAL/METRICS/DIAGNOSTICS/CONTENT) and the runtime privacy names
         # (SYSTEM/BEHAVIORAL/CODE_METADATA/CONTENT) used by older callers.
+        if FieldClass.SECRET.value in allowed:
+            # SECRET is never persisted; declaring it could only be a mistake.
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "TELEMETRY_POLICY_INVALID",
+                    "message": "SECRET is never collected and cannot be allowed",
+                },
+            )
         known = {field_class.value for field_class in TelemetryFieldClass} | {
             field_class.value for field_class in FieldClass
         }

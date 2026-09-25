@@ -122,6 +122,8 @@ def main() -> int:
             record("A7 study details contain no revision ID", not re.search(r"revision", details.inner_text(), re.I))
 
             renamed = f"{study_name} (edited)"
+            # Metadata editing lives in the study's Settings tab.
+            details.get_by_role("tab", name=re.compile("settings", re.I)).click()
             details.locator("input").first.fill(renamed)
             owner.click('button:has-text("Save metadata")')
             owner.wait_for_selector("text=Study metadata updated.", timeout=20000)
@@ -200,7 +202,47 @@ def main() -> int:
             )
             record("A11 stale-client metadata write is rejected after consent", forced_status == 409, f"status={forced_status}")
 
+            # ---- Scenario E: study workspace — participants, dashboards, analytics ----
+            details.get_by_role("tab", name=re.compile("participants", re.I)).click()
+            participants_table = details.get_by_role("table", name="Enrolled participants")
+            participants_table.wait_for(timeout=20000)
+            rows = participants_table.locator("tbody tr")
+            arm_cell = rows.first.locator("td").nth(1).inner_text().strip() if rows.count() else ""
+            record(
+                "E1 participants tab lists the enrolled participant with its frozen arm",
+                rows.count() == 1 and bool(arm_cell) and "Not assigned" not in arm_cell,
+                f"arm={arm_cell.splitlines()[0] if arm_cell else ''}",
+            )
+            rows.first.get_by_role("button", name=re.compile("open dashboard", re.I)).click()
+            drawer = owner.get_by_role("dialog")
+            drawer.wait_for(timeout=20000)
+            owner.wait_for_function(
+                """() => { const d = document.querySelector('[role=dialog]');
+                           return d && !d.textContent.includes('Loading participant telemetry'); }""",
+                timeout=20000,
+            )
+            drawer_text = drawer.inner_text()
+            record(
+                "E2 the participant dashboard opens with metadata-only telemetry",
+                "Participant" in drawer_text and ("Prompts" in drawer_text or "No telemetry" in drawer_text),
+            )
+            owner.keyboard.press("Escape")
+            drawer.wait_for(state="detached", timeout=20000)
+            details.get_by_role("tab", name=re.compile("analytics", re.I)).click()
+            owner.wait_for_selector("text=Arm comparison", timeout=20000)
+            record(
+                "E3 analytics compares arms on participant-level metrics",
+                owner.get_by_text("Participants with telemetry").count() >= 1,
+            )
+            participant.goto(f"{UI}/research/my-studies", wait_until="networkidle")
+            participant.wait_for_selector(f"text={renamed}", timeout=20000)
+            record(
+                "E4 My studies shows the joined study and its schedule",
+                participant.get_by_text("Study ends").count() >= 1 and participant.locator('input[type="checkbox"]').count() == 0,
+            )
+
             # ---- Scenario C: stop, retained data, clone ----
+            details.get_by_role("tab", name=re.compile("settings", re.I)).click()
             owner.wait_for_selector('button:has-text("Stop study")', state="visible", timeout=20000)
             owner.once("dialog", lambda dialog: dialog.accept())
             owner.click('button:has-text("Stop study")')
@@ -217,6 +259,9 @@ def main() -> int:
             record("C2 stopped study retains its enrollment rows", stopped_state["status"] == "STUDY_STOPPED" and stopped_state["enrollments"] == 1, str(stopped_state))
 
             owner.click('button:has-text("Clone as new Draft")')
+            # Cloning is a two-step flow: the clone must select its agent profiles.
+            owner.locator("fieldset.research-profile-selection input[type=checkbox]").first.check()
+            owner.click('button:has-text("Clone Draft study")')
             owner.wait_for_selector("text=/Clone created/", timeout=20000)
             record("C3 clone reports the omitted fields explicitly", True)
 
@@ -252,10 +297,13 @@ def main() -> int:
             # The kill-switch control lives in the selected study's detail panel.
             admin.locator("button.research-list-item", has_text=CONFIG.get("study_name", "E2E Synthetic Study")).first.click()
             admin.wait_for_selector('section[aria-label="Study details"]', timeout=20000)
+            admin.get_by_role("tab", name=re.compile("settings", re.I)).click()
             record(
                 "D4 admin sees the kill-switch control in the study detail panel",
                 admin.get_by_role("button", name=re.compile("kill switch", re.I)).count() >= 1,
             )
+            # Compare like with like: the owner looks at the same Settings tab.
+            owner.get_by_role("tab", name=re.compile("settings", re.I)).click()
             record(
                 "D5 non-admin researcher sees no kill-switch control",
                 owner.get_by_role("button", name=re.compile("kill switch", re.I)).count() == 0,
@@ -276,7 +324,7 @@ def main() -> int:
             {"id": name, "status": "PASS" if ok else "FAIL", "detail": detail}
             for name, ok, detail in results
         ]}, indent=2))
-    return 1 if failed or len(results) != 27 else 0
+    return 1 if failed or len(results) != 31 else 0
 
 
 if __name__ == "__main__":

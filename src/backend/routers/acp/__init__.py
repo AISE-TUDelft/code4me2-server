@@ -572,6 +572,7 @@ def get_acp_agent_config(
     approval_policy: Optional[str] = None
     temperature: Optional[float] = None
     max_context_tokens: Optional[int] = None
+    system_prompt: Optional[str] = None
     store_agent_content = False
 
     db = app.get_db_session()
@@ -598,6 +599,7 @@ def get_acp_agent_config(
                 approval_policy = profile.approval_policy
                 temperature = profile.temperature
                 max_context_tokens = profile.max_context_tokens
+                system_prompt = getattr(profile, "system_prompt", None)
                 max_iterations = max(1, int(profile.max_steps or max_iterations))
                 try:
                     parsed_tools = json.loads(profile.tools_json or "[]")
@@ -703,6 +705,7 @@ def get_acp_agent_config(
             max_context_tokens=max_context_tokens,
             approval_policy=approval_policy,
             temperature=temperature,
+            system_prompt=system_prompt,
             store_agent_content=store_agent_content,
             transport=transport,
             managed_protocol_version=(
@@ -772,7 +775,7 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
                     raise HTTPException(status_code=503, detail="Assigned command policy is invalid")
                 commands_allowlist = [command.strip() for command in raw_allowlist]
 
-    return {
+    policy = {
         "version": MANAGED_PROTOCOL_VERSION,
         "transport": "managed_backend",
         "agent_profile": profile.name,
@@ -788,6 +791,13 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
             db, str(user_id), study_id=study_id
         ),
     }
+    # The managed runtime re-applies this run policy before every prompt, so
+    # the frozen prompt travels with it (and is recorded on the task). A
+    # prompt-less arm keeps exactly the policy it had before the field existed.
+    system_prompt = getattr(profile, "system_prompt", None)
+    if system_prompt is not None:
+        policy["system_prompt"] = system_prompt
+    return policy
 
 
 @router.get("/readiness")

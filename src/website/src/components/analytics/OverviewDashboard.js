@@ -196,6 +196,9 @@ const OverviewDashboard = ({ timeWindow, onTimeWindowChange }) => {
           <div className="insight-group">
             <h3>Top Programming Languages</h3>
             <div className="language-list">
+              {!overviewData?.top_languages?.length ? (
+                <p className="insight-empty">No completions in this period.</p>
+              ) : null}
               {overviewData?.top_languages?.slice(0, 5).map((lang, index) => (
                 <div key={lang.language} className="language-item">
                   <div className="language-info">
@@ -222,6 +225,9 @@ const OverviewDashboard = ({ timeWindow, onTimeWindowChange }) => {
           <div className="insight-group">
             <h3>Top Performing Models</h3>
             <div className="model-list">
+              {!overviewData?.top_models?.length ? (
+                <p className="insight-empty">No model usage in this period.</p>
+              ) : null}
               {overviewData?.top_models?.slice(0, 3).map((model, index) => (
                 <div key={model.model_id} className="model-item">
                   <div className="model-header">

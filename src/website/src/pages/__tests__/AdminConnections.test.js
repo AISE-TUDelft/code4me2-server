@@ -71,6 +71,7 @@ test("creates a connection by POSTing the normalized payload", async () => {
   render(<AdminConnections />);
   await screen.findByText("primary");
 
+  fireEvent.click(screen.getByRole("button", { name: /new connection/i }));
   fireEvent.change(screen.getByLabelText(/^Label$/i), {
     target: { value: "secondary" },
   });
@@ -80,9 +81,12 @@ test("creates a connection by POSTing the normalized payload", async () => {
   fireEvent.change(screen.getByLabelText(/secret name/i), {
     target: { value: "OPENAI_API_KEY" },
   });
-  fireEvent.change(screen.getByLabelText(/models \(one per line\)/i), {
-    target: { value: "model-a\nmodel-b, model-c" },
+  // Several models at once: a pasted list (new lines and commas) becomes chips.
+  // A text input strips new lines from typed values, so pasting is the path.
+  fireEvent.paste(screen.getByLabelText(/^Models/i), {
+    clipboardData: { getData: () => "model-a\nmodel-b, model-c" },
   });
+  expect(screen.getByRole("button", { name: "Remove model-b" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: /create connection/i }));
 
   await waitFor(() => {
@@ -120,6 +124,7 @@ test("renders a typed create error without a raw detail object", async () => {
   render(<AdminConnections />);
   await screen.findByText("No provider connections yet.");
 
+  fireEvent.click(screen.getByRole("button", { name: /new connection/i }));
   fireEvent.change(screen.getByLabelText(/^Label$/i), {
     target: { value: "bad" },
   });
@@ -129,7 +134,8 @@ test("renders a typed create error without a raw detail object", async () => {
   fireEvent.change(screen.getByLabelText(/secret name/i), {
     target: { value: "OPENAI_API_KEY" },
   });
-  fireEvent.change(screen.getByLabelText(/models \(one per line\)/i), {
+  // Typed but not yet added with "+": still part of the submitted list.
+  fireEvent.change(screen.getByLabelText(/^Models/i), {
     target: { value: "model-a" },
   });
   fireEvent.click(screen.getByRole("button", { name: /create connection/i }));
@@ -137,4 +143,74 @@ test("renders a typed create error without a raw detail object", async () => {
   expect(
     (await screen.findAllByText(/must be the NAME of an environment variable/i)).length,
   ).toBeGreaterThan(0);
+});
+
+test("the add button adds one model and the pending text is kept in the payload", async () => {
+  global.fetch = jest.fn((url, options = {}) => {
+    if ((options.method || "GET") === "POST") {
+      return Promise.resolve(jsonResponse(201, { connection: CONNECTION }));
+    }
+    return Promise.resolve(jsonResponse(200, { connections: [] }));
+  });
+
+  render(<AdminConnections />);
+  await screen.findByText("No provider connections yet.");
+  fireEvent.click(screen.getByRole("button", { name: /new connection/i }));
+  fireEvent.change(screen.getByLabelText(/^Label$/i), { target: { value: "third" } });
+  fireEvent.change(screen.getByLabelText(/base url/i), { target: { value: "https://third.example/v1" } });
+  fireEvent.change(screen.getByLabelText(/secret name/i), { target: { value: "THIRD_KEY" } });
+
+  const models = screen.getByLabelText(/^Models/i);
+  fireEvent.change(models, { target: { value: "model-x" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add model" }));
+  expect(screen.getByRole("button", { name: "Remove model-x" })).toBeInTheDocument();
+  fireEvent.change(models, { target: { value: "model-y" } });
+  fireEvent.click(screen.getByRole("button", { name: /create connection/i }));
+
+  await waitFor(() => {
+    const post = requests().find((r) => r.method === "POST");
+    expect(post).toBeTruthy();
+    expect(post.body.models).toEqual(["model-x", "model-y"]);
+  });
+});
+
+test("the card switch deactivates a connection with a full update", async () => {
+  global.fetch = jest.fn((url, options = {}) => {
+    if ((options.method || "GET") === "PUT") {
+      return Promise.resolve(jsonResponse(200, { connection: { ...CONNECTION, is_active: false } }));
+    }
+    return Promise.resolve(jsonResponse(200, { connections: [CONNECTION] }));
+  });
+
+  render(<AdminConnections />);
+  await screen.findByText("primary");
+  fireEvent.click(screen.getByRole("switch", { name: /primary active/i }));
+
+  await waitFor(() => {
+    const put = requests().find((r) => r.method === "PUT");
+    expect(put).toBeTruthy();
+    expect(put.url).toContain("/api/research/provider-connections/c-1");
+    expect(put.body).toEqual({
+      label: "primary",
+      base_url: "https://api.example.com/v1",
+      secret_ref: "OPENAI_API_KEY",
+      models: ["model-a", "model-b"],
+      is_active: false,
+    });
+  });
+});
+
+test("deleting a connection in use warns with the profile count", async () => {
+  global.fetch = jest.fn(() =>
+    Promise.resolve(jsonResponse(200, { connections: [{ ...CONNECTION, profile_count: 2 }] })),
+  );
+  const confirm = jest.spyOn(window, "confirm").mockReturnValue(false);
+  render(<AdminConnections />);
+  await screen.findByText("primary");
+  expect(screen.getByText("2 agent profiles")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /delete/i }));
+  expect(confirm.mock.calls[0][0]).toMatch(/used by 2 agent profiles/i);
+  expect(requests().some((r) => r.method === "DELETE")).toBe(false);
+  confirm.mockRestore();
 });

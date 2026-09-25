@@ -177,6 +177,10 @@ def build_profile_selections(
             "temperature": profile.temperature,
             "max_context_tokens": profile.max_context_tokens,
         }
+        # Only a set prompt is frozen, so a profile without one keeps the exact
+        # snapshot (and profile_digest) it produced before the column existed.
+        if getattr(profile, "system_prompt", None) is not None:
+            snapshot["system_prompt"] = profile.system_prompt
         selections.append(
             StudyAgentProfile(
                 study_id=study_id,

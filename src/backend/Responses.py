@@ -315,6 +315,11 @@ class AcpAgentConfigGetResponse(BaseResponse):
     temperature: Optional[float] = Field(
         default=None, description="Sampling temperature; null = provider default."
     )
+    system_prompt: Optional[str] = Field(
+        default=None,
+        description="Researcher-authored system prompt frozen with the assigned "
+        "profile; null = none (the runtime keeps its built-in prompt).",
+    )
     store_agent_content: bool = Field(
         default=True,
         description="Whether the server will persist content for this user. "

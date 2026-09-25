@@ -27,13 +27,13 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from research.participants import identity as identity_store
 from research.runtime.sessions import store as session_store
 from research.telemetry.builder import EventBuilder
 from research.telemetry.content_policy import resolve_study_content_policy
-from research.telemetry.enums import CanonicalEventType, EventSource
+from research.telemetry.enums import CanonicalEventType, EventSource, FieldClass, PolicyAction
 from research.telemetry.ingestion.models import (
     IngestionContext,
     TelemetryBatchAckV1,
@@ -41,7 +41,7 @@ from research.telemetry.ingestion.models import (
 from research.telemetry.ingestion.service import ingest_events_for_context
 from research.telemetry.ingestion.store import SqlAlchemyIngestionStore
 from research.telemetry.models import Correlations, Coverage, EventMetrics
-from research.telemetry.privacy import PrivacyPolicy
+from research.telemetry.privacy import PrivacyPolicy, classify_field
 
 __all__ = [
     "CanonicalIngestionFailed",
@@ -146,8 +146,45 @@ def research_bound(task: Any) -> bool:
     )
 
 
-def build_legacy_events(task: Any, facts: Sequence[LegacyFact]) -> list:
-    """Build canonical events for a research-bound task, in order."""
+#: Plain metadata classes a policy may exclude; see ``_policy_payload``.
+_EXCLUDABLE_METADATA = frozenset({FieldClass.SYSTEM, FieldClass.BEHAVIORAL})
+
+
+def _policy_payload(
+    payload: Mapping[str, Any], policy: Optional[PrivacyPolicy]
+) -> dict[str, Any]:
+    """``payload`` without the scalar SYSTEM/BEHAVIORAL fields ``policy`` excludes.
+
+    Clients filter their events before upload, so ingestion refuses any event
+    the study policy would still change. These events are built here on the
+    server, so they are built compliant instead: a policy that excludes agent
+    activity (e.g. usage and timings only) would otherwise refuse every
+    self-report and model call, losing the timings and token counts the study
+    does collect. Content, secrets and code metadata are left for the ingestion
+    check, which refuses them rather than stripping (ISSUE-01).
+    """
+    if policy is None:
+        return dict(payload)
+    kept: dict[str, Any] = {}
+    for key, value in payload.items():
+        if not isinstance(value, (Mapping, list, tuple)):
+            field_class = classify_field(key, value)
+            # Only what the engine itself would drop; a blocked class is left
+            # for ingestion to refuse.
+            if field_class in _EXCLUDABLE_METADATA and policy.action_for(field_class) is PolicyAction.DROP:
+                continue
+        kept[key] = value
+    return kept
+
+
+def build_legacy_events(
+    task: Any, facts: Sequence[LegacyFact], policy: Optional[PrivacyPolicy] = None
+) -> list:
+    """Build canonical events for a research-bound task, in order.
+
+    With ``policy``, plain metadata fields it excludes are left out of each
+    payload (see ``_policy_payload``).
+    """
     builder = EventBuilder()
     sequence = int(getattr(task, "next_event_index", 0) or 0)
     events = []
@@ -163,7 +200,7 @@ def build_legacy_events(task: Any, facts: Sequence[LegacyFact]) -> list:
                 source=EventSource.RELAY,
                 occurred_at=fact.occurred_at,
                 normalizer_version=RELAY_NORMALIZER_VERSION,
-                payload={**fact.payload, "legacy_kind": fact.kind},
+                payload=_policy_payload({**fact.payload, "legacy_kind": fact.kind}, policy),
                 metrics=fact.metrics,
                 coverage=fact.coverage,
                 correlations=fact.correlations,
@@ -243,7 +280,7 @@ def record_legacy_facts(
             research_session_id=task.research_session_id,
             revocation_epoch=enrollment.revocation_epoch,
         )
-        events = build_legacy_events(task, facts)
+        events = build_legacy_events(task, facts, policy)
         ack = ingest_events_for_context(
             context=context,
             enrollment=enrollment,

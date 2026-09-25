@@ -685,249 +685,6 @@ export const getUserEngagement = async (timeWindow = "30d") => {
   }
 };
 
-// ===== ADMIN-ONLY STUDY MANAGEMENT FUNCTIONS =====
-
-/**
- * Get list of studies
- *
- * @param {boolean} includeInactive - Include inactive studies
- * @returns {Promise} - Promise that resolves with studies list
- */
-export const getStudies = async (includeInactive = false) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/list?include_inactive=${includeInactive}`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error fetching studies:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Create a new study
- *
- * @param {Object} studyData - Study data
- * @returns {Promise} - Promise that resolves with creation result
- */
-export const createStudy = async (studyData) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/create`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify(studyData),
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error creating study:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Activate a study
- *
- * @param {string} studyId - Study ID
- * @returns {Promise} - Promise that resolves with activation result
- */
-export const activateStudy = async (studyId) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/activate`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error activating study:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Get study evaluation results
- *
- * @param {string} studyId - Study ID
- * @returns {Promise} - Promise that resolves with evaluation data
- */
-export const getStudyEvaluation = async (studyId) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/evaluation`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error fetching study evaluation:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Get study details (assignments and metadata)
- *
- * @param {string} studyId - Study ID
- * @returns {Promise}
- */
-export const getStudyDetails = async (studyId) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/details`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error fetching study details:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Deactivate a study
- *
- * @param {string} studyId - Study ID
- * @returns {Promise}
- */
-export const deactivateStudy = async (studyId) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/deactivate`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error deactivating study:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
 /**
  * Logout the current user by deactivating their session
  *
@@ -1268,8 +1025,8 @@ export const validateHuggingFaceModel = async (name) => {
 
 // ── Agent subsystem ─────────────────────────────────────────────────────────
 //
-// Backs the admin pages: AgentProfiles (define experiment arms) and
-// AgentResults (compare arms). All endpoints are admin-only server-side.
+// Backs the Agent Profiles page (define experiment arms). The endpoints are
+// researcher/admin-only server-side.
 // Assignments are owned by enrollment/study membership; there is no manual
 // assignment authoring endpoint (ISSUE-16).
 
@@ -1770,6 +1527,51 @@ export const getStudyParticipantCoverage = async (studyId) => {
   return result;
 };
 
+// Study analytics (owner/admin only). Study-scoped participant codes and
+// metadata-only telemetry aggregates; never content or account identity.
+const studyAnalyticsRequest = async (studyId, path, label) => {
+  const result = await researchRequest(
+    `/studies/${encodeURIComponent(studyId)}/analytics${path}`,
+    { label },
+  );
+  if (result.ok) return { ok: true, data: result.data || {} };
+  if (result.status === 403) {
+    return {
+      ok: false,
+      forbidden: true,
+      status: 403,
+      code: result.code || "FORBIDDEN_STUDY",
+      error: "Only the study owner or an administrator can view study analytics.",
+    };
+  }
+  if (result.status === 405) {
+    return {
+      ok: false,
+      missing: true,
+      error: "Study analytics are not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+export const getStudyParticipants = (studyId) =>
+  studyAnalyticsRequest(studyId, "/participants", "load study participants");
+
+export const getStudyParticipantDashboard = (studyId, enrollmentId) =>
+  studyAnalyticsRequest(
+    studyId,
+    `/participants/${encodeURIComponent(enrollmentId)}`,
+    "load participant dashboard",
+  );
+
+export const getStudyAnalyticsSummary = (studyId, { start, end } = {}) => {
+  const params = new URLSearchParams();
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return studyAnalyticsRequest(studyId, `/summary${query}`, "load study analytics");
+};
+
 // The researcher-readable release catalogue (ISSUE-11): registered releases
 // independent of existing profiles, so a fresh install can author its first
 // profile. Read-only and non-secret; importing and qualifying releases remains
@@ -1838,31 +1640,6 @@ export const getResearchPackages = async (releaseId) => {
   return result.ok ? { ok: true, data: result.data.packages || [] } : result;
 };
 
-// Per-arm comparison for a study's agent arms.
-export const getStudyAgentEvaluation = async (studyId) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/agent-evaluation`,
-      {
-        method: "GET",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-      },
-    );
-    const body = await response.json();
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: body["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    }
-    return { ok: true, data: body };
-  } catch (e) {
-    console.error("Error loading agent evaluation:", e);
-    return { ok: false, error: "Failed to load agent evaluation" };
-  }
-};
-
 // ── Administrator panel ─────────────────────────────────────────────────────
 //
 // Backs the admin-only Dashboard views (AdminResearchers, AdminConnections and
@@ -1872,14 +1649,40 @@ export const getStudyAgentEvaluation = async (studyId) => {
 
 // Every account (not only enabled researchers), newest first. The route keeps
 // its historical `/researchers` name but returns the full account list.
-export const listAccounts = async ({ limit = 100 } = {}) => {
-  const query = limit ? `?limit=${encodeURIComponent(limit)}` : "";
+// Server-side filters: `q` (email/name substring), `role`
+// (all|admin|researcher|participant), `enrollment` (any|enrolled|not_enrolled)
+// and `studyId`. Rows carry their study enrollments (study name/status only).
+export const listAccounts = async ({
+  limit = 100,
+  offset = 0,
+  q = "",
+  role = "",
+  enrollment = "",
+  studyId = "",
+} = {}) => {
+  const params = new URLSearchParams();
+  if (limit) params.set("limit", String(limit));
+  if (offset) params.set("offset", String(offset));
+  if (q && q.trim()) params.set("q", q.trim());
+  if (role && role !== "all") params.set("role", role);
+  if (enrollment && enrollment !== "any") params.set("enrollment", enrollment);
+  if (studyId) params.set("study_id", studyId);
+  const query = params.toString() ? `?${params.toString()}` : "";
   const result = await researchRequest(`/researchers${query}`, {
     label: "load accounts",
   });
-  return result.ok
-    ? { ok: true, data: result.data.researchers || [], status: result.status }
-    : result;
+  if (!result.ok) return result;
+  const rows = result.data.researchers || [];
+  return {
+    ok: true,
+    data: rows,
+    // null when the server predates paging (no total): callers must not
+    // present a page length as a population count.
+    total: typeof result.data.total === "number" ? result.data.total : null,
+    limit: result.data.limit ?? limit,
+    offset: result.data.offset ?? offset,
+    status: result.status,
+  };
 };
 
 // Toggle the single can_research flag. The server re-checks admin, so a 403 is

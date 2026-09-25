@@ -260,6 +260,7 @@ def upgrade() -> None:
     sa.Column('max_steps', sa.Integer(), nullable=False),
     sa.Column('temperature', sa.Double(), nullable=True),
     sa.Column('max_context_tokens', sa.Integer(), nullable=True),
+    sa.Column('system_prompt', sa.Text(), nullable=True),
     sa.Column('configuration_digest', sa.String(), server_default='', nullable=False),
     sa.Column('is_active', sa.Boolean(), server_default='true', nullable=False),
     sa.Column('created_at', sa.DateTime(), nullable=True),

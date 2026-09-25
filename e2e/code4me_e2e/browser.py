@@ -83,14 +83,14 @@ def run(scenario, run_path) -> int:
             time.sleep(0.2)
         else:
             raise TimeoutError("Website host did not become ready")
-        print("Testing 27 website study and consent checks in Chromium", file=sys.stderr)
+        print("Testing 31 website study, consent and dashboard checks in Chromium", file=sys.stderr)
         rc = process.run([python, "-u", str(BROWSER_DIR / "scenarios.py")], cwd=root, env=env,
                          log_path=run_path / "browser-test.log", timeout=300)
         results = json.loads(results_path.read_text()) if results_path.is_file() else {}
         steps = results.get("steps", [])
         details["per_step"] = steps
-        if rc or len(steps) != 27 or any(step.get("status") != "PASS" for step in steps):
-            raise RuntimeError("All 27 browser checks must execute and pass; see browser-test.log")
+        if rc or len(steps) != 31 or any(step.get("status") != "PASS" for step in steps):
+            raise RuntimeError("All 31 browser checks must execute and pass; see browser-test.log")
         status = "PASS"
     except Exception as error:
         details["error"] = str(error)

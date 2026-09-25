@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from research.telemetry.adapters import LegacyFact, build_legacy_events
-from research.telemetry.enums import CanonicalEventType
+from research.telemetry.enums import CanonicalEventType, FieldClass
 from research.telemetry.models import Coverage, EventMetrics
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
@@ -91,3 +91,29 @@ def test_missing_usage_is_unavailable_never_zero():
     (event,) = build_legacy_events(_task(), [fact])
     assert event.metrics.usage_tokens is None
     assert event.metrics.usage_capability.state.value == "UNAVAILABLE"
+
+
+def test_server_built_payloads_only_lose_plain_metadata_the_policy_drops():
+    from research.telemetry.adapters import _policy_payload
+    from research.telemetry.privacy import PrivacyPolicy
+
+    payload = {
+        "model": "m1",  # BEHAVIORAL
+        "tool_schema_bytes": 800,  # SYSTEM
+        "file_extension": ".py",  # CODE_METADATA: hashed by ingestion, never stripped here
+        "result_text": "print()",  # CONTENT: refused by ingestion, never stripped here
+        "api_key": "sk-abcdefghijklmnopqrstuvwxyz0123",  # SECRET: refused by ingestion
+        "extra": {"model": "nested"},  # containers are left to ingestion
+    }
+    metrics_only = PrivacyPolicy.from_study_policy({"allowed_field_classes": ["METRICS"]}, consent_active=True)
+    assert _policy_payload(payload, metrics_only) == {
+        key: value for key, value in payload.items() if key != "model"
+    }
+    # The default policy and no policy change nothing.
+    assert _policy_payload(payload, PrivacyPolicy.from_study_policy({}, consent_active=True)) == payload
+    assert _policy_payload(payload, None) == payload
+    # A blocked class is not silently stripped: ingestion refuses it.
+    blocked = PrivacyPolicy.from_study_policy({"allowed_field_classes": ["METRICS"]}, consent_active=True).model_copy(
+        update={"blocked_field_classes": [FieldClass.BEHAVIORAL]}
+    )
+    assert "model" in _policy_payload(payload, blocked)

@@ -51,11 +51,16 @@ from research.study.agents.distributions import (
     distribution_supported_platforms,
     resolve_distribution_view,
 )
+from research.study.agents.enums import MANAGED_RUNTIME_FRAMEWORK
 
 router = APIRouter()
 
 SUPPORTED_FRAMEWORKS = ("code4me2-agent", "goose", "codex")
 SUPPORTED_APPROVAL_POLICIES = ("auto", "per_step", "suggestion_only")
+#: Cap on a researcher-authored system prompt, in characters as submitted (the
+#: profile editor enforces the same limit). Long enough for study instructions,
+#: short enough to stay a bounded share of the managed runtime's context window.
+SYSTEM_PROMPT_MAX_LENGTH = 4000
 
 
 def _models_for(connection: Any) -> list[str]:
@@ -92,6 +97,24 @@ class AgentProfilePayload(BaseModel):
     is_active: bool = Field(default=True)
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     max_context_tokens: Optional[int] = Field(default=None, ge=1)
+    # Researcher-authored system prompt (managed runtime only; a BYOA release
+    # refuses it). Null or blank = no prompt; stored trimmed. On an update an
+    # omitted field keeps the stored prompt for the managed runtime and clears
+    # it for a BYOA runtime (see update_agent_profile).
+    system_prompt: Optional[str] = Field(
+        default=None, max_length=SYSTEM_PROMPT_MAX_LENGTH
+    )
+
+    @field_validator("system_prompt")
+    @classmethod
+    def normalize_system_prompt(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if "\x00" in value:
+            # PostgreSQL text cannot store NUL; refuse it as a 422, not a 500.
+            raise ValueError("system_prompt must not contain NUL characters")
+        candidate = value.strip()
+        return candidate or None
 
     @field_validator("release_id")
     @classmethod
@@ -200,6 +223,22 @@ def _authorize_connection(
     return connection
 
 
+def _configuration_error_detail(
+    exc: crud.ProfileReleaseError | ProfileConfigurationError,
+) -> dict[str, Any]:
+    """Typed 422 body for a profile↔release contract violation.
+
+    ``field`` is included when the violation names one (for example
+    ``BYOA_FIELD_UNSUPPORTED`` on ``max_context_tokens``), so the editor can
+    attach the error to that input.
+    """
+    detail: dict[str, Any] = {"code": exc.code, "message": str(exc)}
+    field = getattr(exc, "field", "")
+    if field:
+        detail["field"] = field
+    return detail
+
+
 def _release_for(db: Any, profile: AgentProfile):
     """Rehydrate the registry release a profile pins, if any."""
     release_id = getattr(profile, "release_id", None)
@@ -240,6 +279,7 @@ def _profile_to_dict(db: Any, profile: AgentProfile) -> dict[str, Any]:
         "is_active": profile.is_active,
         "temperature": profile.temperature,
         "max_context_tokens": profile.max_context_tokens,
+        "system_prompt": getattr(profile, "system_prompt", None),
         "configuration_digest": getattr(profile, "configuration_digest", ""),
         "connection": _connection_summary(db, profile),
         "release_id": view.release_id,
@@ -353,6 +393,7 @@ def create_agent_profile(
             is_active=payload.is_active,
             temperature=payload.temperature,
             max_context_tokens=payload.max_context_tokens,
+            system_prompt=payload.system_prompt,
         )
         return JsonResponseWithStatus(
             status_code=201, content={"profile": _profile_to_dict(db, profile)}
@@ -367,7 +408,7 @@ def create_agent_profile(
         db.rollback()
         raise HTTPException(
             status_code=422,
-            detail={"code": exc.code, "message": str(exc)},
+            detail=_configuration_error_detail(exc),
         ) from exc
     except IntegrityError as exc:
         db.rollback()
@@ -431,10 +472,26 @@ def update_agent_profile(
             is_active=payload.is_active,
             temperature=payload.temperature,
             max_context_tokens=payload.max_context_tokens,
+            system_prompt=payload.system_prompt,
             connection_id=payload.connection_id,
             release_id=payload.release_id,
             update_connection_id=True,
             update_release_id=True,
+            # A PUT is a full replacement: a null override clears the stored
+            # value instead of keeping the previous one.
+            update_temperature=True,
+            update_max_context_tokens=True,
+            # Except the system prompt when the field is omitted for the
+            # managed runtime: a client that does not show it (an older
+            # website, or a release the catalogue does not list) must not
+            # silently wipe an arm's prompt. A BYOA runtime can never hold a
+            # prompt, so there an omitted field clears it (the website omits it
+            # when switching a profile to goose/codex). An explicit null always
+            # clears it.
+            update_system_prompt=(
+                "system_prompt" in payload.model_fields_set
+                or payload.framework_version != MANAGED_RUNTIME_FRAMEWORK
+            ),
         )
         return JsonResponseWithStatus(
             status_code=200, content={"profile": _profile_to_dict(db, profile)}
@@ -449,7 +506,7 @@ def update_agent_profile(
         db.rollback()
         raise HTTPException(
             status_code=422,
-            detail={"code": exc.code, "message": str(exc)},
+            detail=_configuration_error_detail(exc),
         ) from exc
     except IntegrityError as exc:
         db.rollback()

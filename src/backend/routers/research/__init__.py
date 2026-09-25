@@ -19,6 +19,7 @@ from .read_models import operations_router as read_operations_router
 from .researchers import router as researchers_router
 from .sessions import router as sessions_router
 from .studies import router as studies_router
+from .study_analytics import router as study_analytics_router
 from .telemetry import router as telemetry_router
 
 router = APIRouter()
@@ -26,6 +27,13 @@ router.include_router(
     studies_router,
     prefix="/studies",
     tags=["Research Studies"],
+)
+# Study-owner/administrator analytics read models: participants table,
+# per-participant dashboard and arm comparison (``/{study_id}/analytics/...``).
+router.include_router(
+    study_analytics_router,
+    prefix="/studies",
+    tags=["Research Study Analytics"],
 )
 # Participant self-enrollment by shared join code. ``/join/{code}`` is readable
 # by any authenticated user; ``POST /join`` enrolls the caller.

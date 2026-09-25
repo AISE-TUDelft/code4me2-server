@@ -129,3 +129,17 @@ platform results remain unqualified; import a newly tested manifest rather than
 converting old manual approvals into passing tests. Legacy aggregate test verdicts
 also stay unqualified. Existing `DISABLED`, `BLOCKED`, and `RETIRED` states remain
 terminal on reads.
+
+Agent profiles now store an optional `system_prompt` (packaged releases only). The
+column is part of the consolidated revision, so a fresh database gets it, but a
+database that is already at that revision does not: every profile query fails
+with an undefined-column error until you add it. Before deploying to an existing
+database, run:
+
+```sql
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS system_prompt TEXT;
+```
+
+The column is nullable and the previous code ignores it, so it is safe to add
+while the old backend is still running. Existing profiles, their configuration
+digests and frozen studies are unchanged: a prompt only enters a digest when set.

@@ -54,6 +54,10 @@ def _model_call_fact(
     values are distinguishable from byte estimates by their field names.
     """
     span = span or {}
+    # Payload keys must be ones the privacy classifier recognises as metadata:
+    # an unrecognised key is treated as content (fail closed), and ingestion
+    # then refuses the whole event under every study that does not capture
+    # content (the default). Counters therefore go into ``metrics.counts``.
     counts: dict[str, int] = {}
     for key, value in (
         ("prompt_tokens", record.prompt_tokens),
@@ -61,6 +65,7 @@ def _model_call_fact(
         ("message_count", record.message_count),
         ("tools_kept", record.tools_kept),
         ("tools_stripped", record.tools_stripped),
+        ("step_index", span.get("step_index")),
     ):
         number = _optional_int(value)
         if number is not None:
@@ -70,17 +75,29 @@ def _model_call_fact(
         "model": record.model,
         "finish_reason": record.finish_reason,
         "upstream_status": record.upstream_status,
-        "step_index": span.get("step_index"),
         "request_id": record.request_id,
         "agent_profile": record.agent_profile,
-        "streaming": record.streaming,
+        "call_mode": (
+            None
+            if record.streaming is None
+            else ("streaming" if record.streaming else "single")
+        ),
     }
     for key in ("tool_schema_bytes", "context_window_size_bytes"):
         number = _optional_int(span.get(key))
+        if number is None and isinstance(extra, dict):
+            # The relay reports the tool schema size in ``extra``.
+            number = _optional_int(extra.get(key))
         if number is not None:
             payload[key] = number
     if isinstance(extra, dict):
-        payload["extra"] = extra
+        # Only the extras recognised as metadata; the rest (such as the
+        # upstream base URL, which is server configuration) stays in the
+        # legacy operational row.
+        if extra.get("requested_model"):
+            payload["requested_model"] = extra["requested_model"]
+        if extra.get("wire_api"):
+            payload["api_kind"] = extra["wire_api"]
     return LegacyFact(
         kind="model_call",
         occurred_at=datetime.now(timezone.utc),
@@ -116,18 +133,23 @@ def _tool_call_fact(
     arguments = tool_execution.get("arguments")
     result = tool_execution.get("result")
     payload: dict[str, Any] = {}
+    counts: dict[str, int] = {}
     if name:
         payload["tool_name"] = name
     if isinstance(arguments, str):
-        payload["tool_arguments_length"] = len(arguments)
+        # A counter, not payload: "arguments" marks a payload key as content.
+        counts["tool_arguments_length"] = len(arguments)
     if isinstance(result, str):
+        # Payload for the dashboard read model, and a counter that survives a
+        # policy excluding agent activity (like the arguments length).
         payload["tool_result_length"] = len(result)
+        counts["tool_result_length"] = len(result)
     tool_call_id = tool_execution.get("id") or tool_execution.get("tool_call_id")
     return LegacyFact(
         kind="tool_call" if succeeded is not False else "tool_failed",
         occurred_at=datetime.now(timezone.utc),
         payload=payload,
-        metrics=EventMetrics(latency_ms=latency_ms),
+        metrics=EventMetrics(latency_ms=latency_ms, counts=counts),
         coverage=Coverage(state=CoverageState.AVAILABLE, capability="tool_lifecycle"),
         correlations=Correlations(tool_call_id=str(tool_call_id) if tool_call_id else None),
         source_event_id=str(tool_call_id) if tool_call_id else None,

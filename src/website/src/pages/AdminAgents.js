@@ -365,7 +365,7 @@ const AdminAgents = () => {
 
       <form className="admin-section" onSubmit={handleImport}>
         <h3>Import a runtime manifest and its archives</h3>
-        <label><input type="checkbox" checked={useUrls} onChange={(event) => setUseUrls(event.target.checked)} />Import from release URLs</label>
+        <label className="ui-check"><input type="checkbox" checked={useUrls} onChange={(event) => setUseUrls(event.target.checked)} /><span className="ui-check-text">Import from release URLs</span></label>
         {useUrls ? <div key="urls" className="admin-form-grid">
           <label>Manifest URL<input type="url" required value={manifestUrl} onChange={(event) => setManifestUrl(event.target.value)} /></label>
           <label>Archive URLs (one per line)<textarea required value={archiveUrls} onChange={(event) => setArchiveUrls(event.target.value)} /></label>
