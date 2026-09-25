@@ -264,7 +264,7 @@ def build_legacy_events(
                 payload=_policy_payload({**fact.payload, "legacy_kind": fact.kind}, policy),
                 metrics=fact.metrics,
                 coverage=fact.coverage,
-                correlations=fact.correlations,
+                correlations=correlations,
                 source_event_id=fact.source_event_id,
                 study_id=getattr(task, "study_id", None),
                 enrollment_id=getattr(task, "enrollment_id", None),
@@ -288,7 +288,11 @@ def _kill_switch_check(db: Any, task: Any):
 
 
 def record_legacy_facts(
-    db: Any, *, task: Any, facts: Sequence[LegacyFact]
+    db: Any,
+    *,
+    task: Any,
+    facts: Sequence[LegacyFact],
+    first_sequence: Optional[int] = None,
 ) -> Optional[CanonicalRecordResult]:
     """Persist legacy facts through the canonical ingestion writer.
 
@@ -296,6 +300,11 @@ def record_legacy_facts(
     its legacy operational write. For a research-bound task it always returns a
     result: the caller must not fall back to ``agent_event`` even when the
     canonical write failed (ISSUE-07). Never raises.
+
+    A caller that already reserved ``len(facts)`` task event indexes (the
+    self-report ingest does, for its legacy rows) passes the reserved base as
+    ``first_sequence``; reserving a second block would open a sequence gap
+    before every batch.
     """
     if task is None or not facts or not research_bound(task):
         return None
@@ -365,9 +374,10 @@ def record_legacy_facts(
         # this, every call replays sequences from the (never advanced) task
         # counter and every batch after the first is rejected as an integrity
         # conflict. Burned indexes on failed writes surface as ordinary gaps.
-        first_sequence = crud.reserve_agent_event_indexes(
-            db, getattr(task, "task_id", None), len(facts)
-        )
+        if first_sequence is None:
+            first_sequence = crud.reserve_agent_event_indexes(
+                db, getattr(task, "task_id", None), len(facts)
+            )
         events = build_legacy_events(task, facts, policy, first_sequence=first_sequence)
         ack = ingest_events_for_context(
             context=context,

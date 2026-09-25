@@ -55,7 +55,7 @@ def db_runtime():
         engine.dispose()
 
 
-def _seed(db, *, content_capture: bool, telemetry_policy: dict | None = None):
+def _seed_user(db) -> uuid.UUID:
     config_id = db.execute(
         text("INSERT INTO public.config (config_data) VALUES ('{}') RETURNING config_id")
     ).scalar_one()
@@ -73,6 +73,11 @@ def _seed(db, *, content_capture: bool, telemetry_policy: dict | None = None):
             "config_id": config_id,
         },
     )
+    return user_id
+
+
+def _seed(db, *, content_capture: bool, telemetry_policy: dict | None = None):
+    user_id = _seed_user(db)
     study_id = uuid.uuid4()
     db.add(
         StudyRow(
@@ -379,5 +384,106 @@ def test_relay_model_and_tool_calls_are_stored_under_the_default_policy(db_runti
         serialized = json.dumps([model_call, tool_call])
         assert "provider.example" not in serialized
         assert "[REDACTED]" not in serialized
+    finally:
+        db.close()
+
+
+def _runtime_event(event_type: str, payload: dict) -> dict:
+    return {
+        "event_id": str(uuid.uuid4()),
+        "run_id": "run-1",
+        "schema_version": "1",
+        "event_type": event_type,
+        "timestamp": NOW.isoformat(),
+        "sequence": 1,
+        "source": "code4me2_agent",
+        "session_id": "acp-session",
+        "request_id": "req-1",
+        "payload": payload,
+        "metrics": {"duration_ms": 5},
+    }
+
+
+def _permission_decided() -> dict:
+    return _runtime_event(
+        "agent.permission.decided",
+        {
+            "tool_name": "write_file",
+            "tool_call_id": "tc-1",
+            "kind": "edit",
+            "decision": "accepted",
+            "decision_scope": "once",
+        },
+    )
+
+
+def test_self_reports_outside_a_study_keep_the_legacy_write(db_runtime):
+    """A task without a research binding still stores its events in agent_event.
+
+    The column mapping also carries keys only the canonical fact uses (run id,
+    permission decision, ...); the legacy table has no column for them.
+    """
+    db = db_runtime()
+    try:
+        task = crud.create_agent_task(
+            db,
+            agent_profile="personal",
+            model="personal-model",
+            approval_policy="per_step",
+            tools_json="[]",
+            source="code4me2_agent",
+            owner_user_id=_seed_user(db),
+            external_run_id=f"run-{uuid.uuid4()}",
+            agent_session_id="acp-session",
+            status="running",
+        )
+        ingested, skipped = ingest_event_batch(
+            db,
+            task_id=task.task_id,
+            events=[
+                _runtime_event(
+                    "agent.tool.completed",
+                    {"tool_name": "write_file", "tool_call_id": "tc-1"},
+                ),
+                _permission_decided(),
+            ],
+            content_included=False,
+            agent_profile="personal",
+        )
+        assert (ingested, skipped) == (2, [])
+        event_types = db.execute(
+            text(
+                "SELECT event_type FROM public.agent_event "
+                "WHERE task_id = :task_id ORDER BY event_index"
+            ),
+            {"task_id": task.task_id},
+        ).scalars().all()
+        assert event_types == ["tool_call", "permission_decided"]
+    finally:
+        db.close()
+
+
+def test_self_report_batches_continue_one_emitter_sequence(db_runtime):
+    """Consecutive self-report batches number their canonical events without gaps."""
+    db = db_runtime()
+    try:
+        task = _seed(db, content_capture=False)
+        for size in (2, 3):
+            ingested, _skipped = ingest_event_batch(
+                db,
+                task_id=task.task_id,
+                events=[_permission_decided() for _ in range(size)],
+                content_included=False,
+                agent_profile="managed-arm",
+            )
+            assert ingested == size
+        sequences = db.execute(
+            text(
+                "SELECT emitter_sequence FROM public.research_event "
+                "WHERE agent_run_id = :run_id ORDER BY emitter_sequence"
+            ),
+            {"run_id": task.external_run_id},
+        ).scalars().all()
+        assert sequences == [1, 2, 3, 4, 5]
     finally:
         db.close()

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from research.telemetry.adapters import LegacyFact, build_legacy_events
 from research.telemetry.enums import CanonicalEventType, FieldClass
-from research.telemetry.models import Coverage, EventMetrics
+from research.telemetry.models import Correlations, Coverage, EventMetrics
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
 
@@ -199,3 +199,24 @@ def test_permission_kinds_map_to_permission_types_with_metadata():
     assert dec_event.event_type == "permission.decided"
     assert dec_event.payload["decision"] == "accepted"
     assert dec_event.payload["decision_scope"] == "once"
+
+
+def test_trace_and_span_default_to_the_run_and_the_source_event():
+    """Facts without their own handles are traced by the run and their event id."""
+    defaulted, explicit = build_legacy_events(
+        _task(),
+        [
+            LegacyFact(kind="tool_call", occurred_at=NOW, source_event_id="evt-1"),
+            LegacyFact(
+                kind="model_call",
+                occurred_at=NOW,
+                source_event_id="evt-2",
+                correlations=Correlations(trace_id="trace-9", span_id="span-9"),
+            ),
+        ],
+    )
+    assert defaulted.correlations.trace_id == "run-1"
+    assert defaulted.correlations.span_id == "evt-1"
+    # A producer's own handles win over the defaults.
+    assert explicit.correlations.trace_id == "trace-9"
+    assert explicit.correlations.span_id == "span-9"

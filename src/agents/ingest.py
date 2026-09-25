@@ -80,6 +80,12 @@ _PROMOTED_METRIC_KEYS = frozenset(
     {"duration_ms", "prompt_tokens", "completion_tokens", "total_tokens"}
 )
 
+# Keys ``map_event_to_columns`` carries only for the canonical fact; the legacy
+# ``agent_event`` table has no column for them.
+_CANONICAL_ONLY_COLUMNS = frozenset(
+    {"run_id", "message_id", "tool_call_id", "decision", "decision_scope", "tool_kind"}
+)
+
 
 def map_event_type(runtime_event_type: str) -> str:
     """Translate a runtime event type, defaulting unknown ones to `observation`.
@@ -469,7 +475,9 @@ def ingest_event_batch(
                 _fact_from_columns(columns, content_included=content_included)
             )
         if task is not None:
-            result = record_legacy_facts(db, task=task, facts=facts)
+            result = record_legacy_facts(
+                db, task=task, facts=facts, first_sequence=first_index
+            )
             if result is not None:
                 # Research-bound task: the canonical writer is the only
                 # authority. Never fall back to the legacy table (ISSUE-07).
@@ -497,7 +505,11 @@ def ingest_event_batch(
             source_event_id=source_event_id,
             ignore_duplicate_source=True,
             commit=False,
-            **columns,
+            **{
+                key: value
+                for key, value in columns.items()
+                if key not in _CANONICAL_ONLY_COLUMNS
+            },
         )
         if inserted is None:
             skipped.append(source_event_id)
