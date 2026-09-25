@@ -60,7 +60,7 @@ def test_per_step_policy_keeps_read_tools_automatic():
 
 def test_per_step_policy_executes_mutation_after_allow_once():
     file_tools = MagicMock()
-    file_tools.read_file.return_value = SimpleNamespace(content="before")
+    file_tools.read_text.return_value = ("before", False)
     file_tools.write_file.return_value = {"status": "ok"}
     sink = ApprovalSink(ApprovalDecision("accepted", "once"))
     registry = ToolRegistry(
@@ -199,6 +199,8 @@ def test_policy_refresh_rebuilds_session_memory_limit(tmp_path):
     core.load_session_memory(
         [
             {"role": "system", "content": "system"},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
             {"role": "user", "content": "first message"},
             {"role": "assistant", "content": "second message"},
         ]
@@ -213,9 +215,12 @@ def test_policy_refresh_rebuilds_session_memory_limit(tmp_path):
 
     core.apply_config(restricted)
 
+    # The current turn (from the last user message) is always kept; older
+    # exchanges are dropped when the budget shrinks.
     assert core._session_memory is not None
     assert core._session_memory.window() == [
         {"role": "system", "content": "system"},
+        {"role": "user", "content": "first message"},
         {"role": "assistant", "content": "second message"},
     ]
 
@@ -260,9 +265,9 @@ def test_system_context_reports_host_and_available_commands(tmp_path):
     ):
         context = adapter._system_context()
 
-    assert "operating system is Windows" in context
-    assert "executable commands allowed by policy are: git" in context
-    assert "Never assume Bash" in context
+    assert "host OS: Windows" in context
+    assert "Allowlisted executables: git" in context
+    assert "no shell" in context
 
 
 def test_managed_telemetry_does_not_write_project_trace(tmp_path):

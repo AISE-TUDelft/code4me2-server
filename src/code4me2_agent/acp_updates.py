@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Sequence
 
 
@@ -13,29 +12,6 @@ class AcpUpdateBuilder:
 
         self._acp = acp
         self._schema = schema
-
-    @property
-    def sdk_version(self) -> str:
-        try:
-            return version("agent-client-protocol")
-        except PackageNotFoundError:
-            return "unknown"
-
-    @property
-    def helper_gaps(self) -> tuple[str, ...]:
-        required_helpers = (
-            "text_block",
-            "tool_content",
-            "tool_diff_content",
-            "tool_terminal_ref",
-            "update_agent_message",
-            "update_agent_thought",
-            "start_tool_call",
-            "start_read_tool_call",
-            "start_edit_tool_call",
-            "update_tool_call",
-        )
-        return tuple(name for name in required_helpers if not hasattr(self._acp, name))
 
     def agent_message(
         self,
@@ -76,6 +52,39 @@ class AcpUpdateBuilder:
             return update
         return update.model_copy(update={"field_meta": metadata})
 
+    def agent_plan(self, entries: Sequence[Any]) -> Any:
+        """Build a ``plan`` session update from PlanEntrySpec-like objects or dicts."""
+        plan_entries = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                content = str(entry.get("content", ""))
+                status = str(entry.get("status", "pending"))
+                priority = str(entry.get("priority", "medium"))
+            else:
+                content = str(getattr(entry, "content", ""))
+                status = str(getattr(entry, "status", "pending"))
+                priority = str(getattr(entry, "priority", "medium"))
+            plan_entries.append(
+                self._schema.PlanEntry(content=content, priority=priority, status=status)
+            )
+        return self._schema.AgentPlanUpdate(session_update="plan", entries=plan_entries)
+
+    def usage_update(
+        self,
+        *,
+        used: int,
+        size: int,
+        metadata: dict[str, Any] | None = None,
+    ) -> Any:
+        update = self._schema.UsageUpdate(
+            session_update="usage_update",
+            used=max(0, int(used)),
+            size=max(0, int(size)),
+        )
+        if metadata is None:
+            return update
+        return update.model_copy(update={"field_meta": metadata})
+
     def text_tool_content(self, text: str) -> Any:
         text_block = getattr(self._acp, "text_block", None)
         tool_content = getattr(self._acp, "tool_content", None)
@@ -97,15 +106,6 @@ class AcpUpdateBuilder:
             new_text=new_text,
         )
 
-    def terminal_tool_content(self, terminal_id: str) -> Any:
-        tool_terminal_ref = getattr(self._acp, "tool_terminal_ref", None)
-        if tool_terminal_ref is not None:
-            return tool_terminal_ref(terminal_id)
-        return self._schema.TerminalToolCallContent(
-            type="terminal",
-            terminal_id=terminal_id,
-        )
-
     def start_tool_call(
         self,
         *,
@@ -114,11 +114,17 @@ class AcpUpdateBuilder:
         kind: str,
         status: str = "pending",
         path: str | None = None,
+        locations: Sequence[str] | None = None,
         content: Sequence[Any] | None = None,
         raw_input: Any | None = None,
         raw_output: Any | None = None,
     ) -> Any:
-        locations = [self._schema.ToolCallLocation(path=path)] if path else None
+        location_paths = [str(item) for item in locations if item] if locations else ([path] if path else [])
+        location_models = (
+            [self._schema.ToolCallLocation(path=item) for item in location_paths]
+            if location_paths
+            else None
+        )
         if raw_input is None and path is not None:
             raw_input = {"path": path}
 
@@ -130,7 +136,7 @@ class AcpUpdateBuilder:
                 kind=kind,
                 status=status,
                 content=content,
-                locations=locations,
+                locations=location_models,
                 raw_input=raw_input,
                 raw_output=raw_output,
             )
@@ -141,7 +147,7 @@ class AcpUpdateBuilder:
             kind=kind,
             status=status,
             content=list(content) if content is not None else None,
-            locations=locations,
+            locations=location_models,
             raw_input=raw_input,
             raw_output=raw_output,
         )

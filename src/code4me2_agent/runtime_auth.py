@@ -31,7 +31,23 @@ def _secret_for_log(value: str | None) -> str:
 
 
 class AcpAuthorizationFailure(Exception):
-    pass
+    """A backend request was rejected or could not complete.
+
+    ``status_code`` carries the HTTP status when one was received and
+    ``transient`` marks network-level failures, so callers can decide whether
+    a retry is worthwhile without parsing messages.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        status_code: int | None = None,
+        transient: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.transient = transient
 
 
 class AcpSessionExpired(AcpAuthorizationFailure):
@@ -352,7 +368,8 @@ class AcpBackendAuthorization:
             )
             failure_type = AcpSessionExpired if exc.code == 401 else AcpAuthorizationFailure
             raise failure_type(
-                "Code4Me ACP authorized request was rejected."
+                "Code4Me ACP authorized request was rejected.",
+                status_code=int(exc.code),
             ) from None
         except error.URLError as exc:
             logger.warning(
@@ -361,12 +378,14 @@ class AcpBackendAuthorization:
                 http_request.full_url,
             )
             raise AcpAuthorizationFailure(
-                "Code4Me ACP authorized request was rejected."
+                "Code4Me ACP authorized request was rejected.",
+                transient=True,
             ) from None
         except TimeoutError:
             logger.warning("ACP authorized request timed out.")
             raise AcpAuthorizationFailure(
-                "Code4Me ACP authorized request was rejected."
+                "Code4Me ACP authorized request was rejected.",
+                transient=True,
             ) from None
         except ValueError:
             logger.warning("ACP authorized request returned invalid JSON.")

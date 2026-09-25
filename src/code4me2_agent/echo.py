@@ -29,6 +29,9 @@ class EchoPromptResult:
     run_status: str
     thoughts: tuple[str, ...] = ()
     duration_ms: float = 0.0
+    # True when the adapter already streamed the final text to the client.
+    response_emitted: bool = False
+    usage: dict[str, int] | None = None
 
 
 class EchoAgentCore:
@@ -154,8 +157,6 @@ class EchoAgentCore:
             raw_payload={"role": "user", "content": prompt, "message_id": message_id},
         )
 
-        # 3
-        logger.info("Adapter is: %s", self._adapter)
         adapter_result = self._adapter.handle_prompt(
             prompt=prompt,
             run_id=run_id,
@@ -164,7 +165,6 @@ class EchoAgentCore:
             memory=self._session_memory,
             cancellation_event=cancellation_event,
         )
-        # n-1
         final_response = adapter_result.final_response
 
         response_event = self._telemetry.record(
@@ -207,4 +207,6 @@ class EchoAgentCore:
             run_status=adapter_result.run_status,
             thoughts=adapter_result.thoughts,
             duration_ms=duration_ms,
+            response_emitted=bool(getattr(adapter_result, "response_emitted", False)),
+            usage=getattr(adapter_result, "usage", None),
         )

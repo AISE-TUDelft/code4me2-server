@@ -29,13 +29,22 @@ from __future__ import annotations
 # profile's command allowlist).
 CODE4ME2_AGENT_TOOLS: frozenset[str] = frozenset(
     {
+        # Reading and discovery
         "read_file",
-        "write_file",
-        "create_file",
-        "replace_text",
         "list_files",
-        "search_files",
+        "glob_files",
+        "grep_files",
+        "search_files",  # legacy literal search; kept for frozen profiles
+        # Editing
+        "create_file",
+        "write_file",
+        "replace_text",
+        "edit_file",
+        "delete_file",
+        "move_file",
+        # Execution and planning
         "run_command",
+        "update_plan",
         # Explicit opt-in for any tool exposed by client-supplied ACP MCP servers.
         # Concrete names remain filtered and approval-gated by the managed runtime.
         "mcp__*",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import platform
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -11,10 +12,17 @@ from uuid import uuid4
 
 from code4me2_agent.acp_updates import AcpUpdateBuilder
 from code4me2_agent.acp_utils import capability_value
-from code4me2_agent.async_bridge import EventLoopAsyncRunner
+from code4me2_agent.async_bridge import EventLoopAsyncRunner, OperationCancelled
 from code4me2_agent.command_tools import available_commands, build_acp_command_backend
 from code4me2_agent.echo import EchoAgentCore
-from code4me2_agent.events import ApprovalDecision
+from code4me2_agent.events import (
+    ApprovalDecision,
+    AssistantTextEvent,
+    PlanEvent,
+    ThoughtEvent,
+    UsageEvent,
+)
+from code4me2_agent.tool_catalog import approval_kind, tool_kind
 from code4me2_agent.file_tools import build_acp_file_system_backend
 from code4me2_agent.mcp_tools import StdioMcpToolBroker, serialize_mcp_servers
 from code4me2_agent.runtime_auth import (
@@ -42,24 +50,6 @@ if TYPE_CHECKING:
     from code4me2_agent.telemetry import AgentTelemetryRecorder
 
 
-def _prompt_text(prompt: list[Any]) -> str:
-    parts: list[str] = []
-    for block in prompt:
-        if isinstance(block, dict):
-            block_type = block.get("type", "")
-            text = block.get("text", "")
-            if block_type == "resource_link":
-                text = _resource_link_text(block)
-        else:
-            block_type = getattr(block, "type", "")
-            text = getattr(block, "text", "")
-            if block_type == "resource_link":
-                text = _resource_link_text(block)
-        if text:
-            parts.append(text)
-    return "\n".join(parts)
-
-
 async def _prompt_text_async(prompt: list[Any]) -> str:
     parts: list[str] = []
     for block in prompt:
@@ -78,23 +68,6 @@ async def _prompt_text_async(prompt: list[Any]) -> str:
     return "\n".join(parts)
 
 
-def _resource_link_text(block: object) -> str:
-    uri = str(capability_value(block, "uri") or "").strip()
-    name = str(capability_value(block, "name") or uri or "resource").strip()
-    details = []
-    mime_type = capability_value(block, "mimeType") or capability_value(
-        block, "mime_type"
-    )
-    description = capability_value(block, "description")
-    if mime_type:
-        details.append(f"mimeType={mime_type}")
-    if description:
-        details.append(f"description={description}")
-    suffix = f"; {'; '.join(details)}" if details else ""
-    resource_link = f"[Resource link: {name} <{uri}>{suffix}]"
-    return resource_link
-
-
 async def _resource_link_text_async(block: object) -> str:
     uri = str(capability_value(block, "uri") or "").strip()
     name = str(capability_value(block, "name") or uri or "resource").strip()
@@ -111,18 +84,30 @@ async def _resource_link_text_async(block: object) -> str:
     resource_link = f"[Resource link: {name} <{uri}>{suffix}]"
     return resource_link
 
+_ACP_STOP_REASONS = frozenset(
+    {"end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled"}
+)
+_USAGE_UPDATES_ENABLED = os.getenv("CODE4ME_ACP_USAGE_UPDATES", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+
 def _acp_stop_reason(adapter_stop_reason: str) -> str:
+    """Map adapter outcomes onto the ACP StopReason vocabulary.
+
+    Failures (``error``, ``provider_exhausted``) have already been shown to the
+    user as a final agent message, so the turn ended normally from the client's
+    point of view; the cause travels in ``PromptResponse._meta``. ``refusal`` is
+    reserved for a model content-filter refusal.
+    """
     if adapter_stop_reason == "max_iterations":
         return "max_turn_requests"
-    if adapter_stop_reason in {
-        "end_turn",
-        "max_tokens",
-        "max_turn_requests",
-        "refusal",
-        "cancelled",
-    }:
+    if adapter_stop_reason in _ACP_STOP_REASONS:
         return adapter_stop_reason
-    return "refusal"
+    return "end_turn"
 
 
 @dataclass
@@ -145,14 +130,73 @@ class AcpSessionEventSink:
         updates: AcpUpdateBuilder,
         telemetry: object,
         async_runner: EventLoopAsyncRunner,
+        cancel_event: Event | None = None,
     ) -> None:
         self._conn = conn
         self._session_id = session_id
         self._updates = updates
         self._telemetry = telemetry
         self._async_runner = async_runner
+        self._cancel_event = cancel_event
         self._session_approved_kinds: set[str] = set()
         self._tool_content: dict[str, list[Any] | None] = {}
+
+    def _run_blocking(self, awaitable: Any) -> Any:
+        if self._cancel_event is None:
+            return self._async_runner.run(awaitable)
+        return self._async_runner.run(awaitable, cancel_event=self._cancel_event)
+
+    def assistant_text(self, event: AssistantTextEvent) -> None:
+        update = self._updates.agent_message(
+            event.text,
+            message_id=event.message_id,
+            metadata={
+                "code4me2": {
+                    "phase": "final" if event.final else "progress",
+                    "iteration": event.iteration,
+                }
+            },
+        )
+        self._send_session_update(
+            update,
+            run_id=event.run_id,
+            request_id=event.request_id,
+            update_type="agent_message_chunk",
+        )
+
+    def plan(self, event: PlanEvent) -> None:
+        update = self._updates.agent_plan(list(event.entries))
+        self._send_session_update(
+            update,
+            run_id=event.run_id,
+            request_id=event.request_id,
+            update_type="plan",
+            extra={"tool_call_id": event.tool_call_id},
+        )
+
+    def usage(self, event: UsageEvent) -> None:
+        if not _USAGE_UPDATES_ENABLED:
+            return
+        update = self._updates.usage_update(
+            used=event.prompt_tokens + event.completion_tokens,
+            size=event.context_budget_tokens,
+            metadata={
+                "code4me2": {
+                    "iteration": event.iteration,
+                    "model": event.model,
+                    "promptTokens": event.prompt_tokens,
+                    "completionTokens": event.completion_tokens,
+                    "totalTokens": event.total_tokens,
+                    "turnTotalTokens": event.turn_total_tokens,
+                }
+            },
+        )
+        self._send_session_update(
+            update,
+            run_id=event.run_id,
+            request_id=event.request_id,
+            update_type="usage_update",
+        )
 
     def tool_call(self, event: ToolCallEvent) -> None:
         content = self._tool_call_content(event)
@@ -164,6 +208,7 @@ class AcpSessionEventSink:
                 kind=event.kind,
                 status=event.status,
                 path=event.path,
+                locations=event.locations,
                 content=content,
                 raw_input=event.raw_input,
             )
@@ -176,7 +221,17 @@ class AcpSessionEventSink:
                 content=content,
                 raw_output=event.raw_output,
             )
-        self._send_update(event=event, update=update)
+        self._send_session_update(
+            update,
+            run_id=event.run_id,
+            request_id=event.request_id,
+            update_type=str(getattr(update, "session_update", "tool_call")),
+            extra={
+                "tool_call_id": event.tool_call_id,
+                "tool_name": event.tool_name,
+                "phase": event.phase,
+            },
+        )
         if event.phase != "started":
             self._tool_content.pop(event.tool_call_id, None)
 
@@ -206,27 +261,12 @@ class AcpSessionEventSink:
             getattr(event, "text", ""),
             metadata=timing_metadata,
         )
-        try:
-            self._async_runner.run(
-                self._conn.session_update(
-                    session_id=self._session_id,
-                    update=update,
-                    source="code4me2_agent",
-                )
-            )
-        except Exception as exc:
-            record = getattr(self._telemetry, "record", None)
-            if callable(record):
-                record(
-                    event_type="agent.acp.update_failed",
-                    run_id=getattr(event, "run_id", None),
-                    request_id=getattr(event, "request_id", None),
-                    parent_event_id=None,
-                    payload={
-                        "update_type": "agent_thought",
-                        "error_message": str(exc),
-                    },
-                )
+        self._send_session_update(
+            update,
+            run_id=getattr(event, "run_id", None),
+            request_id=getattr(event, "request_id", None),
+            update_type="agent_thought",
+        )
 
     def request_approval(
         self, tool_call: object, arguments: dict[str, Any]
@@ -234,12 +274,7 @@ class AcpSessionEventSink:
         """Synchronously bridge a worker-thread tool decision to ACP/JetBrains."""
         name = str(getattr(tool_call, "name", "tool"))
         tool_call_id = str(getattr(tool_call, "tool_call_id", ""))
-        metadata = {
-            "run_command": "execute",
-            "create_file": "edit",
-            "write_file": "edit",
-            "replace_text": "edit",
-        }.get(name, "other")
+        metadata = approval_kind(name)
         if metadata in self._session_approved_kinds:
             # Answered by the user's earlier "allow for this session": no one is
             # asked, so telemetry must not report a new decision.
@@ -249,20 +284,22 @@ class AcpSessionEventSink:
             session_id=self._session_id,
             tool_call_id=tool_call_id,
             title=summary,
-            kind=metadata,
+            kind=tool_kind(name),
             summary=summary,
             raw_input=_approval_raw_input(name, arguments),
             session_option_name=_session_option_name(metadata),
             content=self._tool_content.get(tool_call_id),
         )
         try:
-            response = self._async_runner.run(
+            response = self._run_blocking(
                 self._conn.request_permission(
                     session_id=permission.session_id,
                     tool_call=permission.tool_call,
                     options=permission.options,
                 )
             )
+        except OperationCancelled:
+            return ApprovalDecision("cancelled")
         except Exception:  # noqa: BLE001
             logger.exception("ACP permission request failed for tool %s", name)
             return ApprovalDecision("unavailable")
@@ -285,28 +322,37 @@ class AcpSessionEventSink:
             self._session_approved_kinds.add(metadata)
         return ApprovalDecision("accepted", scope) if scope else ApprovalDecision("rejected")
 
-    def _send_update(self, *, event: ToolCallEvent, update: object) -> None:
+    def _send_session_update(
+        self,
+        update: object,
+        *,
+        run_id: str | None,
+        request_id: str | None,
+        update_type: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         try:
-            self._async_runner.run(
+            self._run_blocking(
                 self._conn.session_update(
                     session_id=self._session_id,
                     update=update,
                     source="code4me2_agent",
                 )
             )
-        except Exception as exc:
+        except OperationCancelled:
+            return
+        except Exception as exc:  # noqa: BLE001
             record = getattr(self._telemetry, "record", None)
             if callable(record):
                 record(
                     event_type="agent.acp.update_failed",
-                    run_id=event.run_id,
-                    request_id=event.request_id,
+                    run_id=run_id,
+                    request_id=request_id,
                     parent_event_id=None,
                     payload={
-                        "tool_call_id": event.tool_call_id,
-                        "tool_name": event.tool_name,
-                        "phase": event.phase,
+                        "update_type": update_type,
                         "error_message": str(exc),
+                        **(extra or {}),
                     },
                 )
 
@@ -331,12 +377,26 @@ def _record_acp_runtime_event(
 def _approval_raw_input(name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
     if name == "run_command":
         argv = arguments.get("argv")
-        return {
+        raw: dict[str, Any] = {
             "argv": [str(arg) for arg in argv] if isinstance(argv, (list, tuple)) else [],
             "cwd": str(arguments.get("cwd", ".")),
         }
-    if name in {"create_file", "write_file", "replace_text"}:
+        if arguments.get("timeout_seconds") is not None:
+            raw["timeout_seconds"] = arguments["timeout_seconds"]
+        return raw
+    if name in {"create_file", "write_file", "replace_text", "delete_file"}:
         return {"path": str(arguments.get("path", ""))}
+    if name == "edit_file":
+        return {
+            "path": str(arguments.get("path", "")),
+            "edit_count": len(arguments.get("edits") or []),
+        }
+    if name == "move_file":
+        return {
+            "source_path": str(arguments.get("source_path", "")),
+            "destination_path": str(arguments.get("destination_path", "")),
+            "overwrite": bool(arguments.get("overwrite", False)),
+        }
     return None
 
 
@@ -344,12 +404,25 @@ def _approval_summary(name: str, arguments: dict[str, Any]) -> str:
     if name == "run_command":
         argv = arguments.get("argv")
         command = " ".join(str(arg) for arg in argv) if isinstance(argv, (list, tuple)) else "command"
-        return f"Run command: {command}"
+        timeout = arguments.get("timeout_seconds")
+        suffix = f" (timeout {int(float(timeout))}s)" if isinstance(timeout, (int, float)) else ""
+        return f"Run command: {command}{suffix}"
+    if name == "move_file":
+        source = str(arguments.get("source_path", "")).strip()
+        destination = str(arguments.get("destination_path", "")).strip()
+        return f"Move file: {source} → {destination}"
     path = str(arguments.get("path", "")).strip()
+    if name == "edit_file":
+        edit_count = len(arguments.get("edits") or [])
+        return f"Edit file: {path} ({edit_count} edit{'s' if edit_count != 1 else ''})"
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        return f"Call {parts[1]}: {parts[2]}" if len(parts) == 3 else f"Run tool: {name}"
     labels = {
         "create_file": "Create file",
         "write_file": "Write file",
         "replace_text": "Edit file",
+        "delete_file": "Delete file",
     }
     return f"{labels.get(name, f'Run tool: {name}')}{f': {path}' if path else ''}"
 
@@ -433,7 +506,6 @@ def create_acp_agent(
     *,
     authorization: Any | None = None,
 ) -> Any:
-    # TODO new agent -> a lot of changes to here.
     try:
         from acp import (
             AuthenticateResponse,
@@ -452,6 +524,7 @@ def create_acp_agent(
             SessionCapabilities,
             SessionCloseCapabilities,
             SessionResumeCapabilities,
+            Usage,
         )
     except ImportError as exc:
         raise SystemExit(
@@ -495,12 +568,14 @@ def create_acp_agent(
             session_authorization: Any | None = None,
         ) -> AgentSession:
             async_runner = EventLoopAsyncRunner(asyncio.get_running_loop())
+            cancel_event = Event()
             event_sink = AcpSessionEventSink(
                 conn=self._conn,
                 session_id=session_id,
                 updates=self._updates,
                 telemetry=None,
                 async_runner=async_runner,
+                cancel_event=cancel_event,
             )
             core = EchoAgentCore(session_config, event_sink=event_sink)
             event_sink._telemetry = core._telemetry
@@ -523,6 +598,7 @@ def create_acp_agent(
                 session_id=session_id,
                 core=core,
                 mcp_tools=mcp_tools,
+                cancel_event=cancel_event,
                 authorization=session_authorization or self._authorization,
             )
 
@@ -972,8 +1048,7 @@ def create_acp_agent(
             # Rebuild every enforcement point (ToolRegistry allowed_tools /
             # approval, command allowlist, adapter provider) rather than
             # mutating _config in place, which would leave already-constructed
-            # adapters enforcing stale policy. This subsumes upstream's
-            # set_allowed_tools live-update: apply_config refreshes allowed
+            # adapters enforcing stale policy: apply_config refreshes allowed
             # tools plus approval/command/provider state.
             self._bootstrap_core.apply_config(new_config)
             for session in self._sessions.values():
@@ -1140,7 +1215,7 @@ def create_acp_agent(
                             },
                         )
                     prompt_text = await _prompt_text_async(prompt)
-                    logger.info("Prompt text: %s", prompt_text)
+                    logger.info("Prompt received (%d characters).", len(prompt_text))
                     run_id = uuid4().hex
                     if config.managed_mode:
                         run_payload = await asyncio.to_thread(
@@ -1171,7 +1246,7 @@ def create_acp_agent(
                         session.cancel_event,
                     )
                     await asyncio.to_thread(self._save_persisted_memory, session)
-                    if result.final_response:
+                    if result.final_response and not getattr(result, "response_emitted", False):
                         await self._conn.session_update(
                             session_id=session_id,
                             update=self._updates.agent_message(
@@ -1186,8 +1261,23 @@ def create_acp_agent(
                             ),
                             source="code4me2_agent",
                         )
+                    usage = getattr(result, "usage", None)
                     return PromptResponse(
                         stop_reason=_acp_stop_reason(result.stop_reason),
+                        usage=Usage(
+                            total_tokens=int(usage.get("total_tokens", 0)),
+                            input_tokens=int(usage.get("prompt_tokens", 0)),
+                            output_tokens=int(usage.get("completion_tokens", 0)),
+                        )
+                        if isinstance(usage, dict)
+                        else None,
+                        field_meta={
+                            "code4me2": {
+                                "outcome": result.run_status,
+                                "adapterStopReason": result.stop_reason,
+                                "durationMs": result.duration_ms,
+                            }
+                        },
                     )
                 finally:
                     session.active_prompt_task = None

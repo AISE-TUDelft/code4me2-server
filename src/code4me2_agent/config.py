@@ -22,7 +22,10 @@ class UploadConfig:
 @dataclass(frozen=True)
 class CommandConfig:
     allowlisted_commands: list[str] = field(default_factory=list)
-    timeout_seconds: float = 10.0
+    # Default per-command timeout; the model may raise it per call up to
+    # ``max_timeout_seconds`` (builds and test suites routinely exceed 10 s).
+    timeout_seconds: float = 120.0
+    max_timeout_seconds: float = 600.0
     max_output_bytes: int = 16384
 
 
@@ -31,7 +34,9 @@ class MemoryWindowConfig:
     scope: str = "prompt"
     strategy: str = "last_messages"
     max_messages: int = 12
-    max_tokens: int = 16000
+    # Estimated tokens (chars/4) of conversation kept per request; the server
+    # profile's max_context_tokens overrides this.
+    max_tokens: int = 32000
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,9 @@ class OpenAICompatibleProviderConfig:
     timeout_seconds: float = 90.0
     temperature: float | None = None
     auth_headers: dict[str, str] = field(default_factory=dict)
+    # Forwarded as ``max_tokens`` only when set: newer OpenAI models reject it in
+    # favour of ``max_completion_tokens`` and the relay hides which upstream is used.
+    max_output_tokens: int | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -405,13 +413,12 @@ class AgentConfig:
                 if isinstance(command, str) and command.strip()
             ]
 
-        raw_command_timeout = commands_data.get("timeout_seconds", 10.0)
-        try:
-            command_timeout_seconds = float(raw_command_timeout)
-            if command_timeout_seconds <= 0:
-                command_timeout_seconds = 10.0
-        except (TypeError, ValueError):
-            command_timeout_seconds = 10.0
+        command_timeout_seconds = _positive_float(
+            commands_data.get("timeout_seconds", 120.0), default=120.0
+        )
+        max_command_timeout_seconds = _positive_float(
+            commands_data.get("max_timeout_seconds", 600.0), default=600.0
+        )
 
         raw_max_output_bytes = commands_data.get("max_output_bytes", 16384)
         try:
@@ -422,6 +429,7 @@ class AgentConfig:
         commands = CommandConfig(
             allowlisted_commands=allowlisted_commands,
             timeout_seconds=command_timeout_seconds,
+            max_timeout_seconds=max(command_timeout_seconds, max_command_timeout_seconds),
             max_output_bytes=max_output_bytes,
         )
 
@@ -451,11 +459,11 @@ class AgentConfig:
             max_messages = max(1, int(raw_max_messages))
         except (TypeError, ValueError):
             max_messages = 12
-        raw_max_tokens = memory_window_data.get("max_tokens", 4000)
+        raw_max_tokens = memory_window_data.get("max_tokens", 32000)
         try:
             max_tokens = max(1, int(raw_max_tokens))
         except (TypeError, ValueError):
-            max_tokens = 4000
+            max_tokens = 32000
 
         fake_provider_data = adapter_data.get("fake_provider", {})
         if not isinstance(fake_provider_data, dict):
@@ -511,6 +519,13 @@ class AgentConfig:
                     else None
                 ),
                 auth_headers=provider_auth_headers,
+                max_output_tokens=(
+                    int(provider_data["max_output_tokens"])
+                    if isinstance(provider_data.get("max_output_tokens"), int)
+                    and not isinstance(provider_data.get("max_output_tokens"), bool)
+                    and provider_data["max_output_tokens"] > 0
+                    else None
+                ),
             ),
         )
 
