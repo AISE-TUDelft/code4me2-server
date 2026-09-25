@@ -25,6 +25,12 @@ Event semantics (verified against the producers on 2026-09-24):
   from model requests; the same call is normally also observed by the ACP proxy.
   ACP tool events therefore own a research session's tool metrics whenever the
   session has any, and relay tool calls count only in sessions without them.
+* ``permission.*`` with source ``relay`` are the built-in agent's own reports
+  (decisions ``accepted``/``rejected``/``cancelled``/``unavailable``). The ACP
+  proxy observes the same round-trips, so they count only in sessions without
+  ACP permission events; ``accepted``/``rejected`` read as ACP's
+  ``allow``/``reject``. A ``policy``-scope decision (auto-approval, a
+  suggestion-only refusal) was never put to the participant and never counts.
 * Turn and permission ids are JSON-RPC request ids that restart with every proxy
   process, so they are keyed by (research session, emitter, id).
 * ``ide.document.changed`` is one IDE document change; its ``payload.count`` is
@@ -95,6 +101,7 @@ TOOL_EVENTS = frozenset(
 )
 PERMISSION_REQUESTED_EVENT = CanonicalEventType.PERMISSION_REQUESTED.value
 PERMISSION_DECIDED_EVENT = CanonicalEventType.PERMISSION_DECIDED.value
+PERMISSION_EVENTS = frozenset({PERMISSION_REQUESTED_EVENT, PERMISSION_DECIDED_EVENT})
 PLAN_EVENT = CanonicalEventType.PLAN_UPDATED.value
 USAGE_EVENT = CanonicalEventType.USAGE_UPDATED.value
 ERROR_EVENTS = frozenset(
@@ -135,6 +142,10 @@ OTHER_TOOL_KIND = "other"
 FAILED_STATUSES = frozenset({"failed", "error"})
 CANCELLED_STOP_REASON = "cancelled"
 UNKNOWN = "unknown"
+#: A self-reported decision the approval policy made without asking anyone.
+POLICY_DECISION_SCOPE = "policy"
+#: The built-in agent's decision vocabulary, read as the ACP one.
+RELAY_DECISIONS = {"accepted": "allow", "rejected": "reject"}
 TERMINAL_SESSION_STATES = frozenset({"ended", "revoked"})
 ACTIVE_ENROLLMENT_STATUS = "ACTIVE"
 #: A participant is ``ACTIVE`` when their last event is this recent.
@@ -289,6 +300,33 @@ def is_model_call(row: EventRow) -> bool:
 def is_cancel(row: EventRow) -> bool:
     """An ACP ``session/cancel`` (a user interrupt)."""
     return row.event_type == CANCEL_EVENT and row.source == ACP_SOURCE
+
+
+def acp_permission_sessions(rows: Iterable[EventRow]) -> frozenset:
+    """Research sessions whose permission round-trips the ACP proxy observed."""
+    return frozenset(
+        row.session_id
+        for row in rows
+        if row.event_type in PERMISSION_EVENTS and row.source == ACP_SOURCE
+    )
+
+
+def counts_as_permission(row: EventRow, acp_sessions: frozenset) -> bool:
+    """A permission event put to the participant, from its session's owning source."""
+    if row.event_type not in PERMISSION_EVENTS:
+        return False
+    if row.source != RELAY_SOURCE:
+        return True
+    return (
+        row.session_id not in acp_sessions
+        and row.decision_scope != POLICY_DECISION_SCOPE
+    )
+
+
+def permission_decision(row: EventRow) -> str:
+    """A ``permission.decided`` outcome in the ACP vocabulary."""
+    decision = row.decision or UNKNOWN
+    return RELAY_DECISIONS.get(decision, decision)
 
 
 def _in_window(moment: datetime, window: Optional[DateWindow]) -> bool:
@@ -743,6 +781,7 @@ class ParticipantAnalysis:
     first_event_at: Optional[datetime]
     last_event_at: Optional[datetime]
     first_edit_seconds: list[float]
+    acp_permission_sessions: frozenset = frozenset()
 
     @property
     def has_telemetry(self) -> bool:
@@ -867,11 +906,15 @@ def analyze_participant(
         if call.turn is not None:
             call.turn.tool_calls.append(call)
 
-    # Permissions.
+    # Permissions: each round-trip once, from the source that owns the session.
+    acp_sessions = acp_permission_sessions(rows)
+    permission_rows = [row for row in rows if counts_as_permission(row, acp_sessions)]
     permission_requests = [
-        row for row in rows if row.event_type == PERMISSION_REQUESTED_EVENT
+        row for row in permission_rows if row.event_type == PERMISSION_REQUESTED_EVENT
     ]
-    decisions = [row for row in rows if row.event_type == PERMISSION_DECIDED_EVENT]
+    decisions = [
+        row for row in permission_rows if row.event_type == PERMISSION_DECIDED_EVENT
+    ]
     first_request: dict[tuple, EventRow] = {}
     permission_tool_calls: set[tuple] = set()
     for request in permission_requests:
@@ -897,7 +940,7 @@ def analyze_participant(
     permission_waits: list[float] = []
     decided: set[tuple] = set()
     for decision in decisions:
-        decision_counts[(decision.decision or UNKNOWN)] += 1
+        decision_counts[permission_decision(decision)] += 1
         if decision.permission_id is None:
             continue
         key = (decision.session_id, decision.emitter_id, decision.permission_id)
@@ -1037,6 +1080,7 @@ def analyze_participant(
         first_event_at=first_event_at,
         last_event_at=last_event_at,
         first_edit_seconds=first_edit_seconds,
+        acp_permission_sessions=acp_sessions,
     )
 
 
@@ -1373,7 +1417,12 @@ def _timeline_rows(
     items = [
         row
         for row in timeline
-        if not is_message_chunk(row) and row.event_type not in TIMELINE_EXCLUDED_EVENT_TYPES
+        if not is_message_chunk(row)
+        and row.event_type not in TIMELINE_EXCLUDED_EVENT_TYPES
+        and (
+            row.event_type not in PERMISSION_EVENTS
+            or counts_as_permission(row, analysis.acp_permission_sessions)
+        )
     ]
     items.sort(key=order_key, reverse=True)
     output = []
@@ -1404,7 +1453,11 @@ def _timeline_rows(
                 "tool_name": tool_name,
                 "tool_kind": tool_kind,
                 "status": row.status or row.lifecycle_state,
-                "decision": row.decision,
+                "decision": (
+                    permission_decision(row)
+                    if row.event_type == PERMISSION_DECIDED_EVENT
+                    else row.decision
+                ),
                 "stop_reason": row.stop_reason,
                 "error_code": row.error_code,
             }

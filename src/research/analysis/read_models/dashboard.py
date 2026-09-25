@@ -41,6 +41,15 @@ _CONTEXT_BYTES = (
 _TOOL_RESULT_LENGTH = (
     "(e.envelope_json -> 'payload' ->> 'tool_result_length')::bigint"
 )
+_DECISION = "e.envelope_json -> 'payload' ->> 'decision'"
+#: A permission decision the built-in agent put to its user. As with the model
+#: and tool counts, only the agent's own reports are read (for a proxied run the
+#: ACP proxy observes the same round-trips), and a ``policy``-scope decision
+#: (auto-approval, a suggestion-only refusal) asked no one.
+_USER_DECISION = (
+    f"({_LEGACY_KIND} = 'permission_decided' AND {_DECISION} IS NOT NULL "
+    "AND COALESCE(e.envelope_json -> 'payload' ->> 'decision_scope', '') <> 'policy')"
+)
 
 _EVENT_JOIN = (
     "FROM research_event e "
@@ -154,9 +163,9 @@ def agent_overview(
                 SUM({_TOOL_SCHEMA_BYTES}) AS tool_schema_bytes,
                 SUM({_CONTEXT_BYTES}) AS conversation_context_bytes,
                 SUM({_TOOL_RESULT_LENGTH}) AS tool_result_bytes,
-                COUNT(*) FILTER (WHERE e.event_type = 'permission.decided') AS permission_decisions,
-                COUNT(*) FILTER (WHERE e.event_type = 'permission.decided'
-                    AND e.envelope_json -> 'payload' ->> 'decision' = 'accepted') AS permission_accepted,
+                COUNT(*) FILTER (WHERE {_USER_DECISION}) AS permission_decisions,
+                COUNT(*) FILTER (WHERE {_USER_DECISION} AND {_DECISION} = 'accepted')
+                    AS permission_accepted,
                 AVG({_LATENCY}) FILTER (WHERE {_LEGACY_KIND} = 'model_call')
                     AS avg_model_latency_ms,
                 PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {_LATENCY})
@@ -366,9 +375,9 @@ def agent_overview(
                 else None
             ),
             # Edit acceptance is computed from recorded permission decisions:
-            # accepted tool executions over all decided ones. With no observed
-            # decisions both stay null and the dashboard renders unavailable
-            # rather than a fabricated ratio.
+            # accepted tool executions over all decisions a user was asked for
+            # (see ``_USER_DECISION``). With no such decision both stay null and
+            # the dashboard renders unavailable rather than a fabricated ratio.
             "edit_acceptance_rate": (
                 (num(events.permission_accepted, integer=True) or 0)
                 / (num(events.permission_decisions, integer=True) or 0)

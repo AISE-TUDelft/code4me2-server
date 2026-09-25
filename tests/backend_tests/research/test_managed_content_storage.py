@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from dotenv import load_dotenv
@@ -487,3 +488,51 @@ def test_self_report_batches_continue_one_emitter_sequence(db_runtime):
         assert sequences == [1, 2, 3, 4, 5]
     finally:
         db.close()
+
+
+def test_the_agent_dashboard_rates_only_decisions_someone_was_asked_for(db_runtime):
+    """Edit acceptance reads the agent's own reports, without policy decisions."""
+    from research.analysis.read_models.dashboard import agent_overview
+
+    db = db_runtime()
+    try:
+        task = _seed(db, content_capture=False)
+        outcomes = [
+            ("accepted", "once"),
+            ("rejected", "once"),
+            ("accepted", "policy"),
+            ("accepted", "policy"),
+        ]
+        events = [
+            _runtime_event(
+                "agent.permission.decided",
+                {
+                    "tool_name": "write_file",
+                    "tool_call_id": f"tc-{index}",
+                    "decision": decision,
+                    "decision_scope": scope,
+                },
+            )
+            for index, (decision, scope) in enumerate(outcomes)
+        ]
+        ingested, _skipped = ingest_event_batch(
+            db,
+            task_id=task.task_id,
+            events=events,
+            content_included=False,
+            agent_profile="managed-arm",
+        )
+        assert ingested == len(outcomes)
+        db.commit()
+
+        owner = SimpleNamespace(user_id=task.owner_user_id, is_admin=False)
+        # agent_task.created_at is naive server-local time; a day of slack keeps
+        # the task inside the window whatever the host's time zone.
+        summary = agent_overview(
+            db, owner, time_window="7d", now=NOW + timedelta(days=1)
+        )["summary"]
+        assert summary["total_edits"] == 2
+        assert summary["edit_acceptance_rate"] == 0.5
+    finally:
+        db.close()
+
