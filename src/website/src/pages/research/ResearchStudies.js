@@ -1,159 +1,126 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   cloneResearchStudy,
   createResearchStudy,
   engageResearchKillSwitch,
   getAgentProfiles,
   getCurrentUser,
+  getStudyAnalyticsSummary,
+  getStudyParticipants,
   listResearchStudies,
   releaseResearchKillSwitch,
   stopResearchStudy,
   updateResearchStudyMetadata,
 } from "../../utils/api";
-import StudyParticipantCoverage from "./StudyParticipantCoverage";
+import Icon from "../../components/common/Icon";
+import { CopyButton, EmptyState, Loading, PageHeader, TabPanel, Tabs } from "../../components/common/ui";
+import { formatDate, formatNumber } from "../../utils/format";
+import StudyCreateForm from "./StudyCreateForm";
+import StudyOverview from "./StudyOverview";
+import StudyParticipants from "./StudyParticipants";
+import StudyAnalytics from "./StudyAnalytics";
+import StudySettings from "./StudySettings";
+import { STATUS_LABELS, armsForStudy, statusClass } from "./studyUtils";
 import "./research.css";
 import "./ResearchStudies.css";
 
-const STATUS_LABELS = {
-  DRAFT: "Draft",
-  ACTIVE: "Active",
-  STUDY_STOPPED: "Stopped",
+const TABS = ["overview", "participants", "analytics", "settings"];
+const LIST_COLLAPSED_KEY = "code4me.research.studies.listCollapsed";
+
+const STATUS_FILTERS = [
+  { value: "", label: "All" },
+  { value: "ACTIVE", label: "Active" },
+  { value: "DRAFT", label: "Draft" },
+  { value: "STUDY_STOPPED", label: "Stopped" },
+];
+
+const METADATA_ERRORS = {
+  STUDY_METADATA_LOCKED: "Study metadata is locked after consent.",
+  STUDY_STOPPED: "Stopped studies cannot be edited.",
+  PROFILE_LOCKED: "The selected profile is locked.",
+  PROFILE_NOT_ALLOWED: "You are not allowed to use that profile.",
 };
 
-// The server validates and freezes a complete session policy on create
-// (SESSION_POLICY_INVALID otherwise), so the form must never default to an
-// empty object (ISSUE-05).
-const DEFAULT_SESSION_POLICY = {
-  idle_timeout_seconds: 600,
-  resume_grace_seconds: 120,
-  heartbeat_seconds: 30,
+const scheduleText = (study) => {
+  if (!study.starts_at && !study.ends_at) return "Open-ended";
+  const start = study.starts_at ? formatDate(study.starts_at) : "Now";
+  const end = study.ends_at ? formatDate(study.ends_at) : "no end";
+  return `${start} – ${end}`;
 };
-
-const parsePolicyDraft = (text) => {
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (_) {
-    return {
-      ok: false,
-      error: "Invalid JSON. Create stays disabled until it parses.",
-    };
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { ok: false, error: "The policy must be a JSON object." };
-  }
-  return { ok: true, value: parsed };
-};
-
-const asPolicyObject = (policy) =>
-  policy && typeof policy === "object" && !Array.isArray(policy)
-    ? policy
-    : {};
 
 const ResearchStudies = () => {
+  const params = useParams();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+
   const [studies, setStudies] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isUnavailable, setIsUnavailable] = useState(false);
   const [isForbidden, setIsForbidden] = useState(false);
-  const [selectedStudy, setSelectedStudy] = useState(null);
+  const [selectedStudyId, setSelectedStudyId] = useState(params.studyId || "");
+  const [activeTab, setActiveTab] = useState(TABS.includes(searchParams.get("tab")) ? searchParams.get("tab") : "overview");
   const [isCreating, setIsCreating] = useState(false);
-  const [form, setForm] = useState({
-    name: "",
-    description: "",
-    startsAt: "",
-    endsAt: "",
-    telemetryPolicy: {},
-    sessionPolicy: { ...DEFAULT_SESSION_POLICY },
-    profileIds: [],
-  });
-  // Raw draft text for the JSON editors: invalid input stays visible and the
-  // parsed policy is only replaced once the draft parses (ISSUE-05).
-  const [telemetryPolicyText, setTelemetryPolicyText] = useState(JSON.stringify({}));
-  const [sessionPolicyText, setSessionPolicyText] = useState(
-    JSON.stringify(DEFAULT_SESSION_POLICY),
-  );
-  const [telemetryPolicyError, setTelemetryPolicyError] = useState("");
-  const [sessionPolicyError, setSessionPolicyError] = useState("");
-
-  // Presets: a researcher should never hand-write policy JSON. The raw editors
-  // stay available under "Advanced". Vocabulary: STRUCTURAL/METRICS/DIAGNOSTICS
-  // are metadata; CONTENT is the sensitive one.
-  const TELEMETRY_PRESETS = {
-    metadata: { allowed_field_classes: ["STRUCTURAL", "METRICS", "DIAGNOSTICS"] },
-    everything: { allowed_field_classes: ["STRUCTURAL", "METRICS", "DIAGNOSTICS", "CONTENT"] },
-  };
-  const TELEMETRY_CLASS_LABELS = {
-    STRUCTURAL: "Agent and session structure (which events and tools ran)",
-    METRICS: "Usage and timings (tokens, durations, counts)",
-    DIAGNOSTICS: "Errors and diagnostics",
-    CONTENT: "Prompts, code and tool output (sensitive)",
-  };
-  const SESSION_PRESETS = {
-    standard: { idle_timeout_seconds: 900, resume_grace_seconds: 300, heartbeat_seconds: 30 },
-    long: { idle_timeout_seconds: 3600, resume_grace_seconds: 900, heartbeat_seconds: 60 },
-  };
-  const [telemetryPreset, setTelemetryPreset] = useState("metadata");
-  const [sessionPreset, setSessionPreset] = useState("standard");
-  const telemetryClasses =
-    (parsePolicyDraft(telemetryPolicyText) || {}).allowed_field_classes || [];
-
-  const applyTelemetryPreset = (preset) => {
-    setTelemetryPreset(preset);
-    if (TELEMETRY_PRESETS[preset]) {
-      setTelemetryPolicyText(JSON.stringify(TELEMETRY_PRESETS[preset]));
-      setTelemetryPolicyError("");
-    }
-  };
-  const toggleTelemetryClass = (name) => {
-    const current = parsePolicyDraft(telemetryPolicyText) || {};
-    const list = Array.isArray(current.allowed_field_classes) ? current.allowed_field_classes : [];
-    const next = list.includes(name) ? list.filter((item) => item !== name) : [...list, name];
-    setTelemetryPolicyText(JSON.stringify({ ...current, allowed_field_classes: next }));
-    setTelemetryPolicyError("");
-    setTelemetryPreset("custom");
-  };
-  const applySessionPreset = (preset) => {
-    setSessionPreset(preset);
-    if (SESSION_PRESETS[preset]) {
-      setSessionPolicyText(JSON.stringify(SESSION_PRESETS[preset]));
-      setSessionPolicyError("");
-    }
-  };
   // Non-null while the create form is acting as the clone submission step.
   const [cloneSource, setCloneSource] = useState(null);
   const [profiles, setProfiles] = useState([]);
-  const [metadata, setMetadata] = useState({ name: "", description: "" });
   const [isBusy, setIsBusy] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [killSwitchId, setKillSwitchId] = useState("");
-  const [killSwitchReason, setKillSwitchReason] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [listQuery, setListQuery] = useState("");
+  const [listStatus, setListStatus] = useState("");
+  const [participantsState, setParticipantsState] = useState({ isLoading: false, error: "", data: null });
+  // Collapsing the study list gives dashboards the full width (remembered per browser).
+  const [listCollapsed, setListCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(LIST_COLLAPSED_KEY) === "1";
+    } catch (_) {
+      return false;
+    }
+  });
+  // The all-time analytics summary: the overview and the analytics tab's
+  // "All time" range share it, so opening the tab does not refetch it.
+  const [summaryState, setSummaryState] = useState({ isLoading: false, error: "", data: null });
+  // Bumped by every study reload so the selected study's participants and
+  // analytics refresh with it (not only when another study is selected).
+  const [refreshToken, setRefreshToken] = useState(0);
+  const selectedRef = useRef(selectedStudyId);
+  selectedRef.current = selectedStudyId;
+  // Only the latest request of each kind may update the page.
+  const participantsRequest = useRef(0);
+  const summaryRequest = useRef(0);
+  // "<study>:<refresh token>" of the summary in summaryState (see below).
+  const summaryKey = useRef("");
 
-  const loadStudies = async (preferredStudyId) => {
-    setError("");
+  const selectedStudy = useMemo(
+    () => studies.find((study) => study.study_id === selectedStudyId) || null,
+    [studies, selectedStudyId],
+  );
+
+  const loadStudies = useCallback(async (preferredStudyId) => {
     setIsLoading(true);
     const result = await listResearchStudies();
-    if (result.ok) {
+    if (result && result.ok) {
       setIsUnavailable(false);
       setIsForbidden(false);
       const nextStudies = Array.isArray(result.data) ? result.data : [];
       setStudies(nextStudies);
-      const studyId = preferredStudyId || selectedStudy?.study_id;
-      setSelectedStudy(studyId ? nextStudies.find((study) => study.study_id === studyId) || null : null);
+      const target = preferredStudyId || selectedRef.current;
+      setSelectedStudyId(target || "");
+      setRefreshToken((value) => value + 1);
     } else {
-      setIsUnavailable(Boolean(result.missing));
-      setIsForbidden(Boolean(result.forbidden || result.status === 403));
-      setError(result.error || "Research studies are unavailable.");
+      setIsUnavailable(Boolean(result && result.missing));
+      setIsForbidden(Boolean(result && (result.forbidden || result.status === 403)));
+      setError((result && result.error) || "Research studies are unavailable.");
     }
     setIsLoading(false);
-  };
+  }, []);
 
   useEffect(() => {
     loadStudies();
-    // Initial load only; actions explicitly refresh state below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadStudies]);
 
   useEffect(() => {
     Promise.resolve(getAgentProfiles()).then((result) => {
@@ -162,91 +129,140 @@ const ResearchStudies = () => {
   }, []);
 
   useEffect(() => {
-    getCurrentUser().then((result) => {
+    Promise.resolve(getCurrentUser()).then((result) => {
       if (result && result.ok && result.user) setIsAdmin(result.user.is_admin === true);
     });
   }, []);
 
+  // Follow browser navigation (back/forward) between study URLs, including
+  // back to the bare list, and between tabs.
   useEffect(() => {
-    const persistedSwitch = selectedStudy?.kill_switch;
-    const isEngaged = persistedSwitch?.switch_id && persistedSwitch.status !== "RELEASED";
-    setKillSwitchId(isEngaged ? persistedSwitch.switch_id : "");
+    const target = params.studyId || "";
+    if (target !== selectedRef.current) setSelectedStudyId(target);
+  }, [params.studyId]);
+
+  const tabParam = searchParams.get("tab");
+  useEffect(() => {
+    setActiveTab(TABS.includes(tabParam) ? tabParam : "overview");
+  }, [tabParam]);
+
+  useEffect(() => {
+    const persisted = selectedStudy?.kill_switch;
+    const engaged = persisted?.switch_id && persisted.status !== "RELEASED";
+    setKillSwitchId(engaged ? persisted.switch_id : "");
   }, [selectedStudy]);
 
+  const loadParticipants = useCallback(async (studyId) => {
+    if (!studyId) return;
+    const requestId = participantsRequest.current + 1;
+    participantsRequest.current = requestId;
+    setParticipantsState((current) => ({ ...current, isLoading: true, error: "" }));
+    const result = await getStudyParticipants(studyId);
+    if (participantsRequest.current !== requestId || selectedRef.current !== studyId) return;
+    if (result && result.ok) setParticipantsState({ isLoading: false, error: "", data: result.data });
+    else setParticipantsState({ isLoading: false, error: (result && result.error) || "", data: null });
+  }, []);
+
+  const loadSummary = useCallback(async (studyId) => {
+    if (!studyId) return;
+    const requestId = summaryRequest.current + 1;
+    summaryRequest.current = requestId;
+    setSummaryState((current) => ({ ...current, isLoading: true, error: "" }));
+    const result = await getStudyAnalyticsSummary(studyId, {});
+    if (summaryRequest.current !== requestId || selectedRef.current !== studyId) return;
+    if (result && result.ok) setSummaryState({ isLoading: false, error: "", data: result.data });
+    else
+      setSummaryState({
+        isLoading: false,
+        error: (result && result.error) || "Study analytics could not be loaded.",
+        data: null,
+      });
+  }, []);
+
+  // A different study starts from a clean slate…
+  useEffect(() => {
+    setParticipantsState({ isLoading: false, error: "", data: null });
+    setSummaryState({ isLoading: false, error: "", data: null });
+    summaryKey.current = "";
+  }, [selectedStudyId]);
+
+  // …and each tab loads only what it shows: both requests read every
+  // telemetry event of the study, so they are not fetched speculatively.
+  // The participants list is refetched whenever its tab opens (enrollment
+  // changes at any time); the summary once per study and reload, shared by
+  // the overview and the analytics tab's "All time" range.
+  // Nothing loads before the study list does (a deep link would otherwise
+  // fetch twice: once on mount and again when the list bumps the token).
+  const showsParticipants = activeTab === "participants";
+  const needsSummary = activeTab === "overview" || activeTab === "analytics";
+  const studyReady = Boolean(selectedStudy);
+  useEffect(() => {
+    if (studyReady && showsParticipants) loadParticipants(selectedStudyId);
+  }, [studyReady, selectedStudyId, refreshToken, showsParticipants, loadParticipants]);
+  useEffect(() => {
+    if (!studyReady || !needsSummary) return;
+    const key = `${selectedStudyId}:${refreshToken}`;
+    if (summaryKey.current === key) return;
+    summaryKey.current = key;
+    loadSummary(selectedStudyId);
+  }, [studyReady, selectedStudyId, refreshToken, needsSummary, loadSummary]);
+
+  const syncUrl = (studyId, tab, replace = false) => {
+    const search = tab && tab !== "overview" ? `?tab=${tab}` : "";
+    navigate(studyId ? `/research/studies/${encodeURIComponent(studyId)}${search}` : "/research/studies", { replace });
+  };
+
   const openStudy = (study) => {
-    setSelectedStudy(study);
-    setMetadata({ name: study.name || "", description: study.description || "" });
+    setSelectedStudyId(study.study_id);
     setNotice("");
     setError("");
+    syncUrl(study.study_id, activeTab);
   };
 
-  const resetStudyForm = () => {
-    setForm({
-      name: "",
-      description: "",
-      startsAt: "",
-      endsAt: "",
-      telemetryPolicy: {},
-      sessionPolicy: { ...DEFAULT_SESSION_POLICY },
-      profileIds: [],
+  const changeTab = (tab) => {
+    setActiveTab(tab);
+    syncUrl(selectedStudyId, tab, true);
+  };
+
+  const toggleList = () => {
+    setListCollapsed((value) => {
+      const next = !value;
+      try {
+        localStorage.setItem(LIST_COLLAPSED_KEY, next ? "1" : "0");
+      } catch (_) {
+        // Storage may be unavailable; the toggle still works for this visit.
+      }
+      return next;
     });
-    setTelemetryPolicyText(JSON.stringify({}));
-    setSessionPolicyText(JSON.stringify(DEFAULT_SESSION_POLICY));
-    setTelemetryPolicyError("");
-    setSessionPolicyError("");
+  };
+
+  const openCreateForm = () => {
     setCloneSource(null);
-  };
-
-  const toggleCreateForm = () => {
-    resetStudyForm();
-    setIsCreating((value) => !value);
-  };
-
-  // Opens the create form prefilled from the stopped source. The clone endpoint
-  // copies the stored configuration and accepts only new profile selections, so
-  // these fields are shown for reference and the profile list is the input.
-  const openCloneForm = () => {
-    if (!selectedStudy) return;
-    const telemetryPolicy = asPolicyObject(selectedStudy.telemetry_policy);
-    const sessionPolicy = asPolicyObject(selectedStudy.session_policy);
-    setForm({
-      name: `${selectedStudy.name} (copy)`,
-      description: selectedStudy.description || "",
-      startsAt: "",
-      endsAt: "",
-      telemetryPolicy,
-      sessionPolicy,
-      profileIds: [],
-    });
-    setTelemetryPolicyText(JSON.stringify(telemetryPolicy));
-    setSessionPolicyText(JSON.stringify(sessionPolicy));
-    setTelemetryPolicyError("");
-    setSessionPolicyError("");
-    setCloneSource(selectedStudy);
     setIsCreating(true);
     setError("");
     setNotice("");
   };
 
-  const applyPolicyDraft = (field, setText, setDraftError) => (event) => {
-    const text = event.target.value;
-    setText(text);
-    const parsed = parsePolicyDraft(text);
-    if (!parsed.ok) {
-      setDraftError(parsed.error);
-      return;
-    }
-    setDraftError("");
-    setForm((current) => ({ ...current, [field]: parsed.value }));
+  const closeCreateForm = () => {
+    setIsCreating(false);
+    setCloneSource(null);
   };
 
-  const handleCreate = async (event) => {
-    event.preventDefault();
-    if (telemetryPolicyError || sessionPolicyError) return;
+  // Opens the create form prefilled from the stopped source. The clone
+  // endpoint copies the stored configuration and accepts only new profile
+  // selections, so the copied fields are shown for reference.
+  const openCloneForm = () => {
+    if (!selectedStudy) return;
+    setCloneSource(selectedStudy);
+    setIsCreating(true);
+    setError("");
+    setNotice("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const handleCreate = async (form) => {
     if (cloneSource && form.profileIds.length === 0) {
-      setError(
-        "Select at least one agent profile; a clone without profile selections cannot be joined.",
-      );
+      setError("Select at least one agent profile; a clone without profile selections cannot be joined.");
       return;
     }
     const source = cloneSource;
@@ -256,378 +272,398 @@ const ResearchStudies = () => {
     const result = source
       ? await cloneResearchStudy(source.study_id, { profileIds: form.profileIds })
       : await createResearchStudy(form);
-    if (result.ok) {
-      resetStudyForm();
+    if (result && result.ok) {
       setIsCreating(false);
+      setCloneSource(null);
+      const created = result.data?.study || result.data;
       if (source) {
-        const cloned = result.data?.study || result.data;
         setNotice(
           "Clone created in Draft state with the selected agent profiles. Name, description, schedule, telemetry policy, and session policy were copied; participants, consent, assignments, telemetry data, join code, and study ID were not.",
         );
-        await loadStudies(cloned?.study_id);
       } else {
         setNotice("Study created in Draft state.");
-        await loadStudies();
       }
-    } else if (result.code === "SESSION_POLICY_INVALID" || result.code === "TELEMETRY_POLICY_INVALID") {
+      setActiveTab("overview");
+      await loadStudies(created?.study_id);
+      if (created?.study_id) syncUrl(created.study_id, "overview");
+    } else if (result && (result.code === "SESSION_POLICY_INVALID" || result.code === "TELEMETRY_POLICY_INVALID")) {
       setError(`${result.code}: ${result.error || "invalid policy"}`);
     } else {
-      setError(result.error || (source ? "Study could not be cloned." : "Study could not be created."));
+      setError((result && result.error) || (source ? "Study could not be cloned." : "Study could not be created."));
     }
     setIsBusy(false);
   };
 
-  const handleMetadataSave = async (event) => {
-    event.preventDefault();
+  const handleMetadataSave = async (metadata) => {
     if (!selectedStudy) return;
     setIsBusy(true);
     setError("");
     setNotice("");
     const result = await updateResearchStudyMetadata(selectedStudy.study_id, metadata);
-    if (result.ok) {
+    if (result && result.ok) {
       setNotice("Study metadata updated.");
       await loadStudies();
     } else {
-      setError({ STUDY_METADATA_LOCKED: "Study metadata is locked after consent.", STUDY_STOPPED: "Stopped studies cannot be edited.", PROFILE_LOCKED: "The selected profile is locked.", PROFILE_NOT_ALLOWED: "You are not allowed to use that profile." }[result.code] || result.error || "Study metadata could not be updated.");
+      setError(METADATA_ERRORS[result && result.code] || (result && result.error) || "Study metadata could not be updated.");
     }
     setIsBusy(false);
   };
 
   const handleStop = async () => {
-    if (!selectedStudy || !window.confirm("Stop this study permanently? This is terminal, closes collection, and retains existing research data without deleting it.")) {
+    if (
+      !selectedStudy ||
+      !window.confirm(
+        "Stop this study permanently? This is terminal, closes collection, and retains existing research data without deleting it.",
+      )
+    ) {
       return;
     }
     setIsBusy(true);
     setError("");
     setNotice("");
     const result = await stopResearchStudy(selectedStudy.study_id);
-    if (result.ok) {
+    if (result && result.ok) {
       setNotice("Study stopped. Collection is revoked and retained data remains available.");
       await loadStudies();
     } else {
-      setError(result.error || "Study could not be stopped.");
+      setError((result && result.error) || "Study could not be stopped.");
     }
     setIsBusy(false);
   };
 
-  const handleKillSwitch = async () => {
-    if (!selectedStudy) return;
+  // Resolves true only when the switch was engaged or released.
+  const handleKillSwitch = async (reason) => {
+    if (!selectedStudy) return false;
     if (selectedStudy.research_status === "STUDY_STOPPED") {
       setError("This study is stopped permanently; releasing a switch cannot reopen it.");
-      return;
+      return false;
     }
     const persistedSwitchId = selectedStudy.kill_switch?.switch_id;
-    const persistedSwitchEngaged = persistedSwitchId && selectedStudy.kill_switch?.status !== "RELEASED";
-    const activeSwitchId = persistedSwitchEngaged ? persistedSwitchId : killSwitchId;
-    if (!activeSwitchId && (!killSwitchReason.trim() || !window.confirm(`Engage the kill switch for this study? Reason: ${killSwitchReason.trim()}`))) return;
+    const persistedEngaged = persistedSwitchId && selectedStudy.kill_switch?.status !== "RELEASED";
+    const activeSwitchId = persistedEngaged ? persistedSwitchId : killSwitchId;
+    const confirmText = `Engage the kill switch for "${selectedStudy.name || "this study"}"? Reason: ${reason}`;
+    if (!activeSwitchId && (!reason || !window.confirm(confirmText))) {
+      return false;
+    }
     setIsBusy(true);
     setError("");
     const result = activeSwitchId
       ? await releaseResearchKillSwitch(activeSwitchId)
-      : await engageResearchKillSwitch(selectedStudy.study_id, killSwitchReason.trim());
-    if (result.ok) {
+      : await engageResearchKillSwitch(selectedStudy.study_id, reason);
+    const succeeded = Boolean(result && result.ok);
+    if (succeeded) {
       setKillSwitchId(activeSwitchId ? "" : result.data.switch_id || "");
-      setKillSwitchReason("");
       setNotice(activeSwitchId ? "Kill switch released." : "Kill switch engaged.");
       await loadStudies(selectedStudy.study_id);
     } else {
-      setError(result.error || "Kill switch operation failed.");
+      setError((result && result.error) || "Kill switch operation failed.");
     }
     setIsBusy(false);
+    return succeeded;
   };
 
+  const filteredStudies = useMemo(() => {
+    const needle = listQuery.trim().toLowerCase();
+    return studies.filter((study) => {
+      if (listStatus && (study.research_status || "DRAFT") !== listStatus) return false;
+      if (!needle) return true;
+      return [study.name, study.description, study.join_code]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(needle));
+    });
+  }, [studies, listQuery, listStatus]);
+
+  const arms = useMemo(
+    () =>
+      selectedStudy
+        ? armsForStudy(selectedStudy, participantsState.data?.arms || summaryState.data?.arms || [])
+        : [],
+    [selectedStudy, participantsState.data, summaryState.data],
+  );
+
+  const participantCount = Array.isArray(participantsState.data?.participants)
+    ? participantsState.data.participants.length
+    : selectedStudy?.enrollment_count ?? null;
+
+  const tabs = [
+    { id: "overview", label: "Overview", icon: "overview" },
+    { id: "participants", label: "Participants", icon: "users", count: participantCount ?? undefined },
+    { id: "analytics", label: "Analytics", icon: "usage" },
+    { id: "settings", label: "Settings", icon: "config" },
+  ];
+
+  if (isForbidden) {
+    return (
+      <section className="ui-page research-page" aria-labelledby="research-studies-title">
+        <PageHeader titleId="research-studies-title" title="Research studies" />
+        <p className="research-error" role="alert">
+          You do not have permission to view research studies.
+        </p>
+        <p className="ui-muted">
+          Ask an administrator to grant research access to your account. Looking for a study you joined? Open{" "}
+          <a href="/research/my-studies">My studies</a>.
+        </p>
+      </section>
+    );
+  }
+
   return (
-    <section className="research-page" aria-labelledby="research-studies-title">
-      <header className="research-header">
-        <div>
-          <h2 id="research-studies-title">Research Studies</h2>
-          <p>Create a study once, monitor its lifecycle, and stop it when collection ends.</p>
-        </div>
-        <button
-          type="button"
-          className="primary-button"
-          onClick={toggleCreateForm}
-          disabled={isBusy}
-        >
-          {isCreating ? "Close" : "New study"}
-        </button>
-      </header>
-
-      {isLoading && <p className="research-hint" role="status">Loading research studies...</p>}
-      {isForbidden && <p className="research-error" role="alert">You do not have permission to view research studies.</p>}
-      {isUnavailable && <p className="research-error" role="alert">The research control plane is unavailable on this server.</p>}
-      {error && !isForbidden && !isUnavailable && <p className="research-error" role="alert">{error}</p>}
-      {notice && <p className="research-notice" role="status">{notice}</p>}
-
-      {isCreating && (
-        <form className="research-card" onSubmit={handleCreate}>
-          <h3>{cloneSource ? "Clone study" : "New study"}</h3>
-          {cloneSource ? (
-            <>
-              <p className="research-hint">
-                Copies the name, description, schedule, telemetry policy, and
-                session policy from “{cloneSource.name}”. Participants, consent,
-                assignments, telemetry data, join code, and study ID are not
-                copied. Agent profiles are not copied either: select them below,
-                and without a selection the clone cannot be joined.
-              </p>
-              <dl className="research-metrics">
-                <div><dt>Name</dt><dd>{form.name}</dd></div>
-                <div><dt>Description</dt><dd>{form.description || "No description"}</dd></div>
-                <div><dt>Telemetry policy</dt><dd><code>{telemetryPolicyText}</code></dd></div>
-                <div><dt>Session policy</dt><dd><code>{sessionPolicyText}</code></dd></div>
-              </dl>
-            </>
-          ) : (
-            <>
-              <label>
-                Name
-                <input
-                  value={form.name}
-                  onChange={(event) => setForm({ ...form, name: event.target.value })}
-                  required
-                  disabled={isBusy}
-                />
-              </label>
-              <label>
-                Description
-                <textarea
-                  value={form.description}
-                  onChange={(event) => setForm({ ...form, description: event.target.value })}
-                  rows={3}
-                  disabled={isBusy}
-                />
-              </label>
-              <label>Starts at<input type="datetime-local" value={form.startsAt} onChange={(event) => setForm({ ...form, startsAt: event.target.value })} disabled={isBusy} /></label>
-              <label>Ends at<input type="datetime-local" value={form.endsAt} onChange={(event) => setForm({ ...form, endsAt: event.target.value })} disabled={isBusy} /></label>
-              <fieldset className="research-policy">
-                <legend>Telemetry policy</legend>
-                <label>
-                  <input
-                    type="radio"
-                    name="telemetry-preset"
-                    checked={telemetryPreset === "metadata"}
-                    onChange={() => applyTelemetryPreset("metadata")}
-                    disabled={isBusy}
-                  />
-                  Metadata only — how the agent ran, timings and errors. No prompts or code. (default)
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="telemetry-preset"
-                    checked={telemetryPreset === "everything"}
-                    onChange={() => applyTelemetryPreset("everything")}
-                    disabled={isBusy}
-                  />
-                  Everything — also collect prompts, code and tool output.
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="telemetry-preset"
-                    checked={telemetryPreset === "custom"}
-                    onChange={() => setTelemetryPreset("custom")}
-                    disabled={isBusy}
-                  />
-                  Custom — choose exactly what is collected.
-                </label>
-                {telemetryPreset === "custom" && (
-                  <div className="research-policy-classes">
-                    {Object.entries(TELEMETRY_CLASS_LABELS).map(([name, label]) => (
-                      <label key={name}>
-                        <input
-                          type="checkbox"
-                          checked={telemetryClasses.includes(name)}
-                          onChange={() => toggleTelemetryClass(name)}
-                          disabled={isBusy}
-                        />
-                        {label}
-                      </label>
-                    ))}
-                    <p className="research-hint">
-                      Prompts, code and outputs are collected only if you select the
-                      sensitive category. Provider credentials are never collected.
-                    </p>
-                  </div>
-                )}
-                {telemetryPolicyError && (
-                  <p id="telemetry-policy-error" className="research-error" role="alert">
-                    {telemetryPolicyError}
-                  </p>
-                )}
-                <details className="research-advanced">
-                  <summary>Advanced: raw JSON</summary>
-                  <textarea
-                    aria-label="Telemetry policy (JSON)"
-                    value={telemetryPolicyText}
-                    onChange={applyPolicyDraft("telemetryPolicy", setTelemetryPolicyText, setTelemetryPolicyError)}
-                    rows={2}
-                    disabled={isBusy}
-                    aria-invalid={Boolean(telemetryPolicyError)}
-                    aria-describedby={telemetryPolicyError ? "telemetry-policy-error" : undefined}
-                  />
-                </details>
-              </fieldset>
-              <fieldset className="research-policy">
-                <legend>Session policy</legend>
-                <label>
-                  Session length
-                  <select
-                    value={sessionPreset}
-                    onChange={(event) => applySessionPreset(event.target.value)}
-                    disabled={isBusy}
-                  >
-                    <option value="standard">Standard — stop after 15 min idle, resume within 5 min</option>
-                    <option value="long">Long — stop after 60 min idle, resume within 15 min</option>
-                    <option value="custom">Custom</option>
-                  </select>
-                </label>
-                {sessionPolicyError && (
-                  <p id="session-policy-error" className="research-error" role="alert">
-                    {sessionPolicyError}
-                  </p>
-                )}
-                <details className="research-advanced" open={sessionPreset === "custom"}>
-                  <summary>Advanced: raw JSON</summary>
-                  <textarea
-                    aria-label="Session policy (JSON)"
-                    value={sessionPolicyText}
-                    onChange={applyPolicyDraft("sessionPolicy", setSessionPolicyText, setSessionPolicyError)}
-                    rows={2}
-                    disabled={isBusy}
-                    aria-invalid={Boolean(sessionPolicyError)}
-                    aria-describedby={sessionPolicyError ? "session-policy-error" : undefined}
-                  />
-                </details>
-              </fieldset>
-            </>
-          )}
-          <fieldset className="research-profile-selection">
-            <legend>Agent profiles</legend>
-            {profiles.length === 0 ? (
-              <p className="research-hint">No active agent profiles available.</p>
-            ) : (
-              profiles.map((profile) => (
-                <label key={profile.profile_id}>
-                  <input
-                    type="checkbox"
-                    aria-label={profile.name}
-                    checked={form.profileIds.includes(profile.profile_id)}
-                    onChange={(event) => {
-                      const nextIds = event.target.checked
-                        ? [...form.profileIds, profile.profile_id]
-                        : form.profileIds.filter((id) => id !== profile.profile_id);
-                      setForm({ ...form, profileIds: nextIds });
-                    }}
-                    disabled={isBusy}
-                  />
-                  <span>{profile.name}</span>
-                  <small>{profile.model}</small>
-                </label>
-              ))
-            )}
-          </fieldset>
-          <button
-            type="submit"
-            className="primary-button"
-            disabled={isBusy || !form.name.trim() || form.profileIds.length === 0 || Boolean(telemetryPolicyError) || Boolean(sessionPolicyError)}
-          >
-            {cloneSource ? "Clone Draft study" : "Create Draft study"}
+    <section className="ui-page research-page" aria-labelledby="research-studies-title">
+      <PageHeader
+        titleId="research-studies-title"
+        title="Research studies"
+        description="Create a study once, share its join code, follow enrollment and telemetry per arm, and stop it when collection ends."
+        actions={
+          <button type="button" className="primary-button" onClick={openCreateForm} disabled={isBusy}>
+            <Icon name="plus" size={15} />
+            New study
           </button>
-        </form>
-      )}
+        }
+      />
 
-      <div className="research-layout">
-        <section className="research-card" aria-label="Study list">
-          <div className="research-card-header">
-            <h3>Studies</h3>
-            <button type="button" className="secondary-button" onClick={loadStudies} disabled={isBusy}>
-              Refresh
-            </button>
+      {isUnavailable ? (
+        <p className="research-error" role="alert">
+          The research control plane is unavailable on this server.
+        </p>
+      ) : null}
+      {error && !isUnavailable ? (
+        <p className="research-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="research-notice" role="status">
+          {notice}
+        </p>
+      ) : null}
+
+      {isCreating ? (
+        <StudyCreateForm
+          key={cloneSource ? `clone-${cloneSource.study_id}` : "create"}
+          profiles={profiles}
+          cloneSource={cloneSource}
+          isBusy={isBusy}
+          onSubmit={handleCreate}
+          onCancel={closeCreateForm}
+        />
+      ) : null}
+
+      <div className={`research-layout${listCollapsed && selectedStudy ? " is-list-collapsed" : ""}`}>
+        <section className="ui-card research-card study-list-panel" aria-label="Study list">
+          <div className="research-card-header study-list-header">
+            <h3 className="ui-card-title">
+              Studies <span className="ui-subtle">{studies.length ? `(${studies.length})` : ""}</span>
+            </h3>
+            <div className="ui-row">
+              <button type="button" className="secondary-button button-sm" onClick={() => loadStudies()} disabled={isBusy}>
+                <Icon name="refresh" size={14} />
+                Refresh
+              </button>
+              {selectedStudy ? (
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={toggleList}
+                  aria-label="Hide the study list"
+                  title="Hide the study list"
+                >
+                  <Icon name="chevronLeft" size={16} />
+                </button>
+              ) : null}
+            </div>
           </div>
-          {!isLoading && !isUnavailable && !isForbidden && studies.length === 0 ? (
-            <p className="research-hint">No research studies yet.</p>
+          <div className="study-list-filters">
+            <div className="ui-search">
+              <Icon name="search" size={15} />
+              <input
+                className="ui-input"
+                type="search"
+                value={listQuery}
+                onChange={(event) => setListQuery(event.target.value)}
+                placeholder="Search studies"
+                aria-label="Search studies"
+              />
+            </div>
+            <div className="ui-segmented study-status-filter" role="group" aria-label="Filter by status">
+              {STATUS_FILTERS.map((option) => (
+                <button
+                  key={option.value || "all"}
+                  type="button"
+                  aria-pressed={listStatus === option.value}
+                  className={listStatus === option.value ? "is-active" : undefined}
+                  onClick={() => setListStatus(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {isLoading && studies.length === 0 ? (
+            <div className="study-list-empty">
+              <Loading label="Loading research studies..." />
+            </div>
+          ) : !isUnavailable && studies.length === 0 ? (
+            <EmptyState
+              icon="flask"
+              title="No research studies yet."
+              action={
+                <button type="button" className="primary-button" onClick={openCreateForm}>
+                  <Icon name="plus" size={15} />
+                  Create your first study
+                </button>
+              }
+            >
+              A study bundles agent profiles (arms), a telemetry policy and a join code for participants.
+            </EmptyState>
+          ) : filteredStudies.length === 0 ? (
+            <EmptyState icon="search" title="No studies match" />
           ) : (
             <ul className="research-list">
-              {studies.map((study) => (
-                <li key={study.study_id}>
-                  <button type="button" className="research-list-item" onClick={() => openStudy(study)}>
-                    <span>
-                      <strong>{study.name}</strong>
-                      <small>{study.description || "No description"}</small>
-                    </span>
-                    <span className={`research-status research-status-${String(study.research_status || "DRAFT").toLowerCase()}`}>
-                      {STATUS_LABELS[study.research_status] || study.research_status || "Draft"}
-                    </span>
-                  </button>
-                </li>
-              ))}
+              {filteredStudies.map((study) => {
+                const selected = study.study_id === selectedStudyId;
+                return (
+                  <li key={study.study_id}>
+                    <button
+                      type="button"
+                      className={`research-list-item${selected ? " is-selected" : ""}`}
+                      onClick={() => openStudy(study)}
+                      aria-current={selected ? "true" : undefined}
+                    >
+                      <span className="research-list-item-top">
+                        <strong>{study.name}</strong>
+                        <span className={statusClass(study.research_status)}>
+                          {STATUS_LABELS[study.research_status] || study.research_status || "Draft"}
+                        </span>
+                      </span>
+                      <small className="research-list-item-description">{study.description || "No description"}</small>
+                      <span className="research-list-item-meta">
+                        <span>
+                          <Icon name="users" size={13} />
+                          {formatNumber(study.enrollment_count ?? 0)} enrolled
+                        </span>
+                        <span>
+                          <Icon name="layers" size={13} />
+                          {(study.profile_selections || []).length} arm{(study.profile_selections || []).length === 1 ? "" : "s"}
+                        </span>
+                        <span>
+                          <Icon name="calendar" size={13} />
+                          {formatDate(study.created_at)}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
 
-        {selectedStudy && (
-          <section className="research-card" aria-label="Study details">
-            <h3>{selectedStudy.name}</h3>
-            <dl className="research-metrics">
-              <div><dt>Status</dt><dd>{STATUS_LABELS[selectedStudy.research_status] || selectedStudy.research_status}</dd></div>
-              <div><dt>Join code</dt><dd>{selectedStudy.join_code || "Not available"}</dd></div>
-              <div><dt>Enrollments</dt><dd>{selectedStudy.enrollment_count ?? "Unavailable"} ({selectedStudy.active_enrollment_count ?? "Unavailable"} active)</dd></div>
-              <div><dt>Assignments</dt><dd>{selectedStudy.assignment_count ?? "Unavailable"}</dd></div>
-              <div><dt>Sessions</dt><dd>{selectedStudy.active_session_count ?? "Unavailable"} active</dd></div>
-              <div><dt>Collection</dt><dd>{selectedStudy.collection_status || "Unavailable"}</dd></div>
-            </dl>
-            <div className="research-profile-summary">
-              <h4>Selected agent profiles</h4>
-              {selectedStudy.profile_selections?.length ? (
-                <ul>
-                  {selectedStudy.profile_selections.map((profile) => (
-                    <li key={profile.profile_id}>
-                      <strong>{profile.name || profile.profile_id}</strong>
-                      <small>{profile.model || "Model not specified"}</small>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="research-hint">
-                  No profiles selected. A study without selected agent profiles
-                  cannot be joined.
-                </p>
-              )}
-              <p className="research-hint">Profile selection is fixed after study creation.</p>
-            </div>
-            <StudyParticipantCoverage studyId={selectedStudy.study_id} />
-            {selectedStudy.research_status !== "STUDY_STOPPED" && (
-              <form onSubmit={handleMetadataSave}>
-                <label>
-                  Name
-                  <input value={metadata.name} onChange={(event) => setMetadata({ ...metadata, name: event.target.value })} disabled={isBusy || Boolean(selectedStudy.consent_locked_at)} />
-                </label>
-                <label>
-                  Description
-                  <textarea value={metadata.description} onChange={(event) => setMetadata({ ...metadata, description: event.target.value })} rows={3} disabled={isBusy || Boolean(selectedStudy.consent_locked_at)} />
-                </label>
-                <div className="research-actions">
-                  <button type="submit" className="secondary-button" disabled={isBusy || Boolean(selectedStudy.consent_locked_at)}>Save metadata</button>
-                  <button type="button" className="danger-button" onClick={handleStop} disabled={isBusy}>Stop study</button>
+        {selectedStudy ? (
+          <section className="ui-card research-card study-detail" aria-label="Study details">
+            <div className="study-detail-header">
+              <div className="study-detail-heading">
+                <div className="ui-row">
+                  <h3 className="study-detail-title">{selectedStudy.name}</h3>
+                  <span className={statusClass(selectedStudy.research_status)}>
+                    {STATUS_LABELS[selectedStudy.research_status] || selectedStudy.research_status || "Draft"}
+                  </span>
                 </div>
-              </form>
-            )}
-            {isAdmin && selectedStudy.research_status !== "STUDY_STOPPED" && (
-              <div className="research-actions">
-                {!selectedStudy.kill_switch?.switch_id || selectedStudy.kill_switch.status === "RELEASED" ? <input aria-label="Kill switch reason" value={killSwitchReason} onChange={(event) => setKillSwitchReason(event.target.value)} placeholder="Reason required" disabled={isBusy} /> : null}
-                <button type="button" className="secondary-button" onClick={handleKillSwitch} disabled={isBusy || ((!selectedStudy.kill_switch?.switch_id || selectedStudy.kill_switch.status === "RELEASED") && !killSwitchReason.trim())}>
-                  {selectedStudy.kill_switch?.switch_id && selectedStudy.kill_switch.status !== "RELEASED" ? "Release kill switch" : "Engage kill switch"}
-                </button>
+                {selectedStudy.description ? <p className="study-detail-description">{selectedStudy.description}</p> : null}
               </div>
-            )}
-            {isAdmin && selectedStudy.kill_switch && <p className="research-hint">Kill switch: {selectedStudy.kill_switch.status || "RELEASED"}. Reason: {selectedStudy.kill_switch.reason || "Not provided"}</p>}
-            {selectedStudy.research_status === "STUDY_STOPPED" && (
-              <button type="button" className="primary-button" onClick={openCloneForm} disabled={isBusy}>Clone as new Draft</button>
-            )}
+              <div className="ui-page-actions">
+                {listCollapsed ? (
+                  <button type="button" className="secondary-button button-sm" onClick={toggleList}>
+                    <Icon name="chevronRight" size={14} />
+                    All studies
+                  </button>
+                ) : null}
+                {selectedStudy.research_status === "STUDY_STOPPED" ? (
+                  <button type="button" className="primary-button" onClick={openCloneForm} disabled={isBusy}>
+                    <Icon name="copy" size={15} />
+                    Clone as new Draft
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            <dl className="study-detail-facts">
+              <div>
+                <dt>Status</dt>
+                <dd>{STATUS_LABELS[selectedStudy.research_status] || selectedStudy.research_status || "Draft"}</dd>
+              </div>
+              <div className="study-join-code">
+                <dt>Join code</dt>
+                <dd>
+                  <code>{selectedStudy.join_code || "Not available"}</code>
+                </dd>
+                {selectedStudy.join_code ? <CopyButton value={selectedStudy.join_code} label="Copy join code" /> : null}
+              </div>
+              <div>
+                <dt>Participants</dt>
+                <dd>
+                  {selectedStudy.enrollment_count ?? "—"}
+                  {selectedStudy.active_enrollment_count !== undefined && selectedStudy.active_enrollment_count !== null
+                    ? ` (${selectedStudy.active_enrollment_count} active)`
+                    : ""}
+                </dd>
+              </div>
+              <div>
+                <dt>Schedule</dt>
+                <dd>{scheduleText(selectedStudy)}</dd>
+              </div>
+            </dl>
+
+            <Tabs tabs={tabs} active={activeTab} onChange={changeTab} label="Study sections" idPrefix="study-tab" />
+
+            <TabPanel id={activeTab} idPrefix="study-tab">
+              {activeTab === "overview" ? (
+                <StudyOverview
+                  study={selectedStudy}
+                  arms={arms}
+                  participantsData={participantsState.data}
+                  onReloadSummary={() => loadSummary(selectedStudy.study_id)}
+                  summaryError={summaryState.error}
+                  summary={summaryState.data}
+                  onOpenTab={changeTab}
+                />
+              ) : null}
+              {activeTab === "participants" ? (
+                <StudyParticipants
+                  study={selectedStudy}
+                  arms={arms}
+                  state={participantsState}
+                  onReload={() => loadParticipants(selectedStudy.study_id)}
+                />
+              ) : null}
+              {activeTab === "analytics" ? (
+                <StudyAnalytics
+                  key={selectedStudy.study_id}
+                  study={selectedStudy}
+                  allTime={summaryState}
+                  onReloadAllTime={() => loadSummary(selectedStudy.study_id)}
+                  refreshToken={refreshToken}
+                />
+              ) : null}
+              {activeTab === "settings" ? (
+                <StudySettings
+                  key={selectedStudy.study_id}
+                  study={selectedStudy}
+                  isAdmin={isAdmin}
+                  isBusy={isBusy}
+                  onSaveMetadata={handleMetadataSave}
+                  onStop={handleStop}
+                  onKillSwitch={handleKillSwitch}
+                />
+              ) : null}
+            </TabPanel>
           </section>
-        )}
+        ) : studies.length > 0 ? (
+          <section className="ui-card study-detail study-detail-placeholder" aria-label="No study selected">
+            <EmptyState icon="flask" title="Select a study">
+              Pick a study on the left to see its participants, analytics and settings.
+            </EmptyState>
+          </section>
+        ) : null}
       </div>
     </section>
   );

@@ -1,18 +1,22 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import ResearchStudies from "../ResearchStudies";
 import * as api from "../../../utils/api";
 
 jest.mock("../../../utils/api");
 
 beforeEach(() => {
+  jest.clearAllMocks();
   api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: false } });
-  api.getStudyParticipantCoverage.mockResolvedValue({
+  api.getStudyParticipants.mockResolvedValue({
     ok: true,
-    data: { study_id: "study-1", participants: [] },
+    data: { study_id: "study-1", arms: [], participants: [] },
   });
+  api.getStudyAnalyticsSummary.mockResolvedValue({ ok: true, data: null });
 });
+
+const openSettings = () => fireEvent.click(screen.getByRole("tab", { name: /settings/i }));
 
 const STUDY = {
   study_id: "study-1",
@@ -45,7 +49,8 @@ test("renders lifecycle study list without revision controls", async () => {
   renderPage();
 
   expect(await screen.findByText("Pilot study")).toBeInTheDocument();
-  expect(screen.getByText("Draft")).toBeInTheDocument();
+  const item = screen.getByRole("button", { name: /Pilot study/ });
+  expect(within(item).getByText("Draft")).toBeInTheDocument();
   expect(screen.queryByText(/supersede|revision|publish draft/i)).not.toBeInTheDocument();
 });
 
@@ -60,19 +65,362 @@ test("shows selected profiles as read-only study configuration", async () => {
   expect(screen.getByText("Profile selection is fixed after study creation.")).toBeInTheDocument();
 });
 
-test("mounts the study-scoped participant coverage view for the selected study", async () => {
+test("lists participants with their assigned arm in the Participants tab", async () => {
   api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.getStudyParticipants.mockResolvedValue({
+    ok: true,
+    data: {
+      study_id: "study-1",
+      arms: [{ profile_id: "profile-1", name: "Code4Me", model: "model-a", participants: 1 }],
+      participants: [
+        {
+          enrollment_id: "e-1",
+          participant_code: "P-ALPHA",
+          status: "ACTIVE",
+          enrolled_at: "2026-09-01T10:00:00Z",
+          arm: { profile_id: "profile-1", name: "Code4Me", model: "model-a", framework_version: "code4me2-agent" },
+          sessions: { total: 4, active: 1, session_seconds: 5400 },
+          activity: { prompts: 12, tool_calls: 40, tool_failures: 3, errors: 2, last_event_at: "2026-09-10T09:04:00Z" },
+          health: "IDLE",
+        },
+      ],
+    },
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  // The overview needs only the summary; the list loads when its tab opens.
+  await waitFor(() => expect(api.getStudyAnalyticsSummary).toHaveBeenCalledWith("study-1", {}));
+  expect(api.getStudyParticipants).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("tab", { name: /participants/i }));
+  await waitFor(() => expect(api.getStudyParticipants).toHaveBeenCalledWith("study-1"));
+
+  const table = await screen.findByRole("table", { name: "Enrolled participants" });
+  expect(within(table).getByText("P-ALPHA")).toBeInTheDocument();
+  // The frozen arm is shown by name, not as an opaque profile id.
+  expect(within(table).getByText("Code4Me")).toBeInTheDocument();
+  expect(within(table).getByText("12")).toBeInTheDocument();
+  expect(within(table).getByText("3 failed")).toBeInTheDocument();
+  expect(screen.getByText("Study-local participant codes only; account identities never appear here.")).toBeInTheDocument();
+});
+
+test("opens a participant's telemetry dashboard in a drawer", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.getStudyParticipants.mockResolvedValue({
+    ok: true,
+    data: {
+      arms: [],
+      participants: [
+        {
+          enrollment_id: "e-1",
+          participant_code: "P-ALPHA",
+          status: "ACTIVE",
+          arm: { profile_id: "profile-1", name: "Code4Me", model: "model-a" },
+          sessions: { total: 1 },
+          activity: { prompts: 2 },
+          health: "ACTIVE",
+        },
+      ],
+    },
+  });
+  api.getStudyParticipantDashboard.mockResolvedValue({
+    ok: true,
+    data: {
+      enrollment_id: "e-1",
+      participant_code: "P-ALPHA",
+      status: "ACTIVE",
+      health: "ACTIVE",
+      activity: { prompts: 2 },
+      metrics: { prompts: 2, tool_calls_per_prompt: 1.5, tool_failure_rate: 0.25 },
+      daily: [{ date: "2026-09-10", prompts: 2, tool_calls: 3, errors: 0, ide_edits: 4, session_seconds: 600 }],
+      tool_kinds: [{ tool_kind: "read", calls: 2, failures: 0 }, { tool_kind: "edit", calls: 1, failures: 1 }],
+      tools: [],
+      stop_reasons: [{ stop_reason: "end_turn", count: 1 }, { stop_reason: "cancelled", count: 1 }],
+      permission_decisions: [{ decision: "allow", count: 1 }],
+      sessions_list: [],
+      turns: [
+        { turn_id: "t-1", started_at: "2026-09-10T09:00:00Z", duration_seconds: 42, tool_calls: 3, tool_failures: 1, permission_requests: 1, stop_reason: "cancelled", cancelled: true },
+      ],
+      timeline: [{ occurred_at: "2026-09-10T09:00:00Z", event_type: "tool.failed", source: "acp", tool_name: "edit_file", tool_kind: "edit", status: "failed" }],
+    },
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /participants/i }));
+  fireEvent.click(await screen.findByRole("button", { name: "Open dashboard for participant P-ALPHA" }));
+
+  const drawer = await screen.findByRole("dialog", { name: "Participant P-ALPHA" });
+  await waitFor(() => expect(api.getStudyParticipantDashboard).toHaveBeenCalledWith("study-1", "e-1"));
+  expect(await within(drawer).findByText("Tool calls / prompt")).toBeInTheDocument();
+  expect(within(drawer).getByText("25%")).toBeInTheDocument();
+  expect(within(drawer).getByText("Cancelled by user")).toBeInTheDocument();
+  expect(within(drawer).getByText("Tool failed")).toBeInTheDocument();
+  // Metadata only: the timeline never renders prompt or code content.
+  expect(within(drawer).getByText(/metadata only/i)).toBeInTheDocument();
+});
+
+test("the analytics tab compares arms on participant-level metrics", async () => {
+  const twoArms = {
+    ...STUDY,
+    profile_selections: [
+      { profile_id: "profile-1", name: "Code4Me", model: "model-a", selection_order: 0 },
+      { profile_id: "profile-2", name: "Codex", model: "model-b", selection_order: 1 },
+    ],
+  };
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [twoArms] });
+  api.getStudyAnalyticsSummary.mockResolvedValue({
+    ok: true,
+    data: {
+      totals: { participants_enrolled: 4, participants_with_telemetry: 3, participants_active: 4, prompts: 30, tool_calls: 90, tool_failures: 9, sessions: 6 },
+      arms: [
+        {
+          profile_id: "profile-1",
+          name: "Code4Me",
+          metrics: { tool_calls_per_prompt: { n: 2, median: 3, p25: 2, p75: 4, mean: 3, values: [2, 4] } },
+          tool_kinds: [{ tool_kind: "read", calls: 10 }],
+          stop_reasons: [],
+          permission_decisions: [],
+          transitions: [],
+          context: { cap_tokens: 16000, model_calls: 5, calls_with_prompt_tokens: 5, prompt_tokens_p50: 4000, prompt_tokens_p95: 9000, prompt_tokens_max: 12000, over_cap_calls: 0, over_cap_share: 0, coverage: "AVAILABLE" },
+        },
+        {
+          profile_id: "profile-2",
+          name: "Codex",
+          metrics: { tool_calls_per_prompt: { n: 1, median: 1, p25: 1, p75: 1, mean: 1, values: [1] } },
+          tool_kinds: [],
+          stop_reasons: [],
+          permission_decisions: [],
+          transitions: [],
+          context: { cap_tokens: 16000, model_calls: 0, coverage: "UNAVAILABLE" },
+        },
+      ],
+      daily: [],
+      tools: [],
+      coverage: { usage_tokens: "PARTIAL" },
+    },
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /analytics/i }));
+
+  expect(await screen.findByText("Arm comparison")).toBeInTheDocument();
+  expect(screen.getByText("Tool calls per prompt")).toBeInTheDocument();
+  expect(screen.getByText("Not observable (BYOA)")).toBeInTheDocument();
+  // "All time" reuses the summary the overview loaded: one request, not two.
+  expect(api.getStudyAnalyticsSummary).toHaveBeenCalledTimes(1);
+  expect(api.getStudyAnalyticsSummary).toHaveBeenCalledWith("study-1", {});
+
+  fireEvent.click(screen.getByRole("button", { name: "Last 7 days" }));
+  await waitFor(() =>
+    expect(api.getStudyAnalyticsSummary).toHaveBeenLastCalledWith(
+      "study-1",
+      expect.objectContaining({ start: expect.any(String), end: expect.any(String) }),
+    ),
+  );
+});
+
+test("a superseded analytics range never replaces the newer one", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  const summaryWith = (prompts) => ({
+    ok: true,
+    data: {
+      totals: { participants_enrolled: 1, participants_with_telemetry: 1, participants_active: 1, prompts, tool_calls: 0, sessions: 1 },
+      arms: [],
+      daily: [],
+      tools: [],
+      coverage: {},
+    },
+  });
+  let resolveSevenDays;
+  api.getStudyAnalyticsSummary.mockImplementation((studyId, window) => {
+    if (!window || !window.start) return Promise.resolve(summaryWith(1111));
+    const days = (new Date(window.end) - new Date(window.start)) / 86400000 + 1;
+    if (days === 7) return new Promise((resolve) => (resolveSevenDays = resolve));
+    return Promise.resolve(summaryWith(3333));
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /analytics/i }));
+  expect(await screen.findByText("1,111")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Last 7 days" }));
+  fireEvent.click(screen.getByRole("button", { name: "Last 30 days" }));
+  expect(await screen.findByText("3,333")).toBeInTheDocument();
+
+  // The slow 7-day response arrives last and is ignored.
+  await act(async () => {
+    resolveSevenDays(summaryWith(7777));
+  });
+  expect(screen.getByText("3,333")).toBeInTheDocument();
+  expect(screen.queryByText("7,777")).not.toBeInTheDocument();
+});
+
+test("a custom range must not end before it starts", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.getStudyAnalyticsSummary.mockResolvedValue({
+    ok: true,
+    data: { totals: { prompts: 2, tool_calls: 0, sessions: 1 }, arms: [], daily: [], tools: [], coverage: {} },
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /analytics/i }));
+  fireEvent.click(await screen.findByRole("button", { name: "Custom" }));
+  fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-09-20" } });
+  fireEvent.change(screen.getByLabelText("To date"), { target: { value: "2026-09-10" } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+  expect(await screen.findByText("The start date must be on or before the end date.")).toBeInTheDocument();
+  expect(api.getStudyAnalyticsSummary).toHaveBeenCalledTimes(1);
+});
+
+test("the telemetry presets reach the submitted policy", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
+  api.getAgentProfiles.mockResolvedValue({
+    ok: true,
+    data: [{ profile_id: "profile-1", name: "Code4Me", model: "model-a", is_active: true }],
+  });
+  api.createResearchStudy.mockResolvedValue({ ok: true, data: { study: STUDY } });
+
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Content study" } });
+  fireEvent.click(screen.getByLabelText(/Everything — also collect prompts/));
+  fireEvent.change(screen.getByLabelText("Session length"), { target: { value: "long" } });
+  fireEvent.click(await screen.findByLabelText("Code4Me"));
+  fireEvent.click(screen.getByRole("button", { name: "Create Draft study" }));
+
+  await waitFor(() => expect(api.createResearchStudy).toHaveBeenCalled());
+  const payload = api.createResearchStudy.mock.calls[0][0];
+  // Content is only stored when the frozen policy carries content_capture.
+  // …and keeps every metadata class, so structural fields survive ingestion.
+  expect(payload.telemetryPolicy).toEqual({
+    allowed_field_classes: ["STRUCTURAL", "METRICS", "DIAGNOSTICS", "CODE_METADATA", "CONTENT"],
+    content_capture: true,
+  });
+  expect(payload.sessionPolicy).toEqual({ idle_timeout_seconds: 3600, resume_grace_seconds: 900, heartbeat_seconds: 60 });
+});
+
+test("custom telemetry offers the study categories and previews what they collect", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
+  api.getAgentProfiles.mockResolvedValue({
+    ok: true,
+    data: [{ profile_id: "profile-1", name: "Code4Me", model: "model-a", is_active: true }],
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.click(screen.getByLabelText(/Custom — choose which categories/));
+  const categories = document.querySelector(".research-policy-classes");
+  // The five study categories, never the runtime names.
+  expect(within(categories).getAllByRole("checkbox")).toHaveLength(5);
+  expect(
+    within(categories).getByText("Stored at runtime: event records, activity details, system details, code metadata."),
+  ).toBeInTheDocument();
+  const warning = /cannot identify prompts, tool calls or approvals/;
+  expect(within(categories).queryByText(warning)).not.toBeInTheDocument();
+
+  // Usage only: no agent activity, so the dashboards would be empty.
+  fireEvent.click(within(categories).getByLabelText("Agent and session structure (which events and tools ran)"));
+  fireEvent.click(within(categories).getByLabelText("Errors and diagnostics"));
+  expect(within(categories).getByText(warning)).toBeInTheDocument();
+  expect(within(categories).getByText("Stored at runtime: event records, system details, code metadata.")).toBeInTheDocument();
+
+  // Diagnostics enables all agent-activity metadata at runtime.
+  fireEvent.click(within(categories).getByLabelText("Errors and diagnostics"));
+  expect(within(categories).queryByText(warning)).not.toBeInTheDocument();
+
+  // The sensitive category turns content capture on: the preview says so.
+  const contentBox = within(categories).getByLabelText(
+    "Prompts, model responses and reasoning, tool arguments and output, and file contents (sensitive)",
+  );
+  fireEvent.click(contentBox);
+  expect(
+    within(categories).getByText(
+      "Stored at runtime: event records, activity details, system details, code metadata, content (prompts, responses, tool arguments and output, file contents).",
+    ),
+  ).toBeInTheDocument();
+  // Turning the sensitive category off turns content capture off again.
+  fireEvent.click(contentBox);
+  expect(JSON.parse(screen.getByLabelText("Telemetry policy (JSON)").value).content_capture).toBeUndefined();
+});
+
+test("a raw JSON policy in runtime names previews what it stores without a false warning", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
+  api.getAgentProfiles.mockResolvedValue({ ok: true, data: [] });
+
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.change(screen.getByLabelText("Telemetry policy (JSON)"), {
+    target: { value: '{"allowed_field_classes":["SYSTEM","BEHAVIORAL"],"content_capture":true}' },
+  });
+  const categories = document.querySelector(".research-policy-classes");
+  expect(
+    within(categories).getByText(
+      "Stored at runtime: event records, activity details, system details, hashed code metadata, content (prompts, responses, tool arguments and output, file contents).",
+    ),
+  ).toBeInTheDocument();
+  expect(within(categories).queryByText(/cannot identify prompts, tool calls or approvals/)).not.toBeInTheDocument();
+
+  // Toggling a metadata category keeps the policy's own content-capture flag.
+  fireEvent.click(within(categories).getByLabelText("Usage and timings (tokens, durations, counts)"));
+  expect(JSON.parse(screen.getByLabelText("Telemetry policy (JSON)").value).content_capture).toBe(true);
+
+  // No preview, and read-only categories, while the JSON does not parse.
+  fireEvent.change(screen.getByLabelText("Telemetry policy (JSON)"), { target: { value: "{" } });
+  const invalid = within(document.querySelector(".research-policy-classes"));
+  expect(invalid.queryByText(/^Stored at runtime/)).not.toBeInTheDocument();
+  invalid.getAllByRole("checkbox").forEach((box) => expect(box).toBeDisabled());
+});
+
+test("the overview lists what a legacy SECRET-only policy actually stores", async () => {
+  api.listResearchStudies.mockResolvedValue({
+    ok: true,
+    data: [{ ...STUDY, telemetry_policy: { allowed_field_classes: ["SECRET"] } }],
+  });
 
   renderPage();
   fireEvent.click(await screen.findByText("Pilot study"));
 
-  expect(await screen.findByText("Study participant coverage")).toBeInTheDocument();
-  expect(
-    screen.getByText("Study participants — study-scoped, participant-local codes"),
-  ).toBeInTheDocument();
-  await waitFor(() =>
-    expect(api.getStudyParticipantCoverage).toHaveBeenCalledWith("study-1"),
-  );
+  expect(await screen.findByText(/^Activity details: tools run/)).toBeInTheDocument();
+  expect(screen.getByText(/^Event records: which agent and IDE events/)).toBeInTheDocument();
+  expect(screen.getByText(/^Code metadata: file types and languages/)).toBeInTheDocument();
+  expect(screen.getByText("Declared as SECRET.")).toBeInTheDocument();
+});
+
+test("the overview shows undeclared code metadata as hashed, not absent", async () => {
+  api.listResearchStudies.mockResolvedValue({
+    ok: true,
+    data: [{ ...STUDY, telemetry_policy: { allowed_field_classes: ["METRICS"] } }],
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+
+  expect(await screen.findByText(/stored as unsalted hashes/)).toBeInTheDocument();
+  expect(screen.queryByText(/^Activity details/)).not.toBeInTheDocument();
+});
+
+test("rejects an end date before the start date", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
+  api.getAgentProfiles.mockResolvedValue({
+    ok: true,
+    data: [{ profile_id: "profile-1", name: "Code4Me", model: "model-a", is_active: true }],
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Dated" } });
+  fireEvent.change(screen.getByLabelText("Starts at"), { target: { value: "2026-10-10T10:00" } });
+  fireEvent.change(screen.getByLabelText("Ends at"), { target: { value: "2026-10-01T10:00" } });
+  fireEvent.click(await screen.findByLabelText("Code4Me"));
+  fireEvent.click(screen.getByRole("button", { name: "Create Draft study" }));
+
+  expect(await screen.findByText("The end must be after the start.")).toBeInTheDocument();
+  expect(api.createResearchStudy).not.toHaveBeenCalled();
 });
 
 test("creates a Draft study through the lifecycle API", async () => {
@@ -195,6 +543,7 @@ test("stops a study and opens the clone profile-selection step", async () => {
 
   renderPage();
   fireEvent.click(await screen.findByText("Pilot study"));
+  openSettings();
   fireEvent.click(screen.getByRole("button", { name: "Stop study" }));
 
   await waitFor(() => expect(api.stopResearchStudy).toHaveBeenCalledWith("study-1"));
@@ -249,11 +598,136 @@ test("shows the kill-switch control to admins and calls the operations API", asy
 
   renderPage();
   fireEvent.click(await screen.findByText("Pilot study"));
-  fireEvent.change(screen.getByLabelText("Kill switch reason"), { target: { value: "Admin maintenance" } });
+  openSettings();
+  fireEvent.change(await screen.findByLabelText("Kill switch reason"), { target: { value: "Admin maintenance" } });
   fireEvent.click(screen.getByRole("button", { name: "Engage kill switch" }));
 
   await waitFor(() => expect(api.engageResearchKillSwitch).toHaveBeenCalledWith("study-1", "Admin maintenance"));
   window.confirm.mockRestore();
+});
+
+test("a deep link loads each dataset once, only for the tab it opens", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  render(
+    <MemoryRouter initialEntries={["/research/studies/study-1"]}>
+      <Routes>
+        <Route path="/research/studies/:studyId" element={<ResearchStudies />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("tab", { name: /overview/i, selected: true })).toBeInTheDocument();
+  await waitFor(() => expect(api.getStudyAnalyticsSummary).toHaveBeenCalledWith("study-1", {}));
+  await act(async () => {});
+  expect(api.getStudyAnalyticsSummary).toHaveBeenCalledTimes(1);
+  expect(api.getStudyParticipants).not.toHaveBeenCalled();
+});
+
+test("returning to a study reloads its summary", async () => {
+  const OTHER = { ...STUDY, study_id: "study-2", name: "Second study", join_code: "JOIN5678" };
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY, OTHER] });
+  api.getStudyAnalyticsSummary.mockImplementation((studyId) =>
+    Promise.resolve({
+      ok: true,
+      data: {
+        totals: { prompts: studyId === "study-1" ? 432 : 123, tool_calls: 0, sessions: 1 },
+        arms: [],
+        daily: [],
+        tools: [],
+        coverage: {},
+      },
+    }),
+  );
+  let navigateTo;
+  const Navigator = () => {
+    navigateTo = useNavigate();
+    return null;
+  };
+  render(
+    <MemoryRouter initialEntries={["/research/studies/study-1"]}>
+      <Navigator />
+      <Routes>
+        <Route path="/research/studies" element={<ResearchStudies />} />
+        <Route path="/research/studies/:studyId" element={<ResearchStudies />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  expect(await screen.findByText("432")).toBeInTheDocument();
+
+  // Back to the list, then forward to the same study.
+  act(() => navigateTo("/research/studies"));
+  await waitFor(() => expect(screen.queryByText("432")).not.toBeInTheDocument());
+  act(() => navigateTo("/research/studies/study-1"));
+  expect(await screen.findByText("432")).toBeInTheDocument();
+
+  // A → B on the Participants tab → A, then the overview.
+  act(() => navigateTo("/research/studies/study-1?tab=participants"));
+  act(() => navigateTo("/research/studies/study-2?tab=participants"));
+  act(() => navigateTo("/research/studies/study-1?tab=participants"));
+  fireEvent.click(await screen.findByRole("tab", { name: /overview/i }));
+  expect(await screen.findByText("432")).toBeInTheDocument();
+});
+
+test("a failed kill switch keeps the typed reason", async () => {
+  api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: true } });
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.engageResearchKillSwitch.mockResolvedValue({ ok: false, error: "Operations service unavailable." });
+  jest.spyOn(window, "confirm").mockReturnValue(true);
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  openSettings();
+  fireEvent.change(await screen.findByLabelText("Kill switch reason"), { target: { value: "Leak investigation" } });
+  fireEvent.click(screen.getByRole("button", { name: "Engage kill switch" }));
+
+  expect(await screen.findByText("Operations service unavailable.")).toBeInTheDocument();
+  expect(screen.getByLabelText("Kill switch reason")).toHaveValue("Leak investigation");
+  window.confirm.mockRestore();
+});
+
+test("a kept kill-switch reason does not carry over to another study", async () => {
+  const OTHER = { ...STUDY, study_id: "study-2", name: "Second study", join_code: "JOIN5678" };
+  api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: true } });
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY, OTHER] });
+  api.engageResearchKillSwitch.mockResolvedValue({ ok: false, error: "Operations service unavailable." });
+  jest.spyOn(window, "confirm").mockReturnValue(true);
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  openSettings();
+  fireEvent.change(await screen.findByLabelText("Kill switch reason"), { target: { value: "Leak investigation" } });
+  fireEvent.click(screen.getByRole("button", { name: "Engage kill switch" }));
+  expect(await screen.findByText("Operations service unavailable.")).toBeInTheDocument();
+  expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('"Pilot study"'));
+
+  fireEvent.click(screen.getByText("Second study"));
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Second study" })).toBeInTheDocument());
+  expect(screen.getByLabelText("Kill switch reason")).toHaveValue("");
+  window.confirm.mockRestore();
+});
+
+test("browser navigation follows the study and tab in the URL", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  let navigateTo;
+  const Navigator = () => {
+    navigateTo = useNavigate();
+    return null;
+  };
+  render(
+    <MemoryRouter initialEntries={["/research/studies/study-1?tab=participants"]}>
+      <Navigator />
+      <Routes>
+        <Route path="/research/studies" element={<ResearchStudies />} />
+        <Route path="/research/studies/:studyId" element={<ResearchStudies />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole("tab", { name: /participants/i, selected: true })).toBeInTheDocument();
+  act(() => navigateTo("/research/studies/study-1?tab=analytics"));
+  expect(await screen.findByRole("tab", { name: /analytics/i, selected: true })).toBeInTheDocument();
+  act(() => navigateTo("/research/studies"));
+  await waitFor(() => expect(screen.queryByRole("tab", { name: /analytics/i })).not.toBeInTheDocument());
 });
 
 test("releases a persisted engaged kill switch after refresh", async () => {
@@ -267,6 +741,7 @@ test("releases a persisted engaged kill switch after refresh", async () => {
 
   renderPage();
   fireEvent.click(await screen.findByText("Pilot study"));
+  openSettings();
   fireEvent.click(await screen.findByRole("button", { name: "Release kill switch" }));
 
   await waitFor(() => expect(api.releaseResearchKillSwitch).toHaveBeenCalledWith("switch-1"));
