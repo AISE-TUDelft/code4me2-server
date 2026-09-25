@@ -162,8 +162,9 @@ class App:
         # Initialize completion models for AI functionality
         self.__completion_models = CompletionModels(config=config)
 
-        # Preload models if configured to do so for faster response times
-        if config.preload_models:
+        # Preload models if configured to do so for faster response times; switched-off
+        # classic models are never loaded
+        if config.preload_models and config.classic_models_enabled:
             logging.log(logging.INFO, "Preloading llm models...")
 
             db = self.get_db_session()
