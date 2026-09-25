@@ -28,11 +28,12 @@ from .metrics import (
     DOCUMENT_CHANGED_EVENT,
     IDE_SOURCE,
     MAX_TIMELINE,
-    PERMISSION_EVENTS,
-    POLICY_DECISION_SCOPE,
+    PERMISSION_DECIDED_EVENT,
     PROMPT_EVENT,
     RELAY_SOURCE,
     TIMELINE_EXCLUDED_EVENT_TYPES,
+    UNANSWERED_DECISION,
+    UNASKED_DECISION_SCOPES,
 )
 from .models import (
     ArmRow,
@@ -124,12 +125,22 @@ def _chunk_clause():
     )
 
 
-def _policy_decision_clause():
-    """A relay permission report no person was asked for (null-safe)."""
+def _unasked_decision_clause():
+    """A relay permission decision no one made (null-safe).
+
+    The SQL form of :func:`metrics.relay_decision_made`.
+    """
+    decision = _payload("decision")
     return and_(
         ResearchEvent.source == RELAY_SOURCE,
-        ResearchEvent.event_type.in_(sorted(PERMISSION_EVENTS)),
-        func.coalesce(_payload("decision_scope"), "") == POLICY_DECISION_SCOPE,
+        ResearchEvent.event_type == PERMISSION_DECIDED_EVENT,
+        or_(
+            decision.is_(None),
+            decision == UNANSWERED_DECISION,
+            func.coalesce(_payload("decision_scope"), "").in_(
+                sorted(UNASKED_DECISION_SCOPES)
+            ),
+        ),
     )
 
 
@@ -445,15 +456,16 @@ def load_timeline(
     """The newest metadata-only events for a participant's replay timeline.
 
     Streamed message chunks, per-keystroke document changes, context-usage
-    updates and the built-in agent's policy-scope permission reports (one per
-    tool call) are left out; they would drown every other event.
+    updates and the built-in agent's reports of decisions no one made (one per
+    tool call under the auto policy) are left out; they would drown every other
+    event.
     """
     statement = (
         _scoped(select(*_EVENT_COLUMNS), study_id, enrollment_id=enrollment_id)
         .where(
             ResearchEvent.event_type.notin_(sorted(TIMELINE_EXCLUDED_EVENT_TYPES)),
             not_(_chunk_clause()),
-            not_(_policy_decision_clause()),
+            not_(_unasked_decision_clause()),
         )
         .order_by(
             ResearchEvent.occurred_at.desc(),

@@ -42,13 +42,17 @@ _TOOL_RESULT_LENGTH = (
     "(e.envelope_json -> 'payload' ->> 'tool_result_length')::bigint"
 )
 _DECISION = "e.envelope_json -> 'payload' ->> 'decision'"
-#: A permission decision the built-in agent put to its user. As with the model
-#: and tool counts, only the agent's own reports are read (for a proxied run the
-#: ACP proxy observes the same round-trips), and a ``policy``-scope decision
-#: (auto-approval, a suggestion-only refusal) asked no one.
+#: A permission decision the built-in agent's user made. As with the model and
+#: tool counts, only the agent's own reports are read (for a proxied run the ACP
+#: proxy observes the same round-trips). Decisions no one made are left out, by
+#: the rule of ``study_analytics.metrics.relay_decision_made``: scope ``policy``
+#: (auto-approval, a suggestion-only refusal) or ``session_cached`` (an earlier
+#: "allow for this session"), and ``unavailable`` (the request reached no one).
 _USER_DECISION = (
     f"({_LEGACY_KIND} = 'permission_decided' AND {_DECISION} IS NOT NULL "
-    "AND COALESCE(e.envelope_json -> 'payload' ->> 'decision_scope', '') <> 'policy')"
+    f"AND {_DECISION} <> 'unavailable' "
+    "AND COALESCE(e.envelope_json -> 'payload' ->> 'decision_scope', '') "
+    "NOT IN ('policy', 'session_cached'))"
 )
 
 _EVENT_JOIN = (
@@ -501,7 +505,9 @@ def agent_run_detail(
                 e.envelope_json -> 'correlations' ->> 'parent_span_id' AS parent_span_id,
                 e.envelope_json -> 'correlations' ->> 'model_call_id' AS model_call_id,
                 e.envelope_json -> 'correlations' ->> 'message_id' AS message_id,
-                e.envelope_json -> 'correlations' ->> 'request_id' AS request_id,
+                COALESCE(e.envelope_json -> 'payload' ->> 'request_id',
+                         e.envelope_json -> 'correlations' ->> 'correlation_id')
+                    AS request_id,
                 e.occurred_at AS occurred_at,
                 e.envelope_json -> 'correlations' ->> 'tool_call_id' AS tool_call_id,
                 e.event_type AS canonical_event_type

@@ -36,6 +36,7 @@ from App import App
 from backend.routers.analytics.auth_utils import AuthenticatedUser, get_current_user
 from database.migration.migration_manager import MigrationManager
 from main import app
+from research.analysis.study_analytics import store as analytics_store
 from research.telemetry.ingestion.models import IngestionContext
 from research.telemetry.ingestion.service import _record_from_event, compute_event_digest
 from research.telemetry.ingestion.store import SqlAlchemyIngestionStore
@@ -1419,3 +1420,59 @@ def test_the_built_in_agents_own_permission_reports_count_once(analytics_runtime
     assert permission_rows
     assert {item["source"] for item in permission_rows} == {"acp"}
 
+
+def test_the_timeline_query_leaves_out_decisions_no_one_made(analytics_runtime):
+    """When the newest rows are relay decisions no one made, the query skips
+    them instead of spending its row limit on them."""
+    client, session_factory, current_user = analytics_runtime
+    seeded = _seed_two_arm_study(client, session_factory, current_user)
+
+    seed = _Seeder(seeded.study_id)
+    relay = {
+        "enrollment": seeded.p1,
+        "session": seeded.s1b,
+        "emitter": "self-report:task-1",
+        "source": "relay",
+        "type": "permission.decided",
+    }
+    newest = seeded.base_b + timedelta(hours=1)
+    unasked = [
+        {"decision": "accepted", "decision_scope": "policy"},
+        {"decision": "accepted", "decision_scope": "session_cached"},
+        {"decision": "unavailable", "decision_scope": "none"},
+        {},  # stripped by the study policy
+    ]
+    for offset, fields in enumerate(unasked):
+        seed.add(
+            **relay,
+            at=newest + timedelta(seconds=offset),
+            payload={"legacy_kind": "permission_decided", **fields},
+        )
+    # A decision someone made, newer still: the one relay row listed.
+    seed.add(
+        **relay,
+        at=newest + timedelta(minutes=1),
+        payload={
+            "legacy_kind": "permission_decided",
+            "decision": "rejected",
+            "decision_scope": "once",
+        },
+    )
+    seed.flush(session_factory)
+
+    session = session_factory()
+    try:
+        rows = analytics_store.load_timeline(
+            session,
+            uuid.UUID(seeded.study_id),
+            uuid.UUID(seeded.p1),
+            limit=3,
+        )
+    finally:
+        session.close()
+    assert len(rows) == 3
+    assert (rows[0].source, rows[0].decision) == ("relay", "rejected")
+    assert not any(
+        row.source == "relay" and row.event_type == "permission.decided"
+        for row in rows[1:]
+    )

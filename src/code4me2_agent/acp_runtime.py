@@ -241,7 +241,9 @@ class AcpSessionEventSink:
             "replace_text": "edit",
         }.get(name, "other")
         if metadata in self._session_approved_kinds:
-            return ApprovalDecision("accepted", "session")
+            # Answered by the user's earlier "allow for this session": no one is
+            # asked, so telemetry must not report a new decision.
+            return ApprovalDecision("accepted", "session_cached")
         summary = _approval_summary(name, arguments)
         permission = self._updates.permission_request(
             session_id=self._session_id,
