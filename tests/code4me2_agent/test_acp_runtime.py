@@ -162,12 +162,13 @@ class AcpRuntimeCompatibilityTest(TestCase):
         self.assertTrue(decision.accepted)
         self.assertEqual("session", decision.scope)
 
-        self.assertTrue(
-            sink.request_approval(
-                SimpleNamespace(name="write_file", tool_call_id="tool-2"),
-                {"path": "other.md", "content": "private"},
-            ).accepted
+        cached = sink.request_approval(
+            SimpleNamespace(name="write_file", tool_call_id="tool-2"),
+            {"path": "other.md", "content": "private"},
         )
+        self.assertTrue(cached.accepted)
+        # Answered by the session approval: no one is asked again.
+        self.assertEqual("session_cached", cached.scope)
         self.assertEqual(1, runner.calls)
 
     def test_permission_reuses_the_native_edit_diff(self) -> None:

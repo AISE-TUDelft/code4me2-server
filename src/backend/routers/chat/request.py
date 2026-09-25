@@ -66,7 +66,15 @@ def request_chat_completion(
     We don't want to be generating a completion based on the old state of the chat.
     """
     overall_start = time.perf_counter()
-    logging.info(f"Chat completion request: {chat_completion_request.dict()}")
+    logging.info(
+        "Chat completion request: chat_id=%s models=%s messages=%d "
+        "prefix_chars=%d suffix_chars=%d",
+        chat_completion_request.chat_id,
+        chat_completion_request.model_ids,
+        len(chat_completion_request.messages),
+        len(chat_completion_request.context.prefix or ""),
+        len(chat_completion_request.context.suffix or ""),
+    )
 
     db_auth = app.get_db_session()
     redis_manager = app.get_redis_manager()
@@ -371,13 +379,18 @@ def request_chat_completion(
             )
         )
 
-        # Chain tasks
-        chain(
-            group(*pre_query_tasks) if pre_query_tasks else None,
-            add_chat_task,
-            add_chat_query_task,
-            group(*add_generation_tasks),
-        ).apply_async(queue="db")
+        # Chain tasks. Any stage may be absent (all store_* flags off, or
+        # every model errored): chain only the present stages, since
+        # chain(None, ...) raises TypeError and would 500 a request whose
+        # telemetry/query rows are still worth persisting.
+        chain_steps = []
+        if pre_query_tasks:
+            chain_steps.append(group(*pre_query_tasks))
+        chain_steps.append(add_chat_task)
+        chain_steps.append(add_chat_query_task)
+        if add_generation_tasks:
+            chain_steps.append(group(*add_generation_tasks))
+        chain(*chain_steps).apply_async(queue="db")
 
         t5 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t5 - t4) * 1000:.2f}ms")

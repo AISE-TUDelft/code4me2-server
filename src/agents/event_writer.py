@@ -71,6 +71,10 @@ def _model_call_fact(
         if number is not None:
             counts[key] = number
     total = _optional_int(record.total_tokens)
+    # Mirror the total into counts so context accounting can sum one block
+    # without joining usage_tokens; absent when the producer didn't report it.
+    if total is not None:
+        counts["total_tokens"] = total
     payload: dict[str, Any] = {
         "model": record.model,
         "finish_reason": record.finish_reason,
@@ -86,14 +90,18 @@ def _model_call_fact(
     for key in ("tool_schema_bytes", "context_window_size_bytes"):
         number = _optional_int(span.get(key))
         if number is None and isinstance(extra, dict):
-            # The relay reports the tool schema size in ``extra``.
+            # The relay computes ``tool_schema_bytes`` into the ``extra`` bag.
             number = _optional_int(extra.get(key))
         if number is not None:
             payload[key] = number
+    # The rest of the free-form ``extra`` bag is deliberately NOT copied into
+    # the canonical payload: most of its keys (``wire_api``,
+    # ``openai_passthrough``, ...) do not classify as metadata, so a single one
+    # would get the whole event refused, and ``upstream_base_url`` is admin-only
+    # server configuration that must never reach researcher-visible events. The
+    # legacy row keeps it in ``extra_json``. Two values are carried under keys
+    # the classifier recognises as metadata.
     if isinstance(extra, dict):
-        # Only the extras recognised as metadata; the rest (such as the
-        # upstream base URL, which is server configuration) stays in the
-        # legacy operational row.
         if extra.get("requested_model"):
             payload["requested_model"] = extra["requested_model"]
         if extra.get("wire_api"):

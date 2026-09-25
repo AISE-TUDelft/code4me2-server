@@ -28,8 +28,12 @@ from .metrics import (
     DOCUMENT_CHANGED_EVENT,
     IDE_SOURCE,
     MAX_TIMELINE,
+    PERMISSION_DECIDED_EVENT,
     PROMPT_EVENT,
+    RELAY_SOURCE,
     TIMELINE_EXCLUDED_EVENT_TYPES,
+    UNANSWERED_DECISION,
+    UNASKED_DECISION_SCOPES,
 )
 from .models import (
     ArmRow,
@@ -96,6 +100,7 @@ _EVENT_COLUMNS = (
     _payload("status"),
     _LIFECYCLE,
     _payload("decision"),
+    _payload("decision_scope"),
     _payload("stop_reason"),
     _payload("error_code"),
     _payload("message_kind"),
@@ -116,6 +121,25 @@ def _chunk_clause():
         or_(
             _payload("message_kind").isnot(None),
             func.coalesce(_LIFECYCLE, "") == "started",
+        ),
+    )
+
+
+def _unasked_decision_clause():
+    """A relay permission decision no one made (null-safe).
+
+    The SQL form of :func:`metrics.relay_decision_made`.
+    """
+    decision = _payload("decision")
+    return and_(
+        ResearchEvent.source == RELAY_SOURCE,
+        ResearchEvent.event_type == PERMISSION_DECIDED_EVENT,
+        or_(
+            decision.is_(None),
+            decision == UNANSWERED_DECISION,
+            func.coalesce(_payload("decision_scope"), "").in_(
+                sorted(UNASKED_DECISION_SCOPES)
+            ),
         ),
     )
 
@@ -165,6 +189,7 @@ def _event_row(row: Any) -> EventRow:
         status,
         lifecycle_state,
         decision,
+        decision_scope,
         stop_reason,
         error_code,
         message_kind,
@@ -190,6 +215,7 @@ def _event_row(row: Any) -> EventRow:
         status=status,
         lifecycle_state=lifecycle_state,
         decision=decision,
+        decision_scope=decision_scope,
         stop_reason=stop_reason,
         error_code=error_code,
         message_kind=message_kind,
@@ -429,14 +455,17 @@ def load_timeline(
 ) -> list[EventRow]:
     """The newest metadata-only events for a participant's replay timeline.
 
-    Streamed message chunks, per-keystroke document changes and context-usage
-    updates are left out; they would drown every other event.
+    Streamed message chunks, per-keystroke document changes, context-usage
+    updates and the built-in agent's reports of decisions no one made (one per
+    tool call under the auto policy) are left out; they would drown every other
+    event.
     """
     statement = (
         _scoped(select(*_EVENT_COLUMNS), study_id, enrollment_id=enrollment_id)
         .where(
             ResearchEvent.event_type.notin_(sorted(TIMELINE_EXCLUDED_EVENT_TYPES)),
             not_(_chunk_clause()),
+            not_(_unasked_decision_clause()),
         )
         .order_by(
             ResearchEvent.occurred_at.desc(),

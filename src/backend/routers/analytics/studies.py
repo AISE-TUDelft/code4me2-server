@@ -174,6 +174,8 @@ def create_study(
     except HTTPException:
         db_session.rollback()
         raise
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error creating study: {str(e)}")
@@ -290,6 +292,8 @@ def list_studies(
             content={"studies": studies}
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error listing studies: {str(e)}")
@@ -395,6 +399,8 @@ def get_study_details(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving study details: {str(e)}")
@@ -470,6 +476,8 @@ def activate_study(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error activating study: {str(e)}")
@@ -536,6 +544,8 @@ def deactivate_study(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error deactivating study: {str(e)}")
@@ -690,6 +700,8 @@ def evaluate_study(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error evaluating study: {str(e)}")
@@ -897,6 +909,8 @@ def evaluate_study_agents(
             },
         )
 
+    except HTTPException:
+        raise
     except HTTPException:
         raise
     except Exception as e:

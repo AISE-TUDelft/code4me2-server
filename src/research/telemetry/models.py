@@ -91,6 +91,20 @@ class Correlations(BaseModel):
     permission_id: Optional[str] = None
     edit_id: Optional[str] = None
     correlation_id: Optional[str] = None
+    # The runtime's own message identifier, when the producer reports one.
+    # Distinct from span_id (transport span) and correlation_id (request
+    # scope): it names the logical message within the runtime's protocol.
+    message_id: Optional[str] = None
+    # Distributed-tracing handles. ``trace_id`` scopes one end-to-end trace
+    # (an agent run); ``span_id`` identifies this event's own span and
+    # ``parent_span_id`` its parent, so exact parent-child graphs are
+    # reconstructible without trusting timestamps. ``model_call_id`` is the
+    # stable handle linking one model invocation (start → completion) with the
+    # tool calls it caused. All are opaque strings, never content.
+    trace_id: Optional[str] = None
+    span_id: Optional[str] = None
+    parent_span_id: Optional[str] = None
+    model_call_id: Optional[str] = None
 
 
 class CanonicalEventV1(BaseModel):

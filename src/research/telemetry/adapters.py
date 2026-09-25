@@ -31,6 +31,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from research.participants import identity as identity_store
 from research.runtime.sessions import store as session_store
+from database import crud
 from research.telemetry.builder import EventBuilder
 from research.telemetry.content_policy import resolve_study_content_policy
 from research.telemetry.enums import CanonicalEventType, EventSource, FieldClass, PolicyAction
@@ -61,7 +62,22 @@ _KIND_TO_TYPE: dict[str, CanonicalEventType] = {
     "model_call": CanonicalEventType.AGENT_MESSAGE_COMPLETED,
     "tool_call": CanonicalEventType.TOOL_COMPLETED,
     "tool_failed": CanonicalEventType.TOOL_FAILED,
-    "observation": CanonicalEventType.UNKNOWN_SOURCE_EVENT,
+    # NOTE: no "observation" entry on purpose: unmapped kinds keep their raw
+    # name so the builder stamps unknown_event_type instead of a marker-less
+    # unknown.
+    # Request-side counterparts of the completion kinds above. Mapping them to
+    # the matching start/created canonical types (instead of leaving them
+    # unknown) preserves the request→completion pairing without double
+    # counting: token/step aggregation only ever reads the completion side.
+    "model_request": CanonicalEventType.AGENT_MESSAGE_STARTED,
+    "tool_request": CanonicalEventType.TOOL_CREATED,
+    "run_started": CanonicalEventType.AGENT_RUN_STARTED,
+    "run_completed": CanonicalEventType.AGENT_RUN_COMPLETED,
+    # Permission request/decision outcomes. The decision value (accepted /
+    # rejected / cancelled / unavailable) rides in the payload; the kind
+    # mapping itself never invents it.
+    "permission_requested": CanonicalEventType.PERMISSION_REQUESTED,
+    "permission_decided": CanonicalEventType.PERMISSION_DECIDED,
 }
 
 
@@ -178,24 +194,69 @@ def _policy_payload(
 
 
 def build_legacy_events(
-    task: Any, facts: Sequence[LegacyFact], policy: Optional[PrivacyPolicy] = None
+    task: Any,
+    facts: Sequence[LegacyFact],
+    policy: Optional[PrivacyPolicy] = None,
+    *,
+    first_sequence: Optional[int] = None,
 ) -> list:
     """Build canonical events for a research-bound task, in order.
 
     With ``policy``, plain metadata fields it excludes are left out of each
     payload (see ``_policy_payload``).
+
+    ``(research_session_id, emitter_id, emitter_sequence)`` is a unique key in
+    the store, so sequences must never be reused within a session+emitter.
+    Callers that persist must reserve ``len(facts)`` indexes up front (see
+    ``record_legacy_facts``) and pass the reserved base as ``first_sequence``;
+    deriving from ``task.next_event_index`` without reserving replays the same
+    sequences on every call and every later batch is rejected as an integrity
+    conflict. When ``first_sequence`` is omitted the legacy counter-derived
+    numbering is kept for backward compatibility (tests, dry runs).
+
+    The relay adapts spans from many tasks in one session, but the store's
+    uniqueness key is ``(session, emitter, sequence)``: sharing one emitter
+    across tasks would collide independent streams. Each task's facts are
+    therefore their own emitter namespace (``"<emitter>:<task_id>"``), matching
+    the documented model that independent emitters each own their sequence.
     """
     builder = EventBuilder()
-    sequence = int(getattr(task, "next_event_index", 0) or 0)
+    task_namespace = str(getattr(task, "task_id", "unbound"))
+    # The run scopes the trace for facts that didn't set one explicitly.
+    # Read after the caller-supplied context: record_legacy_facts self-heals
+    # a missing run id before building, so this is never stale there.
+    agent_run_id = getattr(task, "external_run_id", None)
+    if first_sequence is None:
+        sequence = int(getattr(task, "next_event_index", 0) or 0)
+    else:
+        # The reserved base is the 0-based legacy event index; canonical
+        # emitter sequences are 1-based continuations of the same counter,
+        # matching the historical counter-derived numbering (first event of a
+        # fresh task is sequence 1, never 0 which validation rejects).
+        sequence = int(first_sequence)
     events = []
     for fact in facts:
         sequence += 1
-        event_type = _KIND_TO_TYPE.get(
-            fact.kind, CanonicalEventType.UNKNOWN_SOURCE_EVENT
+        mapped = _KIND_TO_TYPE.get(fact.kind)
+        # An unmapped kind keeps its raw name so the builder stamps
+        # ``unknown_event_type`` (and NEEDS_REVIEW coverage) instead of a
+        # marker-less unknown that is useless for forensics.
+        event_type = mapped if mapped is not None else fact.kind
+        # Default the trace/span handles when the producer didn't set them:
+        # the run scopes the trace and the source event id is the span.
+        # Anything explicitly reported wins; nothing is invented beyond that.
+        base_corr = fact.correlations or Correlations()
+        corr_update: dict[str, Any] = {}
+        if base_corr.trace_id is None and agent_run_id is not None:
+            corr_update["trace_id"] = agent_run_id
+        if base_corr.span_id is None and fact.source_event_id is not None:
+            corr_update["span_id"] = fact.source_event_id
+        correlations = (
+            base_corr.model_copy(update=corr_update) if corr_update else base_corr
         )
         events.append(
             builder.build(
-                emitter_id=fact.emitter_id,
+                emitter_id=f"{fact.emitter_id}:{task_namespace}",
                 event_type=event_type,
                 source=EventSource.RELAY,
                 occurred_at=fact.occurred_at,
@@ -203,7 +264,7 @@ def build_legacy_events(
                 payload=_policy_payload({**fact.payload, "legacy_kind": fact.kind}, policy),
                 metrics=fact.metrics,
                 coverage=fact.coverage,
-                correlations=fact.correlations,
+                correlations=correlations,
                 source_event_id=fact.source_event_id,
                 study_id=getattr(task, "study_id", None),
                 enrollment_id=getattr(task, "enrollment_id", None),
@@ -227,7 +288,11 @@ def _kill_switch_check(db: Any, task: Any):
 
 
 def record_legacy_facts(
-    db: Any, *, task: Any, facts: Sequence[LegacyFact]
+    db: Any,
+    *,
+    task: Any,
+    facts: Sequence[LegacyFact],
+    first_sequence: Optional[int] = None,
 ) -> Optional[CanonicalRecordResult]:
     """Persist legacy facts through the canonical ingestion writer.
 
@@ -235,6 +300,11 @@ def record_legacy_facts(
     its legacy operational write. For a research-bound task it always returns a
     result: the caller must not fall back to ``agent_event`` even when the
     canonical write failed (ISSUE-07). Never raises.
+
+    A caller that already reserved ``len(facts)`` task event indexes (the
+    self-report ingest does, for its legacy rows) passes the reserved base as
+    ``first_sequence``; reserving a second block would open a sequence gap
+    before every batch.
     """
     if task is None or not facts or not research_bound(task):
         return None
@@ -262,6 +332,26 @@ def record_legacy_facts(
         enrollment = identity_store.row_to_enrollment(enrollment_row)
         session = session_store.row_to_session(session_row)
 
+        # Self-heal the run correlation: tasks created before run ids were
+        # minted (or through paths that skip them) would otherwise stamp
+        # agent_run_id=None, leaving their events unattributable in every
+        # dashboard join. Minting here is idempotent — tasks that already
+        # have one keep it — and stays inside the same transaction.
+        if getattr(task, "external_run_id", None) in (None, ""):
+            task.external_run_id = uuid.uuid4().hex
+            flush = getattr(db, "flush", None)
+            if callable(flush):
+                try:
+                    flush()
+                except Exception:
+                    db.rollback()
+                    return CanonicalRecordResult(
+                        written=False,
+                        retryable=True,
+                        reason="STORE_UNAVAILABLE",
+                        message="could not persist the task run correlation; retry the batch",
+                    )
+
         # The study policy is the single authority for content storage on this
         # boundary too (ISSUE-01/ISSUE-07). Missing/malformed policy denies
         # content; the ingestion writer rejects the offending facts instead of
@@ -280,7 +370,15 @@ def record_legacy_facts(
             research_session_id=task.research_session_id,
             revocation_epoch=enrollment.revocation_epoch,
         )
-        events = build_legacy_events(task, facts, policy)
+        # Reserve the emitter sequences atomically before building: without
+        # this, every call replays sequences from the (never advanced) task
+        # counter and every batch after the first is rejected as an integrity
+        # conflict. Burned indexes on failed writes surface as ordinary gaps.
+        if first_sequence is None:
+            first_sequence = crud.reserve_agent_event_indexes(
+                db, getattr(task, "task_id", None), len(facts)
+            )
+        events = build_legacy_events(task, facts, policy, first_sequence=first_sequence)
         ack = ingest_events_for_context(
             context=context,
             enrollment=enrollment,

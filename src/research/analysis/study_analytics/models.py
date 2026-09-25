@@ -90,6 +90,8 @@ class EventRow:
     counts). ``message_kind`` is set only on streamed message/thought chunks,
     which are *not* prompts. ``prompt_tokens`` is ``metrics.counts.prompt_tokens``
     (provider-reported, carried by relay-source model-call events).
+    ``decision_scope`` is set on the built-in agent's own relay permission
+    reports (``policy`` or ``session_cached`` when no one was asked).
     """
 
     event_type: str
@@ -107,6 +109,7 @@ class EventRow:
     status: Optional[str] = None
     lifecycle_state: Optional[str] = None
     decision: Optional[str] = None
+    decision_scope: Optional[str] = None
     stop_reason: Optional[str] = None
     error_code: Optional[str] = None
     message_kind: Optional[str] = None

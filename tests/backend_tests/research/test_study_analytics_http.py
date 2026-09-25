@@ -36,6 +36,7 @@ from App import App
 from backend.routers.analytics.auth_utils import AuthenticatedUser, get_current_user
 from database.migration.migration_manager import MigrationManager
 from main import app
+from research.analysis.study_analytics import store as analytics_store
 from research.telemetry.ingestion.models import IngestionContext
 from research.telemetry.ingestion.service import _record_from_event, compute_event_digest
 from research.telemetry.ingestion.store import SqlAlchemyIngestionStore
@@ -1357,3 +1358,121 @@ def test_study_summary_compares_arms_on_participant_level_values(analytics_runti
     assert managed_window["context"]["model_calls"] == 3
     assert managed_window["context"]["over_cap_calls"] == 1
     assert [row["date"] for row in window_body["daily"]] == [DAY]
+
+
+def test_the_built_in_agents_own_permission_reports_count_once(analytics_runtime):
+    """The relay's permission reports never repeat a decision the ACP proxy
+    observed, and decisions the approval policy made without asking are not the
+    participant's: adding both leaves P1's permission numbers and timeline as
+    they were."""
+    client, session_factory, current_user = analytics_runtime
+    seeded = _seed_two_arm_study(client, session_factory, current_user)
+    current_user["value"] = _researcher(seeded.owner)
+    url = _url(seeded.study_id, f"participants/{seeded.p1}")
+    before = client.get(url).json()
+
+    seed = _Seeder(seeded.study_id)
+    relay = {"enrollment": seeded.p1, "emitter": "self-report:task-1", "source": "relay"}
+    # s1a: the proxy already observed this round-trip.
+    seed.add(
+        **relay,
+        session=seeded.s1a,
+        at=BASE + timedelta(seconds=41),
+        type="permission.requested",
+        payload={"legacy_kind": "permission_requested", "tool_call_id": "t-edit-1"},
+    )
+    seed.add(
+        **relay,
+        session=seeded.s1a,
+        at=BASE + timedelta(seconds=42),
+        type="permission.decided",
+        payload={
+            "legacy_kind": "permission_decided",
+            "tool_call_id": "t-edit-1",
+            "decision": "accepted",
+            "decision_scope": "once",
+        },
+    )
+    # s1b has no ACP permission events; these were auto-approved by policy.
+    for offset in range(3):
+        seed.add(
+            **relay,
+            session=seeded.s1b,
+            at=seeded.base_b + timedelta(seconds=60 + offset),
+            type="permission.decided",
+            payload={
+                "legacy_kind": "permission_decided",
+                "tool_call_id": f"t-auto-{offset}",
+                "decision": "accepted",
+                "decision_scope": "policy",
+            },
+        )
+    seed.flush(session_factory)
+
+    response = client.get(url)
+    assert response.status_code == 200, response.text
+    after = response.json()
+    assert after["metrics"] == before["metrics"]
+    assert after["permission_decisions"] == before["permission_decisions"]
+    permission_rows = [
+        item for item in after["timeline"] if item["event_type"].startswith("permission.")
+    ]
+    assert permission_rows
+    assert {item["source"] for item in permission_rows} == {"acp"}
+
+
+def test_the_timeline_query_leaves_out_decisions_no_one_made(analytics_runtime):
+    """When the newest rows are relay decisions no one made, the query skips
+    them instead of spending its row limit on them."""
+    client, session_factory, current_user = analytics_runtime
+    seeded = _seed_two_arm_study(client, session_factory, current_user)
+
+    seed = _Seeder(seeded.study_id)
+    relay = {
+        "enrollment": seeded.p1,
+        "session": seeded.s1b,
+        "emitter": "self-report:task-1",
+        "source": "relay",
+        "type": "permission.decided",
+    }
+    newest = seeded.base_b + timedelta(hours=1)
+    unasked = [
+        {"decision": "accepted", "decision_scope": "policy"},
+        {"decision": "accepted", "decision_scope": "session_cached"},
+        {"decision": "unavailable", "decision_scope": "none"},
+        {},  # stripped by the study policy
+    ]
+    for offset, fields in enumerate(unasked):
+        seed.add(
+            **relay,
+            at=newest + timedelta(seconds=offset),
+            payload={"legacy_kind": "permission_decided", **fields},
+        )
+    # A decision someone made, newer still: the one relay row listed.
+    seed.add(
+        **relay,
+        at=newest + timedelta(minutes=1),
+        payload={
+            "legacy_kind": "permission_decided",
+            "decision": "rejected",
+            "decision_scope": "once",
+        },
+    )
+    seed.flush(session_factory)
+
+    session = session_factory()
+    try:
+        rows = analytics_store.load_timeline(
+            session,
+            uuid.UUID(seeded.study_id),
+            uuid.UUID(seeded.p1),
+            limit=3,
+        )
+    finally:
+        session.close()
+    assert len(rows) == 3
+    assert (rows[0].source, rows[0].decision) == ("relay", "rejected")
+    assert not any(
+        row.source == "relay" and row.event_type == "permission.decided"
+        for row in rows[1:]
+    )

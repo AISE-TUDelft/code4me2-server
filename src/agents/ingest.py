@@ -66,6 +66,8 @@ EVENT_TYPE_MAP: dict[str, str] = {
     "agent.tool.completed": "tool_call",
     "agent.tool.denied": "tool_denied",
     "agent.tool.failed": "tool_failed",
+    "agent.permission.requested": "permission_requested",
+    "agent.permission.decided": "permission_decided",
     "agent.adapter.loop_failed": "error",
     "agent.adapter.parse_failed": "error",
     "agent.request.received": "observation",
@@ -76,6 +78,12 @@ EVENT_TYPE_MAP: dict[str, str] = {
 # Anything not listed stays in extra_json.
 _PROMOTED_METRIC_KEYS = frozenset(
     {"duration_ms", "prompt_tokens", "completion_tokens", "total_tokens"}
+)
+
+# Keys ``map_event_to_columns`` carries only for the canonical fact; the legacy
+# ``agent_event`` table has no column for them.
+_CANONICAL_ONLY_COLUMNS = frozenset(
+    {"run_id", "message_id", "tool_call_id", "decision", "decision_scope", "tool_kind"}
 )
 
 
@@ -258,6 +266,8 @@ def map_event_to_columns(
         "event_type": event_type,
         "source": SOURCE_SELF_REPORT,
         "schema_version": event.get("schema_version"),
+        "run_id": event.get("run_id"),
+        "message_id": event.get("message_id"),
         "occurred_at": _parse_timestamp(event.get("timestamp")),
         "latency_ms": latency_ms,
         # The runtime's own event id becomes the span id, which is what makes
@@ -265,6 +275,18 @@ def map_event_to_columns(
         "span_id": str(event["event_id"]) if event.get("event_id") else None,
         "parent_span_id": _as_uuid(event.get("parent_event_id")),
         "request_id": str(request_id) if request_id else None,
+        # tool_call identity for tool/permission events (structural ids).
+        "tool_call_id": (
+            str(payload.get("tool_call_id"))
+            if payload.get("tool_call_id") is not None
+            else None
+        ),
+        # permission decision metadata: outcome and scope are structural
+        # (BEHAVIORAL-classified), never content, so they persist under
+        # metadata-only policies.
+        "decision": payload.get("decision"),
+        "decision_scope": payload.get("decision_scope"),
+        "tool_kind": payload.get("kind"),
         # model_call fields
         "model": payload.get("model"),
         "message_count": merged.get("message_count"),
@@ -316,8 +338,15 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
         if value is not None:
             counts[key] = int(value)
     total = columns.get("total_tokens")
+    if total is not None:
+        counts["total_tokens"] = int(total)
     payload: dict[str, Any] = {}
     for key in ("model", "finish_reason", "tool_name", "request_id"):
+        value = columns.get(key)
+        if value is not None:
+            payload[key] = value
+    # Permission decision metadata (structural, never content).
+    for key in ("tool_kind", "decision", "decision_scope"):
         value = columns.get(key)
         if value is not None:
             payload[key] = value
@@ -343,6 +372,11 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
                     else CoverageState.UNAVAILABLE
                 ),
                 capability="usage",
+                reason=(
+                    None
+                    if total is not None
+                    else "usage not reported by producer"
+                ),
             ),
             latency_ms=columns.get("latency_ms"),
             counts=counts,
@@ -351,6 +385,20 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
         correlations=Correlations(
             correlation_id=columns.get("request_id"),
             tool_call_id=columns.get("tool_call_id"),
+            message_id=columns.get("message_id"),
+            # The run scopes the trace; the runtime's own event id is the
+            # span and its reported parent (if any) the parent link. The
+            # request id links one model invocation with the tools reported
+            # under it; tools without one keep a null link rather than an
+            # invented one.
+            trace_id=columns.get("run_id"),
+            span_id=columns.get("span_id"),
+            parent_span_id=(
+                str(columns["parent_span_id"])
+                if columns.get("parent_span_id") is not None
+                else None
+            ),
+            model_call_id=columns.get("request_id"),
         ),
         source_event_id=columns.get("span_id"),
         emitter_id="self-report",
@@ -427,7 +475,9 @@ def ingest_event_batch(
                 _fact_from_columns(columns, content_included=content_included)
             )
         if task is not None:
-            result = record_legacy_facts(db, task=task, facts=facts)
+            result = record_legacy_facts(
+                db, task=task, facts=facts, first_sequence=first_index
+            )
             if result is not None:
                 # Research-bound task: the canonical writer is the only
                 # authority. Never fall back to the legacy table (ISSUE-07).
@@ -455,7 +505,11 @@ def ingest_event_batch(
             source_event_id=source_event_id,
             ignore_duplicate_source=True,
             commit=False,
-            **columns,
+            **{
+                key: value
+                for key, value in columns.items()
+                if key not in _CANONICAL_ONLY_COLUMNS
+            },
         )
         if inserted is None:
             skipped.append(source_event_id)

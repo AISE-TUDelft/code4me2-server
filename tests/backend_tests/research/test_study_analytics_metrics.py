@@ -312,6 +312,52 @@ def test_permissions_auto_run_share_denial_rate_and_wait():
     assert analysis.turns[0].permission_requests == 3
 
 
+def self_report(event_type, seconds, *, decision=None, scope=None, **kwargs) -> EventRow:
+    """The built-in agent's own permission report, delivered through the relay."""
+    return ev(
+        event_type,
+        seconds,
+        source="relay",
+        emitter="self-report:task-1",
+        decision=decision,
+        decision_scope=scope,
+        **kwargs,
+    )
+
+
+def test_relay_permission_reports_count_once_and_only_when_someone_was_asked():
+    rows = [
+        prompt(0, "1"),
+        # s1: the ACP proxy observed the round-trip the agent also reports.
+        ev("permission.requested", 10, permission_id="p1", tool_call_id="t1", turn_id="1"),
+        ev("permission.decided", 12, permission_id="p1", tool_call_id="t1", decision="allow", turn_id="1"),
+        self_report("permission.requested", 10, tool_call_id="t1"),
+        self_report("permission.decided", 12, tool_call_id="t1", decision="accepted", scope="once"),
+        # Approved by the approval policy: nobody was asked.
+        self_report("permission.decided", 13, tool_call_id="t2", decision="accepted", scope="policy"),
+        completion(20, "1"),
+        # s2 has no ACP permission events: the agent's own reports count, read
+        # in the ACP vocabulary.
+        self_report("permission.requested", 30, session="s2", tool_call_id="t3"),
+        self_report("permission.decided", 31, session="s2", tool_call_id="t3", decision="rejected", scope="once"),
+        self_report("permission.decided", 32, session="s2", tool_call_id="t4", decision="rejected", scope="policy"),
+        # Answered by an earlier "allow for this session", reaching no one, and
+        # stripped by the study policy: no one decided, so neither the
+        # decisions nor their requests count.
+        self_report("permission.requested", 33, session="s2", tool_call_id="t5"),
+        self_report("permission.decided", 34, session="s2", tool_call_id="t5", decision="accepted", scope="session_cached"),
+        self_report("permission.requested", 35, session="s2", tool_call_id="t6"),
+        self_report("permission.decided", 36, session="s2", tool_call_id="t6", decision="unavailable", scope="none"),
+        self_report("permission.requested", 37, session="s2", tool_call_id="t7"),
+        self_report("permission.decided", 38, session="s2", tool_call_id="t7"),
+    ]
+    analysis = m.analyze_participant(rows, [])
+    assert dict(analysis.decision_counts) == {"allow": 1, "reject": 1}
+    assert len(analysis.permission_requests) == 2
+    assert analysis.metrics()["permission_denial_rate"] == 0.5
+    assert analysis.turns[0].permission_requests == 1
+
+
 def test_cancel_rate_counts_cancel_stop_reason_and_cancels_inside_turns():
     rows = [
         prompt(0, "1"),
@@ -747,6 +793,30 @@ def test_detail_builder_timeline_enriches_tool_names_and_skips_noise():
         }
     ]
     assert m.build_participant_detail(frame, "missing", [], [], [], study_id="s", now=at(0)) is None
+
+
+def test_timeline_lists_each_permission_decision_once_in_the_acp_vocabulary():
+    events = _events() + [
+        ev("permission.decided", 14, permission_id="p1", decision="allow", enrollment="e1"),
+        self_report("permission.decided", 14, decision="accepted", scope="once", enrollment="e1"),
+        self_report("permission.decided", 15, decision="accepted", scope="policy", enrollment="e1"),
+        self_report("permission.decided", 16, session="s9", decision="rejected", scope="once", enrollment="e1"),
+        self_report("permission.decided", 17, session="s9", decision="accepted", scope="session_cached", enrollment="e1"),
+        # An ACP decision without an outcome stays without one.
+        ev("permission.decided", 18, permission_id="p2", enrollment="e1"),
+    ]
+    body = m.build_participant_detail(
+        _frame(), "e1", events, [], events, study_id="study", now=at(3600)
+    )
+    decisions = sorted(
+        (
+            (item["source"], item["decision"])
+            for item in body["timeline"]
+            if item["event_type"] == "permission.decided"
+        ),
+        key=lambda item: (item[0], item[1] or ""),
+    )
+    assert decisions == [("acp", None), ("acp", "allow"), ("relay", "reject")]
 
 
 # -- tool names ------------------------------------------------------------------------------------

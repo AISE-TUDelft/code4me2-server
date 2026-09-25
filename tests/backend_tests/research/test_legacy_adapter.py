@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from research.telemetry.adapters import LegacyFact, build_legacy_events
 from research.telemetry.enums import CanonicalEventType, FieldClass
-from research.telemetry.models import Coverage, EventMetrics
+from research.telemetry.models import Correlations, Coverage, EventMetrics
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
 
@@ -117,3 +117,106 @@ def test_server_built_payloads_only_lose_plain_metadata_the_policy_drops():
         update={"blocked_field_classes": [FieldClass.BEHAVIORAL]}
     )
     assert "model" in _policy_payload(payload, blocked)
+
+
+def test_reserved_sequences_continue_across_batches_and_tasks():
+    """Regression: sequence reuse across batches/tasks caused INTEGRITY_CONFLICT.
+
+    A reserved base continues numbering (never restarts at 0/1), and each
+    task's facts are their own emitter namespace so two tasks sharing a
+    session never collide on (session, emitter, sequence).
+    """
+    task = _task()
+    task.task_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    first = build_legacy_events(task, [_fact("model_call")], first_sequence=0)
+    second = build_legacy_events(task, [_fact("tool_call")], first_sequence=1)
+    assert [e.emitter_sequence for e in first] == [1]
+    assert [e.emitter_sequence for e in second] == [2]
+    assert first[0].emitter_id == second[0].emitter_id
+    assert first[0].emitter_id.endswith(str(task.task_id))
+
+    other = _task()
+    other.task_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    third = build_legacy_events(other, [_fact("tool_call")], first_sequence=0)
+    assert third[0].emitter_sequence == 1
+    assert third[0].emitter_id != first[0].emitter_id
+
+
+def test_request_side_kinds_map_to_start_created_run_types():
+    """R5: request-side legacy kinds normalize instead of staying unknown.
+
+    Completions keep their existing mapping (token/step aggregation reads
+    only the completion side, so pairing them never double-counts).
+    """
+    events = build_legacy_events(
+        _task(),
+        [
+            _fact("model_request"),
+            _fact("tool_request"),
+            _fact("run_started"),
+            _fact("run_completed"),
+        ],
+    )
+    assert [e.event_type for e in events] == [
+        "agent.message.started",
+        "tool.created",
+        "agent.run.started",
+        "agent.run.completed",
+    ]
+
+
+def test_unmapped_kinds_keep_an_explicit_unknown_marker():
+    """Unknowns stay accepted but self-describing for forensics."""
+    (event,) = build_legacy_events(_task(), [_fact("observation")])
+    assert event.event_type == CanonicalEventType.UNKNOWN_SOURCE_EVENT.value
+    assert event.unknown_event_type == "observation"
+
+
+def test_permission_kinds_map_to_permission_types_with_metadata():
+    """Permission request/decision outcomes canonicalize with their metadata."""
+    requested = LegacyFact(
+        kind="permission_requested",
+        occurred_at=NOW,
+        payload={"tool_name": "write_file", "tool_call_id": "tc-1", "kind": "edit"},
+        metrics=EventMetrics(),
+        coverage=Coverage(),
+    )
+    decided = LegacyFact(
+        kind="permission_decided",
+        occurred_at=NOW,
+        payload={
+            "tool_name": "write_file",
+            "tool_call_id": "tc-1",
+            "kind": "edit",
+            "decision": "accepted",
+            "decision_scope": "once",
+        },
+        metrics=EventMetrics(),
+        coverage=Coverage(),
+    )
+    req_event, dec_event = build_legacy_events(_task(), [requested, decided])
+    assert req_event.event_type == "permission.requested"
+    assert dec_event.event_type == "permission.decided"
+    assert dec_event.payload["decision"] == "accepted"
+    assert dec_event.payload["decision_scope"] == "once"
+
+
+def test_trace_and_span_default_to_the_run_and_the_source_event():
+    """Facts without their own handles are traced by the run and their event id."""
+    defaulted, explicit = build_legacy_events(
+        _task(),
+        [
+            LegacyFact(kind="tool_call", occurred_at=NOW, source_event_id="evt-1"),
+            LegacyFact(
+                kind="model_call",
+                occurred_at=NOW,
+                source_event_id="evt-2",
+                correlations=Correlations(trace_id="trace-9", span_id="span-9"),
+            ),
+        ],
+    )
+    assert defaulted.correlations.trace_id == "run-1"
+    assert defaulted.correlations.span_id == "evt-1"
+    # A producer's own handles win over the defaults.
+    assert explicit.correlations.trace_id == "trace-9"
+    assert explicit.correlations.span_id == "span-9"

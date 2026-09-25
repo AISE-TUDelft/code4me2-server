@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from dotenv import load_dotenv
@@ -26,6 +27,10 @@ from research.participants.models import Enrollment, Participant, ResearchEligib
 from research.runtime.sessions import store as session_store
 from research.runtime.sessions.service import open_session
 from research.telemetry.adapters import CanonicalIngestionFailed
+from research.telemetry.ingestion.models import IngestionContext
+from research.telemetry.ingestion.service import _record_from_event, compute_event_digest
+from research.telemetry.ingestion.store import SqlAlchemyIngestionStore
+from research.telemetry.models import CanonicalEventV1, Coverage, Provenance
 from agents.ingest import ingest_event_batch
 
 load_dotenv()
@@ -55,7 +60,7 @@ def db_runtime():
         engine.dispose()
 
 
-def _seed(db, *, content_capture: bool, telemetry_policy: dict | None = None):
+def _seed_user(db) -> uuid.UUID:
     config_id = db.execute(
         text("INSERT INTO public.config (config_data) VALUES ('{}') RETURNING config_id")
     ).scalar_one()
@@ -73,6 +78,11 @@ def _seed(db, *, content_capture: bool, telemetry_policy: dict | None = None):
             "config_id": config_id,
         },
     )
+    return user_id
+
+
+def _seed(db, *, content_capture: bool, telemetry_policy: dict | None = None):
+    user_id = _seed_user(db)
     study_id = uuid.uuid4()
     db.add(
         StudyRow(
@@ -381,3 +391,218 @@ def test_relay_model_and_tool_calls_are_stored_under_the_default_policy(db_runti
         assert "[REDACTED]" not in serialized
     finally:
         db.close()
+
+
+def _runtime_event(event_type: str, payload: dict) -> dict:
+    return {
+        "event_id": str(uuid.uuid4()),
+        "run_id": "run-1",
+        "schema_version": "1",
+        "event_type": event_type,
+        "timestamp": NOW.isoformat(),
+        "sequence": 1,
+        "source": "code4me2_agent",
+        "session_id": "acp-session",
+        "request_id": "req-1",
+        "payload": payload,
+        "metrics": {"duration_ms": 5},
+    }
+
+
+def _permission_decided() -> dict:
+    return _runtime_event(
+        "agent.permission.decided",
+        {
+            "tool_name": "write_file",
+            "tool_call_id": "tc-1",
+            "kind": "edit",
+            "decision": "accepted",
+            "decision_scope": "once",
+        },
+    )
+
+
+def test_self_reports_outside_a_study_keep_the_legacy_write(db_runtime):
+    """A task without a research binding still stores its events in agent_event.
+
+    The column mapping also carries keys only the canonical fact uses (run id,
+    permission decision, ...); the legacy table has no column for them.
+    """
+    db = db_runtime()
+    try:
+        task = crud.create_agent_task(
+            db,
+            agent_profile="personal",
+            model="personal-model",
+            approval_policy="per_step",
+            tools_json="[]",
+            source="code4me2_agent",
+            owner_user_id=_seed_user(db),
+            external_run_id=f"run-{uuid.uuid4()}",
+            agent_session_id="acp-session",
+            status="running",
+        )
+        ingested, skipped = ingest_event_batch(
+            db,
+            task_id=task.task_id,
+            events=[
+                _runtime_event(
+                    "agent.tool.completed",
+                    {"tool_name": "write_file", "tool_call_id": "tc-1"},
+                ),
+                _permission_decided(),
+            ],
+            content_included=False,
+            agent_profile="personal",
+        )
+        assert (ingested, skipped) == (2, [])
+        event_types = db.execute(
+            text(
+                "SELECT event_type FROM public.agent_event "
+                "WHERE task_id = :task_id ORDER BY event_index"
+            ),
+            {"task_id": task.task_id},
+        ).scalars().all()
+        assert event_types == ["tool_call", "permission_decided"]
+    finally:
+        db.close()
+
+
+def test_self_report_batches_continue_one_emitter_sequence(db_runtime):
+    """Consecutive self-report batches number their canonical events without gaps."""
+    db = db_runtime()
+    try:
+        task = _seed(db, content_capture=False)
+        for size in (2, 3):
+            ingested, _skipped = ingest_event_batch(
+                db,
+                task_id=task.task_id,
+                events=[_permission_decided() for _ in range(size)],
+                content_included=False,
+                agent_profile="managed-arm",
+            )
+            assert ingested == size
+        sequences = db.execute(
+            text(
+                "SELECT emitter_sequence FROM public.research_event "
+                "WHERE agent_run_id = :run_id ORDER BY emitter_sequence"
+            ),
+            {"run_id": task.external_run_id},
+        ).scalars().all()
+        assert sequences == [1, 2, 3, 4, 5]
+    finally:
+        db.close()
+
+
+def _store_acp_event(db, task, event_type: str, payload: dict) -> None:
+    """Store one ACP-proxy event of the task's run directly."""
+    event = CanonicalEventV1(
+        event_id=uuid.uuid4(),
+        schema_version="1",
+        event_type=event_type,
+        source="acp",
+        study_id=task.study_id,
+        enrollment_id=task.enrollment_id,
+        research_session_id=task.research_session_id,
+        agent_run_id=task.external_run_id,
+        occurred_at=NOW,
+        emitter_id="proxy-1",
+        emitter_sequence=1,
+        payload=payload,
+        provenance=Provenance(source="acp", normalizer_version="test"),
+        coverage=Coverage(state="AVAILABLE"),
+    )
+    context = IngestionContext(
+        study_id=task.study_id,
+        enrollment_id=task.enrollment_id,
+        research_session_id=task.research_session_id,
+        revocation_epoch=0,
+    )
+    SqlAlchemyIngestionStore(db).insert_events(
+        [_record_from_event(event, context, compute_event_digest(event), accepted_at=NOW)]
+    )
+
+
+def test_the_agent_dashboard_rates_only_decisions_someone_was_asked_for(db_runtime):
+    """Edit acceptance reads the agent's own reports, and only decisions someone made."""
+    from research.analysis.read_models.dashboard import agent_overview
+
+    db = db_runtime()
+    try:
+        task = _seed(db, content_capture=False)
+        outcomes = [
+            ("accepted", "once"),
+            ("rejected", "once"),
+            ("accepted", "policy"),
+            ("accepted", "session_cached"),
+            ("unavailable", "none"),
+        ]
+        events = [
+            _runtime_event(
+                "agent.permission.decided",
+                {
+                    "tool_name": "write_file",
+                    "tool_call_id": f"tc-{index}",
+                    "decision": decision,
+                    "decision_scope": scope,
+                },
+            )
+            for index, (decision, scope) in enumerate(outcomes)
+        ]
+        ingested, _skipped = ingest_event_batch(
+            db,
+            task_id=task.task_id,
+            events=events,
+            content_included=False,
+            agent_profile="managed-arm",
+        )
+        assert ingested == len(outcomes)
+        # The proxy's record of the same run's round-trip is not read here.
+        _store_acp_event(db, task, "permission.decided", {"decision": "allow"})
+        db.commit()
+
+        owner = SimpleNamespace(user_id=task.owner_user_id, is_admin=False)
+        # agent_task.created_at is naive server-local time; a day of slack keeps
+        # the task inside the window whatever the host's time zone.
+        summary = agent_overview(
+            db, owner, time_window="7d", now=NOW + timedelta(days=1)
+        )["summary"]
+        assert summary["total_edits"] == 2
+        assert summary["edit_acceptance_rate"] == 0.5
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "allowed_field_classes",
+    [["SYSTEM", "BEHAVIORAL"], ["METRICS"]],
+    ids=["behavioural-kept", "behavioural-stripped"],
+)
+def test_the_run_detail_names_the_request_of_each_event(db_runtime, allowed_field_classes):
+    """The run timeline carries the reported request id, also when the study
+    policy strips the behavioural payload field that repeats it."""
+    from research.analysis.read_models.dashboard import agent_run_detail
+
+    db = db_runtime()
+    try:
+        task = _seed(
+            db,
+            content_capture=False,
+            telemetry_policy={"allowed_field_classes": allowed_field_classes},
+        )
+        ingested, _skipped = ingest_event_batch(
+            db,
+            task_id=task.task_id,
+            events=[_permission_decided()],
+            content_included=False,
+            agent_profile="managed-arm",
+        )
+        assert ingested == 1
+        db.commit()
+
+        owner = SimpleNamespace(user_id=task.owner_user_id, is_admin=False)
+        detail = agent_run_detail(db, owner, task_id=str(task.task_id))
+        assert [event["request_id"] for event in detail["events"]] == ["req-1"]
+    finally:
+        db.close()
+
