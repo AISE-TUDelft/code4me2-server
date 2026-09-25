@@ -124,6 +124,8 @@ def get_model_comparison(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving model comparison: {str(e)}")
@@ -217,6 +219,8 @@ def get_ground_truth_analysis(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving ground truth analysis: {str(e)}")
@@ -329,6 +333,8 @@ def get_performance_by_context(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving performance by context: {str(e)}")
@@ -412,6 +418,8 @@ def get_model_usage_trends(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving model usage trends: {str(e)}")

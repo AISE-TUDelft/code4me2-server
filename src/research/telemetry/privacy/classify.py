@@ -135,9 +135,13 @@ SYSTEM_TOKENS = frozenset(
         "host",
         "os",
         "arch",
-        "trace",
-        "span",
-        "level",
+    "trace",
+    "span",
+    # Protocol metadata: the relay's ``streaming`` flag describes how the call
+    # was transported, not content. Without this the fail-closed default
+    # classifies it CONTENT and the whole relay fact is rejected.
+    "streaming",
+    "level",
         "tokens",
         "tokens_used",
     }
@@ -225,6 +229,16 @@ def classify_field(name: Any, value: Any = None) -> FieldClass:
         return FieldClass.SECRET
     if _normalize_key(name) in SYSTEM_KEY_EXACT:
         return FieldClass.SYSTEM
+
+    # A bare magnitude of something ("tool_result_length": 42, "step_index": 0)
+    # is structural metadata, never content — even when the measured thing
+    # (arguments, results, ...) would itself be content. Without this, numeric
+    # telemetry like the relay's length-only tool metadata or step counters is
+    # rejected as CONTENT and takes the whole event down with it.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        suffixes = ("_length", "_count", "_counts", "_bytes", "_size", "_ms", "_index")
+        if _normalize_key(name).endswith(suffixes):
+            return FieldClass.SYSTEM
 
     tokens = _tokens(name)
     if tokens & CONTENT_TOKENS:

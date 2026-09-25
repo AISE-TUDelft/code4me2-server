@@ -144,6 +144,8 @@ def get_reliability_diagram(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error generating reliability diagram: {str(e)}")
@@ -273,6 +275,8 @@ def get_brier_score(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error calculating Brier score: {str(e)}")
@@ -397,6 +401,8 @@ def get_confidence_distribution(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving confidence distribution: {str(e)}")
@@ -497,6 +503,8 @@ def get_calibration_summary(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving calibration summary: {str(e)}")

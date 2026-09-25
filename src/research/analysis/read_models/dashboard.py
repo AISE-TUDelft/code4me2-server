@@ -154,6 +154,9 @@ def agent_overview(
                 SUM({_TOOL_SCHEMA_BYTES}) AS tool_schema_bytes,
                 SUM({_CONTEXT_BYTES}) AS conversation_context_bytes,
                 SUM({_TOOL_RESULT_LENGTH}) AS tool_result_bytes,
+                COUNT(*) FILTER (WHERE e.event_type = 'permission.decided') AS permission_decisions,
+                COUNT(*) FILTER (WHERE e.event_type = 'permission.decided'
+                    AND e.envelope_json -> 'payload' ->> 'decision' = 'accepted') AS permission_accepted,
                 AVG({_LATENCY}) FILTER (WHERE {_LEGACY_KIND} = 'model_call')
                     AS avg_model_latency_ms,
                 PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {_LATENCY})
@@ -362,11 +365,19 @@ def agent_overview(
                 if events.tool_result_bytes is not None
                 else None
             ),
-            # There is no canonical producer for edit acceptance (per the
-            # contract, it may only be recorded "when truly exposed"); the
-            # dashboard renders it unavailable rather than computing a ratio.
-            "edit_acceptance_rate": None,
-            "total_edits": None,
+            # Edit acceptance is computed from recorded permission decisions:
+            # accepted tool executions over all decided ones. With no observed
+            # decisions both stay null and the dashboard renders unavailable
+            # rather than a fabricated ratio.
+            "edit_acceptance_rate": (
+                (num(events.permission_accepted, integer=True) or 0)
+                / (num(events.permission_decisions, integer=True) or 0)
+                if (num(events.permission_decisions, integer=True) or 0) > 0
+                else None
+            ),
+            "total_edits": (
+                num(events.permission_decisions, integer=True) or None
+            ),
         },
         "profiles": [
             {
@@ -472,6 +483,16 @@ def agent_run_detail(
                 {_TOOL_NAME} AS tool_name,
                 e.envelope_json -> 'payload' ->> 'model' AS model,
                 {_USAGE} AS total_tokens,
+                e.envelope_json -> 'metrics' -> 'counts' ->> 'prompt_tokens' AS prompt_tokens,
+                e.envelope_json -> 'metrics' -> 'counts' ->> 'completion_tokens' AS completion_tokens,
+                e.envelope_json -> 'payload' ->> 'finish_reason' AS finish_reason,
+                e.envelope_json -> 'metrics' -> 'counts' ->> 'step_index' AS step_index,
+                e.envelope_json -> 'correlations' ->> 'trace_id' AS trace_id,
+                e.envelope_json -> 'correlations' ->> 'span_id' AS span_id,
+                e.envelope_json -> 'correlations' ->> 'parent_span_id' AS parent_span_id,
+                e.envelope_json -> 'correlations' ->> 'model_call_id' AS model_call_id,
+                e.envelope_json -> 'correlations' ->> 'message_id' AS message_id,
+                e.envelope_json -> 'correlations' ->> 'request_id' AS request_id,
                 e.occurred_at AS occurred_at,
                 e.envelope_json -> 'correlations' ->> 'tool_call_id' AS tool_call_id,
                 e.event_type AS canonical_event_type
@@ -493,16 +514,20 @@ def agent_run_detail(
                 "latency_ms": _num(row.latency_ms),
                 "created_at": None,
                 "occurred_at": _iso(row.occurred_at),
-                "span_id": None,
-                "parent_span_id": None,
+                "trace_id": row.trace_id,
+                "span_id": row.span_id,
+                "parent_span_id": row.parent_span_id,
+                "model_call_id": row.model_call_id,
+                "message_id": row.message_id,
+                "request_id": row.request_id,
                 "model": row.model,
                 "tool_name": row.tool_name,
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
+                "prompt_tokens": _num(row.prompt_tokens),
+                "completion_tokens": _num(row.completion_tokens),
                 "total_tokens": _num(row.total_tokens),
-                "finish_reason": None,
+                "finish_reason": row.finish_reason,
                 "upstream_status": _num(row.upstream_status),
-                "step_index": None,
+                "step_index": _num(row.step_index),
                 "detail": row.canonical_event_type
                 if row.event_type != row.canonical_event_type
                 else None,

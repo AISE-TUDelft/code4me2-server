@@ -107,10 +107,19 @@ class PrivacyPolicy(BaseModel):
     def from_study_policy(cls, telemetry_policy: Mapping[str, Any], *, consent_active: bool) -> PrivacyPolicy:
         """Resolve the current manifest policy using the IDE's field defaults.
 
+        Accepts both the study-facing authoring vocabulary (STRUCTURAL /
+        METRICS / DIAGNOSTICS / CONTENT, the same names study creation
+        validates) and the runtime vocabulary (SYSTEM / BEHAVIORAL /
+        CODE_METADATA / CONTENT) — mirroring ``from_revision_policy``. An
+        authored allowlist the resolver doesn't understand must not silently
+        degrade to the default: without this, a researcher writing the
+        documented study vocabulary gets broader capture than they declared.
         Content always needs the explicit content_capture flag and consent.
         Code metadata is allowed when declared (or using the legacy/default
         metadata policy); otherwise clients must upload SHA-256 tokens.
         """
+        # The same resolution the bootstrap manifest sends the IDE plugin
+        # (``runtime_field_classes``), so client and server agree.
         declared = _declared_field_classes(telemetry_policy.get("allowed_field_classes") or []) - {FieldClass.SECRET}
         allowed = declared or {FieldClass.SYSTEM, FieldClass.BEHAVIORAL, FieldClass.CODE_METADATA}
         return cls(

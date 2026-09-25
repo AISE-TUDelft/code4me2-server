@@ -242,6 +242,7 @@ class ToolRegistry:
         event_sink: AgentEventSink | None = None,
         mcp_tools: StdioMcpToolBroker | None = None,
         approval_policy: str = "auto",
+        telemetry: Any | None = None,
     ) -> None:
         from code4me2_agent.events import (
             NoopAgentEventSink,
@@ -255,8 +256,39 @@ class ToolRegistry:
         self._allowed_tools = frozenset(allowed_tools) if allowed_tools is not None else None
         self._approval_policy = approval_policy
         self._event_sink = event_sink or NoopAgentEventSink()
+        self._telemetry = telemetry
         self._event_type = ToolCallEvent
         self._thought_event_type = ThoughtEvent
+
+    def _record_permission(
+        self,
+        event_type: str,
+        *,
+        run_id: str,
+        request_id: str,
+        parent_event_id: str | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Emit a permission.requested/decided telemetry event, if wired.
+
+        Payloads carry only structural metadata (tool name/kind/ids, decision
+        outcome and scope) — never arguments or content — so they survive both
+        local redaction and the server privacy gate under metadata policies.
+        Returns the recorded event (for parent linkage) or ``None``.
+        """
+        record = getattr(self._telemetry, "record", None)
+        if not callable(record):
+            return None
+        try:
+            return record(
+                event_type=event_type,
+                run_id=run_id,
+                request_id=request_id,
+                parent_event_id=parent_event_id,
+                payload=payload,
+            )
+        except Exception:  # noqa: BLE001 - telemetry must never break tools
+            return None
 
     def execute(
         self, tool_call: ToolCall, *, run_id: str, request_id: str
@@ -284,6 +316,18 @@ class ToolRegistry:
         if self._approval_policy == "suggestion_only" and (
             _requires_manual_approval(name)
         ):
+            self._record_permission(
+                "agent.permission.decided",
+                run_id=run_id,
+                request_id=request_id,
+                parent_event_id=None,
+                payload={
+                    "tool_name": name,
+                    "tool_call_id": tool_call.tool_call_id,
+                    "decision": "rejected",
+                    "decision_scope": "policy",
+                },
+            )
             raise ToolRegistryError(
                 f"Tool execution is disabled by suggestion-only policy: {name}",
                 failure_reason="approval_policy_denied",
@@ -300,14 +344,44 @@ class ToolRegistry:
             request_id=request_id,
         )
         if self._approval_policy == "per_step" and _requires_manual_approval(name):
+            metadata = _tool_event_metadata(name, arguments)
+            requested = self._record_permission(
+                "agent.permission.requested",
+                run_id=run_id,
+                request_id=request_id,
+                parent_event_id=None,
+                payload={
+                    "tool_name": name,
+                    "tool_call_id": tool_call.tool_call_id,
+                    "kind": metadata["kind"] if metadata else None,
+                },
+            )
             request_approval = getattr(self._event_sink, "request_approval", None)
             decision = (
                 request_approval(tool_call, arguments)
                 if callable(request_approval)
                 else None
             )
+            outcome = getattr(decision, "decision", "unavailable")
+            scope = getattr(decision, "scope", None)
+            self._record_permission(
+                "agent.permission.decided",
+                run_id=run_id,
+                request_id=request_id,
+                parent_event_id=(requested or {}).get("event_id"),
+                payload={
+                    "tool_name": name,
+                    "tool_call_id": tool_call.tool_call_id,
+                    "kind": metadata["kind"] if metadata else None,
+                    "decision": (
+                        outcome
+                        if outcome in ("accepted", "rejected", "cancelled", "unavailable")
+                        else "unavailable"
+                    ),
+                    "decision_scope": scope,
+                },
+            )
             if not getattr(decision, "accepted", bool(decision)):
-                outcome = getattr(decision, "decision", "unavailable")
                 self._emit_tool_failed(
                     tool_call,
                     arguments,
@@ -320,6 +394,21 @@ class ToolRegistry:
                     f"Tool approval {outcome} for: {name}",
                     failure_reason=f"approval_{outcome}",
                 )
+        else:
+            # No user round-trip (auto policy or tool needs none): the policy
+            # itself accepted, recorded so every execution has a decision.
+            self._record_permission(
+                "agent.permission.decided",
+                run_id=run_id,
+                request_id=request_id,
+                parent_event_id=None,
+                payload={
+                    "tool_name": name,
+                    "tool_call_id": tool_call.tool_call_id,
+                    "decision": "accepted",
+                    "decision_scope": "policy",
+                },
+            )
         try:
             if name == "read_file":
                 result = self._file_tools.read_file(
@@ -1483,6 +1572,7 @@ def create_agent_adapter(
                 approval_policy=config.approval_policy,
                 event_sink=event_sink,
                 mcp_tools=mcp_tools,
+                telemetry=telemetry,
             ),
             event_sink=event_sink,
         )

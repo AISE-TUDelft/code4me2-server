@@ -43,6 +43,10 @@ class CloseReason(str, Enum):
     REVOKED = "revoked"
     CRASH_RECOVERED = "crash_recovered"
     MIGRATED = "migrated"
+    # Written by the study-stop cascade (research.study.lifecycle); without
+    # this member every read of such a session crashed and every write
+    # failed as retryable instead of terminal.
+    STUDY_STOPPED = "STUDY_STOPPED"
 
 
 class AgentRunOutcome(str, Enum):

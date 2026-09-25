@@ -131,6 +131,8 @@ def get_queries_over_time(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving usage data: {str(e)}")
@@ -241,6 +243,8 @@ def get_acceptance_rates(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving acceptance rates: {str(e)}")
@@ -340,6 +344,8 @@ def get_latency_distribution(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving latency data: {str(e)}")
@@ -425,6 +431,8 @@ def get_user_behavior_metrics(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving behavior metrics: {str(e)}")
