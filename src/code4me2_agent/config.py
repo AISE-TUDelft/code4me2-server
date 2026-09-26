@@ -45,6 +45,99 @@ class FakeProviderConfig:
     script: list[dict[str, object]] = field(default_factory=list)
 
 
+PROMPT_PROFILES = frozenset({"auto", "default", "openai", "anthropic", "gemini"})
+
+_HARNESS_BOOL_OPTIONS = (
+    "self_review",
+    "verify_on_stop",
+    "context_summarization",
+    "parallel_tools",
+    "project_instructions",
+    "read_before_edit",
+    "syntax_check",
+    "loop_guard",
+    "instruction_reminders",
+    "test_output_summary",
+)
+
+
+@dataclass(frozen=True)
+class HarnessOptions:
+    """Runtime behaviour switches an agent profile can freeze (``harness_options``).
+
+    Every default is the runtime's recommended behaviour; a profile only lists
+    the switches it changes. The server validates the keys strictly; the
+    runtime ignores keys it does not know so an older runtime never refuses a
+    newer policy for an option it cannot honour anyway.
+    """
+
+    self_review: bool = True
+    verify_on_stop: bool = True
+    # argv run by the runtime before the final answer when files changed;
+    # None means "nudge the model to verify" instead.
+    verify_command: tuple[str, ...] | None = None
+    context_summarization: bool = True
+    parallel_tools: bool = True
+    prompt_profile: str = "auto"
+    project_instructions: bool = True
+    read_before_edit: bool = True
+    syntax_check: bool = True
+    loop_guard: bool = True
+    instruction_reminders: bool = True
+    test_output_summary: bool = True
+
+    def with_overrides(self, overrides: dict[str, object] | None) -> "HarnessOptions":
+        if not overrides:
+            return self
+        from dataclasses import replace as _replace
+
+        return _replace(self, **overrides)
+
+
+def parse_harness_overrides(value: object, *, strict: bool) -> dict[str, object] | None:
+    """Validate a ``harness_options`` mapping into ``HarnessOptions`` overrides.
+
+    ``strict`` (the managed policy) raises ``ValueError`` on a known key with a
+    wrong type; otherwise such a key is skipped. Unknown keys are ignored.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        if strict:
+            raise ValueError("harness_options must be an object.")
+        return None
+    overrides: dict[str, object] = {}
+    for key in _HARNESS_BOOL_OPTIONS:
+        if key not in value:
+            continue
+        if isinstance(value[key], bool):
+            overrides[key] = value[key]
+        elif strict:
+            raise ValueError(f"harness_options.{key} must be a boolean.")
+    if "prompt_profile" in value:
+        profile = value["prompt_profile"]
+        if isinstance(profile, str) and profile.strip().lower() in PROMPT_PROFILES:
+            overrides["prompt_profile"] = profile.strip().lower()
+        elif strict:
+            raise ValueError("harness_options.prompt_profile is not a known profile.")
+    if "verify_command" in value:
+        command = value["verify_command"]
+        if command is None:
+            overrides["verify_command"] = None
+        elif (
+            isinstance(command, list)
+            and command
+            and all(isinstance(item, str) and item for item in command)
+            and command[0].strip()
+        ):
+            # Same rule as the server (agents/tools.py): non-empty arguments; a
+            # whitespace argument such as " " is a legitimate argv item.
+            overrides["verify_command"] = tuple(str(item) for item in command)
+        elif strict:
+            raise ValueError("harness_options.verify_command must be a non-empty argv list.")
+    return overrides
+
+
 @dataclass(frozen=True)
 class OpenAICompatibleProviderConfig:
     """Where this agent sends its model calls.
@@ -129,6 +222,10 @@ class ServerAgentConfig:
     # Researcher-authored system prompt for the assigned arm (agent-config and
     # the managed run policy both carry it). None = built-in default.
     system_prompt: str | None = None
+    # Default per-command timeout frozen with the profile. None = runtime default.
+    command_timeout_seconds: int | None = None
+    # Validated ``HarnessOptions`` overrides frozen with the profile.
+    harness_options: dict[str, object] | None = None
     # Advisory: the server enforces content storage itself. Used only to avoid
     # transmitting content that would be discarded anyway — never to enable
     # capture, which the agent has no power to do.
@@ -180,8 +277,15 @@ class ServerAgentConfig:
                 merged.get("system_prompt") is not None
                 and not isinstance(merged.get("system_prompt"), str)
             )
+            or not _valid_optional_timeout(merged.get("command_timeout_seconds"))
         ):
             raise ValueError("Managed agent policy contains invalid executable settings.")
+        try:
+            parse_harness_overrides(merged.get("harness_options"), strict=True)
+        except ValueError as exc:
+            raise ValueError(
+                f"Managed agent policy contains invalid executable settings: {exc}"
+            ) from None
         return cls.from_payload(merged)
 
     @classmethod
@@ -221,6 +325,10 @@ class ServerAgentConfig:
         if not isinstance(temperature, (int, float)) or isinstance(temperature, bool):
             temperature = None
 
+        command_timeout = payload.get("command_timeout_seconds")
+        if not _valid_optional_timeout(command_timeout) or command_timeout is None:
+            command_timeout = None
+
         return cls(
             agent_profile=_clean_str("agent_profile"),
             framework_version=_clean_str("framework_version"),
@@ -234,6 +342,8 @@ class ServerAgentConfig:
             approval_policy=_clean_str("approval_policy"),
             temperature=float(temperature) if temperature is not None else None,
             system_prompt=_clean_str("system_prompt"),
+            command_timeout_seconds=int(command_timeout) if command_timeout is not None else None,
+            harness_options=parse_harness_overrides(payload.get("harness_options"), strict=False),
             store_agent_content=bool(payload.get("store_agent_content", True)),
         )
 
@@ -252,8 +362,20 @@ class ServerAgentConfig:
                 self.approval_policy,
                 self.temperature,
                 self.system_prompt,
+                self.command_timeout_seconds,
+                self.harness_options,
             )
         )
+
+
+def _valid_optional_timeout(value: object) -> bool:
+    if value is None:
+        return True
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 1 <= value <= 600
+    )
 
 
 @dataclass(frozen=True)
@@ -269,6 +391,7 @@ class AgentConfig:
     allowed_tools: frozenset[str] | None = None
     approval_policy: str = "auto"
     store_agent_content: bool = True
+    harness: HarnessOptions = field(default_factory=HarnessOptions)
     managed_mode: bool = False
     managed_request: Callable[[str, str, dict | None], dict] | None = field(
         default=None, repr=False, compare=False
@@ -343,6 +466,13 @@ class AgentConfig:
                 commands,
                 allowlisted_commands=available_commands(server.commands_allowlist),
             )
+        if server.command_timeout_seconds is not None:
+            timeout = float(server.command_timeout_seconds)
+            commands = _replace(
+                commands,
+                timeout_seconds=timeout,
+                max_timeout_seconds=max(timeout, commands.max_timeout_seconds),
+            )
 
         tools = self.tools
         allowed_tools = self.allowed_tools
@@ -358,6 +488,7 @@ class AgentConfig:
             allowed_tools=allowed_tools,
             approval_policy=server.approval_policy or self.approval_policy,
             store_agent_content=server.store_agent_content,
+            harness=self.harness.with_overrides(server.harness_options),
         )
 
     @classmethod
@@ -547,6 +678,11 @@ class AgentConfig:
             ),
         )
 
+        harness_data = data.get("harness_options", adapter_data.get("harness_options"))
+        harness = HarnessOptions().with_overrides(
+            parse_harness_overrides(harness_data, strict=False)
+        )
+
         return cls(
             workspace_root=workspace_root,
             trace_path=trace_path.resolve(),
@@ -555,6 +691,7 @@ class AgentConfig:
             upload=upload,
             commands=commands,
             adapter=adapter,
+            harness=harness,
         )
 
 

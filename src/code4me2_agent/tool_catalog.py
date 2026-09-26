@@ -18,6 +18,7 @@ TOOL_KINDS: dict[str, str] = {
     "write_file": "edit",
     "replace_text": "edit",
     "edit_file": "edit",
+    "apply_patch": "edit",
     "delete_file": "delete",
     "move_file": "move",
     "list_files": "search",
@@ -35,6 +36,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "write_file",
         "replace_text",
         "edit_file",
+        "apply_patch",
         "delete_file",
         "move_file",
         "run_command",
@@ -48,11 +50,14 @@ APPROVAL_KINDS: dict[str, str] = {
     "write_file": "edit",
     "replace_text": "edit",
     "edit_file": "edit",
+    "apply_patch": "edit",
     "delete_file": "edit",
     "move_file": "edit",
 }
 
-NO_CARD_TOOLS: frozenset[str] = frozenset({"update_plan"})
+# ``update_plan`` renders as the ACP plan and ``ask_user`` as the agent's final
+# message, so neither gets a tool card.
+NO_CARD_TOOLS: frozenset[str] = frozenset({"update_plan", "ask_user"})
 
 DEFAULT_IGNORED_DIRS_TEXT = (
     ".git, node_modules, build, dist, target, out, .idea, .gradle, .venv, __pycache__"
@@ -109,6 +114,38 @@ def _path_property(description: str = _PATH_DESCRIPTION) -> dict[str, Any]:
     return {"type": "string", "description": description}
 
 
+def _force_property() -> dict[str, Any]:
+    return {
+        "type": "boolean",
+        "description": (
+            "Skip the read-before-edit check for a file you have not read in this session. "
+            "Only when you are certain of its current content. Default false."
+        ),
+    }
+
+
+APPLY_PATCH_DESCRIPTION = (
+    "Edit, create, delete or rename files with one patch; all changes apply together or none do. "
+    "Format:\n"
+    "*** Begin Patch\n"
+    "*** Update File: src/app.py\n"
+    "@@ def handler(event):\n"
+    "-    return None\n"
+    "+    return event\n"
+    "*** Add File: src/new.py\n"
+    '+print("hello")\n'
+    "*** Delete File: src/old.py\n"
+    "*** End Patch\n"
+    "Rules: paths are workspace-relative. In an update, '@@' starts a chunk and may name a line "
+    "to find first (a def/class/function signature) so the chunk is placed after it; then lines "
+    "starting with ' ' are unchanged context (include about 3 lines before and after each "
+    "change), '-' lines are removed and '+' lines are added. Context must match the current file "
+    "(read it first). '*** Move to: new/path' right after '*** Update File:' renames the file; "
+    "'*** End of File' after a chunk pins it to the end of the file. Every line of an added file "
+    "starts with '+'."
+)
+
+
 def tool_definitions() -> list[dict[str, Any]]:
     return [
         _function_tool(
@@ -160,18 +197,19 @@ def tool_definitions() -> list[dict[str, Any]]:
             {
                 "path": _path_property(),
                 "content": {"type": "string", "description": "Complete new file content."},
+                "force": _force_property(),
             },
             ["path", "content"],
         ),
         _function_tool(
             "replace_text",
             (
-                "Replace one exact occurrence of old_text with new_text in a file. old_text must "
-                "match the current file content exactly once, including whitespace and "
-                "indentation, and must not include the line-number prefix from read_file. If it "
-                "matches zero or several places the call fails and reports the count: add "
-                "surrounding lines to make it unique, or set replace_all=true to change every "
-                "occurrence. CRLF and LF line endings are matched automatically."
+                "Replace one occurrence of old_text with new_text in a file you have read. Copy "
+                "old_text exactly from read_file, without the line-number prefix. It must match "
+                "exactly one place: if it matches several the call fails and reports their line "
+                "numbers (add surrounding lines, or set replace_all=true to change every exact "
+                "occurrence). Differences only in trailing whitespace, indentation or line endings "
+                "are tolerated and reported; new_text is re-indented to fit."
             ),
             {
                 "path": _path_property(),
@@ -184,6 +222,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "type": "boolean",
                     "description": "Replace every occurrence instead of requiring a unique match. Default false.",
                 },
+                "force": _force_property(),
             },
             ["path", "old_text", "new_text"],
         ),
@@ -216,8 +255,21 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "required": ["old_text", "new_text"],
                     },
                 },
+                "force": _force_property(),
             },
             ["path", "edits"],
+        ),
+        _function_tool(
+            "apply_patch",
+            APPLY_PATCH_DESCRIPTION,
+            {
+                "patch": {
+                    "type": "string",
+                    "description": "The complete patch, from '*** Begin Patch' to '*** End Patch'.",
+                },
+                "force": _force_property(),
+            },
+            ["patch"],
         ),
         _function_tool(
             "delete_file",
@@ -394,6 +446,26 @@ def tool_definitions() -> list[dict[str, Any]]:
                 },
             },
             ["argv"],
+        ),
+        _function_tool(
+            "ask_user",
+            (
+                "Ask the user a question and end your turn; their answer arrives as their next "
+                "message. Use it only when a decision is genuinely ambiguous and would change the "
+                "outcome, or you need information only the user has. Never use it for routine "
+                "confirmation. Offer short answer options when the choice is between known "
+                "alternatives."
+            ),
+            {
+                "question": {"type": "string", "description": "One clear, specific question."},
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 6,
+                    "description": "Optional short answer choices, most likely first.",
+                },
+            },
+            ["question"],
         ),
         _function_tool(
             "update_plan",

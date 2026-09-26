@@ -1,10 +1,10 @@
 from abc import ABC
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_serializer
 
 from response_models import (
     ResponseCompletionResponseData,
@@ -320,6 +320,17 @@ class AcpAgentConfigGetResponse(BaseResponse):
         description="Researcher-authored system prompt frozen with the assigned "
         "profile; null = none (the runtime keeps its built-in prompt).",
     )
+    command_timeout_seconds: Optional[int] = Field(
+        default=None,
+        description="Default per-command timeout in seconds frozen with the "
+        "assigned profile. Present only when the profile sets it; absent = the "
+        "runtime default.",
+    )
+    harness_options: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Harness behaviour switches frozen with the assigned profile. "
+        "Present only when the profile sets them; absent = runtime defaults.",
+    )
     store_agent_content: bool = Field(
         default=True,
         description="Whether the server will persist content for this user. "
@@ -333,6 +344,21 @@ class AcpAgentConfigGetResponse(BaseResponse):
     managed_protocol_version: Optional[str] = Field(
         default=None, description="Negotiated managed-agent protocol."
     )
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_harness_settings(self, handler):
+        # A config whose profile sets neither harness field serializes exactly
+        # as it did before the fields existed (decision D-01).
+        data = handler(self)
+        if isinstance(data, dict):
+            for key in _OPTIONAL_HARNESS_CONFIG_KEYS:
+                if data.get(key) is None:
+                    data.pop(key, None)
+        return data
+
+
+#: ``AcpAgentConfigGetResponse`` keys omitted (not null) when unset.
+_OPTIONAL_HARNESS_CONFIG_KEYS = ("command_timeout_seconds", "harness_options")
 
 
 class PersistentAuthTokenPostResponse(BaseResponse):

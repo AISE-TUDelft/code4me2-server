@@ -9,6 +9,7 @@ from uuid import uuid4
 from code4me2_agent.adapters import MemoryWindow, create_agent_adapter
 from code4me2_agent.command_tools import WorkspaceCommandTools
 from code4me2_agent.file_tools import WorkspaceFileTools
+from code4me2_agent.session_state import SessionToolState
 from code4me2_agent.telemetry import AgentTelemetryRecorder
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,12 @@ class EchoAgentCore:
         self._config = config
         self._event_sink = event_sink
         self._telemetry = AgentTelemetryRecorder(config)
-        self.file_tools = WorkspaceFileTools(config, telemetry=self._telemetry)
+        # What the model has read and what each turn changed: kept for the
+        # whole chat, across the tool rebuilds every policy refresh causes.
+        self.session_state = SessionToolState()
+        self.file_tools = WorkspaceFileTools(
+            config, telemetry=self._telemetry, change_observer=self.session_state.record_change
+        )
         self.command_tools = WorkspaceCommandTools(config, telemetry=self._telemetry)
         self._session_memory = self._build_session_memory()
         self._acp_file_backend = None
@@ -53,6 +59,7 @@ class EchoAgentCore:
             file_tools=self.file_tools,
             command_tools=self.command_tools,
             event_sink=self._event_sink,
+            session_state=self.session_state,
         )
 
     def rebuild_tools(
@@ -69,6 +76,7 @@ class EchoAgentCore:
             self._config,
             acp_backend=acp_file_backend,
             telemetry=self._telemetry,
+            change_observer=self.session_state.record_change,
         )
         self.command_tools = WorkspaceCommandTools(
             self._config,
@@ -106,6 +114,7 @@ class EchoAgentCore:
             command_tools=self.command_tools,
             event_sink=self._event_sink,
             mcp_tools=mcp_tools,
+            session_state=self.session_state,
         )
 
     def _build_session_memory(self) -> MemoryWindow | None:

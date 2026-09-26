@@ -44,7 +44,44 @@ const APPROVAL_POLICIES = [
 
 // Mirrors FALLBACK_MAX_CONTEXT_TOKENS in backend/routers/acp/__init__.py.
 const DEFAULT_CONTEXT_TOKENS = 32000;
+// New built-in profiles start with the context recommended for frontier
+// models (decision D-03); the API fallback for a blank value stays 32k.
+const NEW_PROFILE_CONTEXT_TOKENS = 64000;
 const SYSTEM_PROMPT_MAX_LENGTH = 4000;
+
+// Built-in runtime command and harness settings (decision D-01). Mirrors the
+// validation in backend agents/tools.py, which the server re-applies.
+const COMMAND_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
+const COMMANDS_ALLOWLIST_MAX = 64;
+const COMMAND_TIMEOUT_MIN = 1;
+const COMMAND_TIMEOUT_MAX = 600;
+// Runtime default per-command timeout and the server fallback allowlist
+// (FALLBACK_COMMANDS_ALLOWLIST in backend/routers/acp/__init__.py).
+const DEFAULT_COMMAND_TIMEOUT = 120;
+const DEFAULT_COMMANDS = "pwd, ls, cat, grep, rg";
+const VERIFY_COMMAND_MAX_ARGS = 32;
+const VERIFY_COMMAND_MAX_ARG_LENGTH = 512;
+// Boolean harness switches; the runtime default of each is on.
+const HARNESS_SWITCHES = [
+  { key: "self_review", label: "Self-review", hint: "Review the turn's diff in a clean context before answering." },
+  { key: "verify_on_stop", label: "Verify on stop", hint: "Verify the work before finishing (runs the verify command when set)." },
+  { key: "context_summarization", label: "Context summaries", hint: "Summarise older turns when the context grows long." },
+  { key: "parallel_tools", label: "Parallel tools", hint: "Run read-only tool calls of one step in parallel." },
+  { key: "project_instructions", label: "Project instructions", hint: "Read AGENTS.md-style instruction files from the project." },
+  { key: "read_before_edit", label: "Read before edit", hint: "Refuse edits to files the agent has not read." },
+  { key: "syntax_check", label: "Syntax check", hint: "Warn when an edit introduces a Python, JSON or TOML syntax error." },
+  { key: "loop_guard", label: "Loop guard", hint: "Stop repeated identical tool calls." },
+  { key: "instruction_reminders", label: "Instruction reminders", hint: "Re-inject the instructions during long turns." },
+  { key: "test_output_summary", label: "Test output summary", hint: "Summarise test-runner output for the model." },
+];
+const PROMPT_PROFILES = [
+  { value: "", label: "Runtime default (auto)" },
+  { value: "auto", label: "Auto (from the model name)" },
+  { value: "default", label: "Default" },
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "gemini", label: "Gemini" },
+];
 
 // Settings that govern a packaged (built-in) release. The system prompt is
 // listed so a profile edited before the release catalogue answers is not
@@ -85,10 +122,19 @@ const EMPTY_FORM = {
   tools: [],
   approval_policy: "per_step",
   max_steps: 15,
-  max_context_tokens: "",
+  max_context_tokens: NEW_PROFILE_CONTEXT_TOKENS,
   is_active: true,
   temperature: "", // blank = provider default (no override)
   system_prompt: "",
+  // Built-in runtime only. Blank / empty = not set (the server default).
+  commands_allowlist: "", // comma- or whitespace-separated command names
+  command_timeout_seconds: "",
+  harness_switches: {}, // explicit switch values only; absent = runtime default
+  prompt_profile: "",
+  verify_command: "", // split on whitespace
+  // The stored argv, kept verbatim until the text is edited, so an argument
+  // containing a space survives an unrelated edit.
+  verify_command_argv: null,
 };
 
 const TEMPERATURE_MIN = 0;
@@ -102,6 +148,64 @@ const parseTools = (toolsJson) => {
     return [];
   }
 };
+
+const isPlainObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const parseCommandList = (text) =>
+  String(text || "")
+    .split(/[\s,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const splitArgv = (text) => String(text || "").trim().split(/\s+/).filter(Boolean);
+
+const verifyArgv = (form) => (Array.isArray(form.verify_command_argv) ? form.verify_command_argv : splitArgv(form.verify_command));
+
+// The explicit harness_options a form carries, in a fixed key order so two
+// forms can be compared by their JSON.
+const harnessOptionsFrom = (form) => {
+  const options = {};
+  HARNESS_SWITCHES.forEach(({ key }) => {
+    if (typeof form.harness_switches[key] === "boolean") options[key] = form.harness_switches[key];
+  });
+  if (form.prompt_profile) options.prompt_profile = form.prompt_profile;
+  const argv = verifyArgv(form);
+  if (argv.length) options.verify_command = argv;
+  return options;
+};
+
+// Map stored harness_options onto the form's controls.
+const harnessFormFields = (options) => {
+  const stored = isPlainObject(options) ? options : {};
+  const harness_switches = {};
+  HARNESS_SWITCHES.forEach(({ key }) => {
+    if (typeof stored[key] === "boolean") harness_switches[key] = stored[key];
+  });
+  const argv = Array.isArray(stored.verify_command) ? stored.verify_command.map(String) : null;
+  return {
+    harness_switches,
+    prompt_profile: typeof stored.prompt_profile === "string" ? stored.prompt_profile : "",
+    verify_command: argv ? argv.join(" ") : "",
+    verify_command_argv: argv,
+  };
+};
+
+// Form values of the harness settings when the runtime cannot hold them.
+const CLEARED_HARNESS_FIELDS = {
+  commands_allowlist: "",
+  command_timeout_seconds: "",
+  harness_switches: {},
+  prompt_profile: "",
+  verify_command: "",
+  verify_command_argv: null,
+};
+
+const hasHarnessValues = (form) =>
+  Boolean(
+    String(form.commands_allowlist).trim() ||
+      String(form.command_timeout_seconds).trim() ||
+      Object.keys(harnessOptionsFrom(form)).length,
+  );
 
 const formatPlatforms = (platforms) => {
   if (!Array.isArray(platforms) || platforms.length === 0) return "none declared";
@@ -154,6 +258,10 @@ const AgentProfiles = ({ user = {} }) => {
   const [connections, setConnections] = useState([]);
   const [catalogue, setCatalogue] = useState([]);
   const [form, setForm] = useState(EMPTY_FORM);
+  // The form as last loaded (new, edited or cloned profile): an edit sends a
+  // harness setting only when it differs from this, so untouched stored
+  // values are omitted instead of being re-sent (or blanked).
+  const [formBaseline, setFormBaseline] = useState(EMPTY_FORM);
   // While another runtime's list is still shown (the new request in flight),
   // it neither locks nor clears the form's tools.
   const toolsLoaded = toolsFor === form.framework_version;
@@ -336,11 +444,49 @@ const AgentProfiles = ({ user = {} }) => {
         next.system_prompt = "";
         changed = true;
       }
+      // Command and harness settings only reach the built-in runtime.
+      if (current.framework_version !== "code4me2-agent" && hasHarnessValues(current)) {
+        Object.assign(next, CLEARED_HARNESS_FIELDS);
+        changed = true;
+      }
       return changed ? next : current;
     });
     // fieldEnabled only reads the values listed below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.framework_version, form.release_id, toolsLoaded, availableTools, catalogue, supportsSystemPrompt, formRevision]);
+
+  // Client-side mirror of the server's command/harness validation, so an
+  // obvious mistake is explained before a 422.
+  const validateHarnessFields = () => {
+    const commands = parseCommandList(form.commands_allowlist);
+    const invalid = commands.find((command) => !COMMAND_NAME_PATTERN.test(command));
+    if (invalid) {
+      return `"${invalid}" is not a command name. List bare program names (for ./gradlew, list gradlew); no paths, spaces or shell characters.`;
+    }
+    if (new Set(commands).size !== commands.length) return "The command allowlist lists a command more than once.";
+    if (commands.length > COMMANDS_ALLOWLIST_MAX) {
+      return `The command allowlist may list at most ${COMMANDS_ALLOWLIST_MAX} commands.`;
+    }
+    if (String(form.command_timeout_seconds).trim() !== "") {
+      const timeout = Number(form.command_timeout_seconds);
+      if (!Number.isInteger(timeout) || timeout < COMMAND_TIMEOUT_MIN || timeout > COMMAND_TIMEOUT_MAX) {
+        return `The default command timeout must be a whole number of seconds from ${COMMAND_TIMEOUT_MIN} to ${COMMAND_TIMEOUT_MAX} (or blank).`;
+      }
+    }
+    const argv = verifyArgv(form);
+    if (argv.length) {
+      if (argv.length > VERIFY_COMMAND_MAX_ARGS || argv.some((argument) => argument.length > VERIFY_COMMAND_MAX_ARG_LENGTH)) {
+        return `The verify command may have at most ${VERIFY_COMMAND_MAX_ARGS} arguments of at most ${VERIFY_COMMAND_MAX_ARG_LENGTH} characters.`;
+      }
+      if (!COMMAND_NAME_PATTERN.test(argv[0])) {
+        return "The verify command must start with a bare program name.";
+      }
+      if (!commands.includes(argv[0])) {
+        return `The verify command runs ${argv[0]}; add it to the command allowlist.`;
+      }
+    }
+    return "";
+  };
 
   const validateForm = () => {
     if (!form.name.trim()) return "Profile name is required.";
@@ -372,6 +518,8 @@ const AgentProfiles = ({ user = {} }) => {
     if (form.system_prompt.length > SYSTEM_PROMPT_MAX_LENGTH) {
       return `The system prompt must not exceed ${SYSTEM_PROMPT_MAX_LENGTH.toLocaleString()} characters.`;
     }
+    const harnessError = isByoaRuntime ? "" : validateHarnessFields();
+    if (harnessError) return harnessError;
     if (!user?.is_admin && selectedRelease && !selectedRelease.verified) {
       return "This release is not verified. Only an administrator can pin an unverified release.";
     }
@@ -394,6 +542,7 @@ const AgentProfiles = ({ user = {} }) => {
 
   const resetForm = () => {
     setForm(EMPTY_FORM);
+    setFormBaseline(EMPTY_FORM);
     setFormRevision((value) => value + 1);
     setEditingProfileId(null);
     clearMessages();
@@ -412,18 +561,35 @@ const AgentProfiles = ({ user = {} }) => {
     setForm((current) => ({ ...current, [name]: type === "checkbox" ? checked : value }));
   };
 
+  // A new profile that moves (back) to the built-in runtime gets the
+  // recommended context again; switching to Goose/Codex had cleared it.
+  const withBuiltInDefaults = (next, current) => {
+    if (
+      !editingProfileId &&
+      next.framework_version === "code4me2-agent" &&
+      current.framework_version !== "code4me2-agent" &&
+      next.max_context_tokens === ""
+    ) {
+      return { ...next, max_context_tokens: NEW_PROFILE_CONTEXT_TOKENS };
+    }
+    return next;
+  };
+
   const handleFrameworkChange = (event) => {
     const framework = event.target.value;
     setForm((current) => {
       const release = releaseCatalogue.find((item) => item.release_id === current.release_id);
       // A release pinned for another runtime would fail validation.
       const keepRelease = !release || releaseFrameworks(release).includes(framework);
-      return {
-        ...current,
-        framework_version: framework,
-        release_id: keepRelease ? current.release_id : "",
-        tools: [],
-      };
+      return withBuiltInDefaults(
+        {
+          ...current,
+          framework_version: framework,
+          release_id: keepRelease ? current.release_id : "",
+          tools: [],
+        },
+        current,
+      );
     });
   };
 
@@ -434,9 +600,29 @@ const AgentProfiles = ({ user = {} }) => {
       const frameworks = releaseFrameworks(release);
       if (release && frameworks.length && !frameworks.includes(current.framework_version)) {
         // Selecting a release implies its runtime.
-        return { ...current, release_id: releaseId, framework_version: frameworks[0], tools: [] };
+        return withBuiltInDefaults(
+          { ...current, release_id: releaseId, framework_version: frameworks[0], tools: [] },
+          current,
+        );
       }
       return { ...current, release_id: releaseId };
+    });
+  };
+
+  const handleVerifyCommandChange = (event) => {
+    const { value } = event.target;
+    // Once edited, the text (split on whitespace) is the command.
+    setForm((current) => ({ ...current, verify_command: value, verify_command_argv: null }));
+  };
+
+  // A checked switch that was not explicitly stored goes back to "runtime
+  // default" (omitted) instead of being saved as an explicit true.
+  const handleSwitchToggle = (key, checked) => {
+    setForm((current) => {
+      const switches = { ...current.harness_switches };
+      if (checked && typeof formBaseline.harness_switches[key] !== "boolean") delete switches[key];
+      else switches[key] = checked;
+      return { ...current, harness_switches: switches };
     });
   };
 
@@ -507,6 +693,31 @@ const AgentProfiles = ({ user = {} }) => {
     if (supportsSystemPrompt) {
       payload.system_prompt = form.system_prompt.trim() || null;
     }
+    // Built-in runtime command/harness settings. Untouched ones are omitted:
+    // a new (or cloned) profile sends what is set, an edit sends only what
+    // changed (null when cleared). Goose/Codex never send them, which clears
+    // any stored value on the server.
+    if (!isByoaRuntime) {
+      const commands = parseCommandList(form.commands_allowlist);
+      const timeoutText = String(form.command_timeout_seconds).trim();
+      const timeout = timeoutText === "" ? null : Number(timeoutText);
+      const options = harnessOptionsFrom(form);
+      const hasOptions = Object.keys(options).length > 0;
+      if (!editingProfileId) {
+        if (commands.length) payload.commands_allowlist = commands;
+        if (timeout !== null) payload.command_timeout_seconds = timeout;
+        if (hasOptions) payload.harness_options = options;
+      } else {
+        const baselineTimeout = String(formBaseline.command_timeout_seconds).trim();
+        if (JSON.stringify(commands) !== JSON.stringify(parseCommandList(formBaseline.commands_allowlist))) {
+          payload.commands_allowlist = commands.length ? commands : null;
+        }
+        if (timeoutText !== baselineTimeout) payload.command_timeout_seconds = timeout;
+        if (JSON.stringify(options) !== JSON.stringify(harnessOptionsFrom(formBaseline))) {
+          payload.harness_options = hasOptions ? options : null;
+        }
+      }
+    }
 
     const response = editingProfileId
       ? await updateAgentProfile(editingProfileId, payload)
@@ -540,11 +751,19 @@ const AgentProfiles = ({ user = {} }) => {
     is_active: profile.is_active !== undefined ? Boolean(profile.is_active) : true,
     temperature: profile.temperature === null || profile.temperature === undefined ? "" : profile.temperature,
     system_prompt: profile.system_prompt || "",
+    commands_allowlist: Array.isArray(profile.commands_allowlist) ? profile.commands_allowlist.join(", ") : "",
+    command_timeout_seconds:
+      profile.command_timeout_seconds === null || profile.command_timeout_seconds === undefined
+        ? ""
+        : profile.command_timeout_seconds,
+    ...harnessFormFields(profile.harness_options),
   });
 
   const handleEdit = (profile) => {
+    const loaded = formFromProfile(profile);
     setEditingProfileId(getProfileId(profile));
-    setForm(formFromProfile(profile));
+    setForm(loaded);
+    setFormBaseline(loaded);
     setFormRevision((value) => value + 1);
     clearMessages();
     focusEditor();
@@ -554,8 +773,10 @@ const AgentProfiles = ({ user = {} }) => {
   // under a new name, so a researcher can express v1 vs v2 as two templates that
   // differ only in their release.
   const handleClone = (profile) => {
+    const loaded = { ...formFromProfile(profile), name: `${profile.name || "profile"}-copy` };
     setEditingProfileId(null);
-    setForm({ ...formFromProfile(profile), name: `${profile.name || "profile"}-copy` });
+    setForm(loaded);
+    setFormBaseline(loaded);
     setFormRevision((value) => value + 1);
     clearMessages();
     setNotice(`Cloning "${profile.name}". Change what differs (e.g. the release) and create the new profile.`);
@@ -1092,7 +1313,8 @@ const AgentProfiles = ({ user = {} }) => {
                   />
                   {contextEnabled ? (
                     <p className="ui-hint">
-                      Blank uses the runtime default of {DEFAULT_CONTEXT_TOKENS.toLocaleString()} tokens. The built-in
+                      64k or more is recommended for frontier models. Blank uses the runtime default of{" "}
+                      {DEFAULT_CONTEXT_TOKENS.toLocaleString()} tokens. The built-in
                       agent drops its oldest turns to stay under this estimate; compliance per model call is shown in
                       the study analytics.
                     </p>
@@ -1209,6 +1431,122 @@ const AgentProfiles = ({ user = {} }) => {
                 </div>
               ) : null}
             </fieldset>
+
+            {isByoaRuntime ? null : (
+              <fieldset className="ui-fieldset">
+                <legend>Commands and harness</legend>
+                <div className="ui-form-grid">
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="profile-commands">
+                      Command allowlist
+                    </label>
+                    <input
+                      id="profile-commands"
+                      className="ui-input ui-mono"
+                      name="commands_allowlist"
+                      value={form.commands_allowlist}
+                      onChange={handleChange}
+                      placeholder={`Server default: ${DEFAULT_COMMANDS}`}
+                      disabled={isSaving}
+                    />
+                    <p className="ui-hint">
+                      Programs run_command may start, separated by commas or spaces (list gradlew to allow ./gradlew).
+                      Blank keeps the server default. A participant's own configuration can only narrow this list; to
+                      forbid commands entirely, leave run_command unselected.
+                    </p>
+                  </div>
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="profile-command-timeout">
+                      Default command timeout (s)
+                    </label>
+                    <input
+                      id="profile-command-timeout"
+                      className="ui-input"
+                      name="command_timeout_seconds"
+                      type="number"
+                      min={COMMAND_TIMEOUT_MIN}
+                      max={COMMAND_TIMEOUT_MAX}
+                      step="1"
+                      placeholder={`Default ${DEFAULT_COMMAND_TIMEOUT}`}
+                      value={form.command_timeout_seconds}
+                      onChange={handleChange}
+                      disabled={isSaving}
+                    />
+                    <p className="ui-hint">
+                      Per-command limit, {COMMAND_TIMEOUT_MIN}–{COMMAND_TIMEOUT_MAX} seconds. Blank uses the runtime
+                      default of {DEFAULT_COMMAND_TIMEOUT} seconds.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="ui-field">
+                  <span className="ui-label" id="profile-harness-label">
+                    Harness options
+                  </span>
+                  <div className="tool-grid" role="group" aria-labelledby="profile-harness-label">
+                    {HARNESS_SWITCHES.map(({ key, label, hint }) => {
+                      const checked = form.harness_switches[key] !== false;
+                      return (
+                        <label key={key} className={`tool-option${checked ? " is-selected" : ""}`} title={hint}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => handleSwitchToggle(key, event.target.checked)}
+                            disabled={isSaving}
+                          />
+                          <span>{label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="ui-hint">
+                    Every behaviour is on by default; untick one to switch it off for this arm. Only changed switches
+                    are stored with the profile.
+                  </p>
+                </div>
+
+                <div className="ui-form-grid">
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="profile-prompt-profile">
+                      Prompt profile
+                    </label>
+                    <select
+                      id="profile-prompt-profile"
+                      className="ui-select"
+                      name="prompt_profile"
+                      value={form.prompt_profile}
+                      onChange={handleChange}
+                      disabled={isSaving}
+                    >
+                      {PROMPT_PROFILES.map((option) => (
+                        <option key={option.value || "runtime-default"} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="ui-hint">The prompt variant the runtime uses; auto derives it from the model name.</p>
+                  </div>
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="profile-verify-command">
+                      Verify command
+                    </label>
+                    <input
+                      id="profile-verify-command"
+                      className="ui-input ui-mono"
+                      name="verify_command"
+                      value={form.verify_command}
+                      onChange={handleVerifyCommandChange}
+                      placeholder="e.g. pytest -q"
+                      disabled={isSaving}
+                    />
+                    <p className="ui-hint">
+                      Run by the runtime before it finishes; split on spaces, and its program must be in the command
+                      allowlist. Blank: the agent is only reminded to verify.
+                    </p>
+                  </div>
+                </div>
+              </fieldset>
+            )}
           </div>
 
           <div className="ui-card-footer">

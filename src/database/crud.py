@@ -13,12 +13,13 @@ from database import db_schemas
 from database.db_schemas import DEFAULT_USER_PREFERENCE
 from database.embedding_service import encode_text
 from utils import hash_password, verify_password
-from research.canonical import canonical_hash
+from research.canonical import canonical_hash, canonical_json
 from database.research_schemas import (
     AgentRelease,
     ResearchEnrollment,
     ResearchParticipant,
 )
+from agents.tools import set_harness_profile_fields
 from research.study.agents.distributions import validate_profile_configuration
 from research.study.agents.enums import QualificationStatus
 from research.study.agents.registry import SELECTABLE_STATUSES
@@ -66,6 +67,9 @@ def _validate_profile_configuration(
     max_steps: Optional[int] = None,
     max_context_tokens: Optional[int] = None,
     system_prompt: Optional[str] = None,
+    commands_allowlist: Optional[list] = None,
+    command_timeout_seconds: Optional[int] = None,
+    harness_options: Optional[dict] = None,
 ) -> None:
     """Enforce the shared profile↔release executable contract (ISSUE-03/17).
 
@@ -73,9 +77,12 @@ def _validate_profile_configuration(
     and its stored conformance evidence, so a profile that cannot execute is
     rejected at create/update time with a typed reason. ``model`` /
     ``temperature`` / ``max_steps`` participate in the BYOA field-coverage
-    check and ``max_context_tokens`` / ``system_prompt`` in the BYOA
+    check and ``max_context_tokens`` / ``system_prompt`` and the built-in
+    runtime's command/harness settings (``commands_allowlist`` /
+    ``command_timeout_seconds`` / ``harness_options``) in the BYOA
     unsupported-field check; omitting them would let an ungoverned field
-    through until study creation.
+    through until study creation. The command/harness settings are also
+    checked together (a verify command must be allowlisted).
     """
     if release_id is None:
         raise ProfileReleaseError(
@@ -97,10 +104,18 @@ def _validate_profile_configuration(
         max_steps=max_steps,
         max_context_tokens=max_context_tokens,
         system_prompt=system_prompt,
+        commands_allowlist=commands_allowlist,
+        command_timeout_seconds=command_timeout_seconds,
+        harness_options=harness_options,
     )
     validate_profile_configuration(
         candidate, row_to_release(row), release_json=row.release_json
     )
+
+
+def _optional_json_text(value) -> Optional[str]:
+    """Canonical JSON text for an optional JSON profile column (``None`` stays NULL)."""
+    return None if value is None else canonical_json(value)
 
 
 # User
@@ -1235,6 +1250,9 @@ def _agent_profile_configuration(profile: db_schemas.AgentProfile) -> dict:
     system_prompt = getattr(profile, "system_prompt", None)
     if system_prompt is not None:
         configuration["system_prompt"] = system_prompt
+    # Likewise the built-in runtime's command/harness settings (D-01): only set
+    # values join, so a profile without them keeps its digest.
+    configuration.update(set_harness_profile_fields(profile))
     return configuration
 
 
@@ -1280,11 +1298,15 @@ def create_agent_profile(
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
+    commands_allowlist: Optional[list] = None,
+    command_timeout_seconds: Optional[int] = None,
+    harness_options: Optional[dict] = None,
 ) -> db_schemas.AgentProfile:
     """Create a researcher-owned profile template.
 
     The provider endpoint/secret live on the referenced ``provider_connection``;
-    a profile never stores a URL or a secret reference.
+    a profile never stores a URL or a secret reference. ``commands_allowlist``
+    and ``harness_options`` are stored as canonical JSON text.
     """
     validate_profile_release(db, release_id)
     _validate_profile_configuration(
@@ -1299,6 +1321,9 @@ def create_agent_profile(
         max_steps=max_steps,
         max_context_tokens=max_context_tokens,
         system_prompt=system_prompt,
+        commands_allowlist=commands_allowlist,
+        command_timeout_seconds=command_timeout_seconds,
+        harness_options=harness_options,
     )
     profile = db_schemas.AgentProfile(
         profile_id=uuid.uuid4(),
@@ -1315,6 +1340,9 @@ def create_agent_profile(
         max_context_tokens=max_context_tokens,
         temperature=temperature,
         system_prompt=system_prompt,
+        commands_allowlist_json=_optional_json_text(commands_allowlist),
+        command_timeout_seconds=command_timeout_seconds,
+        harness_options_json=_optional_json_text(harness_options),
     )
     _refresh_agent_profile_digest(profile)
     db.add(profile)
@@ -1359,17 +1387,24 @@ def update_agent_profile(
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
+    commands_allowlist: Optional[list] = None,
+    command_timeout_seconds: Optional[int] = None,
+    harness_options: Optional[dict] = None,
     update_connection_id: bool = False,
     update_release_id: bool = False,
     update_temperature: bool = False,
     update_max_context_tokens: bool = False,
     update_system_prompt: bool = False,
+    update_commands_allowlist: bool = False,
+    update_command_timeout_seconds: bool = False,
+    update_harness_options: bool = False,
 ) -> Optional[db_schemas.AgentProfile]:
     """Update a profile template in place (caller performs ownership checks).
 
     ``None`` keeps a field unchanged, except where the matching ``update_*``
     flag is set: then the supplied value is stored as-is, so ``None`` clears the
-    optional ``temperature`` / ``max_context_tokens`` / ``system_prompt``
+    optional ``temperature`` / ``max_context_tokens`` / ``system_prompt`` /
+    ``commands_allowlist`` / ``command_timeout_seconds`` / ``harness_options``
     overrides (a full-replace PUT). The refreshed digest is then exactly that of
     a profile created with ``NULL`` for the cleared field.
     """
@@ -1399,6 +1434,21 @@ def update_agent_profile(
         if update_system_prompt or system_prompt is not None
         else getattr(profile, "system_prompt", None)
     )
+    effective_commands_allowlist = (
+        commands_allowlist
+        if update_commands_allowlist or commands_allowlist is not None
+        else getattr(profile, "commands_allowlist", None)
+    )
+    effective_command_timeout_seconds = (
+        command_timeout_seconds
+        if update_command_timeout_seconds or command_timeout_seconds is not None
+        else getattr(profile, "command_timeout_seconds", None)
+    )
+    effective_harness_options = (
+        harness_options
+        if update_harness_options or harness_options is not None
+        else getattr(profile, "harness_options", None)
+    )
     # Validate the merged result, not just the supplied fields: changing only
     # the framework (or only the release) must not leave an unexecutable pair.
     _validate_profile_configuration(
@@ -1417,6 +1467,9 @@ def update_agent_profile(
         max_steps=max_steps if max_steps is not None else profile.max_steps,
         max_context_tokens=effective_max_context_tokens,
         system_prompt=effective_system_prompt,
+        commands_allowlist=effective_commands_allowlist,
+        command_timeout_seconds=effective_command_timeout_seconds,
+        harness_options=effective_harness_options,
     )
     if name is not None:
         profile.name = name
@@ -1442,6 +1495,12 @@ def update_agent_profile(
         profile.temperature = temperature
     if update_system_prompt or system_prompt is not None:
         profile.system_prompt = system_prompt
+    if update_commands_allowlist or commands_allowlist is not None:
+        profile.commands_allowlist_json = _optional_json_text(commands_allowlist)
+    if update_command_timeout_seconds or command_timeout_seconds is not None:
+        profile.command_timeout_seconds = command_timeout_seconds
+    if update_harness_options or harness_options is not None:
+        profile.harness_options_json = _optional_json_text(harness_options)
     _refresh_agent_profile_digest(profile)
     db.commit()
     db.refresh(profile)

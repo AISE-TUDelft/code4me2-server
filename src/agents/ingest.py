@@ -253,6 +253,11 @@ def map_event_to_columns(
     for key in ("status", "backend_type", "failure_reason", "denial_reason", "path"):
         if payload.get(key) is not None:
             extra[key] = payload[key]
+    # Why the runtime made a model call ("turn", "summarize", "self_review"):
+    # structural, so analytics can separate harness calls from the agent's own
+    # steps even when content is not stored.
+    if event_type == "model_call" and isinstance(payload.get("call_purpose"), str):
+        extra["call_purpose"] = payload["call_purpose"][:32]
 
     # Content: the payload may quote user prompts, model output or file
     # contents, and raw_payload is the unredacted form of the same. Both are
@@ -321,6 +326,16 @@ def map_event_to_columns(
     }
 
 
+def _extra_value(extra_json: object, key: str) -> object:
+    if not isinstance(extra_json, str):
+        return None
+    try:
+        extra = json.loads(extra_json)
+    except ValueError:
+        return None
+    return extra.get(key) if isinstance(extra, dict) else None
+
+
 def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "LegacyFact":
     """Build the canonical fact for one self-reported event.
 
@@ -352,6 +367,11 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
         value = columns.get(key)
         if value is not None:
             payload[key] = value
+    call_purpose = _extra_value(columns.get("extra_json"), "call_purpose")
+    if isinstance(call_purpose, str):
+        # BEHAVIORAL-classified ("call" token): kept or dropped by the study
+        # policy like other structural metadata, never refused as content.
+        payload["call_purpose"] = call_purpose
     if content_included:
         if columns.get("tool_arguments") is not None:
             payload["tool_arguments"] = columns["tool_arguments"]

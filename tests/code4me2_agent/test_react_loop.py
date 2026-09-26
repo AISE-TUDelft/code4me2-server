@@ -15,7 +15,7 @@ from code4me2_agent.adapters import (
     ToolRegistry,
 )
 from code4me2_agent.command_tools import WorkspaceCommandTools
-from code4me2_agent.config import AdapterConfig, AgentConfig, FakeProviderConfig
+from code4me2_agent.config import AdapterConfig, AgentConfig, FakeProviderConfig, HarnessOptions
 from code4me2_agent.events import ApprovalDecision
 from code4me2_agent.file_tools import WorkspaceFileTools
 from code4me2_agent.telemetry import AgentTelemetryRecorder
@@ -74,7 +74,17 @@ def _tc(call_id: str, name: str, **arguments) -> dict:
 
 
 class Harness:
-    def __init__(self, tmp_path, script, *, tools=None, approval="auto", max_iterations=8, file_tools=None):
+    def __init__(
+        self,
+        tmp_path,
+        script,
+        *,
+        tools=None,
+        approval="auto",
+        max_iterations=8,
+        file_tools=None,
+        harness=None,
+    ):
         self.workspace = (tmp_path / "ws").resolve()
         self.workspace.mkdir(exist_ok=True)
         self.config = AgentConfig(
@@ -88,6 +98,7 @@ class Harness:
                 max_iterations=max_iterations,
                 fake_provider=FakeProviderConfig(enabled=True, script=list(script)),
             ),
+            harness=harness or HarnessOptions(),
         )
         self.captured = []
 
@@ -250,9 +261,11 @@ def test_malformed_tool_arguments_return_error_result_without_execution(tmp_path
 
 
 def test_cancel_between_tool_calls_appends_synthetic_results(tmp_path):
+    # Sequential execution: a cancel after the first call stops the second.
     harness = Harness(
         tmp_path,
         [{"tool_calls": [_tc("c1", "read_file", path="a.txt"), _tc("c2", "read_file", path="a.txt")]}],
+        harness=HarnessOptions(parallel_tools=False),
     )
     (harness.workspace / "a.txt").write_text("hello\n")
     original = harness.file_tools.read_file

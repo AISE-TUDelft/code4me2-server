@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 import shutil
 import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from time import monotonic, perf_counter
-from typing import IO, TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any, Callable
 from uuid import uuid4
 
 from code4me2_agent.acp_utils import capability_value
 from code4me2_agent.async_bridge import run_awaitable_blocking
+from code4me2_agent.runner_output import summarize_test_output
 from code4me2_agent.telemetry import AgentTelemetryRecorder
 from code4me2_agent.tool_errors import CommandNotFoundError, ToolError
 
@@ -24,6 +26,19 @@ if TYPE_CHECKING:
 _POLL_SECONDS = 0.25
 _KILL_GRACE_SECONDS = 5.0
 _PIPE_CHUNK_BYTES = 65536
+# Streaming of running output into the tool card: at most one update per
+# interval, carrying the last lines of output.
+_STREAM_INTERVAL_SECONDS = 1.0
+_STREAM_TAIL_LINES = 20
+_STREAM_TAIL_BYTES = 4096
+# Passing test runs keep only their last lines: the summary says what matters.
+_PASSING_TEST_OUTPUT_LINES = 20
+
+# Build wrappers that live in the project rather than on PATH. Allowlisting the
+# name permits running the workspace's own copy (``./gradlew test``).
+WORKSPACE_WRAPPERS = frozenset({"gradlew", "gradlew.bat", "mvnw", "mvnw.cmd"})
+# Characters cmd.exe interprets in a batch file's arguments ("BatBadBut").
+_BATCH_UNSAFE_RE = re.compile(r'[&|<>^%"!\r\n]')
 
 
 @dataclass(frozen=True)
@@ -39,6 +54,8 @@ class CommandResult:
     duration_ms: float = 0.0
     timeout_seconds: float = 0.0
     status: str = "completed"
+    # Parsed counts and failing tests when argv ran a recognised test runner.
+    test_summary: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -298,6 +315,7 @@ class WorkspaceCommandTools:
         cwd: str = ".",
         timeout_seconds: float | None = None,
         cancel_event: Event | None = None,
+        on_output: Callable[[str], None] | None = None,
         tool_call_id: str | None = None,
         run_id: str | None = None,
         request_id: str | None = None,
@@ -339,6 +357,25 @@ class WorkspaceCommandTools:
             request_id=request_id,
             started_at=started_at,
         )
+        executable = self._workspace_wrapper_or_record_denial(
+            command_name=command_name,
+            argv=normalized_argv,
+            cwd=resolved_cwd,
+            tool_call_id=tool_call_id,
+            run_id=run_id,
+            request_id=request_id,
+            started_at=started_at,
+        )
+        self._check_batch_arguments_or_record_denial(
+            program=executable or shutil.which(command_name) or command_name,
+            command_name=command_name,
+            argv=normalized_argv,
+            cwd=resolved_cwd,
+            tool_call_id=tool_call_id,
+            run_id=run_id,
+            request_id=request_id,
+            started_at=started_at,
+        )
         effective_timeout = self._effective_timeout(timeout_seconds)
 
         relative_cwd = "." if resolved_cwd == self._config.workspace_root else self._relative_path(resolved_cwd)
@@ -347,24 +384,29 @@ class WorkspaceCommandTools:
         if acp_run_command is not None:
             backend_type = "acp"
             acp_result = acp_run_command(
-                command=command_name,
+                command=executable or command_name,
                 args=normalized_argv[1:],
                 cwd=str(resolved_cwd),
                 max_output_bytes=self._max_output_bytes,
                 timeout_seconds=effective_timeout,
             )
-            stdout, stdout_truncated = _truncate_to_max_bytes(acp_result.stdout, self._max_output_bytes)
-            stderr, stderr_truncated = _truncate_to_max_bytes(acp_result.stderr, self._max_output_bytes)
+            stdout, stdout_truncated = _truncate_to_max_bytes(
+                clean_terminal_output(acp_result.stdout), self._max_output_bytes
+            )
+            stderr, stderr_truncated = _truncate_to_max_bytes(
+                clean_terminal_output(acp_result.stderr), self._max_output_bytes
+            )
             exit_code = acp_result.exit_code
             timed_out = acp_result.timed_out
             output_truncated = acp_result.output_truncated or stdout_truncated or stderr_truncated
         else:
             backend_type = "local"
             local = self._run_local(
-                argv=normalized_argv,
+                argv=[executable, *normalized_argv[1:]] if executable else normalized_argv,
                 cwd=resolved_cwd,
                 timeout_seconds=effective_timeout,
                 cancel_event=cancel_event,
+                on_output=on_output,
             )
             stdout, stderr = local.stdout, local.stderr
             exit_code = local.exit_code
@@ -378,6 +420,13 @@ class WorkspaceCommandTools:
             status = "timeout"
         else:
             status = "completed"
+        test_summary = None
+        if status == "completed" and self._test_summaries_enabled():
+            summary = summarize_test_output(normalized_argv, stdout, stderr)
+            if summary is not None:
+                test_summary = summary.as_result()
+                if exit_code == 0 and summary.all_passed:
+                    stdout = _last_lines(stdout, _PASSING_TEST_OUTPUT_LINES)
         duration_ms = round((perf_counter() - started_at) * 1000, 3)
 
         self._record_tool_event(
@@ -400,6 +449,7 @@ class WorkspaceCommandTools:
                 "stderr_bytes": len(stderr.encode("utf-8")),
                 "max_output_bytes": self._max_output_bytes,
                 "timeout_seconds": effective_timeout,
+                **_test_summary_payload(test_summary),
             },
         )
 
@@ -415,7 +465,12 @@ class WorkspaceCommandTools:
             duration_ms=duration_ms,
             timeout_seconds=effective_timeout,
             status=status,
+            test_summary=test_summary,
         )
+
+    def _test_summaries_enabled(self) -> bool:
+        harness = getattr(self._config, "harness", None)
+        return bool(getattr(harness, "test_output_summary", True))
 
     def _effective_timeout(self, requested: float | None) -> float:
         if requested is None:
@@ -434,13 +489,14 @@ class WorkspaceCommandTools:
         cwd: Path,
         timeout_seconds: float,
         cancel_event: Event | None,
+        on_output: Callable[[str], None] | None = None,
     ) -> "_LocalExecution":
         popen_kwargs: dict[str, Any] = {
             "cwd": str(cwd),
             "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
-            "env": _external_command_environment(),
+            "env": command_environment(),
             "close_fds": True,
         }
         if os.name == "nt":
@@ -469,11 +525,19 @@ class WorkspaceCommandTools:
         timed_out = False
         cancelled = False
         exit_code: int | None = None
+        next_stream = monotonic() + _STREAM_INTERVAL_SECONDS
+        streamed_total = -1
         while True:
             try:
                 exit_code = process.wait(timeout=_POLL_SECONDS)
                 break
             except subprocess.TimeoutExpired:
+                if on_output is not None and monotonic() >= next_stream:
+                    next_stream = monotonic() + _STREAM_INTERVAL_SECONDS
+                    total = stdout_collector.total + stderr_collector.total
+                    if total != streamed_total:
+                        streamed_total = total
+                        _deliver_stream(on_output, stdout_collector, stderr_collector)
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
                 elif monotonic() >= deadline:
@@ -492,8 +556,8 @@ class WorkspaceCommandTools:
         stdout_text, stdout_truncated = stdout_collector.render()
         stderr_text, stderr_truncated = stderr_collector.render()
         return _LocalExecution(
-            stdout=stdout_text,
-            stderr=stderr_text,
+            stdout=clean_terminal_output(stdout_text),
+            stderr=clean_terminal_output(stderr_text),
             exit_code=exit_code,
             timed_out=timed_out,
             cancelled=cancelled,
@@ -519,7 +583,9 @@ class WorkspaceCommandTools:
         started_at: float,
     ) -> str:
         command_name = Path(argv[0]).name
-        if command_name != argv[0]:
+        if command_name != argv[0] and not (
+            command_name in WORKSPACE_WRAPPERS and _is_relative_path(argv[0])
+        ):
             self._record_denial(
                 tool_call_id=tool_call_id,
                 run_id=run_id,
@@ -531,6 +597,99 @@ class WorkspaceCommandTools:
             )
             raise PermissionError("Command argv[0] must be an allowlisted command name, not a path.")
         return command_name
+
+    def _workspace_wrapper_or_record_denial(
+        self,
+        *,
+        command_name: str,
+        argv: list[str],
+        cwd: Path,
+        tool_call_id: str,
+        run_id: str,
+        request_id: str,
+        started_at: float,
+    ) -> str | None:
+        """Absolute path of a project build wrapper (``./gradlew``), else None.
+
+        Only allowlisted wrapper names qualify, and the file must resolve inside
+        the workspace. A bare ``gradlew`` that is not on PATH is looked up in the
+        working directory and then the workspace root.
+        """
+        if command_name not in WORKSPACE_WRAPPERS:
+            return None
+        if argv[0] == command_name and shutil.which(command_name):
+            return None
+        workspace_root = self._config.workspace_root.resolve()
+        if _is_relative_path(argv[0]):
+            candidates = [cwd / argv[0]]
+        else:
+            candidates = [cwd / command_name, workspace_root / command_name]
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved != workspace_root and workspace_root not in resolved.parents:
+                if _is_relative_path(argv[0]):
+                    self._record_denial(
+                        tool_call_id=tool_call_id,
+                        run_id=run_id,
+                        request_id=request_id,
+                        started_at=started_at,
+                        argv=argv,
+                        cwd=self._relative_path(cwd),
+                        denial_reason="outside_workspace_root",
+                    )
+                    raise PermissionError(
+                        f"{argv[0]} is outside the workspace; only the project's own build "
+                        "wrapper can run."
+                    )
+                continue
+            if resolved.is_file():
+                return str(resolved)
+        # Not a policy decision: the adapter records this as a failed call.
+        raise CommandNotFoundError(
+            f"{argv[0]} was not found in the workspace. Build wrappers run from the project, "
+            f'e.g. ["./{command_name}", ...] with cwd set to the directory that contains it.'
+        )
+
+    def _check_batch_arguments_or_record_denial(
+        self,
+        *,
+        program: str,
+        command_name: str,
+        argv: list[str],
+        cwd: Path,
+        tool_call_id: str,
+        run_id: str,
+        request_id: str,
+        started_at: float,
+    ) -> None:
+        """Refuse cmd.exe metacharacters in the arguments of a batch file.
+
+        Windows runs ``.bat``/``.cmd`` files through cmd.exe, which re-parses
+        the command line ("BatBadBut"): ``&``, ``|``, ``%`` and quotes in an
+        argument would run other commands outside the allowlist. This applies
+        to a project wrapper and to a batch file found on PATH alike.
+        """
+        is_batch = any(
+            Path(name).suffix.lower() in (".bat", ".cmd") for name in (program, command_name)
+        )
+        if not is_batch or not any(_BATCH_UNSAFE_RE.search(argument) for argument in argv[1:]):
+            return
+        self._record_denial(
+            tool_call_id=tool_call_id,
+            run_id=run_id,
+            request_id=request_id,
+            started_at=started_at,
+            argv=argv,
+            cwd=self._relative_path(cwd),
+            denial_reason="unsafe_batch_arguments",
+        )
+        raise PermissionError(
+            f"{command_name} runs as a batch file: its arguments must not contain "
+            '& | < > ^ % " ! or line breaks.'
+        )
 
     def _normalize_argv_or_record_denial(
         self,
@@ -759,24 +918,37 @@ class _PipeCollector(Thread):
         self._head = bytearray()
         self._tail = bytearray()
         self._total = 0
+        self._lock = Lock()
+
+    @property
+    def total(self) -> int:
+        return self._total
+
+    def recent(self, max_bytes: int) -> bytes:
+        """The most recent output so far (for streaming into the tool card)."""
+        with self._lock:
+            if self._tail:
+                return bytes(self._tail[-max_bytes:])
+            return bytes(self._head[-max_bytes:])
 
     def run(self) -> None:
         if self._pipe is None:
             return
         try:
             while True:
-                chunk = self._pipe.read(_PIPE_CHUNK_BYTES)
+                chunk = self._pipe.read1(_PIPE_CHUNK_BYTES) if hasattr(self._pipe, "read1") else self._pipe.read(_PIPE_CHUNK_BYTES)
                 if not chunk:
                     break
-                self._total += len(chunk)
-                if len(self._head) < self._head_limit:
-                    take = self._head_limit - len(self._head)
-                    self._head += chunk[:take]
-                    chunk = chunk[take:]
-                if chunk:
-                    self._tail += chunk
-                    if len(self._tail) > 2 * self._tail_limit:
-                        del self._tail[: len(self._tail) - self._tail_limit]
+                with self._lock:
+                    self._total += len(chunk)
+                    if len(self._head) < self._head_limit:
+                        take = self._head_limit - len(self._head)
+                        self._head += chunk[:take]
+                        chunk = chunk[take:]
+                    if chunk:
+                        self._tail += chunk
+                        if len(self._tail) > 2 * self._tail_limit:
+                            del self._tail[: len(self._tail) - self._tail_limit]
         except (OSError, ValueError):
             pass
         finally:
@@ -786,6 +958,10 @@ class _PipeCollector(Thread):
                 pass
 
     def render(self) -> tuple[str, bool]:
+        with self._lock:
+            return self._render_locked()
+
+    def _render_locked(self) -> tuple[str, bool]:
         tail = bytes(self._tail[-self._tail_limit :]) if self._tail else b""
         if self._total <= self._max_bytes:
             return (bytes(self._head) + tail).decode("utf-8", errors="replace"), False
@@ -826,8 +1002,85 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
 
 
 def available_commands(commands: list[str]) -> list[str]:
-    """Return policy commands which can actually launch on this machine."""
-    return [command for command in commands if shutil.which(command)]
+    """Return policy commands which can actually launch on this machine.
+
+    Project build wrappers (``gradlew``, ``mvnw``) are kept: they live in the
+    workspace, not on PATH, and are resolved per call.
+    """
+    return [
+        command
+        for command in commands
+        if command in WORKSPACE_WRAPPERS or shutil.which(command)
+    ]
+
+
+def _is_relative_path(value: str) -> bool:
+    if "/" not in value and "\\" not in value:
+        return False
+    return not Path(value).is_absolute() and not value.startswith("~")
+
+
+def _deliver_stream(
+    on_output: Callable[[str], None],
+    stdout_collector: "_PipeCollector",
+    stderr_collector: "_PipeCollector",
+) -> None:
+    parts = []
+    for collector in (stdout_collector, stderr_collector):
+        recent = collector.recent(_STREAM_TAIL_BYTES)
+        if recent:
+            parts.append(clean_terminal_output(recent.decode("utf-8", errors="replace")))
+    text = _last_lines("\n".join(part.rstrip("\n") for part in parts), _STREAM_TAIL_LINES)
+    if not text.strip():
+        return
+    try:
+        on_output(text)
+    except Exception:  # noqa: BLE001 - a card update must never kill the command
+        pass
+
+
+def _last_lines(text: str, count: int) -> str:
+    lines = text.rstrip("\n").splitlines()
+    if len(lines) <= count:
+        return text
+    return f"[... {len(lines) - count} earlier lines omitted ...]\n" + "\n".join(lines[-count:])
+
+
+def _test_summary_payload(test_summary: dict[str, Any] | None) -> dict[str, Any]:
+    if not test_summary:
+        return {}
+    payload: dict[str, Any] = {"test_framework": test_summary.get("framework")}
+    for key in ("passed", "failed", "errors", "skipped"):
+        if test_summary.get(key) is not None:
+            payload[f"tests_{key}"] = test_summary[key]
+    return payload
+
+
+# ANSI CSI/OSC sequences, other escapes and non-printing control characters.
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI: colours, cursor moves, erase line
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC: titles, hyperlinks
+    r"|\x1b[@-Z\\-_]"  # two-character escapes
+)
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean_terminal_output(text: str) -> str:
+    """Strip colour codes and collapse carriage-return progress redraws."""
+    if not text:
+        return text
+    if "\x1b" in text:
+        text = _ANSI_ESCAPE_RE.sub("", text)
+    if "\r" in text:
+        text = text.replace("\r\n", "\n")
+        lines = []
+        for line in text.split("\n"):
+            if "\r" in line:
+                segments = [segment for segment in line.split("\r") if segment]
+                line = segments[-1] if segments else ""
+            lines.append(line)
+        text = "\n".join(lines)
+    return _CONTROL_RE.sub("", text)
 
 
 _ENV_EXACT = frozenset(
@@ -899,6 +1152,27 @@ _ENV_PREFIXES = (
 )
 _ENV_BLOCKED_EXACT = frozenset({"PYTHONHOME", "PYTHONEXECUTABLE", "LD_LIBRARY_PATH"})
 _ENV_BLOCKED_PREFIXES = ("CODE4ME_", "_MEIPASS", "DYLD_", "PYINSTALLER")
+
+
+# Non-interactive, colour-free output for captured commands: pagers would wait
+# on the closed stdin, colours and progress bars waste tokens.
+OUTPUT_HYGIENE_ENVIRONMENT: dict[str, str] = {
+    "NO_COLOR": "1",
+    "FORCE_COLOR": "0",
+    "TERM": "dumb",
+    "CI": "1",
+    "PAGER": "cat",
+    "GIT_PAGER": "cat",
+    "PYTHONUNBUFFERED": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+
+
+def command_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    """The child environment: the allowlisted variables plus output hygiene."""
+    environment = _external_command_environment(source)
+    environment.update(OUTPUT_HYGIENE_ENVIRONMENT)
+    return environment
 
 
 def _external_command_environment(source: dict[str, str] | None = None) -> dict[str, str]:

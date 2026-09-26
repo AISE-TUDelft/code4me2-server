@@ -63,8 +63,16 @@ class _FakeAuthorization:
 
 
 class _FakeClient:
+    """Records session updates; ``updates`` holds the per-turn stream.
+
+    The session-level ``available_commands_update`` (sent once after a session
+    is created) is kept apart in ``command_updates`` so turn assertions stay
+    exact.
+    """
+
     def __init__(self) -> None:
         self.updates: list[dict[str, Any]] = []
+        self.command_updates: list[dict[str, Any]] = []
 
     async def session_update(
         self,
@@ -73,9 +81,11 @@ class _FakeClient:
         update: object,
         **kwargs: Any,
     ) -> None:
-        self.updates.append(
-            {"session_id": session_id, "update": update, "metadata": kwargs}
-        )
+        entry = {"session_id": session_id, "update": update, "metadata": kwargs}
+        if getattr(update, "session_update", None) == "available_commands_update":
+            self.command_updates.append(entry)
+            return
+        self.updates.append(entry)
 
 
 class AcpRuntimeCompatibilityTest(TestCase):
@@ -106,7 +116,11 @@ class AcpRuntimeCompatibilityTest(TestCase):
 
             self.assertEqual("0.12.1", version("agent-client-protocol"))
             self.assertEqual(1, response.protocol_version)
-            self.assertFalse(response.agent_capabilities.load_session)
+            # session/load replays the persisted conversation (harness run 2026-09-26).
+            self.assertTrue(response.agent_capabilities.load_session)
+            self.assertTrue(response.agent_capabilities.prompt_capabilities.embedded_context)
+            self.assertTrue(response.agent_capabilities.mcp_capabilities.http)
+            self.assertTrue(response.agent_capabilities.mcp_capabilities.sse)
             self.assertIsNotNone(response.agent_capabilities.session_capabilities.resume)
             self.assertIsNotNone(response.agent_capabilities.session_capabilities.close)
             self.assertEqual("AuthMethodAgent", type(response.auth_methods[0]).__name__)
@@ -371,7 +385,6 @@ class AcpRuntimeCompatibilityTest(TestCase):
 
             for method, params in (
                 ("session/list", {}),
-                ("session/load", {"cwd": str(self.workspace), "sessionId": "missing"}),
                 ("session/set_model", {"sessionId": "missing", "modelId": "other"}),
                 ("session/mode", {"sessionId": "missing", "modeId": "other"}),
                 (

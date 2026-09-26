@@ -13,6 +13,7 @@ The schema supports:
 - Session management and tracking
 """
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -948,6 +949,16 @@ class AgentProfile(Base):
     # configuration digest and study snapshots only when set, so profiles
     # without a prompt keep their existing digests.
     system_prompt = Column(Text, nullable=True)
+    # Built-in runtime command and harness settings (decision D-01; managed
+    # runtime only, BYOA refuses them), validated by ``agents.tools``. NULL =
+    # the previous behaviour: the server fallback command allowlist (a user's
+    # config row may replace it), the runtime's default command timeout and the
+    # runtime's harness defaults. Like ``system_prompt`` each joins the
+    # configuration digest and study snapshots only when set. Read the JSON
+    # columns through ``commands_allowlist`` / ``harness_options``.
+    commands_allowlist_json = Column(Text, nullable=True)  # JSON array of bare command names
+    command_timeout_seconds = Column(Integer, nullable=True)  # 1..600 seconds
+    harness_options_json = Column(Text, nullable=True)  # JSON object of switches
     configuration_digest = Column(String, nullable=False, server_default="")
     # Only active profiles are candidates for new study selections. Inactive
     # profiles stay in the table for historical snapshots.
@@ -956,6 +967,31 @@ class AgentProfile(Base):
 
     owner = relationship("User")
     connection = relationship("ProviderConnection")
+
+    @property
+    def commands_allowlist(self):
+        """The decoded ``commands_allowlist_json`` (``None`` when unset)."""
+        return _decode_optional_json_text(self.commands_allowlist_json)
+
+    @property
+    def harness_options(self):
+        """The decoded ``harness_options_json`` (``None`` when unset)."""
+        return _decode_optional_json_text(self.harness_options_json)
+
+
+def _decode_optional_json_text(raw):
+    """Decode an optional JSON text column.
+
+    Text that is not JSON (only possible when a row is written around the API)
+    is returned verbatim rather than read as "unset", so every validator
+    downstream refuses it instead of silently dropping an arm's setting.
+    """
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
 
 
 class AgentTask(Base):

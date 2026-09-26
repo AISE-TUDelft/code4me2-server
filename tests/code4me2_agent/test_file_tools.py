@@ -309,10 +309,11 @@ def test_replace_text_no_match_hints(tmp_path):
     tools, workspace, _ = _make_tools(tmp_path)
     _write(workspace, "a.py", "def f():\n    return 1\n")
 
+    # A snippet that differs only in line breaks cannot be matched line by line.
     with pytest.raises(EditMatchError) as whitespace_error:
-        tools.replace_text("a.py", "def f():\n  return 1", "def f():\n    return 2")
+        tools.replace_text("a.py", "def f(): return 1", "def f(): return 2")
     assert whitespace_error.value.code == "edit_no_match"
-    assert "whitespace or indentation" in str(whitespace_error.value)
+    assert "whitespace or line breaks" in str(whitespace_error.value)
 
     with pytest.raises(EditMatchError) as prefix_error:
         tools.replace_text("a.py", "1|def f():", "def g():")

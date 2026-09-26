@@ -14,6 +14,16 @@ from uuid import uuid4
 
 from code4me2_agent.acp_utils import capability_value
 from code4me2_agent.async_bridge import run_awaitable_blocking
+from code4me2_agent.edit_matching import (
+    EXACT,
+    FUZZY_STRATEGIES,
+    find_matches,
+    first_line_hint,
+    has_line_number_prefix,
+)
+from code4me2_agent.patching import PatchAction, PatchError, PlannedFile, plan_patch
+from code4me2_agent.session_state import FileChange
+from code4me2_agent.syntax_check import introduced_syntax_problem
 from code4me2_agent.telemetry import AgentTelemetryRecorder
 from code4me2_agent.tool_errors import (
     DirectoryNotEmptyError,
@@ -21,6 +31,7 @@ from code4me2_agent.tool_errors import (
     FileTooLargeError,
     NotTextFileError,
     ToolArgumentError,
+    ToolError,
     ToolFileExistsError,
     ToolFileNotFoundError,
     WorkspaceBoundaryError,
@@ -100,6 +111,8 @@ class FileWriteResult:
     path: str
     bytes_written: int
     backend_type: str
+    # Set when the write introduced a Python/JSON/TOML syntax error.
+    syntax_error: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +122,17 @@ class FileEditResult:
     backend_type: str
     replacements: int
     edits_applied: int
+    # Per edit, only when an edit matched with a non-exact strategy.
+    match_strategies: list[str] | None = None
+    syntax_error: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class FilePatchResult:
+    files: list[dict[str, object]]
+    backend_type: str
+    file_count: int
+    syntax_errors: list[dict[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +198,17 @@ class TextEdit:
     old_text: str
     new_text: str
     replace_all: bool = False
+
+
+@dataclass(frozen=True)
+class EditOutcome:
+    text: str
+    replacements: int
+    strategies: tuple[str, ...]
+
+    @property
+    def fuzzy(self) -> bool:
+        return any(strategy in FUZZY_STRATEGIES for strategy in self.strategies)
 
 
 class AcpFileSystemBackend:
@@ -270,12 +305,14 @@ class WorkspaceFileTools:
         *,
         limits: FileToolLimits | None = None,
         ignored_dirs: frozenset[str] | set[str] | None = None,
+        change_observer: Callable[[FileChange], None] | None = None,
     ) -> None:
         self._config = config
         self._acp_backend = acp_backend
         self._telemetry = telemetry or AgentTelemetryRecorder(config)
         self._limits = limits or FileToolLimits()
         self._ignored_dirs = frozenset(ignored_dirs) if ignored_dirs is not None else DEFAULT_IGNORED_DIRS
+        self._change_observer = change_observer
 
     @property
     def workspace_root(self) -> Path:
@@ -425,6 +462,8 @@ class WorkspaceFileTools:
             started_at=started_at,
         )
         bytes_written = len(content.encode("utf-8"))
+        self._notify_change(FileChange(relative_path, None, content))
+        syntax_error = self._syntax_problem(relative_path, None, content)
         self._record_tool_event(
             tool_name="create_file",
             tool_call_id=tool_call_id,
@@ -437,10 +476,16 @@ class WorkspaceFileTools:
             extra_payload={
                 "bytes_written": bytes_written,
                 "content_capture_mode": self._content_capture_mode,
+                **_syntax_payload(syntax_error),
             },
             raw_payload=self._raw_write_payload(relative_path, "", content),
         )
-        return FileWriteResult(path=relative_path, bytes_written=bytes_written, backend_type=backend_type)
+        return FileWriteResult(
+            path=relative_path,
+            bytes_written=bytes_written,
+            backend_type=backend_type,
+            syntax_error=syntax_error,
+        )
 
     def write_file(
         self,
@@ -463,7 +508,7 @@ class WorkspaceFileTools:
             raise ToolArgumentError(
                 f"{relative_path} is a directory, not a file.", field="path"
             )
-        before = self._read_before(
+        before, before_known = self._read_before(
             resolved_path,
             tool_name="write_file",
             tool_call_id=tool_call_id,
@@ -481,6 +526,8 @@ class WorkspaceFileTools:
             started_at=started_at,
         )
         bytes_written = len(content.encode("utf-8"))
+        self._notify_change(FileChange(relative_path, before, content, before_known=before_known))
+        syntax_error = self._syntax_problem(relative_path, before, content)
         self._record_tool_event(
             tool_name="write_file",
             tool_call_id=tool_call_id,
@@ -493,10 +540,16 @@ class WorkspaceFileTools:
             extra_payload={
                 "bytes_written": bytes_written,
                 "content_capture_mode": self._content_capture_mode,
+                **_syntax_payload(syntax_error),
             },
-            raw_payload=self._raw_write_payload(relative_path, before, content),
+            raw_payload=self._raw_write_payload(relative_path, before or "", content),
         )
-        return FileWriteResult(path=relative_path, bytes_written=bytes_written, backend_type=backend_type)
+        return FileWriteResult(
+            path=relative_path,
+            bytes_written=bytes_written,
+            backend_type=backend_type,
+            syntax_error=syntax_error,
+        )
 
     def replace_text(
         self,
@@ -565,7 +618,8 @@ class WorkspaceFileTools:
             request_id=request_id,
             started_at=started_at,
         )
-        updated, replacements = apply_text_edits(current, edits, path=relative_path)
+        outcome = apply_text_edits_detailed(current, edits, path=relative_path)
+        updated, replacements = outcome.text, outcome.replacements
         backend_type = self._write_text(
             resolved_path,
             updated,
@@ -576,6 +630,18 @@ class WorkspaceFileTools:
             started_at=started_at,
         )
         bytes_written = len(updated.encode("utf-8"))
+        self._notify_change(FileChange(relative_path, current, updated))
+        syntax_error = self._syntax_problem(relative_path, current, updated)
+        match_strategies = list(outcome.strategies) if outcome.fuzzy else None
+        extra_payload: dict[str, object] = {
+            "bytes_written": bytes_written,
+            "replacements": replacements,
+            "edits_applied": len(edits),
+            "content_capture_mode": self._content_capture_mode,
+            **_syntax_payload(syntax_error),
+        }
+        if match_strategies is not None:
+            extra_payload["match_strategies"] = match_strategies
         self._record_tool_event(
             tool_name=tool_name,
             tool_call_id=tool_call_id,
@@ -585,12 +651,7 @@ class WorkspaceFileTools:
             status="completed",
             backend_type=backend_type,
             started_at=started_at,
-            extra_payload={
-                "bytes_written": bytes_written,
-                "replacements": replacements,
-                "edits_applied": len(edits),
-                "content_capture_mode": self._content_capture_mode,
-            },
+            extra_payload=extra_payload,
             raw_payload=self._raw_write_payload(relative_path, current, updated),
         )
         return FileEditResult(
@@ -599,7 +660,264 @@ class WorkspaceFileTools:
             backend_type=backend_type,
             replacements=replacements,
             edits_applied=len(edits),
+            match_strategies=match_strategies,
+            syntax_error=syntax_error,
         )
+
+    def plan_patch(
+        self,
+        actions: list[PatchAction],
+        *,
+        tool_call_id: str | None = None,
+        run_id: str | None = None,
+        request_id: str | None = None,
+    ) -> list[PlannedFile]:
+        """Resolve a parsed patch against the current files without writing.
+
+        Every path is confined to the workspace (a path outside it records the
+        denial and raises), and the same file named twice in different
+        spellings is refused: both entries would plan against the original.
+        Names differing only in case count as the same file, as they are on
+        case-insensitive filesystems (macOS and Windows defaults).
+        """
+        started_at = perf_counter()
+        tool_call_id = tool_call_id or uuid4().hex
+        run_id = run_id or uuid4().hex
+        request_id = request_id or uuid4().hex
+        seen: dict[str, str] = {}
+        for action in actions:
+            for path in filter(None, (action.path, action.move_to)):
+                if action.action == "delete":
+                    resolved = self._resolve_lexical_or_record_denial(
+                        "apply_patch", path, tool_call_id, run_id, request_id, started_at
+                    )
+                else:
+                    resolved = self._resolve_or_record_denial(
+                        "apply_patch", path, tool_call_id, run_id, request_id, started_at
+                    )
+                key = self._file_identity(resolved)
+                if key in seen:
+                    raise PatchError(
+                        f"{path} and {seen[key]} are the same file; change each file once per patch."
+                    )
+                seen[key] = path
+
+        def read(path: str) -> str | None:
+            resolved = self._resolve_workspace_path(path)
+            try:
+                text, _replaced, _backend = self._read_resolved(
+                    resolved,
+                    strict=True,
+                    tool_name="apply_patch",
+                    tool_call_id=tool_call_id,
+                    run_id=run_id,
+                    request_id=request_id,
+                    started_at=started_at,
+                )
+            except ToolFileNotFoundError:
+                return None
+            return text
+
+        return plan_patch(actions, read)
+
+    def apply_patch(
+        self,
+        actions: list[PatchAction],
+        *,
+        tool_call_id: str | None = None,
+        run_id: str | None = None,
+        request_id: str | None = None,
+    ) -> FilePatchResult:
+        """Apply a parsed V4A patch: every file is resolved before any is written.
+
+        If a write fails part-way, the files already written are restored, so
+        the patch applies completely or not at all.
+        """
+        started_at = perf_counter()
+        tool_call_id = tool_call_id or uuid4().hex
+        run_id = run_id or uuid4().hex
+        request_id = request_id or uuid4().hex
+        try:
+            planned = self.plan_patch(
+                actions, tool_call_id=tool_call_id, run_id=run_id, request_id=request_id
+            )
+        except PatchError as exc:
+            raise ToolError(str(exc), code="patch_does_not_apply") from None
+        backend_type = "local"
+        files: list[dict[str, object]] = []
+        syntax_errors: list[dict[str, object]] = []
+        diff_parts: list[str] = []
+        changes: list[FileChange] = []
+        # [resolved path, text to restore or None to remove, step completed]
+        undo: list[list[object]] = []
+        try:
+            for item in planned:
+                source = self._resolve_workspace_path(item.path)
+                relative = self._relative_path(source)
+                entry: dict[str, object] = {"path": relative, "action": item.action}
+                # Each undo entry is registered before its write, so a write
+                # that fails part-way (after truncating) is restored as well.
+                if item.action == "delete":
+                    resolved = self._resolve_lexical_path(item.path)
+                    undo.append([resolved, item.old_text, False])
+                    resolved.unlink()
+                    undo[-1][2] = True
+                    changes.append(FileChange(relative, item.old_text, None))
+                    entry["removed_lines"] = len((item.old_text or "").splitlines())
+                else:
+                    target_path = self._resolve_workspace_path(item.target)
+                    target = self._relative_path(target_path)
+                    undo.append([target_path, item.old_text if item.move_to is None else None, False])
+                    backend_type = self._write_text(
+                        target_path,
+                        item.new_text or "",
+                        tool_name="apply_patch",
+                        tool_call_id=tool_call_id,
+                        run_id=run_id,
+                        request_id=request_id,
+                        started_at=started_at,
+                    )
+                    undo[-1][2] = True
+                    if item.move_to is not None:
+                        moved_from = self._resolve_lexical_path(item.path)
+                        undo.append([moved_from, item.old_text, False])
+                        moved_from.unlink()
+                        undo[-1][2] = True
+                        entry["move_to"] = target
+                        changes.append(FileChange(relative, item.old_text, None))
+                        changes.append(FileChange(target, None, item.new_text))
+                    else:
+                        changes.append(FileChange(relative, item.old_text, item.new_text))
+                    added, removed = _line_delta(item.old_text or "", item.new_text or "")
+                    entry["added_lines"] = added
+                    entry["removed_lines"] = removed
+                    if item.fuzz:
+                        entry["fuzzy_context"] = True
+                    problem = self._syntax_problem(target, item.old_text, item.new_text or "")
+                    if problem is not None:
+                        syntax_errors.append({"path": target, **problem})
+                diff_parts.append(
+                    self._raw_write_payload(relative, item.old_text or "", item.new_text or "")["diff"]
+                )
+                files.append(entry)
+        except Exception as exc:
+            restored = self._rollback_patch(undo)
+            raise ToolError(
+                f"Applying the patch failed ({exc}); "
+                + ("the files already changed were restored." if restored else "restoring some files failed."),
+                code="patch_write_failed",
+            ) from exc
+        for change in changes:
+            self._notify_change(change)
+        extra_payload: dict[str, object] = {
+            "file_count": len(files),
+            "actions": [entry["action"] for entry in files],
+            "content_capture_mode": self._content_capture_mode,
+        }
+        if any(entry.get("fuzzy_context") for entry in files):
+            extra_payload["fuzzy_context"] = True
+        if syntax_errors:
+            extra_payload["syntax_check"] = "failed"
+        self._record_tool_event(
+            tool_name="apply_patch",
+            tool_call_id=tool_call_id,
+            run_id=run_id,
+            request_id=request_id,
+            path=str(files[0]["path"]) if files else "",
+            status="completed",
+            backend_type=backend_type,
+            started_at=started_at,
+            extra_payload=extra_payload,
+            raw_payload={"diff": "".join(diff_parts)},
+        )
+        return FilePatchResult(
+            files=files,
+            backend_type=backend_type,
+            file_count=len(files),
+            syntax_errors=syntax_errors or None,
+        )
+
+    def _file_identity(self, resolved: Path) -> str:
+        """A key under which two spellings of one file compare equal.
+
+        Existing files are identified by device and inode (case variants on a
+        case-insensitive filesystem, hard links); some filesystems report
+        inode 0 for everything, and then the path is used. A path that does
+        not exist yet is compared case-insensitively on every filesystem: two
+        new files differing only in case cannot be told apart where the
+        filesystem ignores case, so such a patch is refused rather than
+        silently merged.
+        """
+        try:
+            info = os.lstat(resolved)
+            if info.st_ino:
+                return f"inode:{info.st_dev}:{info.st_ino}"
+            return f"path:{resolved}"
+        except OSError:
+            return f"new:{str(resolved).casefold()}"
+
+    def _rollback_patch(self, undo: list[list[object]]) -> bool:
+        """Put every touched file back; False only when one could not be restored.
+
+        Completed steps are always restored (through the same backend that
+        wrote them, so an IDE buffer is restored too). Only the step that was
+        in flight when the failure happened may have changed nothing; it is
+        skipped when the file already holds its original state, read through
+        the same view the patch was planned against.
+        """
+        restored = True
+        for path, text, done in reversed(undo):
+            try:
+                if not done and self._holds_original(path, text):
+                    continue
+                if text is None:
+                    if path.exists() or path.is_symlink():
+                        path.unlink()
+                    continue
+                self._write_text(
+                        path,
+                        text,
+                        tool_name="apply_patch",
+                        tool_call_id=uuid4().hex,
+                        run_id=uuid4().hex,
+                        request_id=uuid4().hex,
+                        started_at=perf_counter(),
+                    )
+            except Exception:  # noqa: BLE001 - keep restoring the rest
+                restored = False
+        return restored
+
+    def _holds_original(self, path: Path, text: object) -> bool:
+        """Whether a step that failed left ``path`` unchanged in every view.
+
+        A write goes to the IDE (ACP) first and falls back to the disk, so
+        both must still hold the original before the step can be skipped.
+        """
+        views: list[str | None] = []
+        try:
+            current, _replaced, _backend = self._read_resolved(
+                path,
+                strict=True,
+                tool_name="apply_patch",
+                tool_call_id=uuid4().hex,
+                run_id=uuid4().hex,
+                request_id=uuid4().hex,
+                started_at=perf_counter(),
+            )
+            views.append(current)
+        except ToolFileNotFoundError:
+            views.append(None)
+        except Exception:  # noqa: BLE001 - unknown state: restore it
+            return False
+        if self._acp_read_text_file() is not None:
+            try:
+                local, _replaced = self._read_local_text(path, strict=True)
+                views.append(local)
+            except ToolFileNotFoundError:
+                views.append(None)
+            except Exception:  # noqa: BLE001
+                return False
+        return all(view == text for view in views)
 
     def delete_file(
         self,
@@ -626,6 +944,7 @@ class WorkspaceFileTools:
             )
         was_directory = resolved_path.is_dir() and not is_symlink
         before = ""
+        before_known = False
         bytes_removed = 0
         if was_directory:
             if any(resolved_path.iterdir()):
@@ -639,10 +958,14 @@ class WorkspaceFileTools:
         else:
             try:
                 bytes_removed = resolved_path.stat().st_size
-                before, _replaced = self._read_local_text(resolved_path, strict=False)
+                before, replaced = self._read_local_text(resolved_path, strict=False)
+                before_known = not replaced
             except (NotTextFileError, FileTooLargeError, OSError):
                 before = ""
             resolved_path.unlink()
+        self._notify_change(
+            FileChange(relative_path, before if before_known else None, None, before_known=before_known)
+        )
         self._record_tool_event(
             tool_name="delete_file",
             tool_call_id=tool_call_id,
@@ -704,6 +1027,7 @@ class WorkspaceFileTools:
             raise ToolArgumentError(
                 "destination_path is inside the directory being moved.", field="destination_path"
             )
+        moved_text = self._checkpoint_text(source) if not was_directory else None
         overwritten = False
         if destination.exists() or destination.is_symlink():
             if destination.is_dir() and not destination.is_symlink():
@@ -721,6 +1045,7 @@ class WorkspaceFileTools:
                     "A directory cannot overwrite an existing file.", field="destination_path"
                 )
             overwritten = True
+        replaced_text = self._checkpoint_text(destination) if overwritten else None
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.replace(source, destination)
@@ -729,6 +1054,16 @@ class WorkspaceFileTools:
                 shutil.move(str(source), str(destination))
             else:
                 raise
+        movable = not was_directory and moved_text is not None
+        self._notify_change(FileChange(source_rel, moved_text, None, before_known=movable))
+        self._notify_change(
+            FileChange(
+                destination_rel,
+                replaced_text,
+                moved_text,
+                before_known=movable and (not overwritten or replaced_text is not None),
+            )
+        )
         self._record_tool_event(
             tool_name="move_file",
             tool_call_id=tool_call_id,
@@ -1213,9 +1548,10 @@ class WorkspaceFileTools:
         run_id: str,
         request_id: str,
         started_at: float,
-    ) -> str:
+    ) -> tuple[str | None, bool]:
+        """``(text, known)``: ``(None, True)`` for a missing file, ``known`` false when unreadable."""
         try:
-            text, _replaced, _backend = self._read_resolved(
+            text, replaced, _backend = self._read_resolved(
                 resolved_path,
                 strict=False,
                 tool_name=tool_name,
@@ -1224,9 +1560,11 @@ class WorkspaceFileTools:
                 request_id=request_id,
                 started_at=started_at,
             )
-            return text
-        except (ToolFileNotFoundError, NotTextFileError, FileTooLargeError, ToolArgumentError):
-            return ""
+            return text, not replaced
+        except ToolFileNotFoundError:
+            return None, True
+        except (NotTextFileError, FileTooLargeError, ToolArgumentError):
+            return None, False
 
     def _write_text(
         self,
@@ -1256,6 +1594,8 @@ class WorkspaceFileTools:
                     operation="write_text_file",
                 )
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        # Bytes, not text mode: Windows text mode would turn each "\n" of a CRLF
+        # file into "\r\n" and double every carriage return.
         resolved_path.write_bytes(content.encode("utf-8"))
         return "local"
 
@@ -1286,6 +1626,56 @@ class WorkspaceFileTools:
         if callable(operation):
             return operation
         return None
+
+    # ------------------------------------------------------------- checkpoints
+
+    def restore_text(self, path: str, content: str) -> None:
+        """Write ``content`` for an undo, without a tool event or change record."""
+        resolved_path = self._resolve_workspace_path(path)
+        self._write_text(
+            resolved_path,
+            content,
+            tool_name="undo",
+            tool_call_id=uuid4().hex,
+            run_id=uuid4().hex,
+            request_id=uuid4().hex,
+            started_at=perf_counter(),
+        )
+
+    def discard_file(self, path: str) -> None:
+        """Remove a file the agent created, for an undo, without a tool event."""
+        resolved_path = self._resolve_lexical_path(path)
+        if resolved_path.is_dir() and not resolved_path.is_symlink():
+            raise ToolArgumentError(f"{path} is a directory.", field="path")
+        resolved_path.unlink()
+
+    def _notify_change(self, change: FileChange) -> None:
+        observer = self._change_observer
+        if observer is None:
+            return
+        try:
+            observer(change)
+        except Exception:  # noqa: BLE001 - checkpoints must never break an edit
+            pass
+
+    def _syntax_problem(self, path: str, before: str | None, after: str) -> dict[str, object] | None:
+        harness = getattr(self._config, "harness", None)
+        if harness is not None and not getattr(harness, "syntax_check", True):
+            return None
+        try:
+            problem = introduced_syntax_problem(path, before, after)
+        except Exception:  # noqa: BLE001 - a checker bug must never fail the edit
+            return None
+        return problem.as_result() if problem is not None else None
+
+    def _checkpoint_text(self, resolved_path: Path) -> str | None:
+        if self._change_observer is None:
+            return None
+        try:
+            text, replaced = self._read_local_text(resolved_path, strict=False)
+        except (ToolFileNotFoundError, NotTextFileError, FileTooLargeError, ToolArgumentError, OSError):
+            return None
+        return None if replaced else text
 
     # ------------------------------------------------------------- helpers
 
@@ -1659,7 +2049,6 @@ def _render_numbered(
     }
 
 
-_LINE_NUMBER_PREFIX_RE = re.compile(r"^\s*\d+\|")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -1669,15 +2058,27 @@ def apply_text_edits(
     *,
     path: str,
 ) -> tuple[str, int]:
-    """Apply exact-match edits in order; returns ``(new_text, replacements)``.
+    """Apply edits in order; returns ``(new_text, replacements)``."""
+    outcome = apply_text_edits_detailed(text, edits, path=path)
+    return outcome.text, outcome.replacements
 
-    Every edit must match exactly once unless ``replace_all``. Nothing is
-    returned partially applied: the first failing edit raises and the caller
-    writes nothing.
+
+def apply_text_edits_detailed(
+    text: str,
+    edits: Sequence[TextEdit],
+    *,
+    path: str,
+) -> EditOutcome:
+    """Apply edits in order, reporting which matching strategy each one used.
+
+    Every edit must match exactly once unless ``replace_all`` (see
+    ``edit_matching`` for the strategy chain). Nothing is returned partially
+    applied: the first failing edit raises and the caller writes nothing.
     """
     edit_count = len(edits)
     current = text
     replacements = 0
+    strategies: list[str] = []
     for index, edit in enumerate(edits):
         prefix = f"Edit {index + 1} of {edit_count}: " if edit_count > 1 else ""
         field_prefix = f"edits[{index}]." if edit_count > 1 else ""
@@ -1690,14 +2091,8 @@ def apply_text_edits(
                 f"{prefix}old_text and new_text are identical; nothing to change.",
                 field=f"{field_prefix}new_text",
             )
-        old_text, new_text = edit.old_text, edit.new_text
-        count = current.count(old_text)
-        if count == 0:
-            converted = _match_line_endings(current, old_text, new_text)
-            if converted is not None:
-                old_text, new_text = converted
-                count = current.count(old_text)
-        if count == 0:
+        found = find_matches(current, edit.old_text, edit.new_text, replace_all=edit.replace_all)
+        if found.count == 0:
             raise EditMatchError(
                 f"{prefix}old_text was not found in {path}. {_no_match_hint(current, edit.old_text)}",
                 code="edit_no_match",
@@ -1705,36 +2100,58 @@ def apply_text_edits(
                 edit_index=index,
                 edit_count=edit_count,
             )
-        if count > 1 and not edit.replace_all:
+        if found.count > 1 and not edit.replace_all:
+            lines = ", ".join(str(line) for line in found.candidate_lines[:10])
+            loosened = (
+                ""
+                if found.strategy in (EXACT, "line_endings")
+                else f" when {_STRATEGY_DESCRIPTIONS.get(found.strategy or '', 'compared loosely')}"
+            )
             raise EditMatchError(
-                f"{prefix}old_text matches {count} locations in {path}; include more surrounding "
-                "lines so it matches exactly once, or set replace_all=true.",
+                f"{prefix}old_text matches {found.count} locations in {path}{loosened} (lines {lines}); "
+                "include more surrounding lines so it matches exactly once, or set replace_all=true.",
                 code="edit_ambiguous",
-                match_count=count,
+                match_count=found.count,
                 edit_index=index,
                 edit_count=edit_count,
             )
-        if edit.replace_all:
-            current = current.replace(old_text, new_text)
-            replacements += count
-        else:
-            current = current.replace(old_text, new_text, 1)
-            replacements += 1
-    return current, replacements
+        for match in sorted(found.matches, key=lambda item: item.start, reverse=True):
+            current = current[: match.start] + match.replacement + current[match.end :]
+        replacements += found.count
+        strategies.append(found.strategy or EXACT)
+    return EditOutcome(text=current, replacements=replacements, strategies=tuple(strategies))
 
 
-def _match_line_endings(text: str, old_text: str, new_text: str) -> tuple[str, str] | None:
-    file_crlf = "\r\n" in text
-    old_crlf = "\r\n" in old_text
-    if file_crlf and not old_crlf and "\n" in old_text:
-        return old_text.replace("\n", "\r\n"), new_text.replace("\r\n", "\n").replace("\n", "\r\n")
-    if not file_crlf and old_crlf:
-        return old_text.replace("\r\n", "\n"), new_text.replace("\r\n", "\n")
-    return None
+_STRATEGY_DESCRIPTIONS = {
+    "trailing_whitespace": "ignoring trailing whitespace",
+    "indentation": "ignoring indentation",
+    "whitespace": "ignoring whitespace",
+    "block_anchor": "matching the first and last lines",
+}
+
+
+def _line_delta(before: str, after: str) -> tuple[int, int]:
+    added = removed = 0
+    for line in unified_diff(before.splitlines(), after.splitlines(), lineterm="", n=0):
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return added, removed
+
+
+def describe_strategy(strategy: str) -> str:
+    return _STRATEGY_DESCRIPTIONS.get(strategy, strategy)
+
+
+def _syntax_payload(syntax_error: dict[str, object] | None) -> dict[str, object]:
+    if syntax_error is None:
+        return {}
+    return {"syntax_check": "failed", "syntax_error_line": syntax_error.get("line")}
 
 
 def _no_match_hint(text: str, old_text: str) -> str:
-    if _LINE_NUMBER_PREFIX_RE.match(old_text):
+    if has_line_number_prefix(old_text):
         return (
             "old_text starts with the line-number prefix from read_file (e.g. '12|'); "
             "remove the prefix and retry."
@@ -1742,7 +2159,10 @@ def _no_match_hint(text: str, old_text: str) -> str:
     collapsed_old = _WHITESPACE_RE.sub(" ", old_text).strip()
     if collapsed_old and collapsed_old in _WHITESPACE_RE.sub(" ", text):
         return (
-            "A match exists that differs only in whitespace or indentation; copy the exact text "
+            "A match exists that differs only in whitespace or line breaks; copy the exact text "
             "from read_file."
         )
+    located = first_line_hint(text, old_text)
+    if located:
+        return located
     return "Call read_file and copy the exact current text."

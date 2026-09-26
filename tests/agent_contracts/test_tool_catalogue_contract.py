@@ -17,10 +17,23 @@ from code4me2_agent.tool_catalog import (
 )
 
 
+#: Tools rendered without a tool-call card, so they have no ACP tool kind:
+#: ``update_plan`` becomes the ACP plan and ``ask_user`` the agent's final
+#: message (run 2026-09-26-agent-harness-tiers).
+CARDLESS_TOOLS = frozenset({"update_plan", "ask_user"})
+
+
 def test_runtime_tool_definitions_are_a_subset_of_the_server_catalogue():
     runtime_names = set(tool_names())
     assert runtime_names <= CODE4ME2_AGENT_TOOLS
     assert CODE4ME2_AGENT_TOOLS - runtime_names == {"mcp__*"}
+
+
+def test_catalogue_pins_the_patch_and_question_tools():
+    # Run 2026-09-26-agent-harness-tiers: the multi-file patch tool (editing)
+    # and the structured question tool (interaction) are selectable.
+    assert {"apply_patch", "ask_user"} <= CODE4ME2_AGENT_TOOLS
+    assert {"apply_patch", "ask_user"} <= tools_for_framework("code4me2-agent")
 
 
 def test_catalogue_is_served_for_the_runtime_framework():
@@ -31,7 +44,7 @@ def test_every_tool_has_a_kind_and_a_described_schema():
     for definition in tool_definitions():
         function = definition["function"]
         name = function["name"]
-        assert name == "update_plan" or name in TOOL_KINDS
+        assert name in CARDLESS_TOOLS or name in TOOL_KINDS
         assert function["description"].strip()
         parameters = function["parameters"]
         assert parameters["type"] == "object"

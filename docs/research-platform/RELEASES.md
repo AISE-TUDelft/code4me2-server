@@ -144,6 +144,27 @@ The column is nullable and the previous code ignores it, so it is safe to add
 while the old backend is still running. Existing profiles, their configuration
 digests and frozen studies are unchanged: a prompt only enters a digest when set.
 
+Built-in (`code4me2-agent`) profiles can also set the commands the agent may run
+(`commands_allowlist`), the default command timeout (`command_timeout_seconds`,
+1–600 s) and the harness behaviour switches (`harness_options`); Goose and Codex
+profiles refuse all three. These columns are part of the consolidated revision
+too, so a database already at that revision needs them before the new backend
+starts:
+
+```sql
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS commands_allowlist_json TEXT;
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS command_timeout_seconds INTEGER;
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS harness_options_json TEXT;
+```
+
+The columns are nullable and the previous code ignores them, so they are safe to
+add while the old backend is still running. NULL keeps the previous behaviour
+(the server fallback allowlist, which a user's config row may replace, and the
+runtime defaults). A value joins the configuration digest, the study snapshot,
+`GET /api/acp/agent-config` and the managed run policy only when set, so existing
+profiles, digests, frozen studies and run policies are unchanged. When a profile
+sets `commands_allowlist`, a user's config-row allowlist can only narrow it.
+
 ## Participant inference budgets (shared provider key)
 
 Goose and built-in (`code4me2-agent`) study arms now spend from the study's

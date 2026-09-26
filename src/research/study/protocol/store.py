@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+from agents.tools import set_harness_profile_fields
 from database.db_schemas import AgentProfile, Study as StudyRow
 from database import crud as database_crud
 from database.research_schemas import (
@@ -181,6 +182,9 @@ def build_profile_selections(
         # snapshot (and profile_digest) it produced before the column existed.
         if getattr(profile, "system_prompt", None) is not None:
             snapshot["system_prompt"] = profile.system_prompt
+        # Likewise the built-in runtime's command/harness settings (D-01),
+        # validated above with the profile↔release contract.
+        snapshot.update(set_harness_profile_fields(profile))
         selections.append(
             StudyAgentProfile(
                 study_id=study_id,

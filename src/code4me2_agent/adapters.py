@@ -7,6 +7,7 @@ import os
 import platform
 import random
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import date
 from email.utils import parsedate_to_datetime
@@ -17,7 +18,8 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence, TypeVar
 
 from openai import APIConnectionError, APIStatusError, OpenAI
 
-from code4me2_agent import tool_catalog
+from code4me2_agent import prompting, slash_commands, tool_catalog
+from code4me2_agent.config import HarnessOptions
 from code4me2_agent.events import (
     AssistantTextEvent,
     NoopAgentEventSink,
@@ -28,7 +30,9 @@ from code4me2_agent.events import (
     UsageEvent,
     emit_event,
 )
-from code4me2_agent.file_tools import TextEdit, apply_text_edits
+from code4me2_agent.file_tools import TextEdit, apply_text_edits, describe_strategy
+from code4me2_agent.patching import PatchError, parse_patch
+from code4me2_agent.session_state import SessionToolState, normalize_workspace_path
 from code4me2_agent.tool_catalog import (
     approval_kind,
     requires_manual_approval,
@@ -472,10 +476,24 @@ class EditPreview:
     old_text: str | None
     new_text: str | None
     error: BaseException | None = None
+    # Additional files of a multi-file change (apply_patch): (absolute path, old, new).
+    extra_diffs: tuple[tuple[str, str | None, str], ...] = ()
 
     @property
     def has_diff(self) -> bool:
         return self.new_text is not None
+
+
+# Tools whose success means the workspace changed; a loop-guard count resets
+# after one, and verify-on-stop / self-review look at the turn's changes.
+_WORKSPACE_MUTATIONS = frozenset(
+    {"create_file", "write_file", "replace_text", "edit_file", "apply_patch", "delete_file", "move_file"}
+)
+# Guarded by read-before-edit: changing an existing file needs a prior look.
+_READ_BEFORE_EDIT_TOOLS = frozenset({"write_file", "replace_text", "edit_file"})
+# Built-in tools that never change anything; they may run in parallel.
+_PARALLEL_SAFE_TOOLS = frozenset({"read_file", "list_files", "glob_files", "grep_files", "search_files"})
+_WRAPPER_NAMES = frozenset({"gradlew", "gradlew.bat", "mvnw", "mvnw.cmd"})
 
 
 class ToolRegistry:
@@ -490,6 +508,8 @@ class ToolRegistry:
         approval_policy: str = "auto",
         telemetry: AgentTelemetryRecorder | None = None,
         workspace_root: Path | None = None,
+        session_state: SessionToolState | None = None,
+        harness: HarnessOptions | None = None,
     ) -> None:
         self._file_tools = file_tools
         self._command_tools = command_tools
@@ -502,12 +522,17 @@ class ToolRegistry:
             candidate = getattr(file_tools, "workspace_root", None)
             workspace_root = candidate if isinstance(candidate, Path) else None
         self._workspace_root = workspace_root
+        # Read-before-edit needs the session's memory of what was read; a
+        # registry built without one (tests, tools used directly) skips it.
+        self._session_state = session_state
+        self._harness = harness or HarnessOptions()
         self._handlers: dict[str, Callable[..., Any]] = {
             "read_file": self._run_read_file,
             "create_file": self._run_create_file,
             "write_file": self._run_write_file,
             "replace_text": self._run_replace_text,
             "edit_file": self._run_edit_file,
+            "apply_patch": self._run_apply_patch,
             "delete_file": self._run_delete_file,
             "move_file": self._run_move_file,
             "list_files": self._run_list_files,
@@ -516,6 +541,7 @@ class ToolRegistry:
             "search_files": self._run_search_files,
             "run_command": self._run_run_command,
             "update_plan": self._run_update_plan,
+            "ask_user": self._run_ask_user,
         }
 
     # ------------------------------------------------------------ policy
@@ -524,12 +550,64 @@ class ToolRegistry:
     def approval_policy(self) -> str:
         return self._approval_policy
 
+    @property
+    def session_state(self) -> SessionToolState | None:
+        return self._session_state
+
+    @property
+    def command_tools(self) -> WorkspaceCommandTools:
+        return self._command_tools
+
+    @property
+    def file_tools(self) -> WorkspaceFileTools:
+        return self._file_tools
+
     def _is_allowed(self, name: str) -> bool:
         if self._allowed_tools is None:
             return True
         if name in self._allowed_tools:
             return True
         return name.startswith("mcp__") and "mcp__*" in self._allowed_tools
+
+    def mcp_access(self, name: str) -> str | None:
+        """The broker's class for an MCP tool ("read", "execute", "edit", "other")."""
+        return self._mcp_access(name)
+
+    def _mcp_access(self, name: str) -> str | None:
+        if not name.startswith("mcp__") or self._mcp_tools is None:
+            return None
+        access = getattr(self._mcp_tools, "tool_access", None)
+        if not callable(access):
+            return None
+        try:
+            return str(access(name))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def requires_approval(self, name: str) -> bool:
+        """Whether ``name`` changes anything (approval under per_step, hidden under suggestion_only).
+
+        Client-supplied MCP tools are treated as mutating unless the broker
+        classified them read-only (the curated IDE diagnostics and search tools).
+        """
+        if name.startswith("mcp__") and self._mcp_access(name) == "read":
+            return False
+        return requires_manual_approval(name)
+
+    def is_parallel_safe(self, name: str) -> bool:
+        if name in _PARALLEL_SAFE_TOOLS:
+            return True
+        return name.startswith("mcp__") and self._mcp_access(name) == "read"
+
+    def display_kind(self, name: str) -> str:
+        access = self._mcp_access(name)
+        if access == "read":
+            return "search"
+        if access == "execute":
+            return "execute"
+        if access == "edit":
+            return "edit"
+        return tool_kind(name)
 
     def definitions(self) -> list[dict[str, Any]]:
         definitions = tool_catalog.tool_definitions()
@@ -545,7 +623,7 @@ class ToolRegistry:
             selected = [
                 definition
                 for definition in selected
-                if not requires_manual_approval(
+                if not self.requires_approval(
                     str(definition.get("function", {}).get("name", ""))
                 )
             ]
@@ -562,7 +640,55 @@ class ToolRegistry:
         return names
 
     def needs_approval(self, name: str) -> bool:
-        return self._approval_policy == "per_step" and requires_manual_approval(name)
+        return self._approval_policy == "per_step" and self.requires_approval(name)
+
+    # ------------------------------------------------------ read tracking
+
+    def _relative(self, path: object) -> str | None:
+        if self._workspace_root is None:
+            return None
+        return normalize_workspace_path(self._workspace_root, path)
+
+    def _check_read_before_edit(self, name: str, arguments: dict[str, Any]) -> None:
+        state = self._session_state
+        if state is None or not self._harness.read_before_edit or arguments.get("force"):
+            return
+        if name in _READ_BEFORE_EDIT_TOOLS:
+            paths = [arguments.get("path")]
+        elif name == "apply_patch":
+            paths = list(arguments.get("_guarded_paths") or [])
+        else:
+            return
+        for path in paths:
+            relative = self._relative(path)
+            if relative is None or state.has_seen(relative):
+                continue
+            if self._workspace_root is not None and not (self._workspace_root / relative).exists():
+                continue  # a new file: nothing to have read
+            raise ToolError(
+                f"{relative} has not been read in this session. Call read_file on it first so the "
+                "edit is based on its current content (or pass force=true if you are certain of it).",
+                code="read_before_edit",
+            )
+
+    def _note_success(self, name: str, arguments: dict[str, Any], output: dict[str, Any]) -> None:
+        state = self._session_state
+        if state is None:
+            return
+        if name in {"read_file", "create_file", "write_file", "replace_text", "edit_file"}:
+            state.mark_seen(self._relative(output.get("path") or arguments.get("path")))
+        elif name == "apply_patch":
+            for item in output.get("files") or []:
+                if isinstance(item, dict) and item.get("action") != "delete":
+                    state.mark_seen(self._relative(item.get("path")))
+        elif name == "move_file":
+            source = self._relative(arguments.get("source_path"))
+            if state.has_seen(source):
+                state.mark_seen(self._relative(arguments.get("destination_path")))
+        elif name in {"grep_files", "search_files"}:
+            for match in output.get("matches") or []:
+                if isinstance(match, dict):
+                    state.mark_seen(self._relative(match.get("path")))
 
     # ----------------------------------------------------------- execute
 
@@ -616,7 +742,7 @@ class ToolRegistry:
             message = f"Unknown assigned approval policy: {self._approval_policy}"
             self._emit_denied(tool_call, arguments, metadata, message=message)
             raise ToolRegistryError(message, failure_reason="invalid_approval_policy")
-        if self._approval_policy == "suggestion_only" and requires_manual_approval(name):
+        if self._approval_policy == "suggestion_only" and self.requires_approval(name):
             message = f"Tool execution is disabled by suggestion-only policy: {name}"
             self._record_permission(
                 "agent.permission.decided",
@@ -635,10 +761,25 @@ class ToolRegistry:
 
         try:
             validated = _validate_arguments(name, arguments)
+            if name == "apply_patch":
+                validated["_patch"] = parse_patch(validated["patch"])
+                validated["_guarded_paths"] = [
+                    change.path for change in validated["_patch"] if change.action != "add"
+                ]
+        except PatchError as exc:
+            self._emit_denied(tool_call, arguments, metadata, message=f"Invalid patch: {exc}")
+            raise ToolArgumentError(str(exc), field="patch") from None
         except ToolArgumentError as exc:
             self._emit_denied(tool_call, arguments, metadata, message=f"Invalid arguments: {exc}")
             raise
         metadata = _safe_tool_event_metadata(name, validated, workspace_root=self._workspace_root)
+        if metadata is not None and name.startswith("mcp__"):
+            metadata["kind"] = self.display_kind(name)
+        try:
+            self._check_read_before_edit(name, validated)
+        except ToolError as exc:
+            self._emit_denied(tool_call, arguments, metadata, message=str(exc))
+            raise
         preview = self._edit_preview(name, validated, tool_call, run_id=run_id, request_id=request_id)
         pending = self.needs_approval(name)
         self._emit_tool_start(tool_call, validated, metadata, preview, pending=pending)
@@ -732,6 +873,7 @@ class ToolRegistry:
             self._emit_tool_failed(tool_call, validated, metadata, preview, error=exc)
             raise
         tool_output = asdict(result) if is_dataclass(result) else dict(result)
+        self._note_success(name, validated, tool_output)
         self._emit_tool_completed(tool_call, validated, tool_output, metadata, preview)
         return tool_output
 
@@ -882,6 +1024,14 @@ class ToolRegistry:
             kwargs["cancellation_event"] = cancellation_event
         return self._file_tools.search_files(**kwargs)
 
+    def _run_apply_patch(self, tool_call, args, *, run_id, request_id, cancellation_event):
+        return self._file_tools.apply_patch(
+            args["_patch"],
+            tool_call_id=tool_call.tool_call_id,
+            run_id=run_id,
+            request_id=request_id,
+        )
+
     def _run_run_command(self, tool_call, args, *, run_id, request_id, cancellation_event):
         kwargs: dict[str, Any] = {
             "argv": args["argv"],
@@ -895,7 +1045,55 @@ class ToolRegistry:
             kwargs["timeout_seconds"] = args["timeout_seconds"]
         if cancellation_event is not None and _accepts_keyword(run_command, "cancel_event"):
             kwargs["cancel_event"] = cancellation_event
+        if _accepts_keyword(run_command, "on_output"):
+            kwargs["on_output"] = self._command_progress(tool_call, args)
         return run_command(**kwargs)
+
+    def _command_progress(self, tool_call: ToolCall, args: dict[str, Any]) -> Callable[[str], None]:
+        """Stream the running command's latest output into its card."""
+        metadata = _safe_tool_event_metadata("run_command", args, workspace_root=self._workspace_root)
+        title = metadata["title"] if metadata else "Run command"
+
+        def on_output(tail: str) -> None:
+            self._event_sink.tool_call(
+                ToolCallEvent(
+                    phase="progress",
+                    tool_call_id=tool_call.tool_call_id,
+                    tool_name=tool_call.name,
+                    run_id="",
+                    request_id="",
+                    title=title,
+                    kind="execute",
+                    status="in_progress",
+                    content_text=f"Running…\n{tail}",
+                )
+            )
+
+        return on_output
+
+    def _run_ask_user(self, tool_call, args, *, run_id, request_id, cancellation_event):
+        options = list(args.get("options") or [])
+        record = getattr(self._telemetry, "record", None)
+        if callable(record):
+            record(
+                event_type="agent.tool.completed",
+                run_id=run_id,
+                request_id=request_id,
+                parent_event_id=None,
+                payload={
+                    "tool_name": "ask_user",
+                    "tool_call_id": tool_call.tool_call_id,
+                    "status": "completed",
+                    "option_count": len(options),
+                    "text": args["question"],
+                },
+            )
+        return {
+            "status": "ok",
+            "question": args["question"],
+            "options": options,
+            "note": "The question is shown to the user; their answer arrives as the next message.",
+        }
 
     def _run_update_plan(self, tool_call, args, *, run_id, request_id, cancellation_event):
         entries: list[PlanEntrySpec] = list(args["entries"])
@@ -958,6 +1156,7 @@ class ToolRegistry:
                 diff_new_text=preview.new_text if preview is not None and preview.has_diff else None,
                 raw_input=metadata.get("raw_input"),
                 locations=metadata.get("locations"),
+                extra_diffs=preview.extra_diffs if preview is not None else (),
             )
         )
 
@@ -985,11 +1184,10 @@ class ToolRegistry:
                 path=metadata.get("path"),
                 diff_old_text=preview.old_text if has_diff else None,
                 diff_new_text=preview.new_text if has_diff else None,
-                content_text=None
-                if has_diff
-                else (_tool_result_summary(tool_call.name, tool_output) or metadata.get("content_text")),
+                content_text=_completed_card_text(tool_call.name, tool_output, metadata, has_diff),
                 raw_output=tool_output,
                 locations=metadata.get("locations"),
+                extra_diffs=preview.extra_diffs if preview is not None else (),
             )
         )
 
@@ -1022,6 +1220,7 @@ class ToolRegistry:
                 diff_new_text=preview.new_text if has_diff else None,
                 content_text=text,
                 locations=metadata.get("locations"),
+                extra_diffs=preview.extra_diffs if preview is not None else (),
             )
         )
 
@@ -1047,6 +1246,10 @@ class ToolRegistry:
         run_id: str,
         request_id: str,
     ) -> EditPreview | None:
+        if name == "apply_patch":
+            return self._patch_preview(
+                arguments, tool_call_id=tool_call.tool_call_id, run_id=run_id, request_id=request_id
+            )
         if name not in {"create_file", "write_file", "replace_text", "edit_file", "delete_file"}:
             return None
         path = str(arguments.get("path", ""))
@@ -1089,6 +1292,33 @@ class ToolRegistry:
         except ToolError as exc:
             return EditPreview(current, None, exc)
         return EditPreview(current, new_text)
+
+    def _patch_preview(
+        self, arguments: dict[str, Any], *, tool_call_id: str, run_id: str, request_id: str
+    ) -> EditPreview | None:
+        plan = getattr(self._file_tools, "plan_patch", None)
+        if not callable(plan):
+            return None
+        try:
+            planned = plan(
+                arguments["_patch"], tool_call_id=tool_call_id, run_id=run_id, request_id=request_id
+            )
+        except PatchError as exc:
+            return EditPreview(None, None, ToolError(str(exc), code="patch_does_not_apply"))
+        except Exception as exc:  # noqa: BLE001 - outside workspace, binary file, ...
+            return EditPreview(None, None, exc)
+        diffs = [
+            (
+                _absolute_path(self._workspace_root, item.target) or item.target,
+                item.old_text,
+                item.new_text if item.new_text is not None else "",
+            )
+            for item in planned
+        ]
+        if not diffs:
+            return None
+        _first_path, first_old, first_new = diffs[0]
+        return EditPreview(first_old, first_new, extra_diffs=tuple(diffs[1:]))
 
     def _read_current_text(
         self,
@@ -1368,10 +1598,16 @@ def _validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             "limit": _arg_int(arguments, "limit", name, minimum=1, maximum=5000)
             or _line_end_limit(arguments, name),
         }
-    if name in {"create_file", "write_file"}:
+    if name == "create_file":
         return {
             "path": _require_str(arguments, "path", name),
             "content": _require_str(arguments, "content", name),
+        }
+    if name == "write_file":
+        return {
+            "path": _require_str(arguments, "path", name),
+            "content": _require_str(arguments, "content", name),
+            "force": _arg_bool(arguments, "force", name),
         }
     if name == "replace_text":
         return {
@@ -1379,12 +1615,41 @@ def _validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             "old_text": _require_str(arguments, "old_text", name),
             "new_text": _require_str(arguments, "new_text", name),
             "replace_all": _arg_bool(arguments, "replace_all", name),
+            "force": _arg_bool(arguments, "force", name),
         }
     if name == "edit_file":
         return {
             "path": _require_str(arguments, "path", name),
             "edits": _require_edits(arguments, name),
+            "force": _arg_bool(arguments, "force", name),
         }
+    if name == "apply_patch":
+        patch = arguments.get("patch", arguments.get("input"))
+        if not isinstance(patch, str) or not patch.strip():
+            raise ToolArgumentError(
+                "Invalid argument 'patch' for apply_patch: expected the patch text, starting with "
+                "'*** Begin Patch' and ending with '*** End Patch'.",
+                field="patch",
+            )
+        return {"patch": patch, "force": _arg_bool(arguments, "force", name)}
+    if name == "ask_user":
+        question = _require_str(arguments, "question", name).strip()
+        if not question:
+            raise ToolArgumentError(
+                "Invalid argument 'question' for ask_user: expected a non-empty question.",
+                field="question",
+            )
+        options = arguments.get("options")
+        if options is None:
+            options = []
+        if not isinstance(options, list) or len(options) > 6 or not all(
+            isinstance(option, str) and option.strip() and len(option) <= 200 for option in options
+        ):
+            raise ToolArgumentError(
+                "Invalid argument 'options' for ask_user: expected at most 6 short answer choices.",
+                field="options",
+            )
+        return {"question": question[:2000], "options": [option.strip() for option in options]}
     if name == "delete_file":
         return {"path": _require_str(arguments, "path", name)}
     if name == "move_file":
@@ -1462,9 +1727,14 @@ class FakeOpenAICompatibleProvider:
         run_id: str = "",
         tool_choice: str | None = "auto",
         cancellation_event: Event | None = None,
+        include_tools: bool = True,
     ) -> ProviderTurn:
         self.calls.append(
-            {"messages": [dict(message) for message in messages], "tool_choice": tool_choice}
+            {
+                "messages": [dict(message) for message in messages],
+                "tool_choice": tool_choice,
+                "include_tools": include_tools,
+            }
         )
         if not self._script:
             raise FakeProviderExhaustedError("The fake provider script is exhausted.")
@@ -1538,12 +1808,13 @@ class OpenAICompatibleProvider:
         run_id: str = "",
         tool_choice: str | None = "auto",
         cancellation_event: Event | None = None,
+        include_tools: bool = True,
     ) -> ProviderTurn:
         request_payload: dict[str, Any] = {
             "model": self._model,
             "messages": [_to_openai_message(message) for message in messages],
         }
-        if self._tool_definitions:
+        if self._tool_definitions and include_tools:
             request_payload["tools"] = list(self._tool_definitions)
             request_payload["tool_choice"] = tool_choice or "auto"
         if self._temperature is not None:
@@ -1818,6 +2089,17 @@ class MemoryWindow:
     def snapshot(self) -> list[dict[str, Any]]:
         return [dict(message) for message in self._messages]
 
+    def message_count(self) -> int:
+        return len(self._messages)
+
+    def older_unit_count(self) -> int:
+        _system, _budget, older, _protected = self._partition(0)
+        return len(older)
+
+    def clear(self) -> None:
+        system, _rest = self._split_pinned_system()
+        self._messages = [system] if system is not None else []
+
     def ensure_system_message(self, content: str) -> None:
         message = {"role": "system", "content": content}
         if self._messages and self._messages[0].get("role") == "system":
@@ -1828,7 +2110,10 @@ class MemoryWindow:
     def estimated_tokens(self) -> int:
         return sum(_estimate_tokens(message) for message in self._messages)
 
-    def window(self, *, reserve_tokens: int = 0) -> list[dict[str, Any]]:
+    def _partition(
+        self, reserve_tokens: int
+    ) -> tuple[dict[str, Any] | None, int, list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
+        """``(system, budget, older units, protected units of the current turn)``."""
         system, rest = self._split_pinned_system()
         budget = self._max_tokens - max(0, int(reserve_tokens))
         if system is not None:
@@ -1836,14 +2121,58 @@ class MemoryWindow:
         units = _split_units(rest)
         last_user = -1
         for position, unit in enumerate(units):
-            if unit[0].get("role") == "user":
+            # Runtime-authored notes (review findings, checkpoints) are not the
+            # user's request: the turn starts at the user's own message.
+            if unit[0].get("role") == "user" and not _is_runtime_message(unit[0]):
                 last_user = position
         if last_user < 0:
-            protected: list[list[dict[str, Any]]] = []
-            older = units
-        else:
-            protected = units[last_user:]
-            older = units[:last_user]
+            return system, budget, units, []
+        return system, budget, units[:last_user], units[last_user:]
+
+    def compaction_plan(self, *, reserve_tokens: int = 0, keep_recent_units: int = 4) -> int:
+        """How many of the oldest units to summarise, or 0 when everything still fits.
+
+        Summarisation is the second layer: it is only needed once whole units
+        would be dropped even with their tool output elided. The most recent
+        ``keep_recent_units`` older units stay verbatim.
+        """
+        _system, budget, older, protected = self._partition(reserve_tokens)
+        if len(older) <= keep_recent_units:
+            return 0
+        used = sum(_unit_tokens(unit) for unit in protected)
+        fits_elided = used + sum(_unit_tokens(_elide_unit(unit)) for unit in older) <= budget
+        if fits_elided:
+            return 0
+        count = len(older) - keep_recent_units
+        if count == 1 and _is_runtime_message(older[0][0]):
+            return 0  # only the previous checkpoint would be re-summarised
+        return count
+
+    def oldest_units(self, count: int) -> list[list[dict[str, Any]]]:
+        _system, _budget, older, _protected = self._partition(0)
+        return [list(unit) for unit in older[:count]]
+
+    def compact(self, count: int, summary: str) -> None:
+        """Replace the ``count`` oldest units with one checkpoint message."""
+        system, rest = self._split_pinned_system()
+        units = _split_units(rest)
+        _system, _budget, older, _protected = self._partition(0)
+        count = max(0, min(count, len(older)))
+        if count == 0:
+            return
+        checkpoint = {
+            "role": "user",
+            "content": f"{CHECKPOINT_PREFIX}\n{summary.strip()}",
+            "code4me_runtime": "checkpoint",
+        }
+        rebuilt: list[dict[str, Any]] = [system] if system is not None else []
+        rebuilt.append(checkpoint)
+        for unit in units[count:]:
+            rebuilt.extend(unit)
+        self._messages = rebuilt
+
+    def window(self, *, reserve_tokens: int = 0) -> list[dict[str, Any]]:
+        system, budget, older, protected = self._partition(reserve_tokens)
 
         message_budget = self._max_messages if self._strategy == "last_messages" else None
         used = sum(_unit_tokens(unit) for unit in protected)
@@ -1915,6 +2244,16 @@ class MemoryWindow:
         self._messages = rebuilt
 
 
+CHECKPOINT_PREFIX = (
+    "[Context checkpoint written by the Code4Me runtime: a summary of the earlier part of this "
+    "session, which no longer fits the context window. It is not a new request.]"
+)
+
+
+def _is_runtime_message(message: dict[str, Any]) -> bool:
+    return bool(message.get("code4me_runtime"))
+
+
 def _split_system(
     messages: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -1971,7 +2310,32 @@ class _TurnState:
     completion_tokens: int = 0
     total_tokens: int = 0
     usage_reported: bool = True
+    # Every model call of the turn (usage) vs. the calls that count toward
+    # max_iterations (decision D-02: summarisation does not count).
     model_calls: int = 0
+    budget_used: int = 0
+    # Loop guard: identical (tool, arguments) calls since the last change.
+    call_counts: dict[str, int] = field(default_factory=dict)
+    forced_final: str | None = None
+    # Transient notes for the next request only.
+    notes: list[str] = field(default_factory=list)
+    after_compaction: bool = False
+    # Tool-call sequence numbers: when the workspace last changed and when a
+    # command last ran, for verify-on-stop.
+    step: int = 0
+    last_change_step: int = 0
+    last_command_step: int = 0
+    commands_run: list[str] = field(default_factory=list)
+    verify_nudged: bool = False
+    verify_runs: int = 0
+    verification_note: str | None = None
+    reviewed: bool = False
+    compaction_failed: bool = False
+    # Changes made through IDE tools (MCP refactorings) have no file diff.
+    external_changes: bool = False
+    # An IDE build/run (MCP) after the last change: enough to skip the verify
+    # nudge, never a replacement for the profile's verification command.
+    last_ide_run_step: int = 0
 
     @property
     def usage(self) -> dict[str, int] | None:
@@ -1984,6 +2348,62 @@ class _TurnState:
         }
 
 
+_LOOP_NUDGE = (
+    "You have called {name} with identical arguments {count} times in this turn and the result "
+    "has not changed. Do not repeat it: use the result you already have, change the arguments "
+    "or the approach, or stop and explain what is blocking you."
+)
+_LOOP_STOP_NOTICE = (
+    "Tools are now disabled for this turn because the same call was repeated {count} times "
+    "without progress. Reply with a user-facing message: what you did, what did not work, and "
+    "what the user could do next."
+)
+_LOOP_NUDGE_AT = 3
+_LOOP_STOP_AT = 5
+_LOOP_NOT_RUN = "Not run: tools are disabled for this turn after repeated identical calls."
+_LOOP_STOPPED_TEXT = (
+    "I stopped because the same step kept repeating without progress, so tools were disabled "
+    "for the rest of this turn. Send another message with more guidance to continue."
+)
+_VERIFY_NUDGE = (
+    "[Runtime check, not a message from the user] You changed {files} but ran no command since "
+    "your last change. If an allowlisted test, build or lint command applies ({commands}), run "
+    "it now and fix what fails; otherwise give your final answer and name the command the user "
+    "should run."
+)
+_VERIFY_FAILED_NOTE = (
+    "[Runtime check, not a message from the user] The runtime ran the configured verification "
+    "command `{command}` after your changes and it failed ({outcome}). Fix the failures, or "
+    "explain in your final answer why they are unrelated to your change."
+)
+_REVIEW_NOTE = (
+    "[Self-review by the Code4Me runtime, not a message from the user] A separate review of "
+    "your diff for this request raised these possible problems:\n{issues}\n"
+    "Fix the real ones (and re-run verification if you changed code), then give your final "
+    "answer. If a point is wrong, say so briefly instead of changing the code."
+)
+_REVIEW_SYSTEM_PROMPT = (
+    "You review a change made by an AI coding agent. You see the user's request, the unified "
+    "diff of the agent's changes, the commands it ran, and its final message. Report only real "
+    "problems: bugs, syntax or import errors, broken callers, logic that does not do what the "
+    "request asks, parts of the request left undone, changes the request did not ask for, and "
+    "claims in the final message that the diff and commands do not support (for example tests "
+    "said to pass that were never run). Ignore style, naming and formatting. If there is nothing "
+    "important, reply with exactly NO_ISSUES. Otherwise list at most five issues, one per line, "
+    "each starting with '- ' and naming the file (and line when you can)."
+)
+_SUMMARY_SYSTEM_PROMPT = (
+    "You compress the earlier part of a coding-agent session into a checkpoint. The original "
+    "messages are removed afterwards, so the agent will rely only on your checkpoint. Keep "
+    "facts, not prose, under these headings: Goal; User requirements and constraints; Work done "
+    "(files changed and how, commands run and their results); Current state; Decisions; Errors "
+    "and open problems (quote error messages verbatim); Next steps. Use short bullet points, "
+    "never invent anything, and stay under 350 words."
+)
+_SUMMARY_INPUT_CHARS = 60_000
+_REVIEW_DIFF_CHARS = 30_000
+
+
 class OpenAICompatibleReactAdapter:
     def __init__(
         self,
@@ -1992,12 +2412,22 @@ class OpenAICompatibleReactAdapter:
         telemetry: AgentTelemetryRecorder,
         tool_registry: ToolRegistry,
         event_sink: AgentEventSink | None = None,
+        session_state: SessionToolState | None = None,
     ) -> None:
         self._config = config
         self._telemetry = telemetry
         self._tool_registry = tool_registry
         self._event_sink = event_sink or NoopAgentEventSink()
         self._provider_instance: FakeOpenAICompatibleProvider | OpenAICompatibleProvider | None = None
+        self._session_state = (
+            session_state
+            or getattr(tool_registry, "session_state", None)
+            or SessionToolState()
+        )
+
+    @property
+    def _harness(self) -> HarnessOptions:
+        return getattr(self._config, "harness", None) or HarnessOptions()
 
     # ------------------------------------------------------------ prompt
 
@@ -2011,50 +2441,137 @@ class OpenAICompatibleReactAdapter:
         memory: "MemoryWindow | None" = None,
         cancellation_event: Event | None = None,
     ) -> AdapterResult:
-        provider = self._provider()
         if memory is None:
             memory = MemoryWindow(
                 strategy=self._config.adapter.memory_window.strategy,
                 max_messages=self._config.adapter.memory_window.max_messages,
                 max_tokens=self._config.adapter.memory_window.max_tokens,
             )
+        command = slash_commands.parse(prompt, managed=bool(self._config.managed_mode))
+        if command is not None:
+            return self._run_slash_command(
+                command,
+                memory=memory,
+                run_id=run_id,
+                request_id=request_id,
+                cancellation_event=cancellation_event,
+            )
+        provider = self._provider()
         tool_names = sorted(self._tool_registry.known_tool_names())
-        memory.ensure_system_message(self._system_context(tool_names=tool_names))
+        instructions = self._project_instructions()
+        profile = self._prompt_profile()
+        memory.ensure_system_message(
+            self._system_context(
+                tool_names=tool_names, instructions=instructions, prompt_profile=profile
+            )
+        )
+        prior_messages = max(0, memory.message_count() - 1)
         memory.append({"role": "user", "content": prompt})
+        self._session_state.begin_turn(run_id, prompt)
+        try:
+            return self._run_turn(
+                provider,
+                prompt=prompt,
+                run_id=run_id,
+                request_id=request_id,
+                memory=memory,
+                cancellation_event=cancellation_event,
+                prior_messages=prior_messages,
+                profile=profile,
+                instructions=instructions,
+            )
+        finally:
+            self._session_state.end_turn()
+
+    def _run_turn(
+        self,
+        provider: FakeOpenAICompatibleProvider | OpenAICompatibleProvider,
+        *,
+        prompt: str,
+        run_id: str,
+        request_id: str,
+        memory: MemoryWindow,
+        cancellation_event: Event | None,
+        prior_messages: int,
+        profile: str,
+        instructions: prompting.ProjectInstructions | None,
+    ) -> AdapterResult:
         definitions = self._tool_registry.definitions()
         reserve_tokens = _estimate_text_tokens(json.dumps(definitions)) + _OUTPUT_HEADROOM_TOKENS
         state = _TurnState()
         max_iterations = max(1, int(self._config.adapter.max_iterations))
+        harness = self._harness
 
-        for iteration in range(1, max_iterations + 1):
+        while True:
             if _turn_was_cancelled(cancellation_event):
                 return self._cancelled(memory, state)
-            final_round = iteration == max_iterations
+            if harness.context_summarization and not state.compaction_failed:
+                compacted = self._maybe_compact(
+                    provider,
+                    memory,
+                    state,
+                    reserve_tokens=reserve_tokens,
+                    run_id=run_id,
+                    request_id=request_id,
+                    cancellation_event=cancellation_event,
+                )
+                if compacted == "cancelled":
+                    return self._cancelled(memory, state)
+                if compacted == "failed":
+                    state.compaction_failed = True  # do not retry every iteration
+            iteration = state.budget_used + 1
+            final_round = iteration >= max_iterations or state.forced_final is not None
             request_messages = memory.window(reserve_tokens=reserve_tokens)
-            transient: list[dict[str, Any]] = []
+            notes: list[str] = []
             tool_choice: str | None = "auto"
-            if final_round and max_iterations > 1:
-                transient.append({"role": "user", "content": _BUDGET_NOTICE})
+            if state.forced_final is not None:
+                notes.append(state.forced_final)
                 tool_choice = "none"
-            elif state.pending_nudge:
-                transient.append({"role": "user", "content": _EMPTY_RESPONSE_NUDGE})
-                state.pending_nudge = False
+            elif final_round and max_iterations > 1:
+                notes.append(_BUDGET_NOTICE)
+                tool_choice = "none"
+            else:
+                if state.pending_nudge:
+                    notes.append(_EMPTY_RESPONSE_NUDGE)
+                    state.pending_nudge = False
+                notes.extend(state.notes)
+            state.notes = []
+            reminded = bool(
+                harness.instruction_reminders
+                and prompting.should_remind(
+                    iteration, prior_messages, after_compaction=state.after_compaction
+                )
+            )
+            if reminded:
+                notes.append(self._reminder(max_iterations - iteration + 1, instructions))
+            state.after_compaction = False
             if not definitions:
                 tool_choice = None
+            transient = [{"role": "user", "content": "\n\n".join(notes)}] if notes else []
             messages = request_messages + transient
 
+            payload: dict[str, Any] = {
+                "iteration": iteration,
+                "message_count": len(messages),
+                "approx_token_count": sum(_estimate_tokens(message) for message in messages),
+                "tool_choice": tool_choice,
+                "final_round": final_round,
+                "call_purpose": "turn",
+            }
+            if iteration == 1:
+                payload["prompt_profile"] = profile
+                if instructions is not None:
+                    payload.update(instructions.telemetry())
+            if reminded:
+                payload["reminder"] = True
+            if state.forced_final is not None:
+                payload["loop_guard"] = "forced_stop"
             self._telemetry.record(
                 event_type="agent.model.requested",
                 run_id=run_id,
                 request_id=request_id,
                 parent_event_id=None,
-                payload={
-                    "iteration": iteration,
-                    "message_count": len(messages),
-                    "approx_token_count": sum(_estimate_tokens(message) for message in messages),
-                    "tool_choice": tool_choice,
-                    "final_round": final_round,
-                },
+                payload=payload,
                 raw_payload={"messages": messages},
             )
             started_at = perf_counter()
@@ -2097,35 +2614,16 @@ class OpenAICompatibleReactAdapter:
                     stop_reason="error",
                     text=f"The model request failed: {exc}",
                 )
-            duration_ms = (perf_counter() - started_at) * 1000
-            state.model_calls += 1
-            self._record_model_completed(
+            state.budget_used += 1
+            self._account_model_call(
+                state,
+                turn,
                 run_id=run_id,
                 request_id=request_id,
-                duration_ms=duration_ms,
-                provider_turn=turn,
+                duration_ms=(perf_counter() - started_at) * 1000,
+                iteration=iteration,
+                context_budget=memory.max_tokens,
             )
-            if turn.usage_estimated:
-                state.usage_reported = False
-            else:
-                state.prompt_tokens += turn.usage.get("prompt_tokens", 0)
-                state.completion_tokens += turn.usage.get("completion_tokens", 0)
-                state.total_tokens += turn.usage.get("total_tokens", 0)
-                emit_event(
-                    self._event_sink,
-                    "usage",
-                    UsageEvent(
-                        run_id=run_id,
-                        request_id=request_id,
-                        iteration=iteration,
-                        model=turn.model,
-                        prompt_tokens=turn.usage.get("prompt_tokens", 0),
-                        completion_tokens=turn.usage.get("completion_tokens", 0),
-                        total_tokens=turn.usage.get("total_tokens", 0),
-                        turn_total_tokens=state.total_tokens,
-                        context_budget_tokens=memory.max_tokens,
-                    ),
-                )
             if _turn_was_cancelled(cancellation_event):
                 return self._cancelled(memory, state)
 
@@ -2150,70 +2648,108 @@ class OpenAICompatibleReactAdapter:
                         request_id=request_id,
                         text=parsed.thought,
                         phase="completed",
-                        duration_ms=round(duration_ms, 3),
-                    ),
-                )
-            if parsed.text:
-                emit_event(
-                    self._event_sink,
-                    "assistant_text",
-                    AssistantTextEvent(
-                        run_id=run_id,
-                        request_id=request_id,
-                        message_id=request_id,
-                        text=parsed.text,
-                        final=not parsed.tool_calls,
-                        iteration=iteration,
+                        duration_ms=round((perf_counter() - started_at) * 1000, 3),
                     ),
                 )
 
+            if parsed.tool_calls and state.forced_final is not None:
+                # Tools were disabled after repeated identical calls; a provider
+                # that ignores tool_choice="none" must not run them again. The
+                # never-run calls are runtime-only: a reopened chat skips them
+                # (the model's text is part of the final message below).
+                memory.append(
+                    _assistant_tool_call_message(parsed.tool_calls, text=None, runtime="loop_stop")
+                )
+                for call in parsed.tool_calls:
+                    memory.append(_tool_message(call, _not_run_result(call, _LOOP_NOT_RUN)))
+                text = f"{parsed.text}\n\n{_LOOP_STOPPED_TEXT}" if parsed.text else _LOOP_STOPPED_TEXT
+                return self._finish(
+                    memory,
+                    state,
+                    run_id=run_id,
+                    request_id=request_id,
+                    text=text,
+                    stop_reason="loop_detected",
+                    iteration=iteration,
+                    emit=True,
+                )
+
             if parsed.tool_calls:
+                if parsed.text:
+                    self._emit_text(parsed.text, run_id=run_id, request_id=request_id, final=False, iteration=iteration)
                 memory.append(_assistant_tool_call_message(parsed.tool_calls, text=parsed.text))
                 state.used_tools = True
-                results: list[dict[str, Any]] = []
-                result_cap = _batch_result_cap(memory.max_tokens, len(parsed.tool_calls))
-                for index, tool_call in enumerate(parsed.tool_calls):
-                    if _turn_was_cancelled(cancellation_event):
-                        for remaining in parsed.tool_calls[index:]:
-                            memory.append(_tool_message(remaining, _cancelled_tool_result(remaining)))
-                        return self._cancelled(memory, state)
-                    result = self._run_tool_call(
-                        tool_call,
-                        run_id=run_id,
-                        request_id=request_id,
-                        cancellation_event=cancellation_event,
-                        max_chars=result_cap,
-                    )
-                    results.append(result)
-                    memory.append(_tool_message(tool_call, result))
-                if final_round:
-                    text = _budget_exhausted_text(parsed.tool_calls, results)
+                results = self._execute_batch(
+                    parsed.tool_calls,
+                    memory=memory,
+                    state=state,
+                    run_id=run_id,
+                    request_id=request_id,
+                    cancellation_event=cancellation_event,
+                    max_chars=_batch_result_cap(memory.max_tokens, len(parsed.tool_calls)),
+                )
+                if results is None:
+                    return self._cancelled(memory, state)
+                question = _asked_question(parsed.tool_calls, results)
+                if question is not None:
                     return self._finish(
                         memory,
                         state,
                         run_id=run_id,
                         request_id=request_id,
-                        text=text,
-                        stop_reason="max_turn_requests",
+                        text=question,
+                        stop_reason="awaiting_user",
+                        iteration=iteration,
+                        emit=True,
+                    )
+                self._update_loop_guard(state, parsed.tool_calls, results)
+                if final_round:
+                    return self._finish(
+                        memory,
+                        state,
+                        run_id=run_id,
+                        request_id=request_id,
+                        text=_budget_exhausted_text(parsed.tool_calls, results),
+                        stop_reason="loop_detected" if state.forced_final else "max_turn_requests",
                         iteration=iteration,
                         emit=True,
                     )
                 continue
 
             if parsed.text:
-                if final_round and max_iterations > 1 and state.used_tools:
+                if state.forced_final is not None:
+                    stop_reason = "loop_detected"
+                elif final_round and max_iterations > 1 and state.used_tools:
                     stop_reason = "max_turn_requests"
                 else:
                     stop_reason = _stop_reason_from_finish(parsed.finish_reason)
+                    gate = self._stop_gate(
+                        provider,
+                        memory,
+                        state,
+                        prompt=prompt,
+                        answer=parsed.text,
+                        max_iterations=max_iterations,
+                        run_id=run_id,
+                        request_id=request_id,
+                        cancellation_event=cancellation_event,
+                    )
+                    if gate == "cancelled":
+                        return self._cancelled(memory, state)
+                    if gate == "continue":
+                        continue
+                text = parsed.text
+                if state.verification_note:
+                    text = f"{text}\n\n{state.verification_note}"
                 return self._finish(
                     memory,
                     state,
                     run_id=run_id,
                     request_id=request_id,
-                    text=parsed.text,
+                    text=text,
                     stop_reason=stop_reason,
                     iteration=iteration,
-                    emit=False,
+                    emit=True,
                 )
 
             if state.empty_retries == 0 and not final_round:
@@ -2230,17 +2766,575 @@ class OpenAICompatibleReactAdapter:
                 text=_EMPTY_RESPONSE_TEXT,
             )
 
-        return self._fail(
-            memory,
-            state,
+    # -------------------------------------------------------- model calls
+
+    def _account_model_call(
+        self,
+        state: _TurnState,
+        turn: ProviderTurn,
+        *,
+        run_id: str,
+        request_id: str,
+        duration_ms: float,
+        iteration: int,
+        context_budget: int,
+        purpose: str = "turn",
+    ) -> None:
+        state.model_calls += 1
+        self._record_model_completed(
             run_id=run_id,
             request_id=request_id,
-            failure_reason="max_iterations_exceeded",
-            stop_reason="max_turn_requests",
-            text="I used the step budget for this message before finishing; send another message to continue.",
+            duration_ms=duration_ms,
+            provider_turn=turn,
+            purpose=purpose,
+        )
+        if turn.usage_estimated:
+            state.usage_reported = False
+            return
+        state.prompt_tokens += turn.usage.get("prompt_tokens", 0)
+        state.completion_tokens += turn.usage.get("completion_tokens", 0)
+        state.total_tokens += turn.usage.get("total_tokens", 0)
+        if purpose != "turn":
+            # A summary or review call runs on a different, small context: an
+            # IDE context meter must keep showing the conversation's usage.
+            return
+        emit_event(
+            self._event_sink,
+            "usage",
+            UsageEvent(
+                run_id=run_id,
+                request_id=request_id,
+                iteration=iteration,
+                model=turn.model,
+                prompt_tokens=turn.usage.get("prompt_tokens", 0),
+                completion_tokens=turn.usage.get("completion_tokens", 0),
+                total_tokens=turn.usage.get("total_tokens", 0),
+                turn_total_tokens=state.total_tokens,
+                context_budget_tokens=context_budget,
+            ),
         )
 
+    def _side_call(
+        self,
+        provider: FakeOpenAICompatibleProvider | OpenAICompatibleProvider,
+        messages: list[dict[str, Any]],
+        state: _TurnState,
+        *,
+        purpose: str,
+        run_id: str,
+        request_id: str,
+        cancellation_event: Event | None,
+        context_budget: int,
+        extra_payload: dict[str, Any] | None = None,
+    ) -> str | None:
+        """A tool-less model call outside the conversation (summary, review).
+
+        Returns the text, ``None`` when the call failed (the turn carries on
+        without it) and raises ``ProviderCancelled`` on cancellation.
+        """
+        self._telemetry.record(
+            event_type="agent.model.requested",
+            run_id=run_id,
+            request_id=request_id,
+            parent_event_id=None,
+            payload={
+                "iteration": state.budget_used,
+                "message_count": len(messages),
+                "approx_token_count": sum(_estimate_tokens(message) for message in messages),
+                "tool_choice": None,
+                "final_round": False,
+                "call_purpose": purpose,
+                **(extra_payload or {}),
+            },
+            raw_payload={"messages": messages},
+        )
+        started_at = perf_counter()
+        try:
+            turn = provider.generate(
+                messages,
+                run_id=run_id,
+                tool_choice=None,
+                cancellation_event=cancellation_event,
+                include_tools=False,
+            )
+        except ProviderCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the main loop continues without it
+            logger.warning("The %s model call failed: %s", purpose, exc)
+            return None
+        self._account_model_call(
+            state,
+            turn,
+            run_id=run_id,
+            request_id=request_id,
+            duration_ms=(perf_counter() - started_at) * 1000,
+            iteration=max(1, state.budget_used),
+            context_budget=context_budget,
+            purpose=purpose,
+        )
+        output = turn.output.get("output", turn.output) if isinstance(turn.output, dict) else {}
+        text = output.get("final_answer", output.get("text")) if isinstance(output, dict) else None
+        return text.strip() if isinstance(text, str) and text.strip() else None
+
+    # ----------------------------------------------------- summarisation
+
+    def _maybe_compact(
+        self,
+        provider: FakeOpenAICompatibleProvider | OpenAICompatibleProvider,
+        memory: MemoryWindow,
+        state: _TurnState,
+        *,
+        reserve_tokens: int,
+        run_id: str,
+        request_id: str,
+        cancellation_event: Event | None,
+        keep_recent_units: int = 4,
+        force: bool = False,
+    ) -> str | None:
+        """Summarise the oldest units when elision alone no longer fits (D1)."""
+        count = memory.compaction_plan(
+            reserve_tokens=reserve_tokens, keep_recent_units=keep_recent_units
+        )
+        if count <= 0 and force:
+            count = max(0, memory.older_unit_count() - keep_recent_units)
+        if count <= 0:
+            return None
+        units = memory.oldest_units(count)
+        rendered = _render_units_for_summary(units, max_chars=min(_SUMMARY_INPUT_CHARS, memory.max_tokens * 2))
+        messages = [
+            {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Session excerpt to compress:\n\n{rendered}"},
+        ]
+        try:
+            summary = self._side_call(
+                provider,
+                messages,
+                state,
+                purpose="summarize",
+                run_id=run_id,
+                request_id=request_id,
+                cancellation_event=cancellation_event,
+                context_budget=memory.max_tokens,
+                extra_payload={"compacted_units": count},
+            )
+        except ProviderCancelled:
+            return "cancelled"
+        if not summary:
+            return "failed"
+        memory.compact(count, summary)
+        state.after_compaction = True
+        return "compacted"
+
+    # --------------------------------------------------------- stop gates
+
+    def _stop_gate(
+        self,
+        provider: FakeOpenAICompatibleProvider | OpenAICompatibleProvider,
+        memory: MemoryWindow,
+        state: _TurnState,
+        *,
+        prompt: str,
+        answer: str,
+        max_iterations: int,
+        run_id: str,
+        request_id: str,
+        cancellation_event: Event | None,
+    ) -> str:
+        """Before a final answer: verify (C5), then self-review (E3).
+
+        Returns ``finish``, ``continue`` (the loop goes on with a note in
+        memory) or ``cancelled``. A continuation needs room to act: two calls
+        after a verification problem (fix, answer), three for a review
+        (review, fix, answer); the last call of a turn has no tools.
+        """
+        changed = self._session_state.changed_paths()
+        if not changed and not state.external_changes:
+            return "finish"
+        remaining = max_iterations - state.budget_used
+        harness = self._harness
+        if harness.verify_on_stop and remaining >= 2 and state.last_change_step > state.last_command_step:
+            command = self._verify_command()
+            if command is not None and state.verify_runs < 2:
+                state.verify_runs += 1
+                outcome = self._run_verification(
+                    command,
+                    memory,
+                    state,
+                    answer=answer,
+                    run_id=run_id,
+                    request_id=request_id,
+                    cancellation_event=cancellation_event,
+                )
+                if outcome in {"cancelled", "continue"}:
+                    return outcome
+            elif (
+                command is None
+                and not state.verify_nudged
+                and self._can_run_commands()
+                and state.last_change_step > state.last_ide_run_step
+            ):
+                state.verify_nudged = True
+                self._continue_with_note(
+                    memory,
+                    answer,
+                    note=_VERIFY_NUDGE.format(
+                        files=(", ".join(changed[:5]) + (" and more" if len(changed) > 5 else ""))
+                        or "files through IDE tools",
+                        commands=", ".join(self._allowlisted_commands()[:12]) or "none",
+                    ),
+                    kind="verify",
+                    run_id=run_id,
+                    request_id=request_id,
+                    iteration=state.budget_used,
+                )
+                return "continue"
+        if harness.self_review and not state.reviewed and remaining >= 3:
+            state.reviewed = True
+            diff = self._session_state.turn_diff(max_chars=_REVIEW_DIFF_CHARS)
+            if not diff.strip():
+                return "finish"
+            calls_before = state.model_calls
+            try:
+                issues = self._self_review(
+                    provider,
+                    state,
+                    prompt=prompt,
+                    answer=answer,
+                    diff=diff,
+                    run_id=run_id,
+                    request_id=request_id,
+                    cancellation_event=cancellation_event,
+                    context_budget=memory.max_tokens,
+                )
+            except ProviderCancelled:
+                return "cancelled"
+            if state.model_calls > calls_before:
+                state.budget_used += 1  # decision D-02: the review counts
+            if issues:
+                self._emit_text(
+                    f"Self-review of the changes raised possible issues:\n{issues}",
+                    run_id=run_id,
+                    request_id=request_id,
+                    final=False,
+                    iteration=state.budget_used,
+                )
+                self._continue_with_note(
+                    memory,
+                    answer,
+                    note=_REVIEW_NOTE.format(issues=issues),
+                    kind="review",
+                    run_id=run_id,
+                    request_id=request_id,
+                    iteration=state.budget_used,
+                    emit_answer=False,
+                )
+                return "continue"
+        return "finish"
+
+    def _continue_with_note(
+        self,
+        memory: MemoryWindow,
+        answer: str,
+        *,
+        note: str,
+        kind: str,
+        run_id: str,
+        request_id: str,
+        iteration: int,
+        emit_answer: bool = True,
+    ) -> None:
+        """Keep the model's provisional answer and add a runtime note; the loop continues."""
+        provisional: dict[str, Any] = {"role": "assistant", "content": answer}
+        if emit_answer:
+            self._emit_text(answer, run_id=run_id, request_id=request_id, final=False, iteration=iteration)
+        else:
+            # The model sees its provisional answer; the user never did, so a
+            # reopened chat must not replay it.
+            provisional["code4me_runtime"] = "provisional"
+        memory.append(provisional)
+        memory.append({"role": "user", "content": note, "code4me_runtime": kind})
+
+    def _verify_command(self) -> list[str] | None:
+        """The profile's verification argv, when this session may actually run it.
+
+        A per-user config row can narrow the frozen allowlist; a command whose
+        program is no longer allowed falls back to asking the model to verify.
+        """
+        command = self._harness.verify_command
+        if not command or not self._can_run_commands():
+            return None
+        program = Path(command[0]).name
+        if program not in self._allowlisted_commands():
+            return None
+        return list(command)
+
+    def _can_run_commands(self) -> bool:
+        if self._config.approval_policy == "suggestion_only":
+            return False
+        if "run_command" not in self._tool_registry.known_tool_names():
+            return False
+        return bool(self._allowlisted_commands())
+
+    def _allowlisted_commands(self) -> list[str]:
+        from code4me2_agent.command_tools import available_commands
+
+        return available_commands(list(self._config.commands.allowlisted_commands))
+
+    def _run_verification(
+        self,
+        command: list[str],
+        memory: MemoryWindow,
+        state: _TurnState,
+        *,
+        answer: str,
+        run_id: str,
+        request_id: str,
+        cancellation_event: Event | None,
+    ) -> str:
+        """Run the profile's verification command; ``continue`` when it failed."""
+        call = ToolCall(
+            tool_call_id=f"verify-{run_id[:8]}-{state.verify_runs}",
+            name="run_command",
+            arguments={"argv": list(command)},
+        )
+        result = self._run_tool_call(
+            call,
+            run_id=run_id,
+            request_id=request_id,
+            cancellation_event=cancellation_event,
+            max_chars=_batch_result_cap(memory.max_tokens, 1),
+        )
+        if _turn_was_cancelled(cancellation_event):
+            memory.append(_assistant_tool_call_message([call], text=None, runtime="verify"))
+            memory.append(_tool_message(call, result))
+            return "cancelled"
+        status = result.get("status")
+        exit_code = result.get("exit_code")
+        shown = " ".join(command)
+        state.step += 1
+        state.last_command_step = state.step
+        state.commands_run.append(shown)
+        failed = (status == "ok" and exit_code not in (0, None)) or status == "timeout"
+        if not failed:
+            memory.append(_assistant_tool_call_message([call], text=None, runtime="verify"))
+            memory.append(_tool_message(call, result))
+            if status == "ok" and exit_code == 0:
+                state.verification_note = f"Verified by the runtime: `{shown}` passed."
+            else:
+                # Not run (denied, rejected, not installed): not a failure of the change.
+                state.verification_note = (
+                    f"The runtime could not run the verification command `{shown}` "
+                    f"({result.get('reason') or result.get('error_code') or status})."
+                )
+            return "passed" if status == "ok" else "skipped"
+        outcome = f"exit code {exit_code}" if status == "ok" else "timed out"
+        self._emit_text(answer, run_id=run_id, request_id=request_id, final=False, iteration=state.budget_used)
+        memory.append({"role": "assistant", "content": answer})
+        memory.append(_assistant_tool_call_message([call], text=None, runtime="verify"))
+        memory.append(_tool_message(call, result))
+        memory.append(
+            {
+                "role": "user",
+                "content": _VERIFY_FAILED_NOTE.format(command=shown, outcome=outcome),
+                "code4me_runtime": "verify",
+            }
+        )
+        state.verification_note = None
+        return "continue"
+
+    def _self_review(
+        self,
+        provider: FakeOpenAICompatibleProvider | OpenAICompatibleProvider,
+        state: _TurnState,
+        *,
+        prompt: str,
+        answer: str,
+        diff: str,
+        run_id: str,
+        request_id: str,
+        cancellation_event: Event | None,
+        context_budget: int,
+    ) -> str | None:
+        """One clean-context review call; returns the issues, or None when there are none."""
+        commands = "\n".join(f"- {command}" for command in state.commands_run[-10:]) or "(none)"
+        messages = [
+            {"role": "system", "content": _REVIEW_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"User request:\n{prompt[:6000]}\n\nDiff of the agent's changes:\n```diff\n{diff}```\n\n"
+                    f"Commands the agent ran this turn:\n{commands}\n\nAgent's final message:\n{answer[:4000]}"
+                ),
+            },
+        ]
+        text = self._side_call(
+            provider,
+            messages,
+            state,
+            purpose="self_review",
+            run_id=run_id,
+            request_id=request_id,
+            cancellation_event=cancellation_event,
+            context_budget=context_budget,
+        )
+        return _review_issues(text)
+
+    # ------------------------------------------------------- tool batches
+
+    def _execute_batch(
+        self,
+        tool_calls: list[ToolCall],
+        *,
+        memory: MemoryWindow,
+        state: _TurnState,
+        run_id: str,
+        request_id: str,
+        cancellation_event: Event | None,
+        max_chars: int,
+    ) -> list[dict[str, Any]] | None:
+        """Run a batch in order; runs of read-only calls execute concurrently (E2).
+
+        Results are appended to memory in call order. Returns None when the
+        turn was cancelled (every call still gets a result message).
+        """
+        results: list[dict[str, Any]] = []
+        index = 0
+        asked = False
+        while index < len(tool_calls):
+            if _turn_was_cancelled(cancellation_event):
+                for remaining in tool_calls[index:]:
+                    memory.append(_tool_message(remaining, _cancelled_tool_result(remaining)))
+                return None
+            if asked:
+                skipped = {
+                    "tool_name": tool_calls[index].name,
+                    "tool_call_id": tool_calls[index].tool_call_id,
+                    "status": "skipped",
+                    "reason": "Not run: the turn ended with a question to the user.",
+                }
+                results.append(skipped)
+                memory.append(_tool_message(tool_calls[index], skipped))
+                index += 1
+                continue
+            segment = [index]
+            if self._harness.parallel_tools and self._parallel_safe(tool_calls[index]):
+                while (
+                    segment[-1] + 1 < len(tool_calls)
+                    and len(segment) < 8
+                    and self._parallel_safe(tool_calls[segment[-1] + 1])
+                ):
+                    segment.append(segment[-1] + 1)
+            if len(segment) > 1:
+
+                def run_unless_cancelled(call: ToolCall) -> dict[str, Any]:
+                    if _turn_was_cancelled(cancellation_event):
+                        return _cancelled_tool_result(call)
+                    return self._run_tool_call(
+                        call,
+                        run_id=run_id,
+                        request_id=request_id,
+                        cancellation_event=cancellation_event,
+                        max_chars=max_chars,
+                    )
+
+                with ThreadPoolExecutor(max_workers=min(4, len(segment)), thread_name_prefix="code4me2-tool") as pool:
+                    futures = [pool.submit(run_unless_cancelled, tool_calls[position]) for position in segment]
+                    segment_results = [future.result() for future in futures]
+            else:
+                segment_results = [
+                    self._run_tool_call(
+                        tool_calls[index],
+                        run_id=run_id,
+                        request_id=request_id,
+                        cancellation_event=cancellation_event,
+                        max_chars=max_chars,
+                    )
+                ]
+            for position, result in zip(segment, segment_results):
+                call = tool_calls[position]
+                results.append(result)
+                memory.append(_tool_message(call, result))
+                self._note_step(state, call, result)
+                if call.name == "ask_user" and result.get("status") == "ok":
+                    asked = True
+            index = segment[-1] + 1
+        return results
+
+    def _parallel_safe(self, tool_call: ToolCall) -> bool:
+        if tool_call.argument_error:
+            return False
+        check = getattr(self._tool_registry, "is_parallel_safe", None)
+        return bool(check(tool_call.name)) if callable(check) else False
+
+    def _tool_class(self, name: str) -> str | None:
+        """"edit" / "execute" for built-in or IDE (MCP) tools that change or run things."""
+        if name in _WORKSPACE_MUTATIONS:
+            return "edit"
+        if name == "run_command":
+            return "execute"
+        access = getattr(self._tool_registry, "mcp_access", None)
+        value = access(name) if callable(access) and name.startswith("mcp__") else None
+        return value if value in ("edit", "execute") else None
+
+    def _note_step(self, state: _TurnState, tool_call: ToolCall, result: dict[str, Any]) -> None:
+        state.step += 1
+        status = result.get("status")
+        tool_class = self._tool_class(tool_call.name)
+        if tool_class == "edit" and status == "ok":
+            state.last_change_step = state.step
+            # A verification result describes the code as it was; any later
+            # change voids it (the gate verifies again when it can).
+            state.verification_note = None
+            if tool_call.name.startswith("mcp__"):
+                state.external_changes = True
+        elif tool_class == "execute" and tool_call.name.startswith("mcp__") and status == "ok":
+            state.last_ide_run_step = state.step
+            state.commands_run.append(f"IDE: {tool_call.name.split('__', 2)[-1]}")
+        elif tool_call.name == "run_command" and status in {"ok", "error", "timeout"}:
+            state.last_command_step = state.step
+            argv = tool_call.arguments.get("argv")
+            if isinstance(argv, list):
+                state.commands_run.append(" ".join(str(item) for item in argv))
+
+    def _update_loop_guard(
+        self, state: _TurnState, tool_calls: list[ToolCall], results: list[dict[str, Any]]
+    ) -> None:
+        if not self._harness.loop_guard:
+            return
+        worst, worst_name = 0, ""
+        for call, result in zip(tool_calls, results):
+            if self._tool_class(call.name) == "edit" and result.get("status") == "ok":
+                # The workspace changed: repeating a read or a test is progress.
+                state.call_counts.clear()
+                worst, worst_name = 0, ""
+                continue
+            key = call.name + "\0" + json.dumps(call.arguments, sort_keys=True, default=str)
+            count = state.call_counts.get(key, 0) + 1
+            state.call_counts[key] = count
+            if count > worst:
+                worst, worst_name = count, call.name
+        if worst >= _LOOP_STOP_AT:
+            state.forced_final = _LOOP_STOP_NOTICE.format(count=worst)
+        elif worst >= _LOOP_NUDGE_AT:
+            state.notes.append(_LOOP_NUDGE.format(name=worst_name, count=worst))
+
     # --------------------------------------------------------- outcomes
+
+    def _emit_text(
+        self, text: str, *, run_id: str, request_id: str, final: bool, iteration: int
+    ) -> None:
+        emit_event(
+            self._event_sink,
+            "assistant_text",
+            AssistantTextEvent(
+                run_id=run_id,
+                request_id=request_id,
+                message_id=request_id,
+                text=text,
+                final=final,
+                iteration=iteration,
+            ),
+        )
 
     def _finish(
         self,
@@ -2255,18 +3349,7 @@ class OpenAICompatibleReactAdapter:
         emit: bool,
     ) -> AdapterResult:
         if emit:
-            emit_event(
-                self._event_sink,
-                "assistant_text",
-                AssistantTextEvent(
-                    run_id=run_id,
-                    request_id=request_id,
-                    message_id=request_id,
-                    text=text,
-                    final=True,
-                    iteration=iteration,
-                ),
-            )
+            self._emit_text(text, run_id=run_id, request_id=request_id, final=True, iteration=iteration)
         memory.append({"role": "assistant", "content": text})
         return AdapterResult(
             final_response=text,
@@ -2289,18 +3372,7 @@ class OpenAICompatibleReactAdapter:
         text: str,
     ) -> AdapterResult:
         self._record_loop_failure(run_id=run_id, request_id=request_id, failure_reason=failure_reason)
-        emit_event(
-            self._event_sink,
-            "assistant_text",
-            AssistantTextEvent(
-                run_id=run_id,
-                request_id=request_id,
-                message_id=request_id,
-                text=text,
-                final=True,
-                iteration=state.model_calls,
-            ),
-        )
+        self._emit_text(text, run_id=run_id, request_id=request_id, final=True, iteration=state.model_calls)
         memory.append({"role": "assistant", "content": text})
         return AdapterResult(
             final_response=text,
@@ -2529,7 +3601,40 @@ class OpenAICompatibleReactAdapter:
             max_output_tokens=getattr(provider_config, "max_output_tokens", None),
         )
 
-    def _system_context(self, *, tool_names: Sequence[str] | None = None) -> str:
+    def _prompt_profile(self) -> str:
+        harness = getattr(self._config, "harness", None)
+        option = getattr(harness, "prompt_profile", "auto") if harness is not None else "auto"
+        return prompting.resolve_prompt_profile(option, self._config.adapter.provider.model)
+
+    def _project_instructions(self) -> prompting.ProjectInstructions | None:
+        harness = getattr(self._config, "harness", None)
+        if harness is not None and not harness.project_instructions:
+            return None
+        try:
+            return prompting.load_project_instructions(self._config.workspace_root)
+        except Exception:  # noqa: BLE001 - instructions are optional context
+            logger.debug("Could not read project instruction files.", exc_info=True)
+            return None
+
+    def _reminder(
+        self, calls_left: int, instructions: prompting.ProjectInstructions | None
+    ) -> str:
+        names = self._tool_registry.known_tool_names()
+        return prompting.reminder_text(
+            approval_policy=self._config.approval_policy,
+            can_edit=bool(names & _WORKSPACE_MUTATIONS),
+            can_run="run_command" in names and self._can_run_commands(),
+            calls_left=max(1, calls_left),
+            has_instructions=instructions is not None,
+        )
+
+    def _system_context(
+        self,
+        *,
+        tool_names: Sequence[str] | None = None,
+        instructions: prompting.ProjectInstructions | None = None,
+        prompt_profile: str | None = None,
+    ) -> str:
         from code4me2_agent.command_tools import available_commands
 
         config = self._config
@@ -2544,6 +3649,12 @@ class OpenAICompatibleReactAdapter:
             else:
                 tool_names = tool_catalog.tool_names()
         tool_names = list(tool_names)
+        names = set(tool_names)
+        if prompt_profile is None:
+            harness = getattr(config, "harness", None)
+            prompt_profile = prompting.resolve_prompt_profile(
+                getattr(harness, "prompt_profile", "auto"), config.adapter.provider.model
+            )
         workspace_root = config.workspace_root.as_posix()
         os_name = platform.system()
         today = date.today().isoformat()
@@ -2552,10 +3663,17 @@ class OpenAICompatibleReactAdapter:
         budget = max(1, int(config.adapter.max_iterations))
 
         if "run_command" in tool_names and commands:
+            wrappers = [command for command in commands if command in _WRAPPER_NAMES]
+            wrapper_hint = (
+                f" Project build wrappers ({', '.join(wrappers)}) run from the project, e.g. "
+                f'["./{wrappers[0]}", "test"].'
+                if wrappers
+                else ""
+            )
             commands_line = (
                 "run_command executes one allowlisted program with an argv list and no shell "
                 "(no pipes, redirects or cd). Allowlisted executables: "
-                f"{', '.join(commands)}. Nothing else can be run."
+                f"{', '.join(commands)}. Nothing else can be run.{wrapper_hint}"
             )
         else:
             commands_line = "Commands cannot be run in this session."
@@ -2575,12 +3693,7 @@ class OpenAICompatibleReactAdapter:
             policy_line = (
                 "Approval policy: tools run immediately; file edits are applied as soon as you call them."
             )
-        plan_line = (
-            "For tasks with three or more steps, call update_plan before you start and keep it "
-            "current: send the complete list each time and mark steps completed as you finish them."
-            if "update_plan" in tool_names
-            else ""
-        )
+        plan_line = prompting.plan_guidance(prompt_profile) if "update_plan" in names else ""
         tool_list = ", ".join(tool_names) if tool_names else "none"
         # A researcher-authored profile prompt replaces the persona paragraph
         # (ported from origin/sys_prompt). The operational instructions that
@@ -2618,19 +3731,22 @@ class OpenAICompatibleReactAdapter:
             "How to work",
             "1. Explore first. Locate code with glob_files, grep_files or list_files, then read_file the "
             "relevant parts. Never guess paths or file contents; if something does not exist, say so.",
-            "2. Read before you edit. Prefer edit_file or replace_text with small, exact snippets (copy "
-            'the text exactly; never include the "N|" line-number prefix). Use write_file only for new '
-            "files or a deliberate full rewrite. Keep edits focused on the request: no drive-by "
-            "refactors, reformatting or new dependencies.",
+            prompting.edit_guidance(prompt_profile, names),
             "3. Verify. When run_command is available, run the relevant tests, build or linter after "
             "editing and fix what you broke. If you cannot verify, say what the user should run.",
             "4. Keep going until the task is done or you are truly blocked. Do not ask for confirmation "
-            "of routine steps; ask only when an ambiguity would change the outcome.",
+            "of routine steps; ask only when an ambiguity would change the outcome"
+            + (", and then use ask_user." if "ask_user" in names else "."),
             '5. Every tool result is JSON with a "status". On "error" or "denied", read the message and '
             'hint, adjust, and try a different approach; never repeat an identical failing call. On '
             '"rejected", drop that change and ask what the user prefers.',
             "6. Paths are workspace-relative (for example src/app.py). Do not invent absolute or "
             "container paths.",
+        ]
+        notes = prompting.profile_notes(prompt_profile)
+        if notes:
+            lines += [f"{7 + index}. {note}" for index, note in enumerate(notes)]
+        lines += [
             "",
             "Answering",
             "- For greetings or general questions, answer directly without tools.",
@@ -2638,7 +3754,197 @@ class OpenAICompatibleReactAdapter:
             "- Your final message states what changed (files), what was verified (commands and results) "
             "and what remains or needs the user's decision. Do not paste code that tools already applied.",
         ]
+        if instructions is not None:
+            lines += ["", prompting.instructions_block(instructions)]
         return "\n".join(lines)
+
+    # --------------------------------------------------------- slash commands
+
+    def _run_slash_command(
+        self,
+        command: slash_commands.ParsedCommand,
+        *,
+        memory: MemoryWindow,
+        run_id: str,
+        request_id: str,
+        cancellation_event: Event | None,
+    ) -> AdapterResult:
+        state = _TurnState()
+        harness = self._harness
+        # Study sessions only parse /status and /undo (slash_commands.available),
+        # identically in every arm. Outside studies a command whose behaviour
+        # the configuration switched off answers neutrally.
+        if command.name == "status":
+            text = self._status_text(memory)
+        elif command.name == "undo":
+            text = self._undo_last_turn(memory)
+        elif command.name == "compact" and not harness.context_summarization:
+            text = "Compacting the conversation is not available in this session."
+        elif command.name == "review" and not harness.self_review:
+            text = "Reviews are not available in this session."
+        elif command.name == "compact":
+            text = self._compact_now(memory, state, run_id=run_id, request_id=request_id, cancellation_event=cancellation_event)
+        elif command.name == "review":
+            text = self._review_session(
+                memory,
+                state,
+                focus=command.argument,
+                run_id=run_id,
+                request_id=request_id,
+                cancellation_event=cancellation_event,
+            )
+        else:  # pragma: no cover - parse() only returns known names
+            text = f"Unknown command /{command.name}."
+        if text is None:
+            return self._cancelled(memory, state)
+        self._emit_text(text, run_id=run_id, request_id=request_id, final=True, iteration=max(1, state.model_calls))
+        return AdapterResult(
+            final_response=text,
+            stop_reason="end_turn",
+            run_status="completed",
+            response_emitted=True,
+            usage=state.usage,
+        )
+
+    def _status_text(self, memory: MemoryWindow) -> str:
+        config = self._config
+        harness = self._harness
+        definitions = self._tool_registry.definitions()
+        reserve = _estimate_text_tokens(json.dumps(definitions)) + _OUTPUT_HEADROOM_TOKENS
+        used = sum(_estimate_tokens(message) for message in memory.window(reserve_tokens=reserve)) + reserve
+        if config.managed_mode:
+            # Study participants stay blind to their arm: no model, prompt
+            # profile, budgets, tools or switches.
+            percent = min(100, round(100 * used / max(1, memory.max_tokens)))
+            return "\n".join(
+                [
+                    "Session status",
+                    f"- Context: about {percent}% of the conversation window in use",
+                    f"- Undo checkpoints: {self._session_state.checkpoint_count()}",
+                ]
+            )
+        switches = [
+            name
+            for name in (
+                "self_review",
+                "verify_on_stop",
+                "context_summarization",
+                "parallel_tools",
+                "project_instructions",
+                "read_before_edit",
+                "syntax_check",
+                "loop_guard",
+                "instruction_reminders",
+                "test_output_summary",
+            )
+            if getattr(harness, name)
+        ]
+        instructions = self._project_instructions()
+        lines = [
+            "Session status",
+            f"- Model: {config.adapter.provider.model or 'not configured'} (prompt profile: {self._prompt_profile()})",
+            f"- Step budget: {config.adapter.max_iterations} model calls per message; approval policy: {config.approval_policy}",
+            f"- Context: about {used:,} of {memory.max_tokens:,} tokens in use",
+            f"- Tools: {', '.join(sorted(self._tool_registry.known_tool_names())) or 'none'}",
+            f"- Commands: {', '.join(self._allowlisted_commands()) or 'none'} "
+            f"(default timeout {int(config.commands.timeout_seconds)} s)",
+            f"- Verification: {_verification_label(harness)}",
+            f"- Enabled behaviours: {', '.join(switches) or 'none'}",
+            f"- Project instructions: {', '.join(name for name, _chars in instructions.files) if instructions else 'none'}",
+            f"- Undo checkpoints: {self._session_state.checkpoint_count()}",
+        ]
+        return "\n".join(lines)
+
+    def _undo_last_turn(self, memory: MemoryWindow) -> str:
+        outcome = self._session_state.undo_last_turn(self._tool_registry.file_tools)
+        if outcome.nothing_to_undo:
+            return "There are no file changes from this session to undo."
+        lines = ["Undid the file changes of the last turn that changed files."]
+        if outcome.restored:
+            lines.append(f"- Restored: {', '.join(outcome.restored)}")
+        if outcome.deleted:
+            lines.append(f"- Removed (created by the agent): {', '.join(outcome.deleted)}")
+        for path, reason in outcome.skipped:
+            lines.append(f"- Not changed: {path} ({reason})")
+        text = "\n".join(lines)
+        # Kept as the user's command and its result, so the model knows the
+        # files were reverted and a reopened chat replays both.
+        memory.append({"role": "user", "content": "/undo"})
+        memory.append({"role": "assistant", "content": text})
+        return text
+
+    def _compact_now(
+        self,
+        memory: MemoryWindow,
+        state: _TurnState,
+        *,
+        run_id: str,
+        request_id: str,
+        cancellation_event: Event | None,
+    ) -> str | None:
+        definitions = self._tool_registry.definitions()
+        reserve = _estimate_text_tokens(json.dumps(definitions)) + _OUTPUT_HEADROOM_TOKENS
+        before = memory.estimated_tokens()
+        outcome = self._maybe_compact(
+            self._provider(),
+            memory,
+            state,
+            reserve_tokens=reserve,
+            run_id=run_id,
+            request_id=request_id,
+            cancellation_event=cancellation_event,
+            keep_recent_units=2,
+            force=True,
+        )
+        if outcome == "cancelled":
+            return None
+        if outcome == "failed":
+            return "Could not summarise the conversation (the model call failed); nothing was changed."
+        if outcome != "compacted":
+            return "Nothing to compact yet: the conversation is still short."
+        return (
+            f"Summarised the earlier conversation into a checkpoint "
+            f"(about {before:,} → {memory.estimated_tokens():,} tokens of history)."
+        )
+
+    def _review_session(
+        self,
+        memory: MemoryWindow,
+        state: _TurnState,
+        *,
+        focus: str,
+        run_id: str,
+        request_id: str,
+        cancellation_event: Event | None,
+    ) -> str | None:
+        diff = self._session_state.session_diff(max_chars=_REVIEW_DIFF_CHARS)
+        if not diff.strip():
+            return "There are no changes from this session to review."
+        request = "Review all changes made in this session."
+        if focus:
+            request += f" Focus: {focus}"
+        try:
+            issues = self._self_review(
+                self._provider(),
+                state,
+                prompt=request,
+                answer="(review requested by the user)",
+                diff=diff,
+                run_id=run_id,
+                request_id=request_id,
+                cancellation_event=cancellation_event,
+                context_budget=memory.max_tokens,
+            )
+        except ProviderCancelled:
+            return None
+        text = (
+            f"Review of this session's changes found possible issues:\n{issues}"
+            if issues
+            else "Review of this session's changes found no important issues."
+        )
+        memory.append({"role": "user", "content": "/review" + (f" {focus}" if focus else "")})
+        memory.append({"role": "assistant", "content": text})
+        return text
 
     def _parse_output(
         self,
@@ -2766,6 +4072,7 @@ class OpenAICompatibleReactAdapter:
         request_id: str,
         duration_ms: float,
         provider_turn: ProviderTurn,
+        purpose: str = "turn",
     ) -> None:
         usage = provider_turn.usage
         self._telemetry.record(
@@ -2779,6 +4086,7 @@ class OpenAICompatibleReactAdapter:
                 "finish_reason": provider_turn.finish_reason,
                 "usage": usage,
                 "usage_estimated": provider_turn.usage_estimated,
+                "call_purpose": purpose,
             },
             metrics={
                 "duration_ms": round(duration_ms, 3),
@@ -2801,6 +4109,7 @@ def create_agent_adapter(
     command_tools: WorkspaceCommandTools,
     event_sink: AgentEventSink | None = None,
     mcp_tools: StdioMcpToolBroker | None = None,
+    session_state: SessionToolState | None = None,
 ) -> AgentAdapter:
     if config.adapter.name == "openai_compatible_react":
         return OpenAICompatibleReactAdapter(
@@ -2821,8 +4130,11 @@ def create_agent_adapter(
                 mcp_tools=mcp_tools,
                 telemetry=telemetry,
                 workspace_root=config.workspace_root,
+                session_state=session_state,
+                harness=getattr(config, "harness", None),
             ),
             event_sink=event_sink,
+            session_state=session_state,
         )
     return DeterministicEchoAdapter()
 
@@ -2830,8 +4142,10 @@ def create_agent_adapter(
 # ------------------------------------------------------- loop helpers
 
 
-def _assistant_tool_call_message(tool_calls: list[ToolCall], *, text: str | None) -> dict[str, Any]:
-    return {
+def _assistant_tool_call_message(
+    tool_calls: list[ToolCall], *, text: str | None, runtime: str | None = None
+) -> dict[str, Any]:
+    message: dict[str, Any] = {
         "role": "assistant",
         "content": text or "",
         "tool_calls": [
@@ -2843,6 +4157,77 @@ def _assistant_tool_call_message(tool_calls: list[ToolCall], *, text: str | None
             for tool_call in tool_calls
         ],
     }
+    if runtime is not None:
+        # Issued by the runtime itself (verify-on-stop), not chosen by the model.
+        message["code4me_runtime"] = runtime
+    return message
+
+
+def _verification_label(harness: HarnessOptions) -> str:
+    if not harness.verify_on_stop:
+        return "off"
+    if harness.verify_command:
+        return f"the runtime runs {' '.join(harness.verify_command)} after changes"
+    return "the agent is asked to verify after changes"
+
+
+def _asked_question(tool_calls: list[ToolCall], results: list[dict[str, Any]]) -> str | None:
+    """The ask_user question of this batch, formatted as the turn's final message."""
+    for call, result in zip(tool_calls, results):
+        if call.name != "ask_user" or result.get("status") != "ok":
+            continue
+        question = str(result.get("question") or "").strip()
+        options = [str(option) for option in result.get("options") or [] if str(option).strip()]
+        if not question:
+            continue
+        if options:
+            listed = "\n".join(f"{number}. {option}" for number, option in enumerate(options, start=1))
+            return f"{question}\n\n{listed}"
+        return question
+    return None
+
+
+def _review_issues(text: str | None) -> str | None:
+    """The reviewer's issue bullets, or None.
+
+    The reviewer is asked for NO_ISSUES or '- ' bullets; a reply without
+    bullets (NO_ISSUES, or prose that ignored the format) is not actionable
+    and must not cost the agent a fix iteration.
+    """
+    if not text:
+        return None
+    bullets = [line.strip() for line in text.splitlines() if re.match(r"^\s*[-*•]\s+\S", line)]
+    if not bullets:
+        return None
+    return "\n".join(bullets[:5])[:2000]
+
+
+def _render_units_for_summary(units: list[list[dict[str, Any]]], *, max_chars: int) -> str:
+    """A compact transcript of the units to summarise, newest content kept when capped."""
+    lines: list[str] = []
+    for unit in units:
+        for message in unit:
+            role = message.get("role")
+            content = str(message.get("content") or "")
+            if role == "tool":
+                lines.append(f"TOOL RESULT ({message.get('name', 'tool')}): {content[:1500]}")
+            elif role == "assistant" and message.get("tool_calls"):
+                if content.strip():
+                    lines.append(f"ASSISTANT: {content[:2000]}")
+                for call in message.get("tool_calls") or []:
+                    if isinstance(call, dict):
+                        arguments = json.dumps(call.get("arguments", {}), sort_keys=True, default=str)
+                        lines.append(f"TOOL CALL {call.get('name')}: {arguments[:600]}")
+            elif role == "user" and message.get("code4me_runtime") == "checkpoint":
+                lines.append(f"EARLIER CHECKPOINT:\n{content[:6000]}")
+            elif role == "user":
+                lines.append(f"USER: {content[:4000]}")
+            else:
+                lines.append(f"ASSISTANT: {content[:3000]}")
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = "[earliest part omitted]\n" + text[-max_chars:]
+    return text
 
 
 def _tool_message(tool_call: ToolCall, result: dict[str, Any]) -> dict[str, Any]:
@@ -2851,6 +4236,15 @@ def _tool_message(tool_call: ToolCall, result: dict[str, Any]) -> dict[str, Any]
         "tool_call_id": tool_call.tool_call_id,
         "name": tool_call.name,
         "content": json.dumps(result, sort_keys=True, default=str),
+    }
+
+
+def _not_run_result(tool_call: ToolCall, reason: str) -> dict[str, Any]:
+    return {
+        "status": "skipped",
+        "reason": reason,
+        "tool_name": tool_call.name,
+        "tool_call_id": tool_call.tool_call_id,
     }
 
 
@@ -3107,7 +4501,7 @@ def _safe_tool_event_metadata(
     try:
         return _tool_event_metadata(tool_name, values, workspace_root=workspace_root)
     except Exception:  # noqa: BLE001
-        if tool_name == "update_plan":
+        if tool_name in tool_catalog.NO_CARD_TOOLS:
             return None
         return {
             "kind": tool_kind(tool_name),
@@ -3124,8 +4518,32 @@ def _tool_event_metadata(
     workspace_root: Path | None = None,
 ) -> dict[str, Any] | None:
     kind = tool_kind(tool_name)
-    if tool_name == "update_plan":
+    if tool_name in tool_catalog.NO_CARD_TOOLS:
         return None
+    if tool_name == "apply_patch":
+        actions = values.get("_patch") or []
+        targets = [
+            str(getattr(action, "move_to", None) or getattr(action, "path", ""))
+            for action in actions
+        ]
+        targets = [target for target in targets if target]
+        absolute = tuple(
+            item for item in (_absolute_path(workspace_root, target) for target in targets) if item
+        )
+        if not targets:
+            title = "Apply patch"
+        elif len(targets) == 1:
+            title = f"Apply patch to {targets[0]}"
+        else:
+            title = f"Apply patch to {targets[0]} and {len(targets) - 1} more file{'s' if len(targets) > 2 else ''}"
+        return {
+            "kind": kind,
+            "title": title,
+            "path": absolute[0] if absolute else None,
+            "locations": absolute or None,
+            "content_text": title,
+            "raw_input": {"files": targets, "file_count": len(targets)},
+        }
     if tool_name == "read_file":
         path = str(values.get("path", "")).strip()
         title = f"Read {path}" if path else "Read file"
@@ -3309,8 +4727,22 @@ def _tool_result_summary(tool_name: str, output: dict[str, Any]) -> str | None:
                     text += f" in {duration / 1000:.1f} s"
             else:
                 return None
+            test_summary = output.get("test_summary")
+            if isinstance(test_summary, dict):
+                headline = _test_headline(test_summary)
+                if headline:
+                    text = f"{text}\n{headline}"
             tail = _output_tail(output)
             return f"{text}\n{tail}" if tail else text
+        if tool_name == "apply_patch":
+            files = output.get("files")
+            if isinstance(files, list):
+                return "; ".join(
+                    f"{item.get('action')} {item.get('move_to') or item.get('path')}"
+                    for item in files
+                    if isinstance(item, dict)
+                )
+            return None
         if tool_name == "replace_text":
             if "replacements" in output:
                 count = int(output["replacements"])
@@ -3331,6 +4763,55 @@ def _tool_result_summary(tool_name: str, output: dict[str, Any]) -> str | None:
     except (TypeError, ValueError):
         return None
     return None
+
+
+def _test_headline(test_summary: dict[str, Any]) -> str | None:
+    counts = [
+        f"{test_summary[key]} {key}"
+        for key in ("failed", "errors", "passed", "skipped")
+        if isinstance(test_summary.get(key), int) and test_summary[key]
+    ]
+    framework = test_summary.get("framework") or "tests"
+    text = f"{framework}: {', '.join(counts)}" if counts else None
+    failures = test_summary.get("failures")
+    if isinstance(failures, list) and failures:
+        names = "; ".join(str(item.get("name")) for item in failures[:5] if isinstance(item, dict))
+        text = f"{text or framework}\nFailing: {names}"
+    return text
+
+
+def _result_notes(tool_name: str, output: dict[str, Any]) -> list[str]:
+    """Warnings the model and the user should notice next to a completed edit."""
+    notes: list[str] = []
+    strategies = output.get("match_strategies")
+    if isinstance(strategies, list) and strategies:
+        fuzzy = sorted({describe_strategy(item) for item in strategies if item not in ("exact", "line_endings")})
+        if fuzzy:
+            notes.append(f"Matched {', '.join(fuzzy)}; check the diff.")
+    syntax = output.get("syntax_error")
+    problems = [syntax] if isinstance(syntax, dict) else list(output.get("syntax_errors") or [])
+    for problem in problems:
+        if isinstance(problem, dict):
+            where = f"{problem.get('path')}:" if problem.get("path") else "line "
+            notes.append(
+                f"Syntax error introduced ({problem.get('language')}, {where}{problem.get('line')}): "
+                f"{problem.get('message')}"
+            )
+    return notes
+
+
+def _completed_card_text(
+    tool_name: str,
+    output: dict[str, Any],
+    metadata: dict[str, Any] | None,
+    has_diff: bool,
+) -> str | None:
+    notes = _result_notes(tool_name, output)
+    if has_diff:
+        return "\n".join(notes) or None
+    summary = _tool_result_summary(tool_name, output) or (metadata or {}).get("content_text")
+    parts = [summary, *notes] if summary else notes
+    return "\n".join(parts) or None
 
 
 def _output_tail(output: dict[str, Any], max_lines: int = 40, max_chars: int = 2000) -> str:

@@ -74,3 +74,56 @@ def test_inference_policy_accepts_new_tools_and_still_rejects_unlisted_names():
     with pytest.raises(HTTPException) as frozen:
         _enforce_inference_tool_policy(legacy_only, policy_tools=["read_file", "search_files"])
     assert frozen.value.status_code == 403
+
+
+# Run 2026-09-26-agent-harness-tiers, issue 01: the server accepts the multi-file
+# patch tool and the structured question tool for built-in profiles.
+PATCH_AND_QUESTION_TOOLS = ["apply_patch", "ask_user"]
+
+
+def test_catalogue_accepts_the_patch_and_question_tools():
+    import json
+    import uuid
+
+    from backend.routers.agent.profiles import AgentProfilePayload, list_available_tools
+    from backend.routers.analytics.auth_utils import AuthenticatedUser
+
+    assert set(PATCH_AND_QUESTION_TOOLS) <= CODE4ME2_AGENT_TOOLS
+    assert set(PATCH_AND_QUESTION_TOOLS) <= tools_for_framework("code4me2-agent")
+    assert not set(PATCH_AND_QUESTION_TOOLS) & tools_for_framework("goose")
+    assert not tools_for_framework("codex")
+
+    researcher = AuthenticatedUser(
+        user_id=uuid.uuid4(),
+        is_admin=False,
+        can_research=True,
+        email="catalogue@example.com",
+        name="Catalogue",
+    )
+    served = json.loads(
+        list_available_tools(framework_version="code4me2-agent", current_user=researcher).body
+    )
+    assert set(PATCH_AND_QUESTION_TOOLS) <= set(served["tools"])
+
+    common = {
+        "name": "arm",
+        "model": "model",
+        "approval_policy": "auto",
+        "max_steps": 3,
+        "connection_id": uuid.uuid4(),
+        "tools_json": json.dumps(PATCH_AND_QUESTION_TOOLS),
+    }
+    assert json.loads(AgentProfilePayload(**common).tools_json) == PATCH_AND_QUESTION_TOOLS
+    with pytest.raises(ValueError):
+        AgentProfilePayload(**common, framework_version="goose")
+
+    full = RUNTIME_TOOLS + PATCH_AND_QUESTION_TOOLS
+    assert _valid_managed_policy_snapshot(_policy(full)) is True
+    request = {"tools": [_definition("apply_patch"), _definition("ask_user")]}
+    _enforce_inference_tool_policy(request, policy_tools=full)
+    assert [tool["function"]["name"] for tool in request["tools"]] == PATCH_AND_QUESTION_TOOLS
+    # A frozen profile that did not select them still cannot advertise them.
+    for name in PATCH_AND_QUESTION_TOOLS:
+        with pytest.raises(HTTPException) as denied:
+            _enforce_inference_tool_policy({"tools": [_definition(name)]}, policy_tools=RUNTIME_TOOLS)
+        assert denied.value.status_code == 403

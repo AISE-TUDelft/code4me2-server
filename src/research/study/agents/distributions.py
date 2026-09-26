@@ -29,7 +29,13 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Mapping, Optional
 
-from agents.tools import tools_for_framework
+from agents.tools import (
+    HARNESS_PROFILE_FIELDS,
+    tools_for_framework,
+    validate_command_timeout_seconds,
+    validate_commands_allowlist,
+    validate_harness_options,
+)
 from research.study.protocol.enums import ReleaseResolutionStatus
 from research.study.protocol.models import ResolvedAgentConfig
 from research.study.protocol.validation import DistributionResolution
@@ -263,7 +269,11 @@ def validate_profile_configuration(
       configuration binding;
     * for BYOA, ``max_context_tokens`` and ``system_prompt`` must stay unset: no
       binding can forward them to an externally installed agent, so they would
-      only be labels.
+      only be labels; the same holds for the built-in runtime's command and
+      harness settings (``commands_allowlist`` / ``command_timeout_seconds`` /
+      ``harness_options``, decision D-01);
+    * those settings must be valid, and a ``harness_options.verify_command``
+      must run a program the profile's own ``commands_allowlist`` lists.
 
     Raises :class:`ProfileConfigurationError` (a ``ValueError`` whose ``str`` is
     ``"CODE: message"``). Nothing is mutated and no database session is needed.
@@ -346,6 +356,17 @@ def validate_profile_configuration(
                 "agents (goose/codex); leave it empty for a BYOA runtime",
                 "system_prompt",
             )
+        # The built-in runtime's command allowlist, command timeout and
+        # harness switches (D-01) only reach the managed runtime through its
+        # run policy; an external agent enforces its own.
+        for field in HARNESS_PROFILE_FIELDS:
+            if getattr(profile, field, None) is not None:
+                raise ProfileConfigurationError(
+                    "BYOA_FIELD_UNSUPPORTED",
+                    f"{field} is not forwarded to externally installed agents "
+                    "(goose/codex); leave it empty for a BYOA runtime",
+                    field,
+                )
 
         # ISSUE-03 Path A: every frozen profile field the profile actually sets
         # must be covered by a declared translation. A field with no binding is
@@ -418,6 +439,41 @@ def validate_profile_configuration(
             "approval_policy must be one of " + ", ".join(ALL_APPROVAL_OPTIONS),
             "approval_policy",
         )
+
+    _validate_harness_settings(profile)
+
+
+def _validate_harness_settings(profile: Any) -> None:
+    """Refuse invalid built-in runtime command/harness settings (D-01).
+
+    The profile API validates each field's shape first; this is the merged-state
+    check shared by create, update and the study freeze (which also sees rows
+    written around the API), including the verify-command-is-allowlisted rule.
+    """
+    allowlist = getattr(profile, "commands_allowlist", None)
+    if allowlist is not None:
+        try:
+            validate_commands_allowlist(allowlist)
+        except ValueError as error:
+            raise ProfileConfigurationError(
+                "COMMANDS_ALLOWLIST_INVALID", str(error), "commands_allowlist"
+            ) from error
+    timeout = getattr(profile, "command_timeout_seconds", None)
+    if timeout is not None:
+        try:
+            validate_command_timeout_seconds(timeout)
+        except ValueError as error:
+            raise ProfileConfigurationError(
+                "COMMAND_TIMEOUT_INVALID", str(error), "command_timeout_seconds"
+            ) from error
+    options = getattr(profile, "harness_options", None)
+    if options is not None:
+        try:
+            validate_harness_options(options, commands_allowlist=allowlist)
+        except ValueError as error:
+            raise ProfileConfigurationError(
+                "HARNESS_OPTIONS_INVALID", str(error), "harness_options"
+            ) from error
 
 
 def _document_mode(release: Any, document: Optional[Mapping[str, Any]]) -> str:
