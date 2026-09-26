@@ -6,7 +6,7 @@ on:
       version:
         description: Runtime version to stamp into the manifest
         required: true
-        default: 0.1.0
+        default: 0.0.1
       publishRelease:
         description: Publish immutable runtime-v<version> release assets
         type: boolean
@@ -14,6 +14,16 @@ on:
         default: false
   push:
     paths:
+      - .github/workflows/build-managed-runtime.yml
+      - src/code4me2_agent/**
+      - packaging/**
+      - src/research/study/agents/**
+      - tests/test_participant_release.py
+      - pyproject.toml
+      - tests/code4me2_agent/**
+  pull_request:
+    paths:
+      - .github/workflows/build-managed-runtime.yml
       - src/code4me2_agent/**
       - packaging/**
       - src/research/study/agents/**
@@ -45,6 +55,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            packaging/requirements-runtime.lock
+            packaging/requirements-build.lock
+            packaging/requirements-test.lock
       - name: Verify native runner architecture
         shell: bash
         env:
@@ -66,8 +81,17 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           version="$RELEASE_VERSION"
-          if [ -z "$version" ]; then version="0.1.0-dev.${GITHUB_SHA:0:12}"; fi
+          if [ -z "$version" ]; then version="0.0.1-dev.${GITHUB_SHA:0:12}"; fi
           python packaging/stamp_runtime_version.py --version "$version"
+      - name: Prepare static OpenSSL for Intel macOS
+        if: matrix.platform == 'macos-x64'
+        shell: bash
+        run: |
+          brew install openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "OPENSSL_STATIC=1" >> "$GITHUB_ENV"
+          echo "PIP_NO_BINARY=cryptography" >> "$GITHUB_ENV"
+          echo "PIP_NO_CACHE_DIR=true" >> "$GITHUB_ENV"
       - name: Install locked runtime and packaging toolchain
         shell: bash
         run: |
@@ -81,7 +105,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/src
         run: |
           python -m pip install -r packaging/requirements-test.lock
-          python -m pytest -q tests/code4me2_agent
+          python -m pytest -q tests/code4me2_agent tests/test_participant_release.py
       - name: Build one-folder bundle
         run: python -m PyInstaller --clean --noconfirm packaging/code4me2-agent.spec
       - name: Sign macOS runtime
@@ -137,7 +161,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           version="$RELEASE_VERSION"
-          if [ -z "$version" ]; then version="0.1.0-dev.${GITHUB_SHA:0:12}"; fi
+          if [ -z "$version" ]; then version="0.0.1-dev.${GITHUB_SHA:0:12}"; fi
           python -m research.study.agents.participant_release native \
             --skip-build --version "$version" --platform "${{ matrix.platform }}" \
             --server-commit "$GITHUB_SHA" --output native-release
@@ -160,13 +184,11 @@ jobs:
           name: code4me-agent-${{ matrix.platform }}
           path: native-release/*
           if-no-files-found: error
+          retention-days: 1
 
-  publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.publishRelease
+  assemble:
     needs: build
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -177,12 +199,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: packaging/requirements-runtime.lock
       - run: python -m pip install -r packaging/requirements-runtime.lock
       - name: Create pinned release metadata
         run: |
           PYTHONPATH=src python -m research.study.agents.participant_release merge \
             --directory release-assets \
             --output release-assets/code4me-managed-runtime-release.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: code4me-managed-runtime-release
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publishRelease
+    needs: assemble
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: code4me-managed-runtime-release
+          path: release-assets
       - name: Publish immutable runtime release
         env:
           GH_TOKEN: ${{ github.token }}

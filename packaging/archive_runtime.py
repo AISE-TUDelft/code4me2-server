@@ -14,7 +14,7 @@ def collect_tree(root: Path) -> dict[str, Path]:
     entries: dict[str, Path] = {}
     root_real = root.resolve()
 
-    def visit(directory: Path, archive_prefix: Path, ancestors: frozenset[Path]) -> None:
+    def visit(directory: Path, archive_prefix: Path, ancestors: frozenset[Path], external_tree: bool = False) -> None:
         real_directory = directory.resolve()
         if real_directory in ancestors:
             return
@@ -22,12 +22,18 @@ def collect_tree(root: Path) -> dict[str, Path]:
         for child in sorted(directory.iterdir(), key=lambda item: item.name):
             archive_path = (archive_prefix / child.name).as_posix()
             resolved_child = child.resolve()
-            if not resolved_child.is_relative_to(root_real):
+            if not resolved_child.is_relative_to(root_real) and not external_tree:
+                if child.is_symlink() and child.is_dir():
+                    visit(resolved_child, archive_prefix / child.name, next_ancestors, True)
+                    continue
+                if child.is_symlink() and child.is_file():
+                    entries.setdefault(archive_path, resolved_child)
+                    continue
                 raise SystemExit(
-                    f"runtime bundle contains a link outside its root: {child}"
+                    f"runtime bundle contains an unsupported external entry: {child}"
                 )
             if child.is_dir():
-                visit(child, archive_prefix / child.name, next_ancestors)
+                visit(child, archive_prefix / child.name, next_ancestors, external_tree)
             elif child.is_file():
                 entries.setdefault(archive_path, resolved_child)
 

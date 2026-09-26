@@ -168,7 +168,7 @@ def test_output_is_head_and_tail_truncated_with_marker(tmp_path, monkeypatch):
     )
 
     assert result.output_truncated is True
-    assert result.stdout.startswith("line 0\n")
+    assert result.stdout.startswith(f"line 0{os.linesep}")
     assert result.stdout.rstrip().endswith("line 19999")
     assert "bytes truncated ...]" in result.stdout
     assert len(result.stdout.encode("utf-8")) < 4096 + 64

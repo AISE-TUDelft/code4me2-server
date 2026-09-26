@@ -10,10 +10,11 @@ everything into **one recipe document**:
 * the BYOA agent declarations (Goose, Codex, ...);
 * the self-check verdict (``tests``).
 
-The recipe is the single source of truth: the plugin embeds it as its runtime
-manifest and the server imports it, verifying the recipe's bytes against the
-archives. There is no extracted-file inventory and no separate manifest copy to
-keep in sync. A self-check that did not pass produces no recipe.
+The recipe is the single source of truth: the server imports it, verifying its
+declared ZIPs against the archives. The plugin receives a package-path
+projection of the recipe whose archive names point at its bundled resources.
+There is no extracted-file inventory. A self-check that did not pass produces
+no recipe.
 """
 from __future__ import annotations
 
@@ -32,7 +33,6 @@ from .models import AdapterRef, AgentConfigBinding, ReleaseTests, normalize_plat
 #: Canonical native platform ids. ``arm64`` is the single canonical spelling for
 #: the 64-bit ARM architecture (``aarch64`` is normalised to it at the boundary).
 PLATFORMS = ("macos-arm64", "macos-x64", "linux-x64", "windows-x64")
-FRAMEWORKS = ("code4me2-agent", "goose", "codex")
 SEMVER = r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 
 #: The one architecture spelling accepted in a recipe.
@@ -90,7 +90,7 @@ class AgentInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     framework: Literal["code4me2-agent", "goose", "codex"]
     version: str = Field(min_length=1)
-    adapter: AdapterRef
+    adapter: Optional[AdapterRef] = None
     agent_command: str | None = None
     agent_command_args: list[str] = Field(default_factory=list)
     byoa_config: list[AgentConfigBinding] = Field(default_factory=list)
@@ -103,6 +103,8 @@ class AgentInput(BaseModel):
         if self.framework != "code4me2-agent":
             if not self.agent_command:
                 raise ValueError("installed agents need an explicit ACP command")
+            if self.adapter is None:
+                raise ValueError("installed agents need an explicit adapter")
             from .distributions import missing_gateway_bindings, requires_inference_gateway
 
             if requires_inference_gateway(self.framework):
@@ -139,9 +141,10 @@ class ParticipantRecipe(BaseModel):
     profiles: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def three_agents(self):
-        if sorted(a.framework for a in self.agents) != sorted(FRAMEWORKS):
-            raise ValueError("the recipe must declare Code4Me, Goose and Codex exactly once")
+    def agent_choices(self):
+        frameworks = [agent.framework for agent in self.agents]
+        if frameworks.count("code4me2-agent") != 1 or len(frameworks) != len(set(frameworks)):
+            raise ValueError("the recipe must declare one managed agent and no duplicate agents")
         names = set()
         allowed = {"name", "model", "framework_version", "connection_id", "tools_json",
                    "approval_policy", "max_steps", "is_active", "temperature", "max_context_tokens"}
@@ -149,7 +152,7 @@ class ParticipantRecipe(BaseModel):
         for profile in self.profiles:
             if set(profile) - allowed or required - set(profile):
                 raise ValueError("profile templates must use explicit non-secret profile request fields")
-            if profile["framework_version"] not in FRAMEWORKS or not profile["name"] or profile["name"] in names:
+            if profile["framework_version"] not in frameworks or not profile["name"] or profile["name"] in names:
                 raise ValueError("profile frameworks must match the recipe and names must be unique")
             names.add(profile["name"])
             UUID(str(profile["connection_id"]))
@@ -228,7 +231,7 @@ def prepare(
             raise ValueError(f"runtime archive size mismatch: {archive}")
         os_name, arch = expected[archive].split("-")
         shutil.copyfile(source, resources / Path(archive).name)
-        artifacts.append({
+        artifact_document = {
             "runtime_id": str(projected.get("runtime_id") or "code4me-agent"),
             "version": managed.version,
             "platform": os_name,
@@ -241,11 +244,12 @@ def prepare(
                 or ("code4me2-agent.exe" if os_name == "windows" else "code4me2-agent")
             ),
             "managed_protocol": "1",
-            # The plugin verifies the bootstrap's adapter pin per artifact, so
-            # a recipe-built plugin must declare it there, not only top-level.
-            "adapter": managed.adapter.model_dump(mode="json"),
             "tests": projected.get("tests"),
-        })
+        }
+        if managed.adapter is not None:
+            # The plugin verifies the bootstrap's adapter pin per artifact.
+            artifact_document["adapter"] = managed.adapter.model_dump(mode="json")
+        artifacts.append(artifact_document)
 
     agents: list[dict[str, Any]] = []
     for agent in recipe.agents:
@@ -276,11 +280,12 @@ def prepare(
         "plugin_version": recipe.plugin_version,
         "plugin_commit": recipe.plugin_commit,
         "server_commit": recipe.server_commit,
-        "adapter": managed.adapter.model_dump(mode="json"),
         "artifacts": artifacts,
         "agents": agents,
         "profiles": profiles,
     }
+    if managed.adapter is not None:
+        document["adapter"] = managed.adapter.model_dump(mode="json")
     from .manifest_import import build_manifest_release
 
     build_manifest_release(document, archives={a["archive"]: resources / a["archive"] for a in artifacts})
@@ -302,19 +307,20 @@ def prepare(
 
 def runtime_manifest_for_plugin(document: dict) -> dict:
     """The prepared recipe as the plugin's bundled ``code4me-runtime/manifest.json``."""
-    return {
+    manifest = {
         "manifest_version": 1,
         "runtime_version": document["runtime_version"],
         "managed_protocol_version": document["managed_protocol_version"],
         "server_commit": document.get("server_commit"),
         "plugin_commit": document.get("plugin_commit"),
-        "adapter": document.get("adapter"),
         "artifacts": [
             {**artifact, "archive": f"code4me-runtime/{artifact['archive']}"}
             for artifact in document["artifacts"]
         ],
     }
-
+    if "adapter" in document:
+        manifest["adapter"] = document["adapter"]
+    return manifest
 
 def load_prepared(output: Path) -> dict:
     """Catch changed/missing prepared inputs before building or any API write."""

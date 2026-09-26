@@ -396,7 +396,7 @@ def test_apply_text_edits_rejects_empty_or_identical_edits():
 
 def test_delete_file_removes_file_and_records_before_content(tmp_path):
     tools, workspace, captured = _make_tools(tmp_path, raw_capture=True)
-    _write(workspace, "gone.txt", "bye\n")
+    _write(workspace, "gone.txt", b"bye\n", binary=True)
 
     result = tools.delete_file("gone.txt")
 
