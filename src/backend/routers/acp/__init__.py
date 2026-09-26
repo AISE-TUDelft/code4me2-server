@@ -67,7 +67,7 @@ from backend.routers.analytics.auth_utils import (
 )
 from backend.routers.research import access
 from database import crud
-from research.analysis.operations import store as operations_store
+from research.budget.meter import InferenceMeter
 from research.runtime.sessions import store as session_store
 from research.study.agents.enums import MANAGED_RUNTIME_FRAMEWORK
 from utils import create_uuid
@@ -75,58 +75,21 @@ from utils import create_uuid
 router = APIRouter()
 
 
-def _active_enrollment_id(db, *, account_id, study_id):
-    """Resolve the account's live enrollment id for kill-switch scoping.
-
-    Best-effort: ``None`` (no participant, no active enrollment, or a store
-    error) simply means the enrollment-scoped kill switch cannot be matched,
-    and the study-scoped check plus ``require_live_enrollment`` stay decisive.
-    """
-    if account_id is None:
-        return None
-    try:
-        from research.participants import identity as identity_store
-        from research.participants.enums import EnrollmentStatus
-
-        participant = identity_store.get_participant_by_account(db, account_id)
-        if participant is None:
-            return None
-        for row in identity_store.list_enrollments(db, participant.participant_id):
-            if row.status != EnrollmentStatus.ACTIVE.value:
-                continue
-            if study_id is not None and row.study_id != study_id:
-                continue
-            return row.enrollment_id
-    except Exception:  # noqa: BLE001 - the funded gate below is decisive
-        return None
-    return None
-
-
-def _require_funded_access(
-    db, *, account_id, study_id, enrollment_id=None
-) -> None:
+def _require_funded_access(db, *, account_id, study_id, enrollment_id=None):
     """Re-check live enrollment/window/kill switch for a study-funded operation.
 
-    The single funded gate for ACP paths: the account must have an ACTIVE
-    enrollment, the study must not be ``STUDY_STOPPED`` and must still be open,
-    and no operator kill switch may be engaged — at study scope or for the
-    account's own enrollment. A previously issued run/capability never bypasses
-    current server state.
+    The single funded gate for ACP paths (``access.require_funded_access``):
+    the account must have an ACTIVE enrollment, the study must not be
+    ``STUDY_STOPPED`` and must still be open, and no operator kill switch may be
+    engaged — at study scope or for that very enrollment. A previously issued
+    run/capability never bypasses current server state. Returns the live
+    enrollment row so callers can meter the call against its budget.
+    ``enrollment_id`` is accepted for call-site compatibility; the switch is
+    always scoped to the enrollment the gate resolves.
     """
-    scoped_enrollment_id = enrollment_id
-    if scoped_enrollment_id is None:
-        scoped_enrollment_id = _active_enrollment_id(
-            db, account_id=account_id, study_id=study_id
-        )
-    kill_switch_check = operations_store.db_kill_switch_check(
-        db, study_id=study_id, enrollment_id=scoped_enrollment_id
-    )
     try:
-        access.require_live_enrollment(
-            db,
-            account_id=account_id,
-            study_id=study_id,
-            kill_switch_check=kill_switch_check,
+        return access.require_funded_access(
+            db, account_id=account_id, study_id=study_id
         )
     except access.FundedAccessRefused as exc:
         raise HTTPException(
@@ -135,15 +98,16 @@ def _require_funded_access(
         ) from exc
 
 
-def _require_funded_task(db, task) -> None:
+def _require_funded_task(db, task):
     """Re-check live enrollment/window/kill switch for a study-funded task.
 
     Applied to the managed run replay and inference paths so a previously issued
-    run/capability never bypasses current server state.
+    run/capability never bypasses current server state. Returns the live
+    enrollment row, or ``None`` for a non-research task.
     """
     if getattr(task, "study_id", None) is None:
-        return
-    _require_funded_access(
+        return None
+    return _require_funded_access(
         db,
         account_id=getattr(task, "owner_user_id", None),
         study_id=task.study_id,
@@ -196,7 +160,7 @@ async def acp_chat_completions(
             raise HTTPException(status_code=503, detail="No active agent profile is configured.")
         # Live enrollment/window/kill-switch gate BEFORE provider resolution: a
         # stopped or closed study never reaches a provider connection.
-        _require_funded_access(
+        enrollment = _require_funded_access(
             db, account_id=user_uuid, study_id=assignment.study_id
         )
         profile = assignment.profile
@@ -226,16 +190,58 @@ async def acp_chat_completions(
     payload["model"] = profile.model
     if profile.temperature is not None:
         payload["temperature"] = profile.temperature
-    async with httpx.AsyncClient(timeout=120) as client:
-        upstream_response = await client.post(
-            upstream.endpoint(responses_api=False),
-            json=payload,
-            headers={"Authorization": f"Bearer {upstream.api_key}"},
+    # Research budgets: reserve the worst-case cost before the call, settle the
+    # actual usage afterwards (or void/forfeit the hold, see the meter).
+    meter = InferenceMeter(
+        app=app,
+        enrollment_id=enrollment.enrollment_id,
+        study_id=assignment.study_id,
+        connection_id=connection.connection_id,
+        model=profile.model,
+        entry_point="acp_chat_completions",
+    )
+    refusal = await meter.reserve(
+        payload, request_id=str(uuid.uuid4()), upstream_base_url=upstream.base_url
+    )
+    if refusal is not None:
+        return refusal
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            upstream_response = await client.post(
+                upstream.endpoint(responses_api=False),
+                json=payload,
+                headers={"Authorization": f"Bearer {upstream.api_key}"},
+            )
+    except httpx.HTTPError as error:
+        await meter.resolve_transport_error(error)
+        return JSONResponse(
+            {
+                "error": {
+                    "message": (
+                        "The model provider could not be reached "
+                        f"({type(error).__name__}). Try again shortly."
+                    ),
+                    "type": "upstream_unavailable",
+                    "code": 502,
+                }
+            },
+            status_code=502,
+        )
+    if upstream_response.status_code >= 400:
+        await meter.resolve_upstream_error(upstream_response.status_code)
+    else:
+        try:
+            upstream_json = upstream_response.json()
+        except ValueError:
+            upstream_json = None
+        await meter.resolve_response(
+            upstream_json, upstream_status=upstream_response.status_code
         )
     return Response(
         content=upstream_response.content,
         status_code=upstream_response.status_code,
         media_type=upstream_response.headers.get("content-type", "application/json"),
+        headers=meter.response_headers(),
     )
 
 
@@ -403,10 +409,8 @@ def prepare_acp_grant(
     if user_id is not None:
         db = app.get_db_session()
         try:
-            kill_switch_check = operations_store.db_kill_switch_check(db)
-            access.require_live_enrollment(
-                db, account_id=user_id, kill_switch_check=kill_switch_check
-            )
+            # Study- and enrollment-scoped kill switches both refuse the grant.
+            access.require_funded_access(db, account_id=user_id)
         except access.FundedAccessRefused as exc:
             raise HTTPException(
                 status_code=403,
@@ -1084,7 +1088,7 @@ async def run_managed_inference(
     try:
         task = _require_managed_task(db, body, scope)
         # Live enrollment/window/kill-switch gate for funded managed inference.
-        _require_funded_task(db, task)
+        enrollment = _require_funded_task(db, task)
         policy = task.policy_snapshot
         if not _valid_managed_policy_snapshot(policy):
             raise HTTPException(status_code=503, detail="Managed run policy is unavailable")
@@ -1113,11 +1117,28 @@ async def run_managed_inference(
             "framework_version": task.framework_version,
             "connection": connection,
             "content_included": bool(policy.get("store_agent_content", False)),
+            "study_id": getattr(task, "study_id", None),
+            "enrollment_id": None if enrollment is None else enrollment.enrollment_id,
+            "research_session_id": getattr(task, "research_session_id", None),
         }
     finally:
         db.close()
 
     from agents import inference
+
+    # Research budgets: a study-funded managed call is metered against the
+    # participant's balance (reserve → forward → settle/void/forfeit).
+    meter = None
+    if snapshot["enrollment_id"] is not None:
+        meter = InferenceMeter(
+            app=app,
+            enrollment_id=snapshot["enrollment_id"],
+            study_id=snapshot["study_id"],
+            connection_id=snapshot["connection"].connection_id,
+            model=snapshot["model"],
+            entry_point="acp_inference",
+            research_session_id=snapshot["research_session_id"],
+        )
 
     model_request = dict(body.request)
     model_request["model"] = snapshot["model"]
@@ -1143,6 +1164,7 @@ async def run_managed_inference(
         profile_tools_json=snapshot["tools_json"],
         content_included=snapshot["content_included"],
         record_observation_events=False,
+        meter=meter,
         app=app,
     )
 

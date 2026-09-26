@@ -1553,6 +1553,69 @@ def delete_provider_connection(db: Session, connection_id: uuid.UUID) -> bool:
     return True
 
 
+def list_model_prices(
+    db: Session, connection_id: uuid.UUID
+) -> List[db_schemas.ProviderModelPrice]:
+    """Price rows of one connection, ordered by model name."""
+    return (
+        db.query(db_schemas.ProviderModelPrice)
+        .filter(db_schemas.ProviderModelPrice.connection_id == connection_id)
+        .order_by(db_schemas.ProviderModelPrice.model)
+        .all()
+    )
+
+
+def list_model_prices_by_connection(
+    db: Session,
+) -> dict:
+    """``{connection_id: {model: price_row}}`` for every connection."""
+    result: dict = {}
+    for row in db.query(db_schemas.ProviderModelPrice).all():
+        result.setdefault(row.connection_id, {})[row.model] = row
+    return result
+
+
+def replace_model_prices(
+    db: Session,
+    connection_id: uuid.UUID,
+    prices: dict,
+    *,
+    allowed_models: Optional[List[str]] = None,
+    updated_by: Optional[str] = None,
+) -> List[db_schemas.ProviderModelPrice]:
+    """Upsert the given ``{model: {input, output, cached_input}}`` prices.
+
+    A ``None`` value deletes that model's price. Price rows for models no
+    longer in ``allowed_models`` are deleted too, so a renamed model never
+    keeps a stale price. Commits.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    existing = {row.model: row for row in list_model_prices(db, connection_id)}
+    for model, price in prices.items():
+        row = existing.get(model)
+        if price is None:
+            if row is not None:
+                db.delete(row)
+            continue
+        if row is None:
+            row = db_schemas.ProviderModelPrice(connection_id=connection_id, model=model)
+            db.add(row)
+        row.input_usd_per_million = price["input_usd_per_million"]
+        row.output_usd_per_million = price["output_usd_per_million"]
+        row.cached_input_usd_per_million = price.get("cached_input_usd_per_million")
+        row.updated_at = now
+        row.updated_by = updated_by
+    if allowed_models is not None:
+        allowed = set(allowed_models)
+        for model, row in existing.items():
+            if model not in allowed and model not in prices:
+                db.delete(row)
+    db.commit()
+    return list_model_prices(db, connection_id)
+
+
 def count_profiles_for_connection(db: Session, connection_id: uuid.UUID) -> int:
     """Agent profiles (active or archived) that reference one connection.
 

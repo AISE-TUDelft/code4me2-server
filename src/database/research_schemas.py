@@ -27,6 +27,8 @@ purely from canonical events and are not persisted.
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
@@ -259,6 +261,209 @@ class StudyAssignment(Base):
     profile_snapshot_json = Column(JSONB, nullable=False)
     status = Column(String, nullable=False, default="ACTIVE")
     assigned_at = Column(DateTime(timezone=True), nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# Participant inference budgets (shared provider key)
+# ---------------------------------------------------------------------------
+
+#: Unit stored on a balance row. Amounts are unit-agnostic integers; only the
+#: pricing layer knows about USD, which keeps a later switch to tokens local.
+BUDGET_UNIT_MICRO_USD = "micro_usd"
+#: ``limit_source`` values for :class:`EnrollmentInferenceBalance`.
+LIMIT_SOURCE_STUDY_DEFAULT = "STUDY_DEFAULT"
+LIMIT_SOURCE_ADJUSTED = "ADJUSTED"
+LIMIT_SOURCE_BACKFILL = "BACKFILL"
+#: ``state`` values for :class:`InferenceReservation`.
+RESERVATION_RESERVED = "RESERVED"
+RESERVATION_SETTLED = "SETTLED"
+RESERVATION_FORFEITED = "FORFEITED"
+RESERVATION_VOIDED = "VOIDED"
+RESERVATION_EXPIRED = "EXPIRED"
+RESERVATION_STATES = (
+    RESERVATION_RESERVED,
+    RESERVATION_SETTLED,
+    RESERVATION_FORFEITED,
+    RESERVATION_VOIDED,
+    RESERVATION_EXPIRED,
+)
+#: ``kind`` values for :class:`InferenceBudgetAdjustment`.
+ADJUSTMENT_TOP_UP = "TOP_UP"
+ADJUSTMENT_SET_LIMIT = "SET_LIMIT"
+ADJUSTMENT_APPLY_DEFAULT = "APPLY_DEFAULT"
+ADJUSTMENT_BACKFILL = "BACKFILL"
+ADJUSTMENT_KINDS = (
+    ADJUSTMENT_TOP_UP,
+    ADJUSTMENT_SET_LIMIT,
+    ADJUSTMENT_APPLY_DEFAULT,
+    ADJUSTMENT_BACKFILL,
+)
+
+
+class EnrollmentInferenceBalance(Base):
+    """One participant's inference budget: the row every metered call reserves on.
+
+    ``available = limit - settled - reserved``. A call is forwarded only after
+    ``UPDATE ... SET reserved = reserved + hold WHERE available >= hold`` succeeds
+    (see ``research.budget.ledger.reserve``); that statement, not a CHECK
+    constraint, is the limit. ``settled`` may exceed ``limit`` after a
+    settlement that overshot its hold or after a limit was lowered; the next
+    reservation is then refused. ``exhausted_at`` is a display projection.
+    """
+
+    __tablename__ = "enrollment_inference_balance"
+    __table_args__ = (
+        CheckConstraint("limit_micro_usd >= 0", name="ck_enrollment_inference_balance_limit"),
+        CheckConstraint("settled_micro_usd >= 0", name="ck_enrollment_inference_balance_settled"),
+        CheckConstraint("reserved_micro_usd >= 0", name="ck_enrollment_inference_balance_reserved"),
+        Index("idx_enrollment_inference_balance_study_id", "study_id"),
+        {"schema": "public"},
+    )
+
+    enrollment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.research_enrollment.enrollment_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    study_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.study.study_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    unit = Column(
+        String, nullable=False, server_default=BUDGET_UNIT_MICRO_USD, default=BUDGET_UNIT_MICRO_USD
+    )
+    limit_micro_usd = Column(BigInteger, nullable=False)
+    settled_micro_usd = Column(BigInteger, nullable=False, server_default="0", default=0)
+    reserved_micro_usd = Column(BigInteger, nullable=False, server_default="0", default=0)
+    settled_prompt_tokens = Column(BigInteger, nullable=False, server_default="0", default=0)
+    settled_completion_tokens = Column(BigInteger, nullable=False, server_default="0", default=0)
+    call_count = Column(Integer, nullable=False, server_default="0", default=0)
+    refused_count = Column(Integer, nullable=False, server_default="0", default=0)
+    last_call_at = Column(DateTime(timezone=True), nullable=True)
+    limit_source = Column(
+        String,
+        nullable=False,
+        server_default=LIMIT_SOURCE_STUDY_DEFAULT,
+        default=LIMIT_SOURCE_STUDY_DEFAULT,
+    )
+    exhausted_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+
+class InferenceReservation(Base):
+    """Append-only ledger: one row per metered inference call.
+
+    A row is inserted in the same transaction that adds its hold to the
+    balance, so a hold never exists without a ledger row and vice versa. Exactly
+    one resolution wins (``WHERE state = 'RESERVED'``): SETTLED (actual usage),
+    VOIDED (proof nothing was generated: hold released), FORFEITED (outcome
+    unknown: full hold charged) or EXPIRED (past ``deadline_at`` when the next
+    reservation for the enrollment runs: full hold charged).
+    ``estimated_prompt_tokens`` and ``prompt_tokens`` are both kept so the
+    estimator's safety factor can be audited from the ledger.
+    """
+
+    __tablename__ = "inference_reservation"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('RESERVED', 'SETTLED', 'FORFEITED', 'VOIDED', 'EXPIRED')",
+            name="ck_inference_reservation_state",
+        ),
+        CheckConstraint("hold_micro_usd >= 0", name="ck_inference_reservation_hold"),
+        CheckConstraint(
+            "charged_micro_usd IS NULL OR charged_micro_usd >= 0",
+            name="ck_inference_reservation_charged",
+        ),
+        UniqueConstraint("request_id", name="uq_inference_reservation_request_id"),
+        Index("idx_inference_reservation_enrollment_state", "enrollment_id", "state"),
+        Index(
+            "idx_inference_reservation_open_deadline",
+            "deadline_at",
+            postgresql_where=text("state = 'RESERVED'"),
+        ),
+        Index("idx_inference_reservation_study_reserved_at", "study_id", "reserved_at"),
+        {"schema": "public"},
+    )
+
+    reservation_id = Column(UUID(as_uuid=True), primary_key=True)
+    enrollment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "public.enrollment_inference_balance.enrollment_id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    study_id = Column(UUID(as_uuid=True), nullable=False)
+    connection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.provider_connection.connection_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    model = Column(String, nullable=False)
+    entry_point = Column(String, nullable=False)
+    request_id = Column(String, nullable=False)
+    research_session_id = Column(UUID(as_uuid=True), nullable=True)
+    state = Column(String, nullable=False)
+    hold_micro_usd = Column(BigInteger, nullable=False)
+    estimated_prompt_tokens = Column(Integer, nullable=False)
+    output_cap_tokens = Column(Integer, nullable=False)
+    charged_micro_usd = Column(BigInteger, nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    cached_prompt_tokens = Column(Integer, nullable=True)
+    usage_source = Column(String, nullable=True)
+    resolution_reason = Column(String, nullable=True)
+    upstream_status = Column(Integer, nullable=True)
+    finish_reason = Column(String, nullable=True)
+    reserved_at = Column(DateTime(timezone=True), nullable=False)
+    deadline_at = Column(DateTime(timezone=True), nullable=False)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class InferenceBudgetAdjustment(Base):
+    """Append-only audit of limit changes (top-ups, set-limit, apply-default, backfill).
+
+    ``(study_id, idempotency_key)`` is unique so a retried researcher action is
+    replayed instead of applied twice; ``request_digest`` detects a reused key
+    with a different body. ``in_flight_micro_usd`` records the holds open when
+    a limit was lowered, which bounds any overshoot against the new limit.
+    """
+
+    __tablename__ = "inference_budget_adjustment"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('TOP_UP', 'SET_LIMIT', 'APPLY_DEFAULT', 'BACKFILL')",
+            name="ck_inference_budget_adjustment_kind",
+        ),
+        UniqueConstraint(
+            "study_id", "idempotency_key", name="uq_inference_budget_adjustment_idempotency"
+        ),
+        Index("idx_inference_budget_adjustment_enrollment", "enrollment_id", "occurred_at"),
+        Index("idx_inference_budget_adjustment_study", "study_id", "occurred_at"),
+        {"schema": "public"},
+    )
+
+    adjustment_id = Column(UUID(as_uuid=True), primary_key=True)
+    enrollment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "public.enrollment_inference_balance.enrollment_id", ondelete="CASCADE"
+        ),
+        nullable=False,
+    )
+    study_id = Column(UUID(as_uuid=True), nullable=False)
+    kind = Column(String, nullable=False)
+    delta_micro_usd = Column(BigInteger, nullable=False)
+    limit_before_micro_usd = Column(BigInteger, nullable=False)
+    limit_after_micro_usd = Column(BigInteger, nullable=False)
+    in_flight_micro_usd = Column(BigInteger, nullable=False, server_default="0", default=0)
+    reason = Column(String, nullable=True)
+    actor = Column(String, nullable=True)
+    idempotency_key = Column(String, nullable=True)
+    request_digest = Column(String, nullable=True)
+    occurred_at = Column(DateTime(timezone=True), nullable=False)
 
 
 # ---------------------------------------------------------------------------

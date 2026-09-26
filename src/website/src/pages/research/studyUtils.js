@@ -207,3 +207,37 @@ export const slugify = (value) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60) || "study";
+
+// Runtimes that spend from the study's shared provider key through the
+// metered relay (a budget per participant applies). Codex signs in with
+// ChatGPT and is not metered. Mirrors METERED_FRAMEWORKS in
+// research/study/agents/enums.py.
+export const METERED_RUNTIMES = ["goose", "code4me2-agent"];
+
+export const isMeteredRuntime = (framework) =>
+  METERED_RUNTIMES.includes(String(framework || "").trim().toLowerCase());
+
+export const LIMIT_SOURCE_LABELS = {
+  STUDY_DEFAULT: "Study default",
+  ADJUSTED: "Adjusted",
+};
+
+export const ADJUSTMENT_LABELS = {
+  TOP_UP: "Top-up",
+  SET_LIMIT: "New limit",
+  APPLY_DEFAULT: "Study default applied",
+};
+
+/**
+ * One key per attempt: the server replays a reused key instead of applying
+ * an adjustment twice. Uses crypto.randomUUID where available and always
+ * matches the server's ^[A-Za-z0-9_-]{8,128}$.
+ */
+export const newIdempotencyKey = (prefix = "web") => {
+  const cryptoApi = typeof window !== "undefined" ? window.crypto : undefined;
+  const random =
+    cryptoApi && typeof cryptoApi.randomUUID === "function"
+      ? cryptoApi.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}-${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}-${random}`.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 128);
+};

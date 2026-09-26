@@ -52,6 +52,7 @@ from research.runtime.bootstrap.service import (
 )
 from research.runtime.sessions import store as session_store
 from research.runtime.sessions.enums import SessionState
+from research.budget.settings import BudgetSettings
 from research.runtime.sessions.models import ResearchSessionV1
 from research.study.agents import store as registry_store
 from research.study.protocol import store as protocol_store
@@ -64,7 +65,10 @@ router = APIRouter()
 # than signing with a predictable, hardcoded secret.
 BOOTSTRAP_SIGNING_SECRET: Optional[str] = os.environ.get("BOOTSTRAP_SIGNING_SECRET")
 _SIGNER: Optional[BootstrapSigningContext] = (
-    BootstrapSigningContext(secret=BOOTSTRAP_SIGNING_SECRET)
+    BootstrapSigningContext(
+        secret=BOOTSTRAP_SIGNING_SECRET,
+        inference_capability_ttl_seconds=BudgetSettings.from_env().capability_ttl_seconds,
+    )
     if BOOTSTRAP_SIGNING_SECRET
     else None
 )

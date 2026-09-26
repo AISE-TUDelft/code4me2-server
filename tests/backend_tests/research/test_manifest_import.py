@@ -374,6 +374,16 @@ def test_import_rolls_back_all_releases_on_database_failure(tmp_path):
     manifest = _clone(MANIFEST)
     manifest["agents"] = [{"framework": "goose", "version": "1.0.0", "agent_command": "goose",
         "adapter": {"adapter_id": "goose", "version": "1"},
+        "byoa_config": [
+            {"field": "model", "transport": "env", "key": "GOOSE_MODEL"},
+            {"field": "max_steps", "transport": "env", "key": "GOOSE_MAX_TURNS"},
+            {"field": "approval_policy", "transport": "env", "key": "GOOSE_MODE"},
+            {"field": "inference_gateway_host", "transport": "env", "key": "OPENAI_HOST"},
+            {"field": "inference_gateway_base_path", "transport": "env", "key": "OPENAI_BASE_PATH"},
+            {"field": "inference_gateway_credential", "transport": "env", "key": "OPENAI_API_KEY"},
+            {"field": "provider_kind", "transport": "env", "key": "GOOSE_PROVIDER", "value_map": {"openai_compatible": "openai"}},
+            {"field": "state_dir", "transport": "env", "key": "GOOSE_PATH_ROOT"},
+        ],
         "tests": [dict(MANIFEST["artifacts"][0]["tests"], os="macos", arch="arm64")]}]
     app = MagicMock()
     db = app.get_db_session.return_value
@@ -431,3 +441,64 @@ def test_disable_and_import_are_admin_only():
         disable_release("release", user, app)
     assert error.value.status_code == 403
     app.get_db_session.assert_not_called()
+
+
+GOOSE_GATEWAY_BINDINGS = [
+    {"field": "model", "transport": "env", "key": "GOOSE_MODEL"},
+    {"field": "max_steps", "transport": "env", "key": "GOOSE_MAX_TURNS"},
+    {"field": "approval_policy", "transport": "env", "key": "GOOSE_MODE"},
+    {"field": "inference_gateway_host", "transport": "env", "key": "OPENAI_HOST"},
+    {"field": "inference_gateway_base_path", "transport": "env", "key": "OPENAI_BASE_PATH"},
+    {"field": "inference_gateway_credential", "transport": "env", "key": "OPENAI_API_KEY"},
+    {"field": "provider_kind", "transport": "env", "key": "GOOSE_PROVIDER", "value_map": {"openai_compatible": "openai"}},
+    {"field": "state_dir", "transport": "env", "key": "GOOSE_PATH_ROOT"},
+]
+
+
+def _goose_agent(bindings):
+    return {
+        "framework": "goose", "version": "1.51.0", "agent_command": "goose",
+        "adapter": {"adapter_id": "goose", "version": "1"},
+        "byoa_config": bindings,
+        "tests": [dict(MANIFEST["artifacts"][0]["tests"], os="macos", arch="arm64")],
+    }
+
+
+def test_import_binds_goose_gateway_bindings(tmp_path):
+    manifest = _clone(MANIFEST)
+    manifest["agents"] = [_goose_agent(GOOSE_GATEWAY_BINDINGS)]
+    plan = build_manifest_release(manifest, archives={ARCHIVE: _archive(tmp_path)})
+    goose = plan.byoa_releases[0]
+    fields = {binding.field: binding for binding in goose.byoa_config}
+    assert fields["inference_gateway_credential"].transport == "env"
+    assert fields["provider_kind"].value_map == {"openai_compatible": "openai"}
+    assert fields["inference_gateway_host"].key == "OPENAI_HOST"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda bindings: [b for b in bindings if b["field"] != "inference_gateway_credential"],
+        lambda bindings: [dict(b, transport="arg") if b["field"] == "inference_gateway_credential" else b for b in bindings],
+        lambda bindings: [dict(b, value_map={}) if b["field"] == "provider_kind" else b for b in bindings],
+        lambda bindings: [b for b in bindings if b["field"] != "state_dir"],
+    ],
+)
+def test_import_rejects_goose_agent_without_gateway_bindings(tmp_path, mutate):
+    manifest = _clone(MANIFEST)
+    manifest["agents"] = [_goose_agent(mutate(GOOSE_GATEWAY_BINDINGS))]
+    with pytest.raises(ManifestImportError) as error:
+        build_manifest_release(manifest, archives={ARCHIVE: _archive(tmp_path)})
+    assert error.value.code == "INVALID_MANIFEST"
+    assert "inference gateway" in str(error.value) or "credential" in str(error.value)
+
+
+def test_import_does_not_require_gateway_bindings_for_codex(tmp_path):
+    manifest = _clone(MANIFEST)
+    manifest["agents"] = [{
+        "framework": "codex", "version": "1.2.3", "agent_command": "codex-acp",
+        "adapter": {"adapter_id": "codex-acp", "version": "0.1.0"},
+        "tests": [dict(MANIFEST["artifacts"][0]["tests"], os="macos", arch="aarch64")],
+    }]
+    plan = build_manifest_release(manifest, archives={ARCHIVE: _archive(tmp_path)})
+    assert plan.byoa_releases[0].agent_id == "codex"

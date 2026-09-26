@@ -45,7 +45,7 @@ PROJECTION_KEYS = {
     "enrolled_at",
     "updated_at",
 }
-ADDED_KEYS = {"consent_accepted_at", "study", "runtime", "sessions", "activity"}
+ADDED_KEYS = {"consent_accepted_at", "study", "runtime", "sessions", "activity", "budget"}
 TELEMETRY_POLICY = {
     "allowed_field_classes": ["STRUCTURAL", "METRICS", "CONTENT"],
     "content_capture": True,
@@ -247,7 +247,13 @@ def test_my_studies_adds_study_runtime_sessions_and_activity(http_runtime):
     assert mine["runtime"] == {
         "framework_version": "goose",
         "display_name": "Goose (install on your machine)",
+        # The study provides model access through its own key (shared);
+        # Codex would be "own" (ChatGPT login).
+        "credentials": "shared",
     }
+    # No balance row was seeded for this enrollment, so the budget is null and
+    # no arm detail leaks through it.
+    assert mine["budget"] is None
     assert mine["sessions"]["total"] == 2
     assert mine["sessions"]["active"] == 1
     assert parse_iso(mine["sessions"]["last_activity_at"]) == seeded.t0 - timedelta(hours=1)
@@ -379,16 +385,19 @@ def test_runtime_view_names_only_the_runtime_kind():
     assert participant_runtime_view({"framework_version": "code4me2-agent"}) == {
         "framework_version": "code4me2-agent",
         "display_name": "Code4Me agent (built-in)",
+        "credentials": "shared",
     }
     assert participant_runtime_view(
         {"framework_version": "codex", "name": "arm", "model": "m"}
     ) == {
         "framework_version": "codex",
         "display_name": "Codex (install on your machine)",
+        "credentials": "own",
     }
     assert participant_runtime_view({"framework_version": "other-agent"}) == {
         "framework_version": "other-agent",
         "display_name": "other-agent",
+        "credentials": "own",
     }
     assert participant_runtime_view({}) is None
     assert participant_runtime_view(None) is None

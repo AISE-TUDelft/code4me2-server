@@ -44,7 +44,10 @@ from database.research_schemas import (
 from database.research_schemas import (
     ResearchSessionV1 as ResearchSessionRow,
 )
+from database.db_schemas import Study as StudyRow
+from research.budget import ledger as budget_ledger
 from research.canonical import canonical_hash
+from research.study.agents.enums import METERED_FRAMEWORKS
 from research.runtime.sessions.enums import (
     CloseReason,
     SessionReasonCode,
@@ -250,6 +253,9 @@ def participant_runtime_view(snapshot: Any) -> Optional[dict[str, str]]:
     return {
         "framework_version": framework,
         "display_name": RUNTIME_DISPLAY_NAMES.get(framework, framework),
+        # "shared": the study provides model access through its own key;
+        # "own": the participant signs in with their own account (Codex).
+        "credentials": "shared" if framework in METERED_FRAMEWORKS else "own",
     }
 
 
@@ -449,10 +455,13 @@ def participant_enrollment_details(
     runtimes = get_assignment_frameworks(session, enrollment_ids)
     sessions = summarize_enrollment_sessions(session, enrollment_ids)
     activity = summarize_enrollment_activity(session, enrollment_ids)
+    budgets = budget_ledger.participant_views(session, enrollment_ids)
     return {
         enrollment.enrollment_id: {
             "study_row": studies.get(enrollment.study_id),
             "runtime": runtimes.get(enrollment.enrollment_id),
+            # Arm-blind budget numbers (unit, limit, consumed, remaining, flags).
+            "budget": budgets.get(enrollment.enrollment_id),
             "sessions": sessions.get(
                 enrollment.enrollment_id,
                 {"total": 0, "active": 0, "last_activity_at": None},
@@ -621,6 +630,19 @@ def create_enrollment(session: Session, enrollment: Enrollment) -> ResearchEnrol
     try:
         with session.begin_nested():
             session.add(row)
+            session.flush()
+            # The inference budget is born with the enrollment, in the same
+            # transaction, at the study's current default (0 = refuse until set).
+            study = session.get(StudyRow, enrollment.study_id)
+            budget_ledger.create_balance(
+                session,
+                enrollment_id=row.enrollment_id,
+                study_id=enrollment.study_id,
+                limit_micro_usd=int(
+                    getattr(study, "inference_budget_default_micro_usd", 0) or 0
+                ),
+                now=enrollment.enrolled_at,
+            )
     except IntegrityError as error:
         raise ActiveEnrollmentConflict(
             "this account already has an active enrollment"

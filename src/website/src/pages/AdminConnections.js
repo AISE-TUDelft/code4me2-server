@@ -14,9 +14,11 @@ import {
   Field,
   FieldErrors,
   Loading,
+  MoneyInput,
   PageHeader,
   Switch,
 } from "../components/common/ui";
+import { parseUsdInput } from "../utils/format";
 import "./AdminPages.css";
 
 /**
@@ -31,6 +33,8 @@ const EMPTY_FORM = {
   secret_ref: "",
   models: [],
   is_active: true,
+  // {model: {input, output, cached}} as typed (USD per million tokens).
+  prices: {},
 };
 
 const splitModels = (text) =>
@@ -43,6 +47,99 @@ const mergeModels = (models, pendingText) =>
   Array.from(new Set([...(models || []), ...splitModels(pendingText)]));
 
 const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+// Model prices: USD per million tokens, decimal strings with at most six
+// places (the server's limit), never floats. Metered arms (Goose and the
+// built-in agent) are charged against participant budgets with them; a model
+// without a price refuses every metered call.
+const PRICE_MAX_USD = 10000;
+const EMPTY_PRICE = { input: "", output: "", cached: "" };
+const PRICE_FIELDS = [
+  ["input", "input"],
+  ["output", "output"],
+  ["cached", "cached input"],
+];
+
+// "0.500000" from the server → "0.50" in the editor (never fewer than two places).
+const trimPrice = (value) => {
+  if (value === null || value === undefined || value === "") return "";
+  const parsed = parseUsdInput(value, { max: PRICE_MAX_USD });
+  return parsed.ok ? parsed.value.replace(/(\.\d\d\d*?)0+$/, "$1") : String(value);
+};
+
+const pricesFrom = (modelPrices) =>
+  Object.fromEntries(
+    Object.entries(modelPrices && typeof modelPrices === "object" ? modelPrices : {})
+      .filter(([, price]) => price && typeof price === "object")
+      .map(([model, price]) => [
+        model,
+        {
+          input: trimPrice(price.input_usd_per_million),
+          output: trimPrice(price.output_usd_per_million),
+          cached: trimPrice(price.cached_input_usd_per_million),
+        },
+      ]),
+  );
+
+// The `model_prices` request map: a price row per allowed model, or null to
+// keep (or make) it unpriced; `error` when a row is incomplete or invalid.
+const pricePayload = (models, prices) => {
+  const result = {};
+  for (const model of models) {
+    const row = prices[model] || EMPTY_PRICE;
+    const input = String(row.input || "").trim();
+    const output = String(row.output || "").trim();
+    const cached = String(row.cached || "").trim();
+    if (!input && !output && !cached) {
+      result[model] = null;
+      continue;
+    }
+    if (!input || !output) {
+      return {
+        error: `Enter both an input and an output price for ${model} (USD per million tokens), or leave both empty.`,
+      };
+    }
+    const parsed = {
+      input: parseUsdInput(input, { max: PRICE_MAX_USD }),
+      output: parseUsdInput(output, { max: PRICE_MAX_USD }),
+      cached: cached ? parseUsdInput(cached, { max: PRICE_MAX_USD }) : null,
+    };
+    const bad = PRICE_FIELDS.find(([key]) => parsed[key] && !parsed[key].ok);
+    if (bad) return { error: `${model} ${bad[1]} price: ${parsed[bad[0]].error}` };
+    result[model] = {
+      input_usd_per_million: parsed.input.value,
+      output_usd_per_million: parsed.output.value,
+      cached_input_usd_per_million: parsed.cached ? parsed.cached.value : null,
+    };
+  }
+  return { prices: result };
+};
+
+// Priced/missing counts for a card; null when the server predates prices.
+const pricingFor = (connection) => {
+  const models = Array.isArray(connection.models) ? connection.models : [];
+  const prices = connection.model_prices;
+  const missing = Array.isArray(connection.pricing?.missing_models)
+    ? connection.pricing.missing_models
+    : prices && typeof prices === "object"
+      ? models.filter((model) => !prices[model])
+      : null;
+  if (missing === null) return null;
+  const missingKnown = missing.filter((model) => models.includes(model));
+  return { total: models.length, priced: models.length - missingKnown.length, missing: missingKnown };
+};
+
+const Pricing = ({ pricing }) =>
+  pricing ? (
+    <span
+      className="ui-row"
+      style={{ color: pricing.missing.length ? "var(--warning-color)" : "var(--success-color)" }}
+    >
+      <Icon name={pricing.missing.length ? "alert" : "checkCircle"} size={15} />
+      Prices: {pricing.priced} of {pricing.total} models
+      {pricing.missing.length ? " — metered calls with an unpriced model are refused" : ""}
+    </span>
+  ) : null;
 
 const payloadFor = (connection, overrides = {}) => ({
   label: connection.label,
@@ -116,6 +213,7 @@ const AdminConnections = () => {
         secret_ref: connection.secret_ref || "",
         models: Array.isArray(connection.models) ? connection.models : [],
         is_active: connection.is_active !== false,
+        prices: pricesFrom(connection.model_prices),
       });
     } else {
       setEditingId("");
@@ -146,6 +244,12 @@ const AdminConnections = () => {
     setForm((current) => ({ ...current, [name]: value }));
   };
 
+  const setPrice = (model, key, value) =>
+    setForm((current) => ({
+      ...current,
+      prices: { ...current.prices, [model]: { ...(current.prices[model] || EMPTY_PRICE), [key]: value } },
+    }));
+
   const validate = (models) => {
     if (!form.label.trim()) return "A label is required.";
     if (!/^https?:\/\//.test(form.base_url.trim())) {
@@ -171,6 +275,12 @@ const AdminConnections = () => {
       setFieldErrors([]);
       return;
     }
+    const priced = pricePayload(models, form.prices);
+    if (priced.error) {
+      setError(priced.error);
+      setFieldErrors([]);
+      return;
+    }
     setIsSaving(true);
     clearMessages();
     const payload = {
@@ -179,6 +289,9 @@ const AdminConnections = () => {
       secret_ref: form.secret_ref.trim(),
       models,
       is_active: Boolean(form.is_active),
+      // Every allowed model: its price, or null to keep/make it unpriced.
+      // (The card switch uses payloadFor, which omits this and leaves prices alone.)
+      model_prices: priced.prices,
     };
     const response = editingId
       ? await updateProviderConnection(editingId, payload)
@@ -370,6 +483,55 @@ const AdminConnections = () => {
                   hint="Press Enter or + to add. Pasting a list adds every model at once."
                 />
               </div>
+              <div className="ui-span-2 ui-field">
+                <span className="ui-label">Model prices (USD per million tokens)</span>
+                <p className="ui-hint">
+                  Goose and built-in arms are charged against participant budgets with these prices; a model
+                  without a price refuses every metered call. Leave a row empty to keep the model unpriced.
+                </p>
+                {formModels.length === 0 ? (
+                  <p className="ui-chip-input-empty">Add a model above to price it.</p>
+                ) : (
+                  <div className="ui-table-wrap">
+                    <table className="ui-table price-table">
+                      <caption className="ui-visually-hidden">Model prices</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">Model</th>
+                          <th scope="col">Input</th>
+                          <th scope="col">Output</th>
+                          <th scope="col">
+                            Cached input <span className="ui-label-meta">optional</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {formModels.map((model) => {
+                          const row = form.prices[model] || EMPTY_PRICE;
+                          return (
+                            <tr key={model}>
+                              <th scope="row" className="ui-mono" title={model}>
+                                {model}
+                              </th>
+                              {PRICE_FIELDS.map(([key, label]) => (
+                                <td key={key}>
+                                  <MoneyInput
+                                    value={row[key]}
+                                    onChange={(value) => setPrice(model, key, value)}
+                                    disabled={formDisabled}
+                                    ariaLabel={`${model} ${label} price`}
+                                    placeholder={key === "cached" ? "optional" : "0.00"}
+                                  />
+                                </td>
+                              ))}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           </Card>
         </div>
@@ -400,6 +562,7 @@ const AdminConnections = () => {
           {connections.map((connection) => {
             const busy = busyId === connection.connection_id;
             const usage = connection.profile_count;
+            const pricing = pricingFor(connection);
             return (
               <Card
                 key={connection.connection_id}
@@ -451,6 +614,7 @@ const AdminConnections = () => {
                 }
               >
                 <Readiness ready={connection.ready} />
+                <Pricing pricing={pricing} />
                 <dl className="connection-meta">
                   <dt>Endpoint</dt>
                   <dd>
@@ -470,13 +634,21 @@ const AdminConnections = () => {
                   <dd>
                     {(connection.models || []).length ? (
                       <ul className="ui-chips" style={{ listStyle: "none", margin: 0, padding: 0 }}>
-                        {connection.models.map((model) => (
-                          <li key={model} className="ui-chip is-static">
-                            <span className="ui-chip-text" title={model}>
-                              {model}
-                            </span>
-                          </li>
-                        ))}
+                        {connection.models.map((model) => {
+                          const unpriced = pricing ? pricing.missing.includes(model) : false;
+                          return (
+                            <li key={model} className={`ui-chip is-static${unpriced ? " is-unpriced" : ""}`}>
+                              <span className="ui-chip-text" title={model}>
+                                {model}
+                              </span>
+                              {unpriced ? (
+                                <Badge tone="warning" title="No budget price; metered calls with this model are refused">
+                                  price missing
+                                </Badge>
+                              ) : null}
+                            </li>
+                          );
+                        })}
                       </ul>
                     ) : (
                       "—"

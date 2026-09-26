@@ -35,11 +35,20 @@ from research.study.protocol.models import ResolvedAgentConfig
 from research.study.protocol.validation import DistributionResolution
 
 from .enums import (
+    INFERENCE_GATEWAY_FRAMEWORKS,
     MANAGED_RUNTIME_FRAMEWORK,
     DistributionMode,
     QualificationStatus,
 )
-from .models import BYOA_CONFIG_FIELDS, BYOA_CONFIG_TRANSPORTS
+from .models import (
+    BYOA_BINDING_FIELDS,
+    BYOA_CONFIG_FIELDS,
+    BYOA_CONFIG_TRANSPORTS,
+    BYOA_CREDENTIAL_FIELD,
+    BYOA_PROVIDER_KIND_FIELD,
+    BYOA_PROVIDER_KIND_OPENAI_COMPATIBLE,
+    BYOA_RUNTIME_FIELDS,
+)
 from .registry import (
     ALL_APPROVAL_OPTIONS,
     AgentRegistry,
@@ -57,6 +66,9 @@ __all__ = [
     "distribution_supported_platforms",
     "parse_command_args",
     "release_profile_configurability",
+    "missing_gateway_bindings",
+    "release_bindings",
+    "requires_inference_gateway",
     "resolve_distribution_view",
     "validate_profile_configuration",
 ]
@@ -187,9 +199,48 @@ def _byoa_bindings(release: Any, document: Optional[Mapping[str, Any]]) -> dict[
             field = str(item.get("field") or "").strip().lower()
             transport = str(item.get("transport") or "").strip().lower()
             key = str(item.get("key") or "").strip()
-            if field in BYOA_CONFIG_FIELDS and transport in BYOA_CONFIG_TRANSPORTS and key:
+            if field in BYOA_BINDING_FIELDS and transport in BYOA_CONFIG_TRANSPORTS and key:
                 bindings[field] = item
     return bindings
+
+
+def release_bindings(release: Any, document: Optional[Mapping[str, Any]] = None) -> dict[str, Mapping[str, Any]]:
+    """Public accessor for a release's declared bindings keyed by field."""
+    return _byoa_bindings(release, document)
+
+
+def requires_inference_gateway(framework: Optional[str]) -> bool:
+    """Whether profiles of ``framework`` call the research inference gateway."""
+    return str(framework or "").strip().lower() in INFERENCE_GATEWAY_FRAMEWORKS
+
+
+def missing_gateway_bindings(bindings: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """The runtime bindings a gateway-bound release lacks (empty when complete).
+
+    Every field in ``BYOA_RUNTIME_FIELDS`` must be bound with the ``env``
+    transport (the plugin fills them at launch; the credential must never be
+    an argv token), and the ``provider_kind`` binding must translate the
+    server's ``openai_compatible`` value into the agent's own vocabulary.
+    """
+    missing: list[str] = []
+    for field in BYOA_RUNTIME_FIELDS:
+        binding = bindings.get(field)
+        if binding is None:
+            missing.append(field)
+            continue
+        transport = str(binding.get("transport") or "").strip().lower()
+        if transport != "env":
+            missing.append(f"{field} (env transport required)")
+            continue
+        if field == BYOA_PROVIDER_KIND_FIELD:
+            value_map = binding.get("value_map") or {}
+            if not isinstance(value_map, Mapping) or not str(
+                value_map.get(BYOA_PROVIDER_KIND_OPENAI_COMPATIBLE) or ""
+            ).strip():
+                missing.append(
+                    f"{field} (value_map must translate {BYOA_PROVIDER_KIND_OPENAI_COMPATIBLE!r})"
+                )
+    return missing
 
 
 def validate_profile_configuration(
@@ -300,8 +351,10 @@ def validate_profile_configuration(
         # must be covered by a declared translation. A field with no binding is
         # refused here, before enrollment, instead of becoming an experimental
         # label that does not govern the external process. The provider
-        # connection is deliberately *not* translatable: a participant-installed
-        # agent uses the participant's own credentials.
+        # connection itself is never translated: a gateway-bound agent (Goose)
+        # receives the research inference gateway address plus a per-participant
+        # capability through the runtime bindings below, and the server-held
+        # key stays on the server.
         bindings = _byoa_bindings(release, document)
         tools = _profile_tools(profile)
         required_fields = {
@@ -324,6 +377,18 @@ def validate_profile_configuration(
                 + "; the profile's values would not govern the external agent",
                 "release_id",
             )
+        # A gateway-bound framework (Goose) must be able to reach the research
+        # inference gateway: without the runtime bindings the participant's own
+        # provider configuration would be used, unmetered. Fail closed.
+        if requires_inference_gateway(getattr(profile, "framework_version", None)):
+            gateway_missing = missing_gateway_bindings(bindings)
+            if gateway_missing:
+                raise ProfileConfigurationError(
+                    "INFERENCE_GATEWAY_UNBOUND",
+                    "the release does not bind the research inference gateway: "
+                    + ", ".join(gateway_missing),
+                    "release_id",
+                )
         for field, binding in bindings.items():
             if field != "tools":
                 continue
@@ -433,14 +498,21 @@ def release_profile_configurability(
     tokens = _declared_identity_tokens(release, document)
     declared = [framework for framework in candidates if framework in tokens]
     bindings = _byoa_bindings(release, document)
+    # Only a release that uniquely names a gateway-bound framework is held to
+    # the gateway bindings; an ambiguous identity never gains requirements.
+    gateway = len(declared) == 1 and requires_inference_gateway(declared[0])
+    required_missing = [field for field in BYOA_ALWAYS_SET_FIELDS if field not in bindings]
+    if gateway:
+        required_missing.extend(missing_gateway_bindings(bindings))
     return {
         "compatible_frameworks": declared if len(declared) == 1 else candidates,
+        # Profile fields only: the runtime (gateway) bindings are filled by the
+        # plugin and are never offered as configurable profile fields.
         "configurable_fields": [
             field for field in BYOA_CONFIG_FIELDS if field in bindings
         ],
-        "required_bindings_missing": [
-            field for field in BYOA_ALWAYS_SET_FIELDS if field not in bindings
-        ],
+        "required_bindings_missing": required_missing,
+        "inference_gateway": gateway,
     }
 
 

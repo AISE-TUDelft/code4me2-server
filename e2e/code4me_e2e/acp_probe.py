@@ -20,7 +20,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Callable, Any, Dict, List, Mapping, Optional, Sequence
 
 from . import process
 from .config import AgentProbeReason
@@ -242,11 +242,16 @@ def run_probe(
     env_extra: Optional[Mapping[str, str]] = None,
     base_env: Optional[Mapping[str, str]] = None,
     expected_substring: Optional[str] = None,
+    prepare_home: Optional[Callable[[Path], None]] = None,
 ) -> ProbeResult:
     """Run the real ACP handshake against the host-installed agent.
 
     Returns a typed :class:`ProbeResult`; it never raises for a missing or
     unusable prerequisite, so a caller can render the blocked reason.
+
+    ``prepare_home`` runs once the empty isolated home exists and before the
+    environment is built, so a caller can seed it (for example with a
+    deliberately poisoned agent config the launch must override).
     """
     run_path = Path(run_dir)
     run_path.mkdir(parents=True, exist_ok=True)
@@ -272,6 +277,8 @@ def run_probe(
         )
 
     home_path = isolated_home(run_path, framework, home)
+    if prepare_home is not None:
+        prepare_home(home_path)
     workspace = run_path / "agent-workspace" / framework
     workspace.mkdir(parents=True, exist_ok=True)
     env = build_env(home_path, base_env=base_env, extra=env_extra)

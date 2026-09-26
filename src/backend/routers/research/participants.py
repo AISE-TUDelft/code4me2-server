@@ -78,6 +78,9 @@ def _my_enrollment_payload(enrollment: Any, details: dict[str, Any]) -> dict[str
     payload["runtime"] = details.get("runtime")
     payload["sessions"] = details["sessions"]
     payload["activity"] = details["activity"]
+    # Budget numbers only (no model, price or profile): ``null`` when the arm
+    # is not metered or no balance exists yet.
+    payload["budget"] = details.get("budget")
     return payload
 
 

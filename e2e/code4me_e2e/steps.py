@@ -504,12 +504,17 @@ def step_provider_connection(ctx: Ctx) -> Dict[str, Any]:
     port = ctx.ensure_stub()
     admin = ctx.client("admin")
     label = "e2e-stub-" + ctx.run_dir.name
+    # Metered arms (Goose, built-in) fail closed without a price for the
+    # model, so the stub connection prices it (USD per million tokens).
     body = {
         "label": label,
         "base_url": f"http://host.docker.internal:{port}/v1",
         "secret_ref": scenario.stack.stub_secret_env,
         "models": [scenario.agent.model],
         "is_active": True,
+        "model_prices": {
+            scenario.agent.model: {"input_usd_per_million": "1", "output_usd_per_million": "4"}
+        },
     }
     resp = admin.post("/api/research/provider-connections", body)
     connection: Optional[dict] = None
@@ -524,6 +529,10 @@ def step_provider_connection(ctx: Ctx) -> Dict[str, Any]:
                 break
         if connection is None:
             raise StepFailure("provider connection label conflict but not found in list")
+        # An earlier run may have created the connection unpriced: (re)price it.
+        priced = admin.put(f"/api/research/provider-connections/{connection.get('connection_id')}", body)
+        if priced.status == 200:
+            connection = (priced.json or {}).get("connection") or connection
     else:
         _expect(resp, (201,), "provider_connection", "creating the provider connection failed")
     connection_id = (connection or {}).get("connection_id")
@@ -668,6 +677,9 @@ def step_create_study(ctx: Ctx) -> Dict[str, Any]:
         "name": scenario.study.name,
         "description": scenario.study.description,
         "profile_ids": [ctx.get("profile_id")],
+        # Required for metered arms (the stub model is priced by the
+        # provider_connection step); ignored for a Codex-only selection.
+        "default_budget_usd": "25",
         "starts_at": scenario.study.start_at or (now - timedelta(hours=1)).isoformat(),
         "ends_at": scenario.study.end_at or (now + timedelta(days=365)).isoformat(),
         "telemetry_policy": {"allowed_field_classes": ["STRUCTURAL", "METRICS"]},

@@ -99,6 +99,8 @@ test("creates a connection by POSTing the normalized payload", async () => {
       secret_ref: "OPENAI_API_KEY",
       models: ["model-a", "model-b", "model-c"],
       is_active: true,
+      // Every allowed model is listed; untouched price rows stay unpriced.
+      model_prices: { "model-a": null, "model-b": null, "model-c": null },
     });
     // The secret value is never part of the outbound payload.
     expect(JSON.stringify(post.body)).not.toContain(SECRET_VALUE);
@@ -213,4 +215,73 @@ test("deleting a connection in use warns with the profile count", async () => {
   expect(confirm.mock.calls[0][0]).toMatch(/used by 2 agent profiles/i);
   expect(requests().some((r) => r.method === "DELETE")).toBe(false);
   confirm.mockRestore();
+});
+
+const PRICED = {
+  ...CONNECTION,
+  model_prices: {
+    "model-a": {
+      input_usd_per_million: "0.500000",
+      output_usd_per_million: "1.500000",
+      cached_input_usd_per_million: null,
+      updated_at: "2026-09-25T10:00:00Z",
+    },
+    "model-b": null,
+  },
+  pricing: { complete: false, missing_models: ["model-b"] },
+};
+
+test("shows how many models are priced and flags the unpriced ones", async () => {
+  global.fetch = jest.fn(() => Promise.resolve(jsonResponse(200, { connections: [PRICED] })));
+  render(<AdminConnections />);
+
+  expect(await screen.findByText(/Prices: 1 of 2 models/)).toBeInTheDocument();
+  expect(screen.getByText("price missing")).toBeInTheDocument();
+  expect(screen.getByText("model-b")).toBeInTheDocument();
+});
+
+test("editing a connection prefills and sends the model prices as decimal strings", async () => {
+  global.fetch = jest.fn((url, options = {}) => {
+    if ((options.method || "GET") === "PUT") {
+      return Promise.resolve(jsonResponse(200, { connection: PRICED }));
+    }
+    return Promise.resolve(jsonResponse(200, { connections: [PRICED] }));
+  });
+
+  render(<AdminConnections />);
+  await screen.findByText("primary");
+  fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+
+  // Stored prices lose their padding zeros; an unpriced model starts empty.
+  const inputA = screen.getByLabelText("model-a input price");
+  expect(inputA).toHaveValue("0.50");
+  expect(screen.getByLabelText("model-a output price")).toHaveValue("1.50");
+  expect(screen.getByLabelText("model-a cached input price")).toHaveValue("");
+  expect(screen.getByLabelText("model-b input price")).toHaveValue("");
+
+  fireEvent.change(inputA, { target: { value: "0.6" } });
+  fireEvent.change(screen.getByLabelText("model-b input price"), { target: { value: "2" } });
+  fireEvent.change(screen.getByLabelText("model-b output price"), { target: { value: "8.25" } });
+  fireEvent.change(screen.getByLabelText("model-b cached input price"), { target: { value: "1" } });
+  fireEvent.click(screen.getByRole("button", { name: /save connection/i }));
+
+  await waitFor(() => expect(requests().some((r) => r.method === "PUT")).toBe(true));
+  const put = requests().find((r) => r.method === "PUT");
+  expect(put.url).toContain("/api/research/provider-connections/c-1");
+  expect(put.body.model_prices).toEqual({
+    "model-a": { input_usd_per_million: "0.60", output_usd_per_million: "1.50", cached_input_usd_per_million: null },
+    "model-b": { input_usd_per_million: "2.00", output_usd_per_million: "8.25", cached_input_usd_per_million: "1.00" },
+  });
+});
+
+test("a half-filled price row is rejected before any request", async () => {
+  global.fetch = jest.fn(() => Promise.resolve(jsonResponse(200, { connections: [PRICED] })));
+  render(<AdminConnections />);
+  await screen.findByText("primary");
+  fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+  fireEvent.change(screen.getByLabelText("model-b input price"), { target: { value: "2" } });
+  fireEvent.click(screen.getByRole("button", { name: /save connection/i }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(/both an input and an output price for model-b/i);
+  expect(requests().some((r) => r.method === "PUT")).toBe(false);
 });

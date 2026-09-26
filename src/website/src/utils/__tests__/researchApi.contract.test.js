@@ -95,8 +95,151 @@ test("createResearchStudy sends the complete lifecycle payload and null dates", 
         telemetry_policy: { redact: true },
         session_policy: { max_minutes: 30 },
         profile_ids: ["p-1"],
+        default_budget_usd: null,
       }),
     }),
+  );
+});
+
+test("createResearchStudy carries the default budget as a decimal string and the warning fraction", async () => {
+  global.fetch.mockResolvedValue(jsonResponse({ study: { study_id: "s-1" } }, 201));
+
+  await api.createResearchStudy({
+    name: "Metered study",
+    profileIds: ["p-1"],
+    defaultBudgetUsd: "12.50",
+    budgetWarningFraction: 0.9,
+  });
+
+  const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+  expect(body.default_budget_usd).toBe("12.50");
+  expect(body.budget_warning_fraction).toBe(0.9);
+});
+
+test("cloneResearchStudy sends a budget override only when one is given", async () => {
+  global.fetch.mockResolvedValue(jsonResponse({ study: { study_id: "s-2" } }, 201));
+
+  await api.cloneResearchStudy("s-1", { profileIds: ["p-1"], defaultBudgetUsd: "20.00" });
+
+  expect(global.fetch).toHaveBeenCalledWith(
+    expect.stringContaining("/api/research/studies/s-1/clone"),
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ profile_ids: ["p-1"], default_budget_usd: "20.00" }),
+    }),
+  );
+});
+
+test("getStudyBudget reads the study budget policy", async () => {
+  global.fetch.mockResolvedValue(
+    jsonResponse({ study_id: "s-1", metered: true, default_budget_micro_usd: 10000000, participants: { on_old_default: 1 } }),
+  );
+
+  const result = await api.getStudyBudget("s-1");
+
+  expect(global.fetch).toHaveBeenCalledWith(
+    expect.stringMatching(/\/api\/research\/studies\/s-1\/budget$/),
+    expect.objectContaining({ method: "GET" }),
+  );
+  expect(result).toMatchObject({ ok: true, data: { metered: true, default_budget_micro_usd: 10000000 } });
+});
+
+test("updateStudyBudget PATCHes only the fields given", async () => {
+  global.fetch.mockResolvedValue(jsonResponse({ study_id: "s-1", default_budget_micro_usd: 12500000 }));
+
+  await api.updateStudyBudget("s-1", { defaultBudgetUsd: "12.50" });
+  expect(global.fetch).toHaveBeenLastCalledWith(
+    expect.stringMatching(/\/api\/research\/studies\/s-1\/budget$/),
+    expect.objectContaining({ method: "PATCH", body: JSON.stringify({ default_budget_usd: "12.50" }) }),
+  );
+
+  await api.updateStudyBudget("s-1", { warningFraction: 0.9 });
+  expect(global.fetch).toHaveBeenLastCalledWith(
+    expect.anything(),
+    expect.objectContaining({ body: JSON.stringify({ warning_fraction: 0.9 }) }),
+  );
+});
+
+test("applyStudyDefaultBudget posts the reason and idempotency key", async () => {
+  global.fetch.mockResolvedValue(
+    jsonResponse({ applied: 2, skipped: 1, default_budget_micro_usd: 12500000, default_budget_usd: "12.50" }),
+  );
+
+  const result = await api.applyStudyDefaultBudget("s-1", { reason: "New term", idempotencyKey: "apply-default-0001" });
+
+  expect(global.fetch).toHaveBeenCalledWith(
+    expect.stringContaining("/api/research/studies/s-1/budget/apply-default"),
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ reason: "New term", idempotency_key: "apply-default-0001" }),
+    }),
+  );
+  expect(result.data).toEqual({ applied: 2, skipped: 1, default_budget_micro_usd: 12500000, default_budget_usd: "12.50" });
+});
+
+test("adjustEnrollmentBudget posts the typed adjustment and keeps the 201 payload", async () => {
+  global.fetch.mockResolvedValue(
+    jsonResponse(
+      {
+        adjustment: { kind: "TOP_UP", delta_micro_usd: 5000000 },
+        replayed: false,
+        balance: { limit_micro_usd: 15000000 },
+      },
+      201,
+    ),
+  );
+
+  const result = await api.adjustEnrollmentBudget("s-1", "e-1", {
+    kind: "TOP_UP",
+    amountUsd: "5.00",
+    reason: "Extra week",
+    idempotencyKey: "adjust-0001",
+  });
+
+  expect(global.fetch).toHaveBeenCalledWith(
+    expect.stringContaining("/api/research/studies/s-1/enrollments/e-1/budget/adjustments"),
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ kind: "TOP_UP", amount_usd: "5.00", reason: "Extra week", idempotency_key: "adjust-0001" }),
+    }),
+  );
+  expect(result).toMatchObject({ ok: true, status: 201, data: { replayed: false, balance: { limit_micro_usd: 15000000 } } });
+});
+
+test("adjustEnrollmentBudget preserves a typed idempotency conflict", async () => {
+  global.fetch.mockResolvedValue(
+    jsonResponse({ detail: { code: "IDEMPOTENCY_KEY_REUSED", message: "key reused" } }, 409),
+  );
+
+  const result = await api.adjustEnrollmentBudget("s-1", "e-1", {
+    kind: "TOP_UP",
+    amountUsd: "5.00",
+    reason: "r",
+    idempotencyKey: "adjust-0001",
+  });
+
+  expect(result).toMatchObject({ ok: false, code: "IDEMPOTENCY_KEY_REUSED", status: 409, error: "key reused" });
+});
+
+test("the enrollment budget, ledger and adjustment pages use study-scoped paths and cursors", async () => {
+  global.fetch.mockResolvedValue(jsonResponse({ entries: [], next_cursor: null }));
+
+  await api.getEnrollmentBudget("s-1", "e-1");
+  expect(global.fetch).toHaveBeenLastCalledWith(
+    expect.stringMatching(/\/api\/research\/studies\/s-1\/enrollments\/e-1\/budget$/),
+    expect.objectContaining({ method: "GET" }),
+  );
+
+  await api.getEnrollmentBudgetLedger("s-1", "e-1", { limit: 20, cursor: "2026-09-25T10:00:00+00:00" });
+  expect(global.fetch).toHaveBeenLastCalledWith(
+    expect.stringContaining("/enrollments/e-1/budget/ledger?limit=20&cursor=2026-09-25T10%3A00%3A00%2B00%3A00"),
+    expect.anything(),
+  );
+
+  await api.getEnrollmentBudgetAdjustments("s-1", "e-1", { limit: 20 });
+  expect(global.fetch).toHaveBeenLastCalledWith(
+    expect.stringContaining("/enrollments/e-1/budget/adjustments?limit=20"),
+    expect.anything(),
   );
 });
 

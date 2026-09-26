@@ -1,17 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
+  applyStudyDefaultBudget,
   cloneResearchStudy,
   createResearchStudy,
   engageResearchKillSwitch,
   getAgentProfiles,
   getCurrentUser,
   getStudyAnalyticsSummary,
+  getStudyBudget,
   getStudyParticipants,
   listResearchStudies,
   releaseResearchKillSwitch,
   stopResearchStudy,
   updateResearchStudyMetadata,
+  updateStudyBudget,
 } from "../../utils/api";
 import Icon from "../../components/common/Icon";
 import { isResearcher } from "../../components/layout/AppShell";
@@ -43,6 +46,17 @@ const METADATA_ERRORS = {
   PROFILE_NOT_ALLOWED: "You are not allowed to use that profile.",
 };
 
+// Typed failures of the budget mutations (Settings → Participant budgets).
+const BUDGET_ERRORS = {
+  STUDY_STOPPED: "Stopped studies cannot be edited.",
+  STUDY_NOT_METERED: "Budgets do not apply: no selected profile runs Goose or the built-in agent.",
+  IDEMPOTENCY_KEY_REUSED: "That request was already submitted; refresh to see its result.",
+  REASON_REQUIRED: "A reason of 1–500 characters is required.",
+};
+
+// Create/clone failures that belong on the form's budget field.
+const CREATE_BUDGET_CODES = ["BUDGET_REQUIRED", "BUDGET_INVALID", "BUDGET_PRICE_MISSING"];
+
 const scheduleText = (study) => {
   if (!study.starts_at && !study.ends_at) return "Open-ended";
   const start = study.starts_at ? formatDate(study.starts_at) : "Now";
@@ -73,6 +87,10 @@ const ResearchStudies = () => {
   const [listQuery, setListQuery] = useState("");
   const [listStatus, setListStatus] = useState("");
   const [participantsState, setParticipantsState] = useState({ isLoading: false, error: "", data: null });
+  // The participant-budget policy shown on the Settings tab (loaded when it opens).
+  const [budgetState, setBudgetState] = useState({ isLoading: false, error: "", data: null });
+  // A typed budget failure from create/clone, shown on the form's budget field.
+  const [createBudgetError, setCreateBudgetError] = useState("");
   // Collapsing the study list gives dashboards the full width (remembered per browser).
   const [listCollapsed, setListCollapsed] = useState(() => {
     try {
@@ -96,6 +114,7 @@ const ResearchStudies = () => {
   // Only the latest request of each kind may update the page.
   const participantsRequest = useRef(0);
   const summaryRequest = useRef(0);
+  const budgetRequest = useRef(0);
   // "<study>:<refresh token>" of the summary in summaryState (see below).
   const summaryKey = useRef("");
 
@@ -198,10 +217,27 @@ const ResearchStudies = () => {
       });
   }, []);
 
+  const loadBudget = useCallback(async (studyId) => {
+    if (!studyId) return;
+    const requestId = budgetRequest.current + 1;
+    budgetRequest.current = requestId;
+    setBudgetState((current) => ({ ...current, isLoading: true, error: "" }));
+    const result = await getStudyBudget(studyId);
+    if (budgetRequest.current !== requestId || selectedRef.current !== studyId) return;
+    if (result && result.ok) setBudgetState({ isLoading: false, error: "", data: result.data });
+    else
+      setBudgetState({
+        isLoading: false,
+        error: (result && result.error) || "The participant budgets could not be loaded.",
+        data: null,
+      });
+  }, []);
+
   // A different study starts from a clean slate…
   useEffect(() => {
     setParticipantsState({ isLoading: false, error: "", data: null });
     setSummaryState({ isLoading: false, error: "", data: null });
+    setBudgetState({ isLoading: false, error: "", data: null });
     summaryKey.current = "";
   }, [selectedStudyId]);
 
@@ -225,6 +261,12 @@ const ResearchStudies = () => {
     summaryKey.current = key;
     loadSummary(selectedStudyId);
   }, [studyReady, selectedStudyId, refreshToken, needsSummary, loadSummary]);
+  // The budget policy is refetched whenever the Settings tab opens and after
+  // every study reload (participant counts change as they join).
+  const showsSettings = activeTab === "settings";
+  useEffect(() => {
+    if (studyReady && showsSettings) loadBudget(selectedStudyId);
+  }, [studyReady, selectedStudyId, refreshToken, showsSettings, loadBudget]);
 
   const syncUrl = (studyId, tab, replace = false) => {
     const search = tab && tab !== "overview" ? `?tab=${tab}` : "";
@@ -260,11 +302,13 @@ const ResearchStudies = () => {
     setIsCreating(true);
     setError("");
     setNotice("");
+    setCreateBudgetError("");
   };
 
   const closeCreateForm = () => {
     setIsCreating(false);
     setCloneSource(null);
+    setCreateBudgetError("");
   };
 
   // Opens the create form prefilled from the stopped source. The clone
@@ -276,6 +320,7 @@ const ResearchStudies = () => {
     setIsCreating(true);
     setError("");
     setNotice("");
+    setCreateBudgetError("");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -288,8 +333,13 @@ const ResearchStudies = () => {
     setIsBusy(true);
     setError("");
     setNotice("");
+    setCreateBudgetError("");
     const result = source
-      ? await cloneResearchStudy(source.study_id, { profileIds: form.profileIds })
+      ? await cloneResearchStudy(source.study_id, {
+          profileIds: form.profileIds,
+          // Omitted, the clone keeps the source study's default budget.
+          ...(form.defaultBudgetUsd ? { defaultBudgetUsd: form.defaultBudgetUsd } : {}),
+        })
       : await createResearchStudy(form);
     if (result && result.ok) {
       setIsCreating(false);
@@ -305,6 +355,9 @@ const ResearchStudies = () => {
       setActiveTab("overview");
       await loadStudies(created?.study_id);
       if (created?.study_id) syncUrl(created.study_id, "overview");
+    } else if (result && CREATE_BUDGET_CODES.includes(result.code)) {
+      // A typed budget failure belongs on the budget field, not the banner.
+      setCreateBudgetError(result.error || "The default budget per participant is invalid.");
     } else if (result && (result.code === "SESSION_POLICY_INVALID" || result.code === "TELEMETRY_POLICY_INVALID")) {
       setError(`${result.code}: ${result.error || "invalid policy"}`);
     } else {
@@ -376,6 +429,49 @@ const ResearchStudies = () => {
       await loadStudies(selectedStudy.study_id);
     } else {
       setError((result && result.error) || "Kill switch operation failed.");
+    }
+    setIsBusy(false);
+    return succeeded;
+  };
+
+  const handleBudgetSave = async (changes) => {
+    if (!selectedStudy) return false;
+    setIsBusy(true);
+    setError("");
+    setNotice("");
+    const result = await updateStudyBudget(selectedStudy.study_id, changes);
+    const succeeded = Boolean(result && result.ok);
+    if (succeeded) {
+      setBudgetState({ isLoading: false, error: "", data: result.data });
+      setNotice("Participant budget defaults saved.");
+      // The study payload carries the policy too (overview, create-form clone prefill).
+      await loadStudies(selectedStudy.study_id);
+    } else {
+      setError(BUDGET_ERRORS[result && result.code] || (result && result.error) || "The budget could not be saved.");
+    }
+    setIsBusy(false);
+    return succeeded;
+  };
+
+  // Resolves true when the default was applied (the reason input is cleared).
+  const handleApplyDefault = async ({ reason, idempotencyKey }) => {
+    if (!selectedStudy) return false;
+    setIsBusy(true);
+    setError("");
+    setNotice("");
+    const result = await applyStudyDefaultBudget(selectedStudy.study_id, { reason, idempotencyKey });
+    const succeeded = Boolean(result && result.ok);
+    if (succeeded) {
+      const applied = Number(result.data?.applied) || 0;
+      const skipped = Number(result.data?.skipped) || 0;
+      setNotice(
+        `Applied the default budget to ${applied} participant${applied === 1 ? "" : "s"}${
+          skipped ? ` (${skipped} left unchanged)` : ""
+        }.`,
+      );
+      await loadBudget(selectedStudy.study_id);
+    } else {
+      setError(BUDGET_ERRORS[result && result.code] || (result && result.error) || "The default budget could not be applied.");
     }
     setIsBusy(false);
     return succeeded;
@@ -464,6 +560,7 @@ const ResearchStudies = () => {
           isBusy={isBusy}
           onSubmit={handleCreate}
           onCancel={closeCreateForm}
+          budgetError={createBudgetError}
         />
       ) : null}
 
@@ -672,6 +769,10 @@ const ResearchStudies = () => {
                   onSaveMetadata={handleMetadataSave}
                   onStop={handleStop}
                   onKillSwitch={handleKillSwitch}
+                  budget={budgetState}
+                  onReloadBudget={() => loadBudget(selectedStudy.study_id)}
+                  onSaveBudget={handleBudgetSave}
+                  onApplyDefault={handleApplyDefault}
                 />
               ) : null}
             </TabPanel>

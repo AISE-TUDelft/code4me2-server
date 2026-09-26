@@ -21,6 +21,7 @@ import {
   labelFor,
   orderedKeys,
 } from "./studyMetrics";
+import ParticipantBudgetPanel from "./ParticipantBudgetPanel";
 import { ENROLLMENT_STATUS, HEALTH, ToolName } from "./studyUtils";
 
 const TILE_METRICS = [
@@ -101,8 +102,21 @@ const eventDetail = (event) =>
     .filter(Boolean)
     .join(" ");
 
-/** Per-participant telemetry dashboard shown in the study drawer. */
-const ParticipantDashboard = ({ studyId, participant, color }) => {
+/**
+ * Per-participant telemetry dashboard shown in the study drawer. Rows of a
+ * metered arm (`participant.budget`) get the budget panel first; the
+ * drawer header's "Adjust budget" button toggles its form.
+ */
+const ParticipantDashboard = ({
+  studyId,
+  participant,
+  color,
+  warningFraction,
+  budgetAdjustOpen = false,
+  onBudgetAdjustClose,
+  canAdjustBudget = false,
+  onBudgetChanged,
+}) => {
   const [state, setState] = useState({ isLoading: true, error: "", data: null });
   const [showAllTurns, setShowAllTurns] = useState(false);
 
@@ -119,12 +133,35 @@ const ParticipantDashboard = ({ studyId, participant, color }) => {
     };
   }, [studyId, participant.enrollment_id]);
 
-  if (state.isLoading) return <Loading label="Loading participant telemetry…" />;
+  // Rendered first in every branch so it survives the telemetry load.
+  const budgetPanel = participant.budget ? (
+    <ParticipantBudgetPanel
+      studyId={studyId}
+      enrollmentId={participant.enrollment_id}
+      warningFraction={warningFraction}
+      adjustOpen={budgetAdjustOpen}
+      onAdjustClose={onBudgetAdjustClose}
+      canAdjust={canAdjustBudget}
+      onChanged={onBudgetChanged}
+    />
+  ) : null;
+
+  if (state.isLoading) {
+    return (
+      <div className="ui-stack participant-dashboard">
+        {budgetPanel}
+        <Loading label="Loading participant telemetry…" />
+      </div>
+    );
+  }
   if (state.error) {
     return (
-      <p className="research-error" role="alert">
-        {state.error}
-      </p>
+      <div className="ui-stack participant-dashboard">
+        {budgetPanel}
+        <p className="research-error" role="alert">
+          {state.error}
+        </p>
+      </div>
     );
   }
 
@@ -173,6 +210,7 @@ const ParticipantDashboard = ({ studyId, participant, color }) => {
 
   return (
     <div className="ui-stack participant-dashboard">
+      {budgetPanel}
       <div className="ui-row">
         <Badge tone={enrollment.tone}>{enrollment.label}</Badge>
         {health ? <Badge tone={health.tone}>{health.label}</Badge> : null}
@@ -243,7 +281,7 @@ const ParticipantDashboard = ({ studyId, participant, color }) => {
           title="Context window"
           subtitle={
             context.coverage === "UNAVAILABLE"
-              ? "Not observable for this runtime (the agent calls its provider directly)."
+              ? "Not observable: Codex signs in with ChatGPT and bypasses the metered relay."
               : `Prompt tokens per model call vs. the arm's cap of ${formatNumber(context.cap_tokens)} tokens`
           }
         >

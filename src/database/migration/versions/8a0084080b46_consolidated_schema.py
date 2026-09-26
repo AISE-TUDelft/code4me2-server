@@ -294,6 +294,108 @@ def upgrade() -> None:
     op.create_index('idx_study_assignment_enrollment_id', 'study_assignment', ['enrollment_id'], unique=False, schema='public')
     op.create_index('idx_study_assignment_study_id', 'study_assignment', ['study_id'], unique=False, schema='public')
     op.create_index('idx_study_assignment_agent_profile_id', 'study_assignment', ['agent_profile_id'], unique=False, schema='public')
+    # Participant inference budgets (shared provider key): prices, balances,
+    # reservation ledger and adjustment audit. Folded into the consolidated
+    # revision; existing databases apply the SQL in docs/research-platform/RELEASES.md.
+    op.create_table('provider_model_price',
+    sa.Column('connection_id', sa.UUID(), nullable=False),
+    sa.Column('model', sa.String(), nullable=False),
+    sa.Column('input_usd_per_million', sa.Numeric(precision=14, scale=6), nullable=False),
+    sa.Column('output_usd_per_million', sa.Numeric(precision=14, scale=6), nullable=False),
+    sa.Column('cached_input_usd_per_million', sa.Numeric(precision=14, scale=6), nullable=True),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_by', sa.String(), nullable=True),
+    sa.CheckConstraint('input_usd_per_million >= 0', name='ck_provider_model_price_input'),
+    sa.CheckConstraint('output_usd_per_million >= 0', name='ck_provider_model_price_output'),
+    sa.CheckConstraint('cached_input_usd_per_million IS NULL OR cached_input_usd_per_million >= 0', name='ck_provider_model_price_cached_input'),
+    sa.ForeignKeyConstraint(['connection_id'], ['public.provider_connection.connection_id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('connection_id', 'model'),
+    schema='public'
+    )
+    op.create_index('idx_provider_model_price_connection', 'provider_model_price', ['connection_id'], unique=False, schema='public')
+    op.create_table('enrollment_inference_balance',
+    sa.Column('enrollment_id', sa.UUID(), nullable=False),
+    sa.Column('study_id', sa.UUID(), nullable=False),
+    sa.Column('unit', sa.String(), server_default='micro_usd', nullable=False),
+    sa.Column('limit_micro_usd', sa.BigInteger(), nullable=False),
+    sa.Column('settled_micro_usd', sa.BigInteger(), server_default='0', nullable=False),
+    sa.Column('reserved_micro_usd', sa.BigInteger(), server_default='0', nullable=False),
+    sa.Column('settled_prompt_tokens', sa.BigInteger(), server_default='0', nullable=False),
+    sa.Column('settled_completion_tokens', sa.BigInteger(), server_default='0', nullable=False),
+    sa.Column('call_count', sa.Integer(), server_default='0', nullable=False),
+    sa.Column('refused_count', sa.Integer(), server_default='0', nullable=False),
+    sa.Column('last_call_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('limit_source', sa.String(), server_default='STUDY_DEFAULT', nullable=False),
+    sa.Column('exhausted_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint('limit_micro_usd >= 0', name='ck_enrollment_inference_balance_limit'),
+    sa.CheckConstraint('settled_micro_usd >= 0', name='ck_enrollment_inference_balance_settled'),
+    sa.CheckConstraint('reserved_micro_usd >= 0', name='ck_enrollment_inference_balance_reserved'),
+    sa.ForeignKeyConstraint(['enrollment_id'], ['public.research_enrollment.enrollment_id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['study_id'], ['public.study.study_id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('enrollment_id'),
+    schema='public'
+    )
+    op.create_index('idx_enrollment_inference_balance_study_id', 'enrollment_inference_balance', ['study_id'], unique=False, schema='public')
+    op.create_table('inference_reservation',
+    sa.Column('reservation_id', sa.UUID(), nullable=False),
+    sa.Column('enrollment_id', sa.UUID(), nullable=False),
+    sa.Column('study_id', sa.UUID(), nullable=False),
+    sa.Column('connection_id', sa.UUID(), nullable=True),
+    sa.Column('model', sa.String(), nullable=False),
+    sa.Column('entry_point', sa.String(), nullable=False),
+    sa.Column('request_id', sa.String(), nullable=False),
+    sa.Column('research_session_id', sa.UUID(), nullable=True),
+    sa.Column('state', sa.String(), nullable=False),
+    sa.Column('hold_micro_usd', sa.BigInteger(), nullable=False),
+    sa.Column('estimated_prompt_tokens', sa.Integer(), nullable=False),
+    sa.Column('output_cap_tokens', sa.Integer(), nullable=False),
+    sa.Column('charged_micro_usd', sa.BigInteger(), nullable=True),
+    sa.Column('prompt_tokens', sa.Integer(), nullable=True),
+    sa.Column('completion_tokens', sa.Integer(), nullable=True),
+    sa.Column('cached_prompt_tokens', sa.Integer(), nullable=True),
+    sa.Column('usage_source', sa.String(), nullable=True),
+    sa.Column('resolution_reason', sa.String(), nullable=True),
+    sa.Column('upstream_status', sa.Integer(), nullable=True),
+    sa.Column('finish_reason', sa.String(), nullable=True),
+    sa.Column('reserved_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('deadline_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('resolved_at', sa.DateTime(timezone=True), nullable=True),
+    sa.CheckConstraint("state IN ('RESERVED', 'SETTLED', 'FORFEITED', 'VOIDED', 'EXPIRED')", name='ck_inference_reservation_state'),
+    sa.CheckConstraint('hold_micro_usd >= 0', name='ck_inference_reservation_hold'),
+    sa.CheckConstraint('charged_micro_usd IS NULL OR charged_micro_usd >= 0', name='ck_inference_reservation_charged'),
+    sa.ForeignKeyConstraint(['connection_id'], ['public.provider_connection.connection_id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['enrollment_id'], ['public.enrollment_inference_balance.enrollment_id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('reservation_id'),
+    sa.UniqueConstraint('request_id', name='uq_inference_reservation_request_id'),
+    schema='public'
+    )
+    op.create_index('idx_inference_reservation_enrollment_state', 'inference_reservation', ['enrollment_id', 'state'], unique=False, schema='public')
+    op.create_index('idx_inference_reservation_open_deadline', 'inference_reservation', ['deadline_at'], unique=False, schema='public', postgresql_where=sa.text("state = 'RESERVED'"))
+    op.create_index('idx_inference_reservation_study_reserved_at', 'inference_reservation', ['study_id', 'reserved_at'], unique=False, schema='public')
+    op.create_table('inference_budget_adjustment',
+    sa.Column('adjustment_id', sa.UUID(), nullable=False),
+    sa.Column('enrollment_id', sa.UUID(), nullable=False),
+    sa.Column('study_id', sa.UUID(), nullable=False),
+    sa.Column('kind', sa.String(), nullable=False),
+    sa.Column('delta_micro_usd', sa.BigInteger(), nullable=False),
+    sa.Column('limit_before_micro_usd', sa.BigInteger(), nullable=False),
+    sa.Column('limit_after_micro_usd', sa.BigInteger(), nullable=False),
+    sa.Column('in_flight_micro_usd', sa.BigInteger(), server_default='0', nullable=False),
+    sa.Column('reason', sa.String(), nullable=True),
+    sa.Column('actor', sa.String(), nullable=True),
+    sa.Column('idempotency_key', sa.String(), nullable=True),
+    sa.Column('request_digest', sa.String(), nullable=True),
+    sa.Column('occurred_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint("kind IN ('TOP_UP', 'SET_LIMIT', 'APPLY_DEFAULT', 'BACKFILL')", name='ck_inference_budget_adjustment_kind'),
+    sa.ForeignKeyConstraint(['enrollment_id'], ['public.enrollment_inference_balance.enrollment_id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('adjustment_id'),
+    sa.UniqueConstraint('study_id', 'idempotency_key', name='uq_inference_budget_adjustment_idempotency'),
+    schema='public'
+    )
+    op.create_index('idx_inference_budget_adjustment_enrollment', 'inference_budget_adjustment', ['enrollment_id', 'occurred_at'], unique=False, schema='public')
+    op.create_index('idx_inference_budget_adjustment_study', 'inference_budget_adjustment', ['study_id', 'occurred_at'], unique=False, schema='public')
     op.create_table('telemetry_batch_receipt',
     sa.Column('receipt_id', sa.UUID(), nullable=False),
     sa.Column('batch_id', sa.String(), nullable=False),
@@ -442,6 +544,10 @@ def upgrade() -> None:
     op.add_column('study', sa.Column('consent_locked_at', sa.DateTime(timezone=True), nullable=True), schema='public')
     op.add_column('study', sa.Column('stopped_at', sa.DateTime(timezone=True), nullable=True), schema='public')
     op.add_column('study', sa.Column('stopped_by', sa.String(), nullable=True), schema='public')
+    op.add_column('study', sa.Column('inference_budget_default_micro_usd', sa.BigInteger(), server_default='0', nullable=False), schema='public')
+    op.add_column('study', sa.Column('inference_budget_warning_fraction', sa.Numeric(precision=4, scale=3), server_default='0.800', nullable=False), schema='public')
+    op.add_column('study', sa.Column('inference_budget_updated_at', sa.DateTime(timezone=True), nullable=True), schema='public')
+    op.add_column('study', sa.Column('inference_budget_updated_by', sa.String(), nullable=True), schema='public')
     op.create_table('study_agent_profile',
     sa.Column('study_id', sa.UUID(), nullable=False),
     sa.Column('profile_id', sa.UUID(), nullable=False),
@@ -509,6 +615,10 @@ def downgrade() -> None:
     op.drop_index('idx_study_research_status', table_name='study', schema='public')
     op.drop_index('idx_study_agent_profile_profile_id', table_name='study_agent_profile', schema='public')
     op.drop_table('study_agent_profile', schema='public')
+    op.drop_column('study', 'inference_budget_updated_by', schema='public')
+    op.drop_column('study', 'inference_budget_updated_at', schema='public')
+    op.drop_column('study', 'inference_budget_warning_fraction', schema='public')
+    op.drop_column('study', 'inference_budget_default_micro_usd', schema='public')
     op.drop_column('study', 'stopped_by', schema='public')
     op.drop_column('study', 'stopped_at', schema='public')
     op.drop_column('study', 'consent_locked_at', schema='public')
@@ -539,6 +649,17 @@ def downgrade() -> None:
     op.drop_table('agent_task', schema='public')
     op.drop_index('idx_telemetry_batch_receipt_session_id', table_name='telemetry_batch_receipt', schema='public')
     op.drop_table('telemetry_batch_receipt', schema='public')
+    op.drop_index('idx_inference_budget_adjustment_study', table_name='inference_budget_adjustment', schema='public')
+    op.drop_index('idx_inference_budget_adjustment_enrollment', table_name='inference_budget_adjustment', schema='public')
+    op.drop_table('inference_budget_adjustment', schema='public')
+    op.drop_index('idx_inference_reservation_study_reserved_at', table_name='inference_reservation', schema='public')
+    op.drop_index('idx_inference_reservation_open_deadline', table_name='inference_reservation', schema='public', postgresql_where=sa.text("state = 'RESERVED'"))
+    op.drop_index('idx_inference_reservation_enrollment_state', table_name='inference_reservation', schema='public')
+    op.drop_table('inference_reservation', schema='public')
+    op.drop_index('idx_enrollment_inference_balance_study_id', table_name='enrollment_inference_balance', schema='public')
+    op.drop_table('enrollment_inference_balance', schema='public')
+    op.drop_index('idx_provider_model_price_connection', table_name='provider_model_price', schema='public')
+    op.drop_table('provider_model_price', schema='public')
     op.drop_index('idx_study_assignment_agent_profile_id', table_name='study_assignment', schema='public')
     op.drop_index('idx_study_assignment_study_id', table_name='study_assignment', schema='public')
     op.drop_index('idx_study_assignment_enrollment_id', table_name='study_assignment', schema='public')

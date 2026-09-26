@@ -1,7 +1,7 @@
 import React from "react";
 import { ChartCard, DailyColumns, DataTable } from "../../components/charts/Charts";
 import { Alert, Badge, Card, KpiTile } from "../../components/common/ui";
-import { formatCompact, formatDate, formatDateTime, formatNumber, humanize } from "../../utils/format";
+import { formatCompact, formatDate, formatDateTime, formatNumber, formatUsd, humanize } from "../../utils/format";
 import { CONTENT_DESCRIPTION, RUNTIME_CLASS_LABELS, RUNTIME_LABELS, collectedClasses, describeSessionPolicy } from "./studyUtils";
 
 const unavailable = (value) => (value === null || value === undefined ? "Unavailable" : value);
@@ -20,6 +20,10 @@ const StudyOverview = ({ study, arms, participantsData, summary, summaryError, o
   const classes = Array.isArray(telemetryPolicy.allowed_field_classes) ? telemetryPolicy.allowed_field_classes : [];
   const contentCapture = telemetryPolicy.content_capture === true;
   const sessionRows = describeSessionPolicy(study.session_policy);
+  // Spend on the study's shared provider key (Goose and built-in arms);
+  // `metered` is null when the server predates budgets.
+  const budgetPolicy = study.budget_policy && typeof study.budget_policy === "object" ? study.budget_policy : null;
+  const metered = budgetPolicy ? budgetPolicy.metered !== false : null;
   // Assigned participants per arm: the summary carries them, so the overview
   // does not need the (heavier) participants list.
   const armCounts = summary?.arms || participantsData?.arms || [];
@@ -55,6 +59,17 @@ const StudyOverview = ({ study, arms, participantsData, summary, summaryError, o
           label="Agent prompts"
           value={totals.prompts !== undefined ? formatCompact(totals.prompts) : "—"}
           detail={totals.tool_calls !== undefined ? `${formatCompact(totals.tool_calls)} tool calls` : "From study telemetry"}
+        />
+        <KpiTile
+          label="Metered spend"
+          value={totals.metered_spend_micro_usd !== undefined ? formatUsd(totals.metered_spend_micro_usd) : "—"}
+          detail={
+            metered === false
+              ? "Codex arms are not metered"
+              : totals.metered_calls !== undefined
+                ? `${formatNumber(totals.metered_calls)} model calls`
+                : "On the study's shared provider key"
+          }
         />
         <KpiTile
           label="Collection"
@@ -133,6 +148,17 @@ const StudyOverview = ({ study, arms, participantsData, summary, summaryError, o
                 <dd>{value}</dd>
               </div>
             ))}
+            {metered ? (
+              <div>
+                <dt>Budget per participant</dt>
+                <dd>
+                  {formatUsd(budgetPolicy.default_budget_micro_usd)}
+                  {Number(budgetPolicy.warning_fraction) > 0
+                    ? ` (warn at ${Math.round(Number(budgetPolicy.warning_fraction) * 100)}%)`
+                    : ""}
+                </dd>
+              </div>
+            ) : null}
           </dl>
           <div className="ui-stack-sm">
             <span className="ui-section-title">Telemetry collected</span>

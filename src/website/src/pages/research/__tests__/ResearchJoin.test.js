@@ -214,3 +214,88 @@ test("earlier studies are listed with their final status", async () => {
   expect(await screen.findByText("Previous studies")).toBeInTheDocument();
   expect(screen.getByText("Completed")).toBeInTheDocument();
 });
+
+const SHARED_BUDGET = {
+  unit: "USD",
+  limit: 10000000,
+  consumed: 2500000,
+  reserved: 0,
+  remaining: 7500000,
+  fraction_used: 0.25,
+  warning_fraction: 0.8,
+  warning: false,
+  exhausted: false,
+  exhausted_at: null,
+  as_of: "2026-09-23T12:00:00Z",
+};
+
+test("My studies shows the budget the study provides, arm-blind, and the shared-key Goose setup", async () => {
+  api.getMyResearchEnrollments.mockResolvedValue({
+    ok: true,
+    data: [
+      {
+        ...ACTIVE_ENROLLMENT,
+        runtime: { framework_version: "goose", display_name: "Goose (install on your machine)", credentials: "shared" },
+        budget: SHARED_BUDGET,
+      },
+    ],
+  });
+
+  renderJoin({ user: { email: "p@example.com" } }, "/research/my-studies");
+
+  expect(await screen.findByText("Budget remaining")).toBeInTheDocument();
+  expect(screen.getByText("$7.50")).toBeInTheDocument();
+  expect(screen.getByText("of $10.00 provided by the study")).toBeInTheDocument();
+  expect(
+    screen.getByText(/The study provides the model access: you do not need your own provider account or API key/),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/sign in to it with your own account/)).not.toBeInTheDocument();
+  // Still arm-blind: no profile, model name or price anywhere.
+  expect(screen.queryByText(/profile|model-a|price/i)).not.toBeInTheDocument();
+});
+
+test("My studies says when the budget is exhausted", async () => {
+  api.getMyResearchEnrollments.mockResolvedValue({
+    ok: true,
+    data: [
+      {
+        ...ACTIVE_ENROLLMENT,
+        runtime: { framework_version: "goose", display_name: "Goose (install on your machine)", credentials: "shared" },
+        budget: {
+          ...SHARED_BUDGET,
+          consumed: 10000000,
+          remaining: 0,
+          fraction_used: 1,
+          warning: true,
+          exhausted: true,
+          exhausted_at: "2026-09-22T12:00:00Z",
+        },
+      },
+    ],
+  });
+
+  renderJoin({ user: { email: "p@example.com" } }, "/research/my-studies");
+
+  expect(await screen.findByText("Exhausted")).toBeInTheDocument();
+  expect(screen.getByText(/ask the research team for a top-up/)).toBeInTheDocument();
+  expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+});
+
+test("Codex participants keep their ChatGPT sign-in and see no budget tile", async () => {
+  api.getMyResearchEnrollments.mockResolvedValue({
+    ok: true,
+    data: [
+      {
+        ...ACTIVE_ENROLLMENT,
+        runtime: { framework_version: "codex", display_name: "Codex (install on your machine)", credentials: "own" },
+        budget: null,
+      },
+    ],
+  });
+
+  renderJoin({ user: { email: "p@example.com" } }, "/research/my-studies");
+
+  expect(await screen.findByText("Install Codex")).toBeInTheDocument();
+  expect(screen.getByText(/sign in with your ChatGPT account/)).toBeInTheDocument();
+  expect(screen.queryByText("Budget remaining")).not.toBeInTheDocument();
+});

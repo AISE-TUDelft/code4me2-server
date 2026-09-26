@@ -7,7 +7,7 @@ import {
 } from "../../utils/api";
 import Icon from "../../components/common/Icon";
 import { Badge, Card, CopyButton, KpiTile, PageHeader } from "../../components/common/ui";
-import { daysUntil, formatDate, formatDateTime, formatNumber, formatRelative } from "../../utils/format";
+import { daysUntil, formatDate, formatDateTime, formatNumber, formatRelative, formatUsd } from "../../utils/format";
 import { collectedClasses } from "./studyUtils";
 import "./research.css";
 
@@ -62,6 +62,19 @@ const runtimeName = (runtime) => {
 const needsOwnAgent = (runtime) =>
   Boolean(runtime && runtime.framework_version && runtime.framework_version !== "code4me2-agent");
 
+// Who provides the model access. Goose in a study runs on the study's own
+// provider key ("shared"); Codex always signs in with the participant's
+// ChatGPT account. Without the flag (older servers) the wording stays generic.
+const installText = (runtime) => {
+  if (runtime.framework_version === "goose" && runtime.credentials === "shared") {
+    return "Your study uses Goose, which you install yourself; follow the coordinator's instructions. The study provides the model access: you do not need your own provider account or API key.";
+  }
+  if (runtime.framework_version === "codex") {
+    return "Your study uses Codex, which you install yourself. Follow the coordinator's instructions and sign in with your ChatGPT account.";
+  }
+  return "Your study uses an agent you install yourself. Follow the coordinator's instructions and sign in to it with your own account.";
+};
+
 const scheduleDetail = (study) => {
   if (!study || !study.ends_at) return "No end date set";
   const days = daysUntil(study.ends_at);
@@ -81,7 +94,7 @@ const SetupSteps = ({ runtime }) => {
       ? [
           {
             title: `Install ${runtime.framework_version === "goose" ? "Goose" : "Codex"}`,
-            text: "Your study uses an agent you install yourself. Follow the coordinator's instructions and sign in to it with your own account.",
+            text: installText(runtime),
           },
         ]
       : []),
@@ -120,6 +133,9 @@ const CurrentStudy = ({ enrollment }) => {
   const sessions = enrollment.sessions || {};
   const activity = enrollment.activity || {};
   const agent = runtimeName(enrollment.runtime);
+  // Numbers only (no model, price or arm): null when the study does not
+  // meter this participant's agent.
+  const budget = enrollment.budget && typeof enrollment.budget === "object" ? enrollment.budget : null;
   return (
     <Card
       className="participant-current"
@@ -147,6 +163,17 @@ const CurrentStudy = ({ enrollment }) => {
           value={formatNumber(activity.prompts ?? null)}
           detail={activity.tool_calls !== undefined && activity.tool_calls !== null ? `${formatNumber(activity.tool_calls)} agent tool calls` : null}
         />
+        {budget ? (
+          <KpiTile
+            label="Budget remaining"
+            value={budget.exhausted ? "Exhausted" : formatUsd(budget.remaining)}
+            detail={
+              budget.exhausted
+                ? "The model allowance the study provides for you is used up; ask the research team for a top-up."
+                : `of ${formatUsd(budget.limit)} provided by the study${budget.warning ? " · running low" : ""}`
+            }
+          />
+        ) : null}
       </div>
 
       <div className="ui-grid-2">

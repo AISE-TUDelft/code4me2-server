@@ -84,6 +84,11 @@ _QUOTA_PATTERNS = (
     "quota", "rate limit", "rate_limit", "ratelimit", "too many requests",
     "429", "usage limit", "insufficient credit", "out of credits",
     "credit balance", "billing", "limit reached", "exceeded your current",
+    # The research gateway's 402 as Goose 1.51 reports it over ACP
+    # (``data.reason: credits_exhausted``, "add more credits") and as the
+    # gateway phrases it.
+    "credits_exhausted", "credits exhausted", "add more credits",
+    "insufficient_quota", "quota_exhausted", "budget is used up",
 )
 #: Authentication evidence.
 _AUTH_PATTERNS = (

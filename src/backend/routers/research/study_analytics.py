@@ -29,6 +29,7 @@ from backend.routers.analytics.auth_utils import AuthenticatedUser, get_current_
 from research.analysis.study_analytics import metrics as analytics
 from research.analysis.study_analytics import store as analytics_store
 from research.analysis.study_analytics.models import DateWindow
+from research.budget import ledger as budget_ledger
 from research.study.protocol import store as study_store
 
 router = APIRouter()
@@ -119,6 +120,10 @@ def study_participants_analytics(
             analytics_store.load_daily_event_counts(db, study_id),
             study_id=str(study_id),
             now=_now(),
+            budgets={
+                str(view.enrollment_id): budget_ledger.balance_summary(view)
+                for view in budget_ledger.list_study_balances(db, study_id)
+            },
         )
         return JsonResponseWithStatus(status_code=200, content=body)
     finally:
@@ -182,6 +187,7 @@ def study_analytics_summary(
             study_id=str(study_id),
             now=_now(),
             window=window,
+            spend=budget_ledger.study_spend_summary(db, study_id),
         )
         return JsonResponseWithStatus(status_code=200, content=body)
     finally:

@@ -132,10 +132,11 @@ docker-compose ps
 #### 🤖 Agent Subsystem (ACP)
 The `backend` service is also a relay + telemetry sink for an autonomous coding agent (it does not run agent inference loops itself):
 
-- **Third-party agents** (e.g. Goose, Codex) run inside the IDE plugin process and call back through `POST /api/agent/inference`, which the backend proxies to an OpenAI-compatible upstream (Ollama, OpenAI, Groq, OpenRouter, or any compatible endpoint).
+- **Goose** (participant-installed) is pointed at the research inference gateway, `POST /api/research/inference/v1/chat/completions`, with a per-participant inference capability as its API key; the backend forwards the call to the study's OpenAI-compatible provider connection with the server-held key and meters it against the participant's budget. **Codex** signs in with the participant's ChatGPT account and is neither relayed nor metered. (The developer-only path still relays through `POST /api/agent/inference`.)
 - **The built-in `code4me2-agent`** runs as a separate local OS process, launched by the IDE plugin, speaking ACP over stdio. It authenticates via a grant → session handoff: the plugin calls `POST /api/acp/grant`, the agent process exchanges it for a bearer token at `POST /api/acp/session/exchange`, then fetches its assigned model/provider/tools from `GET /api/acp/agent-config`.
 - An **agent profile** (`agent_profile` table) defines a runtime + provider + model + tools + approval policy — used as an A/B study arm. An **agent assignment** is a sticky, server-authoritative per-user draw; the client never self-selects.
-- Provider API keys are never stored in the database — a profile stores only the *name* of an environment variable (`api_key_ref`), resolved from the backend's own environment at request time. See [`.env.example`](.env.example).
+- Provider API keys are never stored in the database — an administrator's *provider connection* stores only the *name* of an environment variable (`secret_ref`), resolved from the backend's own environment at request time. See [`.env.example`](.env.example).
+- **Participant budgets.** Goose and built-in arms spend from the study's shared key, so every enrollment carries a USD budget (study default, per-participant top-ups from the website). Each call reserves its worst-case cost before it is forwarded and settles the actual usage afterwards; a participant can never exceed their budget. Prices per model live on the provider connection; see `docs/research-platform/RELEASES.md` for the fail-closed rollout notes.
 - Installing and running the local `code4me2-agent` CLI is a separate, standalone step — see "Running the Agent CLI (`code4me2-agent`)" under Development below.
 
 #### 🧩 Provider-backed classic chat/completion models

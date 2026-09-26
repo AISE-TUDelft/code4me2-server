@@ -16,7 +16,7 @@ from sqlalchemy import text
 
 from backend.routers.analytics.auth_utils import AuthenticatedUser
 
-from ._byoa_contract import BYOA_CONFIG_BINDINGS
+from ._byoa_contract import BYOA_CONFIG_BINDINGS, INFERENCE_GATEWAY_BINDINGS
 
 #: One passing producer platform test: enough for ``derive_qualification_status``.
 PASSING_TESTS = [
@@ -273,8 +273,17 @@ def seed_byoa_release(
     bindings: Sequence[dict[str, Any]] = tuple(BYOA_CONFIG_BINDINGS),
     release_id: Optional[str] = None,
 ) -> str:
-    """A QUALIFIED participant-installed (BYOA) release."""
+    """A QUALIFIED participant-installed (BYOA) release.
+
+    A Goose release is gateway-bound, so the runtime bindings are added unless
+    the caller already declared them (or deliberately passed none).
+    """
     release_id = release_id or f"ui-byoa-{uuid.uuid4().hex[:12]}"
+    bindings = [dict(binding) for binding in bindings]
+    if agent_id == "goose" and bindings and not any(
+        binding.get("field") == "inference_gateway_credential" for binding in bindings
+    ):
+        bindings.extend(dict(binding) for binding in INFERENCE_GATEWAY_BINDINGS)
     return _insert_release(
         session,
         {
@@ -300,7 +309,14 @@ def seed_connection(
     label: Optional[str] = None,
     models: Sequence[str] = ("model",),
     is_active: bool = True,
+    priced: bool = True,
 ) -> uuid.UUID:
+    """A connection whose models are priced (1/4 USD per million) unless ``priced=False``.
+
+    Metered study arms fail closed without a price, so the default keeps the
+    existing study-creation flows working; pass ``priced=False`` to exercise
+    the fail-closed paths.
+    """
     connection_id = uuid.uuid4()
     session.execute(
         text(
@@ -316,6 +332,17 @@ def seed_connection(
             "is_active": is_active,
         },
     )
+    if priced:
+        for model in models:
+            session.execute(
+                text(
+                    "INSERT INTO public.provider_model_price "
+                    "(connection_id, model, input_usd_per_million, output_usd_per_million, updated_at) "
+                    "VALUES (:connection_id, :model, 1.0, 4.0, now()) "
+                    "ON CONFLICT (connection_id, model) DO NOTHING"
+                ),
+                {"connection_id": connection_id, "model": model},
+            )
     session.commit()
     return connection_id
 

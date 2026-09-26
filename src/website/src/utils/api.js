@@ -1267,7 +1267,17 @@ export const researchUpload = async (path, formData, { label } = {}) => {
  * author it immediately), which removes the "paste a UUID" step from the UI.
  * The identity starts as a DRAFT study with a study-owned join code.
  */
-export const createResearchStudy = async ({ name, description, startsAt, endsAt, telemetryPolicy, sessionPolicy, profileIds } = {}) =>
+export const createResearchStudy = async ({
+  name,
+  description,
+  startsAt,
+  endsAt,
+  telemetryPolicy,
+  sessionPolicy,
+  profileIds,
+  defaultBudgetUsd,
+  budgetWarningFraction,
+} = {}) =>
   researchRequest("/studies", {
     method: "POST",
     body: {
@@ -1278,6 +1288,12 @@ export const createResearchStudy = async ({ name, description, startsAt, endsAt,
       telemetry_policy: telemetryPolicy || {},
       session_policy: sessionPolicy || {},
       profile_ids: profileIds || [],
+      // Default participant budget (decimal USD string). Required by the
+      // server when a selected profile is metered; ignored for Codex-only.
+      default_budget_usd: defaultBudgetUsd ? String(defaultBudgetUsd) : null,
+      ...(typeof budgetWarningFraction === "number"
+        ? { budget_warning_fraction: budgetWarningFraction }
+        : {}),
     },
     label: "create research study",
   });
@@ -1332,15 +1348,19 @@ export const stopResearchStudy = async (studyId, actor) =>
 
 // Clone a stopped study. Supplying profile ids completes the clone through the
 // same validated profile freeze as create, so the clone is joinable; omitting
-// them leaves an explicitly non-runnable draft (ISSUE-12).
-export const cloneResearchStudy = async (studyId, { profileIds } = {}) =>
-  researchRequest(`/studies/${encodeURIComponent(studyId)}/clone`, {
+// them leaves an explicitly non-runnable draft (ISSUE-12). A default budget
+// (decimal USD string) overrides the copied one; omitted, the source's is kept.
+export const cloneResearchStudy = async (studyId, { profileIds, defaultBudgetUsd } = {}) => {
+  const body = {
+    ...(Array.isArray(profileIds) && profileIds.length > 0 ? { profile_ids: profileIds } : {}),
+    ...(defaultBudgetUsd ? { default_budget_usd: String(defaultBudgetUsd) } : {}),
+  };
+  return researchRequest(`/studies/${encodeURIComponent(studyId)}/clone`, {
     method: "POST",
-    ...(Array.isArray(profileIds) && profileIds.length > 0
-      ? { body: { profile_ids: profileIds } }
-      : {}),
+    ...(Object.keys(body).length > 0 ? { body } : {}),
     label: "clone research study",
   });
+};
 
 export const revokeResearchEnrollment = async (studyId, enrollmentId, actor) =>
   researchRequest(
@@ -1766,3 +1786,76 @@ export const disableAgentRelease = async (releaseId) =>
   researchRequest(`/agents/releases/${encodeURIComponent(releaseId)}/disable`, {
     method: "POST", label: "disable release",
   });
+
+// ── Participant budgets (shared provider key) ───────────────────────────────
+//
+// Owner/admin surfaces under /studies/{id}/budget and
+// /studies/{id}/enrollments/{eid}/budget. Money is integer micro-USD in
+// responses and a decimal USD string ("12.50") in requests; the helpers pass
+// both through untouched (utils/format.js does the string arithmetic), so no
+// float ever touches an amount on the way to the server.
+
+const studyBudgetPath = (studyId) => `/studies/${encodeURIComponent(studyId)}/budget`;
+
+const enrollmentBudgetPath = (studyId, enrollmentId) =>
+  `/studies/${encodeURIComponent(studyId)}/enrollments/${encodeURIComponent(enrollmentId)}/budget`;
+
+const pageQuery = ({ limit, cursor } = {}) => {
+  const params = new URLSearchParams();
+  if (limit) params.set("limit", String(limit));
+  if (cursor) params.set("cursor", cursor);
+  const query = params.toString();
+  return query ? `?${query}` : "";
+};
+
+export const getStudyBudget = (studyId) =>
+  researchRequest(studyBudgetPath(studyId), { label: "load study budget" });
+
+// Only the fields given are sent; the server leaves an omitted field unchanged.
+export const updateStudyBudget = (studyId, { defaultBudgetUsd, warningFraction } = {}) =>
+  researchRequest(studyBudgetPath(studyId), {
+    method: "PATCH",
+    body: {
+      ...(defaultBudgetUsd !== undefined && defaultBudgetUsd !== null
+        ? { default_budget_usd: String(defaultBudgetUsd) }
+        : {}),
+      ...(typeof warningFraction === "number" ? { warning_fraction: warningFraction } : {}),
+    },
+    label: "update study budget",
+  });
+
+export const applyStudyDefaultBudget = (studyId, { reason, idempotencyKey } = {}) =>
+  researchRequest(`${studyBudgetPath(studyId)}/apply-default`, {
+    method: "POST",
+    body: { reason, idempotency_key: idempotencyKey },
+    label: "apply the default budget",
+  });
+
+export const getEnrollmentBudget = (studyId, enrollmentId) =>
+  researchRequest(enrollmentBudgetPath(studyId, enrollmentId), {
+    label: "load participant budget",
+  });
+
+// kind: "TOP_UP" (adds amountUsd) or "SET_LIMIT" (replaces the limit). A
+// reused idempotency key replays the original adjustment (200, replayed).
+export const adjustEnrollmentBudget = (
+  studyId,
+  enrollmentId,
+  { kind, amountUsd, reason, idempotencyKey } = {},
+) =>
+  researchRequest(`${enrollmentBudgetPath(studyId, enrollmentId)}/adjustments`, {
+    method: "POST",
+    body: { kind, amount_usd: String(amountUsd), reason, idempotency_key: idempotencyKey },
+    label: "adjust participant budget",
+  });
+
+export const getEnrollmentBudgetLedger = (studyId, enrollmentId, page) =>
+  researchRequest(`${enrollmentBudgetPath(studyId, enrollmentId)}/ledger${pageQuery(page)}`, {
+    label: "load participant budget ledger",
+  });
+
+export const getEnrollmentBudgetAdjustments = (studyId, enrollmentId, page) =>
+  researchRequest(
+    `${enrollmentBudgetPath(studyId, enrollmentId)}/adjustments${pageQuery(page)}`,
+    { label: "load participant budget adjustments" },
+  );

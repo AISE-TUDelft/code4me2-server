@@ -201,6 +201,7 @@ def _create_study(client, profile_id: uuid.UUID, name: str) -> dict:
         "/api/research/studies",
         json={
             "name": name,
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(profile_id)],
         },

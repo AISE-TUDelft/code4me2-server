@@ -201,7 +201,7 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
       max: observed ? context.prompt_tokens_max : null,
       note: observed
         ? `${formatPercent(context.over_cap_share, 1)} of calls over cap`
-        : "Not observable (BYOA)",
+        : "Not observable (Codex)",
       context,
     };
   });
@@ -450,8 +450,9 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
                 <>
                   <CapBullet rows={contextRows} />
                   <p className="ui-hint">
-                    Bar: 95th percentile · thin line: maximum · red marker: the arm's cap. Only the built-in agent routes
-                    model calls through the relay; participant-installed agents cannot be observed here.
+                    Bar: 95th percentile · thin line: maximum · red marker: the arm's cap. Built-in and Goose arms route
+                    model calls through the metered relay; Codex signs in with ChatGPT and bypasses it, so it cannot be
+                    observed here.
                   </p>
                 </>
               ) : (

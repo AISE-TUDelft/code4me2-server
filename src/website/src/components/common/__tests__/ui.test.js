@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { Drawer, Switch, TabPanel, Tabs } from "../ui";
+import { Drawer, Meter, MoneyInput, Switch, TabPanel, Tabs } from "../ui";
 
 const DrawerHarness = () => {
   const [open, setOpen] = useState(false);
@@ -106,4 +106,55 @@ test("a named switch keeps a stable name and exposes its state through aria-chec
 test("an unnamed switch is labelled by its visible text", () => {
   render(<Switch checked={false} label="Active" onChange={() => {}} />);
   expect(screen.getByRole("switch", { name: "Active" })).not.toBeChecked();
+});
+
+test("the meter exposes its range and derives its tone from the share used", () => {
+  const { rerender } = render(<Meter value={3120000} max={10000000} label="Budget used" valueText="$3.12 of $10.00" />);
+  const meter = screen.getByRole("meter", { name: "Budget used" });
+  expect(meter).toHaveAttribute("aria-valuemin", "0");
+  expect(meter).toHaveAttribute("aria-valuemax", "10000000");
+  expect(meter).toHaveAttribute("aria-valuenow", "3120000");
+  expect(meter).toHaveAttribute("aria-valuetext", "$3.12 of $10.00");
+  expect(meter).toHaveClass("is-ok");
+
+  rerender(<Meter value={8500000} max={10000000} label="Budget used" />);
+  expect(screen.getByRole("meter")).toHaveClass("is-warning");
+  rerender(<Meter value={10000000} max={10000000} label="Budget used" />);
+  expect(screen.getByRole("meter")).toHaveClass("is-exhausted");
+  // A limit lowered below the spend: forced exhausted, value clamped to the max.
+  rerender(<Meter value={12000000} max={10000000} exhausted label="Budget used" />);
+  expect(screen.getByRole("meter")).toHaveAttribute("aria-valuenow", "10000000");
+  expect(screen.getByRole("meter")).toHaveClass("is-exhausted");
+  // An explicit tone wins.
+  rerender(<Meter value={1} max={100} tone="warning" label="Budget used" />);
+  expect(screen.getByRole("meter")).toHaveClass("is-warning");
+});
+
+const MoneyHarness = () => {
+  const [value, setValue] = useState("");
+  return <MoneyInput ariaLabel="Amount" value={value} onChange={setValue} />;
+};
+
+test("the money input is a decimal text field that flags unparseable input", () => {
+  render(<MoneyHarness />);
+  const input = screen.getByRole("textbox", { name: "Amount" });
+  expect(input).toHaveAttribute("type", "text");
+  expect(input).toHaveAttribute("inputmode", "decimal");
+  expect(screen.getByText("$")).toHaveAttribute("aria-hidden", "true");
+  expect(input).not.toHaveAttribute("aria-invalid");
+
+  fireEvent.change(input, { target: { value: "12.50" } });
+  expect(input).toHaveValue("12.50");
+  expect(input).not.toHaveAttribute("aria-invalid");
+  fireEvent.change(input, { target: { value: "twelve" } });
+  expect(input).toHaveAttribute("aria-invalid", "true");
+  fireEvent.change(input, { target: { value: "-1" } });
+  expect(input).toHaveAttribute("aria-invalid", "true");
+  fireEvent.change(input, { target: { value: "" } });
+  expect(input).not.toHaveAttribute("aria-invalid");
+});
+
+test("the money input's explicit invalid flag overrides its own parse", () => {
+  render(<MoneyInput ariaLabel="Amount" value="12.50" onChange={() => {}} invalid />);
+  expect(screen.getByRole("textbox", { name: "Amount" })).toHaveAttribute("aria-invalid", "true");
 });

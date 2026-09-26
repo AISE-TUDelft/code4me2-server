@@ -30,6 +30,12 @@ from research.study.lifecycle import (
 )
 from research.study.protocol import store
 from research.analysis.operations import store as operations_store
+from research.budget import study_policy
+from research.budget.pricing import parse_usd_amount, usd_to_micro
+from research.study.agents.enums import METERED_FRAMEWORKS
+from database.db_schemas import AgentProfile
+from database.db_schemas import Study as StudyRow
+from sqlalchemy import select
 
 router = APIRouter()
 
@@ -47,6 +53,10 @@ class StudyCreateRequest(BaseModel):
     # selection. The clone route re-validates any selection it carries through
     # the same freeze; a clone body may omit profiles and stay profile-less.
     profile_ids: list[uuid.UUID] = Field(..., min_length=1)
+    # Participant budgets (shared provider key). Required (> 0) when a selected
+    # profile runs Goose or the built-in agent; ignored for Codex-only studies.
+    default_budget_usd: Optional[str] = None
+    budget_warning_fraction: float = Field(default=0.8, gt=0, le=1)
 
     @field_validator("name")
     @classmethod
@@ -67,6 +77,8 @@ class StudyCloneRequest(BaseModel):
     """
 
     profile_ids: Optional[list[uuid.UUID]] = Field(default=None, min_length=1)
+    # Override for the clone's default participant budget (else copied).
+    default_budget_usd: Optional[str] = None
 
 
 class StudyMetadataUpdateRequest(BaseModel):
@@ -199,12 +211,90 @@ def _validated_telemetry_policy(telemetry_policy: dict[str, Any]) -> dict[str, A
     return telemetry_policy
 
 
+def _budget_error(code: str, message: str, **extra: Any) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={"code": code, "field": "default_budget_usd", "message": message, **extra},
+    )
+
+
+def _metered_profile_rows(db: Any, profile_ids: list[uuid.UUID]) -> list[AgentProfile]:
+    if not profile_ids:
+        return []
+    rows = db.execute(
+        select(AgentProfile).where(AgentProfile.profile_id.in_(list(profile_ids)))
+    ).scalars().all()
+    return [
+        row for row in rows
+        if str(row.framework_version or "").strip().lower() in METERED_FRAMEWORKS
+    ]
+
+
+def _resolve_default_budget(
+    db: Any, profile_ids: list[uuid.UUID], default_budget_usd: Optional[str]
+) -> int:
+    """The study's default participant budget in micro-USD, validated.
+
+    Metered arms (Goose, built-in agent) need a positive budget and a price for
+    their frozen model, otherwise every participant call would fail closed on
+    day one. Codex-only studies keep whatever was given (0 when omitted).
+    """
+    metered = _metered_profile_rows(db, profile_ids)
+    if default_budget_usd is not None and str(default_budget_usd).strip():
+        try:
+            amount = parse_usd_amount(default_budget_usd)
+        except ValueError as error:
+            raise _budget_error("BUDGET_INVALID", str(error)) from error
+    else:
+        amount = None
+    if not metered:
+        return usd_to_micro(amount) if amount is not None else 0
+    if amount is None:
+        raise _budget_error(
+            "BUDGET_REQUIRED",
+            "a default budget per participant is required when a selected profile "
+            "runs Goose or the built-in agent",
+        )
+    if amount <= 0:
+        raise _budget_error(
+            "BUDGET_INVALID",
+            "the default budget per participant must be greater than zero for "
+            "Goose/built-in arms",
+        )
+    missing = study_policy.missing_prices(
+        db,
+        [
+            {
+                "profile_id": str(row.profile_id),
+                "name": row.name,
+                "model": row.model,
+                "connection_id": str(row.connection_id) if row.connection_id else None,
+            }
+            for row in metered
+        ],
+    )
+    if missing:
+        raise _budget_error(
+            "BUDGET_PRICE_MISSING",
+            "these profiles' models have no budget price on their provider connection; "
+            "ask an administrator to price them first: "
+            + ", ".join(f"{item['name']} ({item['model']})" for item in missing),
+            missing=missing,
+        )
+    return usd_to_micro(amount)
+
+
 def _study_payload(study: Any, db: Any) -> dict[str, Any]:
     def iso(value: Any) -> Any:
         return value.isoformat() if isinstance(value, datetime) else value
 
     metrics = store.get_study_read_metrics(db, study.study_id)
     stopped = getattr(study, "research_status", None) == "STUDY_STOPPED"
+    budget_row = db.get(StudyRow, study.study_id)
+    budget_policy = study_policy.budget_policy_payload(
+        budget_row if budget_row is not None else study,
+        study_policy.metered_selections(db, study.study_id),
+    )
     config = getattr(study, "research_config_json", None) or {}
     switch = operations_store.latest_study_kill_switch(db, study.study_id)
     switch_status = None
@@ -245,7 +335,10 @@ def _study_payload(study: Any, db: Any) -> dict[str, Any]:
             "stoppable": not stopped,
             "cloneable": stopped,
             "joinable": not stopped and getattr(study, "research_status", None) in {"DRAFT", "ACTIVE"},
+            # Budgets stay editable after the consent lock; only a stop ends it.
+            "budget_editable": not stopped,
         },
+        "budget_policy": budget_policy,
         "kill_switch": (
             {
                 "switch_id": str(switch.switch_id),
@@ -269,6 +362,9 @@ def create_study(
     try:
         session_policy = _validated_session_policy(payload.session_policy)
         telemetry_policy = _validated_telemetry_policy(payload.telemetry_policy)
+        default_budget = _resolve_default_budget(
+            db, list(payload.profile_ids), payload.default_budget_usd
+        )
         study = store.create_study(
             db,
             study_id=uuid.uuid4(),
@@ -286,6 +382,9 @@ def create_study(
             join_code=allocate_join_code(db),
             profile_ids=payload.profile_ids,
             allow_shared_profiles=current_user.is_admin,
+            inference_budget_default_micro_usd=default_budget,
+            inference_budget_warning_fraction=payload.budget_warning_fraction,
+            inference_budget_updated_by=current_user.email,
         )
         return JsonResponseWithStatus(
             status_code=201,
@@ -428,6 +527,20 @@ def clone_study(
     db = app.get_db_session()
     try:
         _authorize_study(db, current_user, study_id)
+        budget_override = None
+        if payload is not None and payload.default_budget_usd is not None:
+            budget_override = _resolve_default_budget(
+                db, list(payload.profile_ids or []), payload.default_budget_usd
+            )
+        elif payload is not None and payload.profile_ids:
+            # A clone that selects metered profiles must not silently inherit an
+            # unusable (zero) default from the source study.
+            source_row = db.get(StudyRow, study_id)
+            inherited = int(getattr(source_row, "inference_budget_default_micro_usd", 0) or 0)
+            _resolve_default_budget(
+                db, list(payload.profile_ids),
+                study_policy.micro_to_usd_string(inherited) if inherited > 0 else None,
+            )
         try:
             clone = clone_stopped_research_study(
                 db,
@@ -435,6 +548,7 @@ def clone_study(
                 actor=current_user.email,
                 profile_ids=payload.profile_ids if payload is not None else None,
                 allow_shared_profiles=current_user.is_admin,
+                inference_budget_default_micro_usd=budget_override,
             )
         except CloneNotAllowedError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error

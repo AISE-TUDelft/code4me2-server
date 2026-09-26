@@ -10,6 +10,7 @@ import {
 } from "../utils/api";
 import Icon from "../components/common/Icon";
 import { Alert, Badge, EmptyState, FieldErrors, Loading, PageHeader, Switch } from "../components/common/ui";
+import { isMeteredRuntime } from "./research/studyUtils";
 import "./AgentProfiles.css";
 
 // Runtimes a profile can target. Must stay in sync with SUPPORTED_FRAMEWORKS in
@@ -25,7 +26,7 @@ const FRAMEWORKS = [
     value: "goose",
     label: "Goose (bring your own agent)",
     short: "Goose",
-    hint: "Participant-installed Goose. Settings only apply where the pinned release declares a translation, and the agent uses the participant's own model credentials.",
+    hint: "Participant-installed Goose. Settings only apply where the pinned release declares a translation; model calls go through the server's metered relay on the study's shared provider key, within each participant's budget.",
   },
   {
     value: "codex",
@@ -276,6 +277,16 @@ const AgentProfiles = ({ user = {} }) => {
 
   const selectedConnection = connections.find((connection) => connection.connection_id === form.connection_id);
   const selectableModels = connectionModels(selectedConnection);
+  // Metered runtimes charge participant budgets with the connection's model
+  // prices; a missing price refuses every call, so the form says so early.
+  const selectedModelUnpriced = Boolean(
+    isMeteredRuntime(form.framework_version) &&
+      form.model &&
+      selectedConnection &&
+      selectedConnection.model_prices &&
+      typeof selectedConnection.model_prices === "object" &&
+      !selectedConnection.model_prices[form.model],
+  );
   const selectedRelease = releaseCatalogue.find((release) => release.release_id === form.release_id);
   const isByoaRuntime = form.framework_version !== "code4me2-agent";
   const governed = governedFields(selectedRelease, form.framework_version);
@@ -709,6 +720,11 @@ const AgentProfiles = ({ user = {} }) => {
                       <span className="ui-truncate" title={profile.model}>
                         {profile.model}
                       </span>
+                      {profile.model_priced === false && isMeteredRuntime(profile.framework_version) ? (
+                        <Badge tone="warning" title="No budget price for this model on its connection; metered calls are refused">
+                          Price missing on the server
+                        </Badge>
+                      ) : null}
                     </div>
                     <dl className="profile-item-facts">
                       <div>
@@ -947,9 +963,11 @@ const AgentProfiles = ({ user = {} }) => {
                     ))}
                   </select>
                   <p className="ui-hint">
-                    {isByoaRuntime
-                      ? "A participant-installed agent uses the participant's own credentials; the connection only defines which model names are allowed."
-                      : "Administrator-managed. The endpoint and secret stay on the server."}
+                    {form.framework_version === "codex"
+                      ? "Codex signs in with the participant's ChatGPT account; the connection only defines which model names are allowed."
+                      : isByoaRuntime
+                        ? "Goose relays its model calls through the server with this connection's key, metered against each participant's budget; the model needs a price on the connection."
+                        : "Administrator-managed. The endpoint and secret stay on the server."}
                   </p>
                 </div>
                 <div className="ui-field">
@@ -979,6 +997,12 @@ const AgentProfiles = ({ user = {} }) => {
                       {selectableModels.length} model{selectableModels.length === 1 ? "" : "s"} allowed by{" "}
                       {selectedConnection.label}
                       {selectedConnection.ready === false ? " · secret missing on the server" : ""}
+                    </p>
+                  ) : null}
+                  {selectedModelUnpriced ? (
+                    <p className="ui-field-error">
+                      Price missing on the server for {form.model}: an administrator must price it on{" "}
+                      {selectedConnection.label} before a study can use this arm.
                     </p>
                   ) : null}
                 </div>

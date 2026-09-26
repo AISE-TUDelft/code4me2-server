@@ -224,6 +224,7 @@ def _create_study(client, profile_ids, name: str) -> dict:
         "/api/research/studies",
         json={
             "name": name,
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(profile_id) for profile_id in profile_ids],
         },
@@ -895,6 +896,9 @@ def test_empty_study_returns_arms_with_nulls_not_zeros(analytics_runtime):
     assert summary["window"] == {"start": None, "end": None}
     assert summary["totals"] == {
         "participants_enrolled": 0,
+        "metered_calls": 0,
+        "metered_reserved_micro_usd": 0,
+        "metered_spend_micro_usd": 0,
         "participants_active": 0,
         "participants_with_telemetry": 0,
         "sessions": 0,
@@ -1212,6 +1216,9 @@ def test_study_summary_compares_arms_on_participant_level_values(analytics_runti
 
     assert body["totals"] == {
         "participants_enrolled": 4,
+        "metered_calls": 0,
+        "metered_reserved_micro_usd": 0,
+        "metered_spend_micro_usd": 0,
         "participants_active": 3,
         "participants_with_telemetry": 3,
         "sessions": 4,

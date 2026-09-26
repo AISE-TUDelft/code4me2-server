@@ -264,6 +264,20 @@ def _connection_summary(db: Any, profile: AgentProfile) -> Optional[dict[str, An
     }
 
 
+def _model_priced(db: Any, profile: AgentProfile) -> Optional[bool]:
+    from research.budget.errors import PriceMissing
+    from research.budget.pricing import get_model_price
+    from research.study.agents.enums import METERED_FRAMEWORKS
+
+    if str(getattr(profile, "framework_version", "") or "").lower() not in METERED_FRAMEWORKS:
+        return None
+    try:
+        get_model_price(db, getattr(profile, "connection_id", None), profile.model)
+    except PriceMissing:
+        return False
+    return True
+
+
 def _profile_to_dict(db: Any, profile: AgentProfile) -> dict[str, Any]:
     release = _release_for(db, profile)
     view = resolve_distribution_view(profile, release)
@@ -282,6 +296,10 @@ def _profile_to_dict(db: Any, profile: AgentProfile) -> dict[str, Any]:
         "system_prompt": getattr(profile, "system_prompt", None),
         "configuration_digest": getattr(profile, "configuration_digest", ""),
         "connection": _connection_summary(db, profile),
+        # Whether the frozen model has a budget price on its connection
+        # (metered runtimes only; ``None`` for Codex). A metered arm without a
+        # price refuses every call, so the study form warns on this flag.
+        "model_priced": _model_priced(db, profile),
         "release_id": view.release_id,
         "release_version": view.version,
         "verified": view.verified,
