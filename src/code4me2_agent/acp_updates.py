@@ -38,6 +38,46 @@ class AcpUpdateBuilder:
             return update
         return update.model_copy(update=model_updates)
 
+    def user_message(self, text: str, *, message_id: str | None = None) -> Any:
+        """A replayed user message (``session/load``)."""
+        update = self._schema.UserMessageChunk(
+            session_update="user_message_chunk",
+            content=self._schema.TextContentBlock(type="text", text=text),
+        )
+        if message_id is None:
+            return update
+        return update.model_copy(update={"message_id": message_id})
+
+    def available_commands(self, commands: Sequence[Any]) -> Any:
+        """``available_commands_update`` from ``slash_commands.SlashCommand`` entries."""
+        available = []
+        for command in commands:
+            hint = getattr(command, "hint", None)
+            available.append(
+                self._schema.AvailableCommand(
+                    name=str(command.name),
+                    description=str(command.description),
+                    input=(
+                        self._schema.AvailableCommandInput(
+                            self._schema.UnstructuredCommandInput(hint=str(hint))
+                        )
+                        if hint
+                        else None
+                    ),
+                )
+            )
+        return self._schema.AvailableCommandsUpdate(
+            session_update="available_commands_update",
+            available_commands=available,
+        )
+
+    def session_info(self, *, title: str | None, updated_at: str | None = None) -> Any:
+        return self._schema.SessionInfoUpdate(
+            session_update="session_info_update",
+            title=title,
+            updated_at=updated_at,
+        )
+
     def agent_thought(self, text: str, *, metadata: dict[str, Any] | None = None) -> Any:
         text_block = getattr(self._acp, "text_block", None)
         update_agent_thought = getattr(self._acp, "update_agent_thought", None)

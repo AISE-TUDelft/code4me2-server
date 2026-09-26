@@ -12,6 +12,7 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from agents.tools import set_harness_profile_fields
 from database.db_schemas import ResearchStudyStatus, Study
 from database.research_schemas import (
     RECORD_KIND_STUDY_LIFECYCLE,
@@ -83,7 +84,9 @@ def profile_snapshot(profile: Any) -> dict[str, Any]:
     """Return the non-secret profile configuration frozen into a study.
 
     ``system_prompt`` is included only when set, so a profile without one keeps
-    the snapshot shape (and digest) it had before the field existed.
+    the snapshot shape (and digest) it had before the field existed; the same
+    holds for the built-in runtime's ``commands_allowlist`` /
+    ``command_timeout_seconds`` / ``harness_options`` (decision D-01).
     """
     snapshot = {
         "profile_id": str(profile.profile_id),
@@ -101,6 +104,7 @@ def profile_snapshot(profile: Any) -> dict[str, Any]:
     system_prompt = getattr(profile, "system_prompt", None)
     if system_prompt is not None:
         snapshot["system_prompt"] = system_prompt
+    snapshot.update(set_harness_profile_fields(profile))
     return snapshot
 
 

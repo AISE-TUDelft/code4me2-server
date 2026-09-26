@@ -32,6 +32,8 @@ class ToolCallEvent:
     raw_output: dict[str, Any] | None = None
     # Absolute paths for the ACP card. When omitted the sink falls back to ``path``.
     locations: tuple[str, ...] | None = None
+    # Further file diffs of a multi-file change: (absolute path, old text, new text).
+    extra_diffs: tuple[tuple[str, str | None, str], ...] = ()
 
 
 @dataclass(frozen=True)

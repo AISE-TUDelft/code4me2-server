@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from threading import RLock
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 from urllib import request
 from uuid import uuid4
@@ -209,6 +210,9 @@ class AgentTelemetryRecorder:
         else:
             self._sinks = sinks
         self._run_sequences: dict[str, int] = {}
+        # Read-only tool calls run in parallel: sequence numbers and sink
+        # writes must stay ordered and whole.
+        self._lock = RLock()
 
     def apply_config(self, config: AgentConfig) -> None:
         """Refresh policy metadata and rotating bearer headers without dropping events."""
@@ -231,6 +235,34 @@ class AgentTelemetryRecorder:
         contains_user_prompt: bool = False,
         contains_agent_response: bool = False,
         raw_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            return self._record_locked(
+                event_type=event_type,
+                run_id=run_id,
+                request_id=request_id,
+                parent_event_id=parent_event_id,
+                payload=payload,
+                message_id=message_id,
+                metrics=metrics,
+                contains_user_prompt=contains_user_prompt,
+                contains_agent_response=contains_agent_response,
+                raw_payload=raw_payload,
+            )
+
+    def _record_locked(
+        self,
+        *,
+        event_type: str,
+        run_id: str,
+        request_id: str,
+        parent_event_id: str | None,
+        payload: dict[str, Any],
+        message_id: str | None,
+        metrics: dict[str, Any] | None,
+        contains_user_prompt: bool,
+        contains_agent_response: bool,
+        raw_payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
         sequence = self._run_sequences.get(run_id, 0) + 1
         self._run_sequences[run_id] = sequence

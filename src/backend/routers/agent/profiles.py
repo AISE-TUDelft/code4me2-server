@@ -30,7 +30,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 
-from agents.tools import KNOWN_AGENT_TOOLS, tools_for_framework
+from agents.tools import (
+    KNOWN_AGENT_TOOLS,
+    tools_for_framework,
+    validate_command_timeout_seconds,
+    validate_commands_allowlist,
+    validate_harness_options,
+)
 from App import App
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.analytics.auth_utils import (
@@ -104,6 +110,43 @@ class AgentProfilePayload(BaseModel):
     system_prompt: Optional[str] = Field(
         default=None, max_length=SYSTEM_PROMPT_MAX_LENGTH
     )
+    # Built-in runtime command and harness settings (decision D-01; managed
+    # runtime only, a BYOA release refuses them). Null = not set: the server
+    # fallback allowlist (a config row may replace it), the runtime's default
+    # timeout and harness defaults. An empty allowlist is a setting (explicitly
+    # no commands); an empty harness_options object carries no switch, so it is
+    # stored as null. Each field's shape is checked here; the cross-field rule
+    # (a verify_command must be allowlisted) runs on the merged profile in the
+    # profile↔release contract. On an update an omitted field keeps the stored
+    # value for the managed runtime and clears it for a BYOA runtime, exactly
+    # like system_prompt.
+    commands_allowlist: Optional[list[str]] = Field(default=None)
+    command_timeout_seconds: Optional[int] = Field(default=None)
+    harness_options: Optional[dict[str, Any]] = Field(default=None)
+
+    @field_validator("commands_allowlist", mode="before")
+    @classmethod
+    def check_commands_allowlist(cls, value: Any) -> Optional[list[str]]:
+        if value is None:
+            return None
+        return validate_commands_allowlist(value)
+
+    @field_validator("command_timeout_seconds", mode="before")
+    @classmethod
+    def check_command_timeout_seconds(cls, value: Any) -> Optional[int]:
+        # "before" so a bool, a float or a numeric string is refused instead
+        # of being coerced to an int.
+        if value is None:
+            return None
+        return validate_command_timeout_seconds(value)
+
+    @field_validator("harness_options", mode="before")
+    @classmethod
+    def check_harness_options(cls, value: Any) -> Optional[dict[str, Any]]:
+        if value is None:
+            return None
+        options = validate_harness_options(value, require_allowlisted_verify=False)
+        return options or None
 
     @field_validator("system_prompt")
     @classmethod
@@ -294,6 +337,9 @@ def _profile_to_dict(db: Any, profile: AgentProfile) -> dict[str, Any]:
         "temperature": profile.temperature,
         "max_context_tokens": profile.max_context_tokens,
         "system_prompt": getattr(profile, "system_prompt", None),
+        "commands_allowlist": getattr(profile, "commands_allowlist", None),
+        "command_timeout_seconds": getattr(profile, "command_timeout_seconds", None),
+        "harness_options": getattr(profile, "harness_options", None),
         "configuration_digest": getattr(profile, "configuration_digest", ""),
         "connection": _connection_summary(db, profile),
         # Whether the frozen model has a budget price on its connection
@@ -412,6 +458,9 @@ def create_agent_profile(
             temperature=payload.temperature,
             max_context_tokens=payload.max_context_tokens,
             system_prompt=payload.system_prompt,
+            commands_allowlist=payload.commands_allowlist,
+            command_timeout_seconds=payload.command_timeout_seconds,
+            harness_options=payload.harness_options,
         )
         return JsonResponseWithStatus(
             status_code=201, content={"profile": _profile_to_dict(db, profile)}
@@ -478,6 +527,15 @@ def update_agent_profile(
             raise HTTPException(status_code=404, detail="Agent profile not found")
         require_owner(current_user, existing.owner_user_id, subject="profile")
         _authorize_connection(db, payload, current_user)
+        # The system prompt and the built-in runtime's command/harness settings
+        # share one rule: an omitted field keeps the stored value for the
+        # managed runtime and clears it for a BYOA runtime (which can never
+        # hold one); an explicit null always clears it.
+        byoa_runtime = payload.framework_version != MANAGED_RUNTIME_FRAMEWORK
+
+        def replaces(field: str) -> bool:
+            return field in payload.model_fields_set or byoa_runtime
+
         profile = crud.update_agent_profile(
             db,
             profile_id=profile_id,
@@ -491,6 +549,9 @@ def update_agent_profile(
             temperature=payload.temperature,
             max_context_tokens=payload.max_context_tokens,
             system_prompt=payload.system_prompt,
+            commands_allowlist=payload.commands_allowlist,
+            command_timeout_seconds=payload.command_timeout_seconds,
+            harness_options=payload.harness_options,
             connection_id=payload.connection_id,
             release_id=payload.release_id,
             update_connection_id=True,
@@ -499,17 +560,17 @@ def update_agent_profile(
             # value instead of keeping the previous one.
             update_temperature=True,
             update_max_context_tokens=True,
-            # Except the system prompt when the field is omitted for the
-            # managed runtime: a client that does not show it (an older
-            # website, or a release the catalogue does not list) must not
-            # silently wipe an arm's prompt. A BYOA runtime can never hold a
-            # prompt, so there an omitted field clears it (the website omits it
-            # when switching a profile to goose/codex). An explicit null always
-            # clears it.
-            update_system_prompt=(
-                "system_prompt" in payload.model_fields_set
-                or payload.framework_version != MANAGED_RUNTIME_FRAMEWORK
-            ),
+            # Except the system prompt (and the command/harness settings) when
+            # the field is omitted for the managed runtime: a client that does
+            # not show it (an older website, or a release the catalogue does
+            # not list) must not silently wipe an arm's setting. A BYOA runtime
+            # can never hold one, so there an omitted field clears it (the
+            # website omits them when switching a profile to goose/codex). An
+            # explicit null always clears it.
+            update_system_prompt=replaces("system_prompt"),
+            update_commands_allowlist=replaces("commands_allowlist"),
+            update_command_timeout_seconds=replaces("command_timeout_seconds"),
+            update_harness_options=replaces("harness_options"),
         )
         return JsonResponseWithStatus(
             status_code=200, content={"profile": _profile_to_dict(db, profile)}

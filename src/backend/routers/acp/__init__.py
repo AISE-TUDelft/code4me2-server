@@ -42,7 +42,12 @@ from sqlalchemy.exc import IntegrityError
 import Queries  # noqa: TC001 - FastAPI evaluates route annotations at runtime
 from agents import provider as provider_module
 from agents import registry
-from agents.tools import CODE4ME2_AGENT_TOOLS
+from agents.tools import (
+    CODE4ME2_AGENT_TOOLS,
+    validate_command_timeout_seconds,
+    validate_commands_allowlist,
+    validate_harness_options,
+)
 from App import App
 from backend.acp_authorization import (
     AcpAuthorizationDenied,
@@ -541,8 +546,14 @@ def get_acp_agent_config(
        normal path, and it's what makes the assignment govern the runtime;
     2. the user's ``config`` row, whose optional ``agent`` section can override
        the command allowlist (an operational safety setting rather than an
-       experimental condition, so it stays outside the profile);
+       experimental condition, so it stays outside the profile). When the
+       profile sets its own ``commands_allowlist`` the config row can only
+       narrow it (intersection, profile order); otherwise it replaces the
+       fallback list;
     3. the conservative fallback constants above.
+
+    ``command_timeout_seconds`` and ``harness_options`` are returned only when
+    the profile sets them, so a config without them is unchanged.
 
     No API key is ever returned — only ``api_key_ref``, the environment
     variable name the agent reads it from locally.
@@ -577,6 +588,9 @@ def get_acp_agent_config(
     temperature: Optional[float] = None
     max_context_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
+    profile_allowlist: Optional[list[str]] = None
+    command_timeout_seconds: Optional[int] = None
+    harness_options: Optional[dict] = None
     store_agent_content = False
 
     db = app.get_db_session()
@@ -617,6 +631,21 @@ def get_acp_agent_config(
                         f"[ACP/agent-config] profile {profile.name!r} has invalid "
                         f"tools_json — using fallback tool set"
                     )
+                try:
+                    (
+                        profile_allowlist,
+                        command_timeout_seconds,
+                        harness_options,
+                    ) = _profile_harness_settings(profile)
+                except ValueError:
+                    if managed_protocol_version is not None:
+                        # Fail closed (503 below) rather than run the arm
+                        # without its frozen command/harness settings.
+                        raise
+                    logging.warning(
+                        f"[ACP/agent-config] profile {profile.name!r} has invalid "
+                        f"command/harness settings — ignoring them"
+                    )
                 logging.info(
                     f"[ACP/agent-config] profile={profile.name!r} "
                     f"runtime={framework_version} model={model} "
@@ -636,6 +665,7 @@ def get_acp_agent_config(
 
             # The command allowlist is an operational guardrail, so it can be
             # narrowed per-user via the config row independently of the profile.
+            config_allowlist: Optional[list[str]] = None
             user = crud.get_user_by_id(db, user_uuid) if user_uuid else None
             if user is not None:
                 config_row = crud.get_config_by_id(db, user.config_id)
@@ -643,9 +673,12 @@ def get_acp_agent_config(
                     overrides = _parse_agent_config_section(config_row.config_data)
                     raw_allowlist = overrides.get("commands_allowlist")
                     if isinstance(raw_allowlist, list):
-                        commands_allowlist = [
+                        config_allowlist = [
                             str(c).strip() for c in raw_allowlist if c
                         ]
+            commands_allowlist = _effective_commands_allowlist(
+                profile_allowlist, config_allowlist
+            )
     except Exception as error:
         if managed_protocol_version is not None:
             raise HTTPException(
@@ -710,6 +743,8 @@ def get_acp_agent_config(
             approval_policy=approval_policy,
             temperature=temperature,
             system_prompt=system_prompt,
+            command_timeout_seconds=command_timeout_seconds,
+            harness_options=harness_options,
             store_agent_content=store_agent_content,
             transport=transport,
             managed_protocol_version=(
@@ -717,6 +752,66 @@ def get_acp_agent_config(
             ),
         ),
     )
+
+
+class _InvalidHarnessSetting(ValueError):
+    """A frozen command/harness setting is malformed; ``detail`` is the 503 text."""
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
+
+
+def _profile_harness_settings(
+    profile,
+) -> tuple[Optional[list[str]], Optional[int], Optional[dict]]:
+    """The profile's built-in runtime command/harness settings (decision D-01).
+
+    Returns ``(commands_allowlist, command_timeout_seconds, harness_options)``,
+    each ``None`` when unset. Raises :class:`_InvalidHarnessSetting` (a
+    ``ValueError``) when a frozen value is malformed, so callers fail closed
+    instead of dropping an arm's setting. The verify command is checked against
+    the profile's own allowlist, never against the (possibly narrower)
+    effective one.
+    """
+    allowlist = getattr(profile, "commands_allowlist", None)
+    timeout = getattr(profile, "command_timeout_seconds", None)
+    options = getattr(profile, "harness_options", None)
+    try:
+        if allowlist is not None:
+            allowlist = validate_commands_allowlist(allowlist)
+    except ValueError as error:
+        raise _InvalidHarnessSetting("Assigned command policy is invalid") from error
+    try:
+        if timeout is not None:
+            timeout = validate_command_timeout_seconds(timeout)
+    except ValueError as error:
+        raise _InvalidHarnessSetting("Assigned profile command timeout is invalid") from error
+    try:
+        if options is not None:
+            options = validate_harness_options(options, commands_allowlist=allowlist)
+    except ValueError as error:
+        raise _InvalidHarnessSetting("Assigned profile harness options are invalid") from error
+    return allowlist, timeout, options
+
+
+def _effective_commands_allowlist(
+    profile_allowlist: Optional[list[str]], config_allowlist: Optional[list[str]]
+) -> list[str]:
+    """The command allowlist a runtime receives.
+
+    A profile allowlist is the arm's condition: the user's config row can only
+    narrow it (intersection, profile order kept). Without one the previous
+    behaviour holds: the config row replaces the fallback list.
+    """
+    if profile_allowlist is None:
+        if config_allowlist is not None:
+            return list(config_allowlist)
+        return list(FALLBACK_COMMANDS_ALLOWLIST)
+    if config_allowlist is None:
+        return list(profile_allowlist)
+    permitted = set(config_allowlist)
+    return [command for command in profile_allowlist if command in permitted]
 
 
 def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.UUID] = None) -> dict:
@@ -765,8 +860,14 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
         or max_iterations < 1
     ):
         raise HTTPException(status_code=503, detail="Assigned profile policy is incomplete")
+    try:
+        profile_allowlist, command_timeout_seconds, harness_options = (
+            _profile_harness_settings(profile)
+        )
+    except _InvalidHarnessSetting as error:
+        raise HTTPException(status_code=503, detail=error.detail) from error
 
-    commands_allowlist = list(FALLBACK_COMMANDS_ALLOWLIST)
+    config_allowlist: Optional[list[str]] = None
     user = crud.get_user_by_id(db, user_id)
     if user is not None:
         config_row = crud.get_config_by_id(db, user.config_id)
@@ -777,7 +878,8 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
             if isinstance(raw_allowlist, list):
                 if not all(isinstance(command, str) and command.strip() for command in raw_allowlist):
                     raise HTTPException(status_code=503, detail="Assigned command policy is invalid")
-                commands_allowlist = [command.strip() for command in raw_allowlist]
+                config_allowlist = [command.strip() for command in raw_allowlist]
+    commands_allowlist = _effective_commands_allowlist(profile_allowlist, config_allowlist)
 
     policy = {
         "version": MANAGED_PROTOCOL_VERSION,
@@ -801,6 +903,12 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
     system_prompt = getattr(profile, "system_prompt", None)
     if system_prompt is not None:
         policy["system_prompt"] = system_prompt
+    # Likewise the command timeout and harness switches (decision D-01): an arm
+    # without them keeps a byte-identical policy.
+    if command_timeout_seconds is not None:
+        policy["command_timeout_seconds"] = command_timeout_seconds
+    if harness_options is not None:
+        policy["harness_options"] = harness_options
     return policy
 
 
@@ -1169,6 +1277,19 @@ async def run_managed_inference(
     )
 
 
+def _valid_harness_options_snapshot(options: object) -> bool:
+    """Whether a run policy's ``harness_options`` has a valid shape.
+
+    The verify command is not re-checked against the policy's allowlist: that
+    list may already be narrowed by the user's config row.
+    """
+    try:
+        validate_harness_options(options, require_allowlisted_verify=False)
+    except ValueError:
+        return False
+    return True
+
+
 def _valid_managed_policy_snapshot(policy: object) -> bool:
     if not isinstance(policy, dict):
         return False
@@ -1176,6 +1297,10 @@ def _valid_managed_policy_snapshot(policy: object) -> bool:
     context_limit = policy.get("max_context_tokens")
     iterations = policy.get("max_iterations")
     tools = policy.get("tools")
+    # Optional keys (decision D-01): absent (or null) in policies of arms that
+    # do not set them and in every policy written before they existed.
+    command_timeout = policy.get("command_timeout_seconds")
+    harness_options = policy.get("harness_options")
     return bool(
         policy.get("version") == MANAGED_PROTOCOL_VERSION
         and isinstance(policy.get("model"), str)
@@ -1198,7 +1323,17 @@ def _valid_managed_policy_snapshot(policy: object) -> bool:
         and isinstance(tools, list)
         and all(isinstance(tool, str) and tool.strip() for tool in tools)
         and set(tools).issubset(CODE4ME2_AGENT_TOOLS)
+        and (command_timeout is None or _valid_command_timeout(command_timeout))
+        and (harness_options is None or _valid_harness_options_snapshot(harness_options))
     )
+
+
+def _valid_command_timeout(value: object) -> bool:
+    try:
+        validate_command_timeout_seconds(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _enforce_inference_tool_policy(

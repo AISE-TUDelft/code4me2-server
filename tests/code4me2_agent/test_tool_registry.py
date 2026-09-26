@@ -15,7 +15,7 @@ from code4me2_agent.adapters import (
 from code4me2_agent.config import AgentConfig
 from code4me2_agent.events import ApprovalDecision, PlanEntrySpec
 from code4me2_agent.telemetry import AgentTelemetryRecorder
-from code4me2_agent.tool_catalog import MUTATING_TOOLS, tool_names
+from code4me2_agent.tool_catalog import MUTATING_TOOLS, NO_CARD_TOOLS, tool_names
 from code4me2_agent.tool_errors import EditMatchError, ToolArgumentError, ToolFileNotFoundError
 
 VALID_ARGUMENTS = {
@@ -32,6 +32,10 @@ VALID_ARGUMENTS = {
     "search_files": {"query": "TODO"},
     "run_command": {"argv": ["ls", "-la"], "timeout_seconds": 30},
     "update_plan": {"entries": [{"content": "step", "status": "pending"}]},
+    "apply_patch": {
+        "patch": "*** Begin Patch\n*** Update File: a.txt\n@@\n-before\n+after\n*** End Patch"
+    },
+    "ask_user": {"question": "Which database?", "options": ["Postgres", "SQLite"]},
 }
 HANDLER_TARGET = {
     "run_command": "command_tools",
@@ -61,7 +65,8 @@ def _mocks():
     file_tools.workspace_root = Path("/ws")
     file_tools.read_text.return_value = ("before", False)
     for name in ("read_file", "create_file", "write_file", "replace_text", "edit_file",
-                 "delete_file", "move_file", "list_files", "glob_files", "grep_files", "search_files"):
+                 "delete_file", "move_file", "list_files", "glob_files", "grep_files", "search_files",
+                 "apply_patch"):
         getattr(file_tools, name).return_value = {"ok": True, "name": name}
     command_tools = MagicMock()
     command_tools.run_command.return_value = {"ok": True, "name": "run_command"}
@@ -72,7 +77,7 @@ def _call(name: str, arguments=None, call_id: str = "call-1") -> ToolCall:
     return ToolCall(call_id, name, dict(VALID_ARGUMENTS[name] if arguments is None else arguments))
 
 
-@pytest.mark.parametrize("name", [n for n in tool_names() if n != "update_plan"])
+@pytest.mark.parametrize("name", [n for n in tool_names() if n not in NO_CARD_TOOLS])
 def test_every_catalogue_tool_dispatches_to_its_handler(name):
     file_tools, command_tools = _mocks()
     sink = RecordingSink()
@@ -173,7 +178,7 @@ def test_event_metadata_kinds_titles_and_absolute_paths(name):
     workspace_root = Path("/ws")
     metadata = _tool_event_metadata(name, VALID_ARGUMENTS[name], workspace_root=workspace_root)
 
-    if name == "update_plan":
+    if name in NO_CARD_TOOLS:
         assert metadata is None
         return
     assert metadata["kind"] in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "other"}
