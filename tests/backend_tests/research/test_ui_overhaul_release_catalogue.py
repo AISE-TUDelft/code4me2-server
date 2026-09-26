@@ -95,6 +95,8 @@ def test_catalogue_entries_expose_per_release_configurability(http_runtime):
         )
 
     assert configurability(seeded.packaged) == (["code4me2-agent"], MANAGED_FIELDS, [])
+    # The seeded Goose release carries the gateway runtime bindings (the seed
+    # helper adds them), so only the two unbound profile fields are missing.
     assert configurability(seeded.goose) == (
         ["goose"],
         ["model", "temperature"],
@@ -185,8 +187,17 @@ def test_catalogue_matches_the_executable_profile_contract(http_runtime, binding
     if view["required_bindings_missing"]:
         with pytest.raises(ProfileConfigurationError) as error:
             validate_profile_configuration(profile, release, release_json=release_json)
-        assert error.value.code == "BYOA_CONFIG_UNMAPPED"
-        for field in view["required_bindings_missing"]:
-            assert field in str(error.value)
+        profile_fields = [
+            field for field in view["required_bindings_missing"]
+            if field in {"model", "temperature", "max_steps", "tools", "approval_policy"}
+        ]
+        if profile_fields:
+            # Unmapped profile fields are reported first.
+            assert error.value.code == "BYOA_CONFIG_UNMAPPED"
+            for field in profile_fields:
+                assert field in str(error.value)
+        else:
+            # Only the gateway runtime bindings are missing (Goose).
+            assert error.value.code == "INFERENCE_GATEWAY_UNBOUND"
     else:
         validate_profile_configuration(profile, release, release_json=release_json)

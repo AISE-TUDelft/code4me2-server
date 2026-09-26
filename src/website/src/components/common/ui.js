@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from "react";
 import Icon from "./Icon";
+import { parseUsdInput } from "../../utils/format";
 
 /*
  * Shared building blocks for the dashboard, research and admin pages. They
@@ -476,3 +477,85 @@ export const FieldErrors = ({ errors }) =>
       ))}
     </ul>
   ) : null;
+
+/**
+ * Bounded quantity such as a participant budget: `value` used out of `max`
+ * (plain numbers; integer micro-USD works). The tone follows the share used
+ * unless given: ok, warning at `warningFraction`, exhausted at the limit.
+ */
+export const Meter = ({
+  value,
+  max,
+  label,
+  tone,
+  warningFraction = 0.8,
+  exhausted = false,
+  valueText,
+  className = "",
+}) => {
+  const total = Number(max) > 0 ? Number(max) : 0;
+  const used = Math.max(0, Number(value) || 0);
+  const fraction = total > 0 ? Math.min(used / total, 1) : used > 0 ? 1 : 0;
+  const atLimit = total > 0 ? used >= total : used > 0;
+  const resolved = tone || (exhausted || atLimit ? "exhausted" : fraction >= warningFraction ? "warning" : "ok");
+  return (
+    <span
+      className={`ui-meter is-${resolved} ${className}`.trim()}
+      role="meter"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={total}
+      aria-valuenow={Math.min(used, total)}
+      aria-valuetext={valueText}
+    >
+      <span className="ui-meter-fill" style={{ width: `${Math.round(fraction * 1000) / 10}%` }} />
+    </span>
+  );
+};
+
+/**
+ * Decimal USD text input with a "$" prefix. Deliberately not type="number"
+ * (that drops trailing zeros and accepts exponents): the raw text is handed
+ * to the parent, which parses it with `parseUsdInput`. A non-empty value that
+ * does not parse is flagged through aria-invalid unless `invalid` is given.
+ */
+export const MoneyInput = ({
+  id,
+  name,
+  value,
+  onChange,
+  disabled = false,
+  invalid,
+  placeholder = "0.00",
+  ariaLabel,
+  describedBy,
+  required = false,
+  className = "",
+}) => {
+  const text = value === null || value === undefined ? "" : String(value);
+  const bad = invalid !== undefined ? Boolean(invalid) : Boolean(text.trim()) && !parseUsdInput(text).ok;
+  return (
+    <span className={`ui-money${disabled ? " is-disabled" : ""} ${className}`.trim()}>
+      <span className="ui-money-prefix" aria-hidden="true">
+        $
+      </span>
+      <input
+        id={id}
+        name={name}
+        className="ui-input"
+        type="text"
+        inputMode="decimal"
+        autoComplete="off"
+        spellCheck={false}
+        value={text}
+        onChange={(event) => onChange && onChange(event.target.value, event)}
+        disabled={disabled}
+        placeholder={placeholder}
+        aria-label={ariaLabel}
+        aria-describedby={describedBy}
+        aria-invalid={bad ? "true" : undefined}
+        required={required}
+      />
+    </span>
+  );
+};

@@ -394,3 +394,43 @@ test("bulk tool controls wait for the current runtime's list", async () => {
   expect(await screen.findByRole("button", { name: "Select all" })).toBeInTheDocument();
   expect(screen.getByText("1 / 2 selected")).toBeInTheDocument();
 });
+
+test("a metered profile whose model has no server price says so in the list", async () => {
+  api.getReleaseCatalogue.mockResolvedValue({ ok: true, data: [...CATALOGUE, GOOSE_RELEASE] });
+  api.getAgentProfiles.mockResolvedValue({
+    ok: true,
+    data: [
+      gooseProfile({ profile_id: "g1", name: "goose-unpriced", model_priced: false }),
+      // The built-in agent is metered too.
+      { ...PROFILE, model_priced: false },
+      // Codex is never metered (the server reports null).
+      { ...PROFILE, profile_id: "p2", name: "codex-arm", framework_version: "codex", model_priced: null },
+    ],
+  });
+  render(<AgentProfiles user={{ is_admin: true }} />);
+  await screen.findByText("goose-unpriced");
+
+  expect(screen.getAllByText("Price missing on the server")).toHaveLength(2);
+});
+
+test("the profile form warns when the selected model has no price on its connection", async () => {
+  api.getProviderConnections.mockResolvedValue({
+    ok: true,
+    data: [
+      {
+        ...CONNECTION,
+        model_prices: {
+          "model-a": { input_usd_per_million: "0.50", output_usd_per_million: "1.50", cached_input_usd_per_million: null },
+          "model-b": null,
+        },
+        pricing: { complete: false, missing_models: ["model-b"] },
+      },
+    ],
+  });
+  await renderPage();
+  fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+
+  expect(screen.queryByText(/Price missing on the server for/)).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText(/^Model$/i), { target: { value: "model-b" } });
+  expect(screen.getByText(/Price missing on the server for model-b/)).toBeInTheDocument();
+});

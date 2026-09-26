@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Optional, Sequence
 import uuid
 import secrets
@@ -20,6 +21,7 @@ from database.research_schemas import (
     StudyAgentProfile,
     StudyAssignment,
 )
+from research.budget import ledger as budget_ledger
 from research.participants import identity as identity_store
 from research.participants.enums import EnrollmentStatus
 from research.participants.models import ResearchEligibility
@@ -239,6 +241,16 @@ def open_study_enrollment(
         assigned_at=timestamp,
     )
     session.add_all([enrollment, assignment])
+    # The participant's inference budget is born with the enrollment, in the
+    # same transaction, at the study's current default (0 = refuse until set).
+    session.flush()
+    budget_ledger.create_balance(
+        session,
+        enrollment_id=enrollment_id,
+        study_id=study.study_id,
+        limit_micro_usd=int(getattr(study, "inference_budget_default_micro_usd", 0) or 0),
+        now=timestamp,
+    )
     if getattr(study, "consent_locked_at", None) is None:
         setattr(study, "consent_locked_at", timestamp)
     setattr(study, "research_status", ResearchStudyStatus.ACTIVE.value)
@@ -261,6 +273,7 @@ def clone_stopped_research_study(
     actor: str,
     profile_ids: Optional[Sequence[uuid.UUID]] = None,
     allow_shared_profiles: bool = False,
+    inference_budget_default_micro_usd: Optional[int] = None,
 ) -> Study:
     """Create a fresh DRAFT from stopped metadata without copying participants.
 
@@ -312,6 +325,17 @@ def clone_stopped_research_study(
         research_config_digest=None,
         join_code=allocate_join_code(session),
         created_at=timestamp,
+        # Participant budgets are copied (or overridden), never reset to zero.
+        inference_budget_default_micro_usd=(
+            int(inference_budget_default_micro_usd)
+            if inference_budget_default_micro_usd is not None
+            else int(getattr(source, "inference_budget_default_micro_usd", 0) or 0)
+        ),
+        inference_budget_warning_fraction=getattr(
+            source, "inference_budget_warning_fraction", None
+        ) or Decimal("0.800"),
+        inference_budget_updated_at=timestamp,
+        inference_budget_updated_by=actor,
     )
     session.add(clone)
     for selection in selections:

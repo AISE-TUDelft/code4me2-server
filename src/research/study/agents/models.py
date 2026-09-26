@@ -42,6 +42,25 @@ BYOA_CONFIG_FIELDS = (
     "tools",
     "approval_policy",
 )
+#: Runtime fields the *plugin* fills for a BYOA agent that calls the research
+#: inference gateway (Goose): the gateway origin and path, the per-participant
+#: credential, the provider kind the agent must select and an isolated state
+#: directory. They are never profile fields (an admin never sees them as
+#: configurable), and the credential binding must use the ``env`` transport:
+#: argv is world-readable.
+BYOA_RUNTIME_FIELDS = (
+    "inference_gateway_host",
+    "inference_gateway_base_path",
+    "inference_gateway_credential",
+    "provider_kind",
+    "state_dir",
+)
+BYOA_CREDENTIAL_FIELD = "inference_gateway_credential"
+BYOA_PROVIDER_KIND_FIELD = "provider_kind"
+#: The provider kind value the server emits; the release maps it to the agent's
+#: own vocabulary through ``value_map`` (Goose: ``openai``).
+BYOA_PROVIDER_KIND_OPENAI_COMPATIBLE = "openai_compatible"
+BYOA_BINDING_FIELDS = BYOA_CONFIG_FIELDS + BYOA_RUNTIME_FIELDS
 BYOA_CONFIG_TRANSPORTS = ("env", "arg")
 BYOA_CONFIG_FORMATS = ("string", "json", "csv")
 
@@ -180,8 +199,8 @@ class AgentConfigBinding(BaseModel):
     @classmethod
     def _known_field(cls, value: str) -> str:
         normalized = (value or "").strip().lower()
-        if normalized not in BYOA_CONFIG_FIELDS:
-            raise ValueError("field must be one of " + ", ".join(BYOA_CONFIG_FIELDS))
+        if normalized not in BYOA_BINDING_FIELDS:
+            raise ValueError("field must be one of " + ", ".join(BYOA_BINDING_FIELDS))
         return normalized
 
     @field_validator("key")
@@ -206,6 +225,11 @@ class AgentConfigBinding(BaseModel):
         ):
             raise ValueError(
                 "an env binding key must be a valid environment variable name"
+            )
+        if self.field == BYOA_CREDENTIAL_FIELD and self.transport != "env":
+            raise ValueError(
+                "the inference_gateway_credential binding must use the env "
+                "transport: a command-line argument is world-readable"
             )
         return self
 
@@ -256,12 +280,19 @@ class AgentReleaseV1(BaseModel):
     @model_validator(mode="after")
     def _unique_config_bindings(self) -> AgentReleaseV1:
         seen: set[str] = set()
+        env_keys: set[str] = set()
         for binding in self.byoa_config:
             if binding.field in seen:
                 raise ValueError(
                     f"duplicate byoa_config binding for {binding.field!r}"
                 )
             seen.add(binding.field)
+            if binding.transport == "env":
+                if binding.key in env_keys:
+                    raise ValueError(
+                        f"two byoa_config bindings set the same environment variable {binding.key!r}"
+                    )
+                env_keys.add(binding.key)
         if self.byoa_config and not self.is_byoa:
             raise ValueError("byoa_config is only valid for a BYOA_EXTERNAL release")
         return self

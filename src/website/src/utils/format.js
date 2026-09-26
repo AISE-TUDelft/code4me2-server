@@ -111,3 +111,93 @@ export const humanize = (value) => {
   const text = String(value).replace(/[_.]+/g, " ").trim().toLowerCase();
   return text.charAt(0).toUpperCase() + text.slice(1);
 };
+
+// ---- Money ----------------------------------------------------------------
+//
+// Budgets travel as integer micro-USD in API payloads and as decimal strings
+// ("12.50") in requests. Everything below works on digit strings, never on a
+// float, so display and request values are exact.
+
+export const MICRO_PER_USD = 1000000;
+
+// Integer micro-USD (number or numeric string) → sign, whole dollars and the
+// six fractional digits; null when it is not an integer amount.
+const microParts = (micro) => {
+  if (isMissing(micro)) return null;
+  if (typeof micro === "number" && !Number.isInteger(micro)) return null;
+  const match = /^(-?)(\d+)$/.exec(String(micro).trim());
+  if (!match) return null;
+  const digits = match[2].replace(/^0+(?=\d)/, "").padStart(7, "0");
+  return {
+    negative: match[1] === "-" && /[1-9]/.test(digits),
+    whole: digits.slice(0, -6),
+    frac: digits.slice(-6),
+  };
+};
+
+// Half-up rounding of "whole.frac" to `keep` fractional digits, with carry.
+const roundDigits = (whole, frac, keep) => {
+  const digits = `${whole}${frac.slice(0, keep)}`.split("");
+  if ((frac.charAt(keep) || "0") >= "5") {
+    let index = digits.length - 1;
+    while (index >= 0 && digits[index] === "9") {
+      digits[index] = "0";
+      index -= 1;
+    }
+    if (index < 0) digits.unshift("1");
+    else digits[index] = String(Number(digits[index]) + 1);
+  }
+  const joined = digits.join("");
+  return [joined.slice(0, joined.length - keep).replace(/^0+(?=\d)/, "") || "0", joined.slice(joined.length - keep)];
+};
+
+const group = (whole) => whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+
+/**
+ * "$12.50" from integer micro-USD; four decimals below one cent ("$0.0042")
+ * so a tiny charge never reads as zero; an em dash when missing.
+ */
+export const formatUsd = (microUsd, { symbol = "$", grouping = true } = {}) => {
+  const parts = microParts(microUsd);
+  if (!parts) return DASH;
+  const subCent = parts.whole === "0" && parts.frac.startsWith("00") && parts.frac !== "000000";
+  const [whole, frac] = roundDigits(parts.whole, parts.frac, subCent ? 4 : 2);
+  return `${parts.negative ? "-" : ""}${symbol}${grouping ? group(whole) : whole}.${frac}`;
+};
+
+// Plain decimal string ("12.50") for CSV cells and requests; null when missing.
+export const microToUsd = (microUsd) => {
+  const text = formatUsd(microUsd, { symbol: "", grouping: false });
+  return text === DASH ? null : text;
+};
+
+/**
+ * Parse typed USD ("12.5", "$1,250", "0.0042") into a normalized decimal
+ * string (at least two decimals) and integer micro-USD. Mirrors the server's
+ * limits: not negative, at most `maxDecimals` places, at most `max` dollars.
+ */
+export const parseUsdInput = (text, { max = 100000, maxDecimals = 6 } = {}) => {
+  const raw = String(text ?? "").trim().replace(/^\$\s*/, "").replace(/,/g, "");
+  if (!raw) return { ok: false, error: "Enter an amount in USD." };
+  const match = /^(\d+)?(?:\.(\d*))?$/.exec(raw);
+  if (!match || (match[1] === undefined && !match[2])) {
+    return { ok: false, error: "Enter a number such as 12.50." };
+  }
+  const whole = (match[1] || "0").replace(/^0+(?=\d)/, "");
+  const frac = match[2] || "";
+  if (frac.length > maxDecimals) {
+    return { ok: false, error: `Use at most ${maxDecimals} decimal places.` };
+  }
+  // Exact: an integer far below 2^53 once the maximum is enforced.
+  const micro = Number(`${whole}${frac.padEnd(6, "0")}`);
+  if (micro > max * MICRO_PER_USD) {
+    return { ok: false, error: `The amount must not exceed $${group(String(max))}.` };
+  }
+  return { ok: true, value: `${whole}.${frac.length < 2 ? frac.padEnd(2, "0") : frac}`, micro };
+};
+
+// Integer micro-USD for a typed amount, or null when it does not parse.
+export const usdToMicro = (text) => {
+  const parsed = parseUsdInput(text);
+  return parsed.ok ? parsed.micro : null;
+};

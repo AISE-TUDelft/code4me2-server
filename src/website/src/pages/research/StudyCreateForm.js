@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import Icon from "../../components/common/Icon";
-import { Badge } from "../../components/common/ui";
+import { Alert, Badge, MoneyInput } from "../../components/common/ui";
+import { parseUsdInput } from "../../utils/format";
 import {
   DEFAULT_TELEMETRY_CLASSES,
   RUNTIME_CLASS_SHORT_LABELS,
@@ -8,6 +9,7 @@ import {
   TELEMETRY_CLASS_LABELS,
   collectedClasses,
   describeSessionPolicy,
+  isMeteredRuntime,
   resolveFieldClasses,
 } from "./studyUtils";
 
@@ -88,10 +90,23 @@ const toLocalDateTime = (value) => (value ? new Date(value) : null);
 /**
  * Create a Draft study, or — with `cloneSource` — the profile-selection step of
  * cloning a stopped study (the server copies the stored configuration).
+ * `budgetError` is the server's typed message for the budget field
+ * (BUDGET_REQUIRED / BUDGET_INVALID / BUDGET_PRICE_MISSING).
  */
-const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel }) => {
+const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, budgetError = "" }) => {
   const initialTelemetry = cloneSource ? asPolicyObject(cloneSource.telemetry_policy) : {};
   const initialSession = cloneSource ? asPolicyObject(cloneSource.session_policy) : DEFAULT_SESSION_POLICY;
+  // Participant budget: the source's default when cloning (a 0 default means
+  // none was set), otherwise empty until a metered arm is selected.
+  const sourceBudget = cloneSource ? asPolicyObject(cloneSource.budget_policy) : {};
+  const [defaultBudgetUsd, setDefaultBudgetUsd] = useState(
+    Number(sourceBudget.default_budget_micro_usd) > 0 && sourceBudget.default_budget_usd
+      ? String(sourceBudget.default_budget_usd)
+      : "",
+  );
+  const [warningPercent, setWarningPercent] = useState(
+    Number(sourceBudget.warning_fraction) > 0 ? String(Math.round(Number(sourceBudget.warning_fraction) * 100)) : "80",
+  );
   const [form, setForm] = useState({
     name: cloneSource ? `${cloneSource.name} (copy)` : "",
     description: cloneSource ? cloneSource.description || "" : "",
@@ -118,6 +133,27 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel }) 
     : [];
 
   const activeProfiles = useMemo(() => profiles.filter((profile) => profile.is_active !== false), [profiles]);
+
+  // Budgets apply only when a selected arm runs Goose or the built-in agent
+  // (they spend from the study's shared key); a metered model without a
+  // server price would refuse every call, so creation is blocked until an
+  // administrator prices it.
+  const selectedProfiles = activeProfiles.filter((profile) => form.profileIds.includes(profile.profile_id));
+  const meteredProfiles = selectedProfiles.filter((profile) => isMeteredRuntime(profile.framework_version));
+  const metered = meteredProfiles.length > 0;
+  const unpricedProfiles = meteredProfiles.filter((profile) => profile.model_priced === false);
+  const budgetDraft = parseUsdInput(defaultBudgetUsd);
+  const budgetValid = budgetDraft.ok && budgetDraft.micro > 0;
+  const budgetFieldError = !metered || !defaultBudgetUsd.trim()
+    ? ""
+    : !budgetDraft.ok
+      ? budgetDraft.error
+      : budgetDraft.micro <= 0
+        ? "The budget must be greater than zero."
+        : "";
+  const warningValue = Number(warningPercent);
+  const warningValid = Number.isInteger(warningValue) && warningValue >= 1 && warningValue <= 100;
+  const budgetMessage = budgetFieldError || budgetError;
 
   const applyTelemetryPreset = (preset) => {
     setTelemetryPreset(preset);
@@ -169,10 +205,15 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel }) 
       }
     }
     setDateError("");
+    if (metered && (!budgetValid || unpricedProfiles.length > 0)) return;
     onSubmit({
       ...form,
       telemetryPolicy: telemetryDraft.value,
       sessionPolicy: sessionDraft.value,
+      // Empty/null without a metered arm: the server ignores them for
+      // Codex-only studies. A clone keeps the source's warning threshold.
+      defaultBudgetUsd: metered ? budgetDraft.value : "",
+      budgetWarningFraction: metered && !cloneSource ? warningValue / 100 : null,
     });
   };
 
@@ -181,7 +222,8 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel }) 
     !form.name.trim() ||
     form.profileIds.length === 0 ||
     Boolean(telemetryPolicyError) ||
-    Boolean(sessionPolicyError);
+    Boolean(sessionPolicyError) ||
+    (metered && (!budgetValid || unpricedProfiles.length > 0 || (!cloneSource && !warningValid)));
 
   return (
     <form className="research-card ui-card study-create-form" onSubmit={handleSubmit} aria-labelledby="study-create-title">
@@ -362,7 +404,9 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel }) 
                   ))}
                   <p className="research-hint">
                     Content is stored only when content capture is on (selecting the sensitive category turns it on)
-                    and the participant has consented. Provider credentials are never collected.
+                    and the participant has consented. Provider credentials are never collected: Goose and built-in
+                    arms use the study's shared provider key on the server, and Codex signs in with the participant's
+                    ChatGPT account.
                   </p>
                   {telemetryDraft.ok ? (
                     <p className="research-hint">Stored at runtime: {storedList(telemetryDraft.value)}.</p>
@@ -478,6 +522,11 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel }) 
                           </Badge>
                         ) : null}
                         {profile.verified === false ? <Badge tone="warning">Unverified release</Badge> : null}
+                        {isMeteredRuntime(profile.framework_version) && profile.model_priced === false ? (
+                          <Badge tone="danger" title="Ask an administrator to price this model on its provider connection">
+                            Price missing
+                          </Badge>
+                        ) : null}
                       </span>
                       <small>{profile.model}</small>
                     </span>
@@ -493,6 +542,79 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel }) 
             </p>
           ) : null}
         </fieldset>
+
+        {form.profileIds.length > 0 ? (
+          <fieldset className="research-policy ui-fieldset study-budget-fieldset">
+            <legend>Participant budgets</legend>
+            {metered ? (
+              <>
+                <p className="ui-hint">
+                  Goose and built-in arms spend from the study's shared provider key on the server, within this budget
+                  per participant; individual participants can be topped up later. Codex arms sign in with ChatGPT and
+                  are not metered.
+                </p>
+                <div className="ui-form-grid">
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="study-default-budget">
+                      Default budget per participant (USD)
+                    </label>
+                    <MoneyInput
+                      id="study-default-budget"
+                      value={defaultBudgetUsd}
+                      onChange={setDefaultBudgetUsd}
+                      disabled={isBusy}
+                      required
+                      invalid={Boolean(budgetMessage)}
+                      describedBy={budgetMessage ? "study-default-budget-error" : undefined}
+                    />
+                    {budgetMessage ? (
+                      <p id="study-default-budget-error" className="ui-field-error" role={budgetError ? "alert" : undefined}>
+                        {budgetMessage}
+                      </p>
+                    ) : null}
+                    <p className="ui-hint">
+                      {cloneSource
+                        ? "Copied from the source study unless you change it here."
+                        : "Applies to every participant who joins; changeable later in Settings, even after the consent lock."}
+                    </p>
+                  </div>
+                  {!cloneSource ? (
+                    <div className="ui-field">
+                      <label className="ui-label" htmlFor="study-budget-warning">
+                        Warn participants at (% of budget used)
+                      </label>
+                      <input
+                        id="study-budget-warning"
+                        className="ui-input"
+                        type="number"
+                        min={1}
+                        max={100}
+                        step={1}
+                        value={warningPercent}
+                        onChange={(event) => setWarningPercent(event.target.value)}
+                        disabled={isBusy}
+                        aria-invalid={warningValid ? undefined : "true"}
+                      />
+                      {!warningValid ? <p className="ui-field-error">Enter a whole number from 1 to 100.</p> : null}
+                    </div>
+                  ) : null}
+                </div>
+                {unpricedProfiles.length > 0 ? (
+                  <Alert tone="warning" live={false} title="A selected model has no price on the server.">
+                    {unpricedProfiles.map((profile) => `${profile.model || "the model"} (${profile.name})`).join(", ")}: ask
+                    an administrator to price this model on its provider connection. Every call from that arm would be
+                    refused, so the study cannot be created until it is priced.
+                  </Alert>
+                ) : null}
+              </>
+            ) : (
+              <p className="ui-hint">
+                No budget needed: the selected arms run Codex, which signs in with the participant's ChatGPT account
+                and is not metered.
+              </p>
+            )}
+          </fieldset>
+        ) : null}
       </div>
 
       <div className="ui-card-footer">

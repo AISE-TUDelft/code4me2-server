@@ -103,6 +103,17 @@ class AgentInput(BaseModel):
         if self.framework != "code4me2-agent":
             if not self.agent_command:
                 raise ValueError("installed agents need an explicit ACP command")
+            from .distributions import missing_gateway_bindings, requires_inference_gateway
+
+            if requires_inference_gateway(self.framework):
+                missing = missing_gateway_bindings(
+                    {binding.field: binding.model_dump(mode="json") for binding in self.byoa_config}
+                )
+                if missing:
+                    raise ValueError(
+                        f"{self.framework} releases must bind the research inference gateway: "
+                        + ", ".join(missing)
+                    )
         elif self.agent_command or self.agent_command_args or self.byoa_config:
             raise ValueError("the managed runtime uses its packaged --managed entrypoint")
         if len({(test.os, test.arch) for test in self.tests}) != len(self.tests):

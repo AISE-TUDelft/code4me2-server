@@ -28,6 +28,19 @@ from research.study.agents.participant_release import (
 
 PASSING_TESTS = {"self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}
 
+# A Goose release is gateway-bound: the recipe must declare how the plugin
+# points it at the research inference gateway.
+GOOSE_GATEWAY_BINDINGS = [
+    {"field": "model", "transport": "env", "key": "GOOSE_MODEL"},
+    {"field": "max_steps", "transport": "env", "key": "GOOSE_MAX_TURNS"},
+    {"field": "approval_policy", "transport": "env", "key": "GOOSE_MODE"},
+    {"field": "inference_gateway_host", "transport": "env", "key": "OPENAI_HOST"},
+    {"field": "inference_gateway_base_path", "transport": "env", "key": "OPENAI_BASE_PATH"},
+    {"field": "inference_gateway_credential", "transport": "env", "key": "OPENAI_API_KEY"},
+    {"field": "provider_kind", "transport": "env", "key": "GOOSE_PROVIDER", "value_map": {"openai_compatible": "openai"}},
+    {"field": "state_dir", "transport": "env", "key": "GOOSE_PATH_ROOT"},
+]
+
 
 def _make_archive(path: Path, platform: str, *, executable: str) -> None:
     magic = {
@@ -95,6 +108,7 @@ def make_inputs(root: Path) -> ParticipantRecipe:
                         "digest": "sha256:" + "c" * 64,
                     },
                     **({"agent_command": framework} if framework != "code4me2-agent" else {}),
+                    **({"byoa_config": GOOSE_GATEWAY_BINDINGS} if framework == "goose" else {}),
                 }
                 for framework in ("code4me2-agent", "goose", "codex")
             ],
@@ -240,3 +254,35 @@ def test_changed_prepared_input_cannot_be_loaded(tmp_path):
     staged.write_bytes(b"changed after preparation")
     with pytest.raises(ValueError, match="prepared input changed"):
         load_prepared(tmp_path / "prepared")
+
+
+def test_recipe_requires_goose_gateway_bindings(tmp_path):
+    """A Goose agent without the gateway runtime bindings is refused at recipe time."""
+    inputs = tmp_path / "inputs"
+    recipe = make_inputs(inputs)
+    document = recipe.model_dump(mode="json")
+    for agent in document["agents"]:
+        if agent["framework"] == "goose":
+            agent["byoa_config"] = [b for b in agent["byoa_config"] if b["field"] != "inference_gateway_credential"]
+    with pytest.raises(ValueError) as error:
+        ParticipantRecipe.model_validate(document)
+    assert "inference gateway" in str(error.value)
+    for agent in document["agents"]:
+        if agent["framework"] == "goose":
+            agent["byoa_config"] = GOOSE_GATEWAY_BINDINGS
+    ParticipantRecipe.model_validate(document)
+
+
+def test_recipe_rejects_a_credential_binding_on_argv(tmp_path):
+    inputs = tmp_path / "inputs"
+    recipe = make_inputs(inputs)
+    document = recipe.model_dump(mode="json")
+    for agent in document["agents"]:
+        if agent["framework"] == "goose":
+            agent["byoa_config"] = [
+                dict(b, transport="arg") if b["field"] == "inference_gateway_credential" else b
+                for b in agent["byoa_config"]
+            ]
+    with pytest.raises(ValueError) as error:
+        ParticipantRecipe.model_validate(document)
+    assert "world-readable" in str(error.value) or "env transport" in str(error.value)

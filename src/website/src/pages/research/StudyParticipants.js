@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import Icon from "../../components/common/Icon";
-import { Alert, Badge, Card, Drawer, EmptyState, Loading } from "../../components/common/ui";
-import { formatDuration, formatNumber, formatRelative, formatShortDateTime } from "../../utils/format";
+import { Alert, Badge, Card, Drawer, EmptyState, Loading, Meter } from "../../components/common/ui";
+import { formatDuration, formatNumber, formatRelative, formatShortDateTime, formatUsd, microToUsd } from "../../utils/format";
 import ParticipantDashboard from "./ParticipantDashboard";
 import { ENROLLMENT_STATUS, HEALTH, RUNTIME_LABELS, armColor, downloadCsv, slugify } from "./studyUtils";
 
@@ -12,6 +12,36 @@ const HEALTH_FILTERS = [
   { value: "NO_TELEMETRY", label: "No telemetry yet" },
   { value: "INACTIVE", label: "Inactive enrollment" },
 ];
+
+// Metered arms only: a row without a budget belongs to an unmetered (Codex) arm.
+const BUDGET_FILTERS = [
+  { value: "", label: "Any budget" },
+  { value: "EXHAUSTED", label: "Exhausted" },
+  { value: "REMAINING", label: "Budget remaining" },
+];
+
+/** "$3.12 / $10.00" with a meter of what is committed (spent + reserved). */
+const BudgetCell = ({ budget, warningFraction }) => {
+  const consumed = Number(budget.consumed_micro_usd) || 0;
+  const reserved = Number(budget.reserved_micro_usd) || 0;
+  const limit = Number(budget.limit_micro_usd) || 0;
+  const title = `${formatUsd(consumed)} spent of ${formatUsd(limit)} · ${formatUsd(reserved)} reserved for calls in flight · ${formatUsd(budget.remaining_micro_usd)} remaining`;
+  return (
+    <div className="ui-cell-stack" title={title}>
+      <span className="ui-nowrap">
+        {formatUsd(consumed)} / {formatUsd(limit)}
+      </span>
+      <Meter
+        value={consumed + reserved}
+        max={limit}
+        exhausted={Boolean(budget.exhausted)}
+        warningFraction={warningFraction}
+        label="Budget used"
+        valueText={`${formatUsd(consumed)} of ${formatUsd(limit)}`}
+      />
+    </div>
+  );
+};
 
 const CSV_COLUMNS = [
   { label: "participant_code", value: (row) => row.participant_code },
@@ -37,6 +67,11 @@ const CSV_COLUMNS = [
   { label: "active_days", value: (row) => row.activity?.active_days },
   { label: "first_event_at", value: (row) => row.activity?.first_event_at },
   { label: "last_event_at", value: (row) => row.activity?.last_event_at },
+  // Budget (metered arms; empty for unmetered ones), decimal USD.
+  { label: "spent_usd", value: (row) => microToUsd(row.budget?.consumed_micro_usd) },
+  { label: "budget_usd", value: (row) => microToUsd(row.budget?.limit_micro_usd) },
+  { label: "reserved_usd", value: (row) => microToUsd(row.budget?.reserved_micro_usd) },
+  { label: "budget_exhausted_at", value: (row) => row.budget?.exhausted_at },
 ];
 
 /** Enrolled participants with their frozen arm and an activity summary. */
@@ -44,7 +79,10 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
   const [query, setQuery] = useState("");
   const [armFilter, setArmFilter] = useState("");
   const [healthFilter, setHealthFilter] = useState("");
+  const [budgetFilter, setBudgetFilter] = useState("");
   const [openEnrollment, setOpenEnrollment] = useState(null);
+  // The drawer's "Adjust budget" form (closed again for another participant).
+  const [adjustOpen, setAdjustOpen] = useState(false);
 
   const participants = useMemo(
     () => (Array.isArray(state.data?.participants) ? state.data.participants : []),
@@ -57,11 +95,20 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
       if (needle && !String(row.participant_code || "").toLowerCase().includes(needle)) return false;
       if (armFilter && row.arm?.profile_id !== armFilter) return false;
       if (healthFilter && row.health !== healthFilter) return false;
+      if (budgetFilter === "EXHAUSTED" && !row.budget?.exhausted) return false;
+      if (budgetFilter === "REMAINING" && (!row.budget || row.budget.exhausted)) return false;
       return true;
     });
-  }, [participants, query, armFilter, healthFilter]);
+  }, [participants, query, armFilter, healthFilter, budgetFilter]);
 
   const openRow = participants.find((row) => row.enrollment_id === openEnrollment) || null;
+  const stopped = study.research_status === "STUDY_STOPPED";
+  const metered = participants.some((row) => row.budget);
+  const warningFraction = Number(study.budget_policy?.warning_fraction) > 0 ? Number(study.budget_policy.warning_fraction) : 0.8;
+  const openParticipant = (enrollmentId) => {
+    setOpenEnrollment(enrollmentId);
+    setAdjustOpen(false);
+  };
 
   if (state.isLoading && !state.data) return <Loading label="Loading participants…" />;
   if (state.error) {
@@ -120,6 +167,15 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
               </option>
             ))}
           </select>
+          {metered ? (
+            <select className="ui-select" value={budgetFilter} onChange={(event) => setBudgetFilter(event.target.value)} aria-label="Filter by budget">
+              {BUDGET_FILTERS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <span className="ui-toolbar-meta">
             {visible.length === participants.length
               ? `${participants.length} participant${participants.length === 1 ? "" : "s"}`
@@ -156,6 +212,10 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
                   <th scope="col" className="is-num">
                     Errors
                   </th>
+                  <th scope="col" className="is-num">
+                    Spent
+                  </th>
+                  <th scope="col">Budget</th>
                   <th scope="col">Last seen</th>
                   <th scope="col">
                     <span className="ui-visually-hidden">Open</span>
@@ -168,7 +228,7 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
                   const health = HEALTH[row.health];
                   const activity = row.activity || {};
                   const sessions = row.sessions || {};
-                  const open = () => setOpenEnrollment(row.enrollment_id);
+                  const open = () => openParticipant(row.enrollment_id);
                   return (
                     <tr key={row.enrollment_id} className="is-clickable" onClick={open}>
                       <td>
@@ -197,6 +257,11 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
                         <div className="ui-row">
                           <Badge tone={enrollment.tone}>{enrollment.label}</Badge>
                           {health && row.health !== "INACTIVE" ? <Badge tone={health.tone}>{health.label}</Badge> : null}
+                          {row.budget?.exhausted ? (
+                            <Badge tone="danger" title="The budget is used up; model calls are refused until it is topped up">
+                              Exhausted
+                            </Badge>
+                          ) : null}
                         </div>
                       </td>
                       <td className="is-num">
@@ -216,6 +281,29 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
                         </div>
                       </td>
                       <td className="is-num">{formatNumber(activity.errors ?? 0)}</td>
+                      <td className="is-num">
+                        {row.budget ? (
+                          <div className="ui-cell-stack">
+                            <span>{formatUsd(row.budget.consumed_micro_usd)}</span>
+                            {Number(row.budget.reserved_micro_usd) > 0 ? (
+                              <small className="ui-nowrap">{formatUsd(row.budget.reserved_micro_usd)} held</small>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="ui-subtle" title="This arm is not metered">
+                            —
+                          </span>
+                        )}
+                      </td>
+                      <td className="study-budget-cell">
+                        {row.budget ? (
+                          <BudgetCell budget={row.budget} warningFraction={warningFraction} />
+                        ) : (
+                          <span className="ui-subtle" title="This arm is not metered">
+                            —
+                          </span>
+                        )}
+                      </td>
                       <td>
                         <div className="ui-cell-stack">
                           <span>{activity.last_event_at ? formatRelative(activity.last_event_at) : "—"}</span>
@@ -254,8 +342,21 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
 
       <Drawer
         open={Boolean(openRow)}
-        onClose={() => setOpenEnrollment(null)}
+        onClose={() => openParticipant(null)}
         title={openRow ? `Participant ${openRow.participant_code}` : ""}
+        actions={
+          openRow && openRow.budget && !stopped ? (
+            <button
+              type="button"
+              className="secondary-button button-sm"
+              onClick={() => setAdjustOpen((value) => !value)}
+              aria-pressed={adjustOpen}
+            >
+              <Icon name="sliders" size={14} />
+              Adjust budget
+            </button>
+          ) : null
+        }
         subtitle={
           openRow && openRow.arm ? (
             <span className="ui-row">
@@ -270,6 +371,11 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
             studyId={study.study_id}
             participant={openRow}
             color={openRow.arm ? armColor(arms, openRow.arm.profile_id) : "var(--viz-1)"}
+            warningFraction={warningFraction}
+            budgetAdjustOpen={adjustOpen}
+            onBudgetAdjustClose={() => setAdjustOpen(false)}
+            canAdjustBudget={!stopped}
+            onBudgetChanged={onReload}
           />
         ) : null}
       </Drawer>

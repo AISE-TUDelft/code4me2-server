@@ -29,7 +29,8 @@ from App import App
 from backend.routers.agent.consent import resolve_store_agent_content
 from backend.routers.research import access
 from database import crud
-from research.analysis.operations import store as operations_store
+from research.budget.meter import InferenceMeter
+from research.study.agents.enums import METERED_FRAMEWORKS
 from research.telemetry.adapters import LegacyFact, record_legacy_facts
 from research.telemetry.enums import CoverageState
 from research.telemetry.models import Correlations, Coverage, EventMetrics
@@ -37,24 +38,22 @@ from research.telemetry.models import Correlations, Coverage, EventMetrics
 router = APIRouter(tags=["Agent"])
 
 
-def _require_funded_task(db, task) -> None:
+def _require_funded_task(db, task):
     """Re-check live enrollment/window/kill switch for a study-funded task.
 
-    Non-research operational tasks (no ``study_id``) are unaffected. A research
-    task must resolve an ACTIVE enrollment in its own study, with the study
-    window open and no operator kill switch engaged.
+    Non-research operational tasks (no ``study_id``) are unaffected and yield
+    ``None``. A research task must resolve an ACTIVE enrollment in its own
+    study, with the study window open and no operator kill switch engaged at
+    the study scope or at that enrollment's scope (``access.require_funded_access``
+    scopes the switch to the live enrollment). Returns the live enrollment row.
     """
     if getattr(task, "study_id", None) is None:
-        return
-    kill_switch_check = operations_store.db_kill_switch_check(
-        db, study_id=task.study_id, enrollment_id=None
-    )
+        return None
     try:
-        access.require_live_enrollment(
+        return access.require_funded_access(
             db,
             account_id=getattr(task, "owner_user_id", None),
             study_id=task.study_id,
-            kill_switch_check=kill_switch_check,
         )
     except access.FundedAccessRefused as exc:
         raise HTTPException(
@@ -274,7 +273,7 @@ async def run_agent_inference(
         # Funded research use requires a live enrollment and an open study
         # window, re-checked here on every call (a previously issued capability
         # never substitutes for current server state).
-        _require_funded_task(db, task)
+        enrollment = _require_funded_task(db, task)
         # Resolved server-side from the stored preference, never from the
         # request body — see backend.routers.agent.consent. The research
         # enrollment gate is applied on top.
@@ -311,14 +310,45 @@ async def run_agent_inference(
             "tools_json": task.tools_json,
             "framework_version": task.framework_version
             or (profile.framework_version if profile else None),
+            "research_session_id": getattr(task, "research_session_id", None),
         }
     finally:
         db.close()
 
+    # A study-funded task may only relay Chat Completions calls from a metered
+    # runtime (Goose, built-in agent), and those are always metered against the
+    # participant's budget. Anything else on a study task (a Responses-shaped
+    # body, a Codex arm) is refused: the study's key is never spent unmetered.
+    # Non-study developer tasks are unmetered as before.
+    meter = None
+    if enrollment is not None:
+        framework = str(task_snapshot["framework_version"] or "").strip().lower()
+        chat_body = "input" not in body.request and isinstance(body.request.get("messages"), list)
+        if framework not in METERED_FRAMEWORKS or not chat_body:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "RELAY_NOT_METERED",
+                    "message": (
+                        "study-funded relay calls must be Chat Completions requests "
+                        "from a Goose or built-in agent arm"
+                    ),
+                },
+            )
+        meter = InferenceMeter(
+            app=app,
+            enrollment_id=enrollment.enrollment_id,
+            study_id=task.study_id,
+            connection_id=connection.connection_id,
+            model=task_snapshot["model"],
+            entry_point="agent_inference",
+            research_session_id=task_snapshot["research_session_id"],
+        )
+
     logging.info(
         f"[Agent/inference] task validated — profile={task_snapshot['agent_profile']} "
         f"runtime={task_snapshot['framework_version']} "
-        f"content={content_included}"
+        f"content={content_included} metered={meter is not None}"
     )
     return await inference.run_inference(
         task_uuid=body.task_id,
@@ -332,6 +362,7 @@ async def run_agent_inference(
         framework_version=task_snapshot["framework_version"],
         profile_tools_json=task_snapshot["tools_json"],
         content_included=content_included,
+        meter=meter,
         app=app,
     )
 

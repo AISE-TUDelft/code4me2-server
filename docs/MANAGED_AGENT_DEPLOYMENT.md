@@ -1,6 +1,6 @@
 # Managed agent deployment
 
-The participant plugin assumes a globally reachable HTTPS backend and managed ACP protocol v1. Provider credentials belong only in the backend environment; participant machines must not receive them.
+The participant plugin assumes a globally reachable HTTPS backend and managed ACP protocol v1. Provider credentials belong only in the backend environment; participant machines must not receive them. A Goose arm's machine receives only a scoped, revocable *inference capability* (a bearer for the research inference gateway that is re-checked on every call against the enrollment, the study window, the kill switch and the participant's budget), never the provider key.
 
 ## Deployment order
 
@@ -18,8 +18,10 @@ Do not reset a deployed study database during an upgrade. A failed migration mus
 - Upgrade a copy of the previous deployed schema and initialize an empty database.
 - Confirm the active study contains only runtime profiles certified for the participant release.
 - Confirm the backend holds every provider key named by an active profile.
+- Confirm every metered model (Goose and built-in arms) has a price on its provider connection and every active study has a non-zero default participant budget; without them the arms refuse every call (`503 price_missing` / `402 quota_exhausted`). Apply the SQL in `docs/research-platform/RELEASES.md` to an existing database first.
+- Confirm the Goose release in the catalogue binds the inference gateway (the release catalogue shows `inference_gateway: true`); an unbound release blocks bootstrap with `INFERENCE_GATEWAY_UNBOUND`.
 - Verify grant exchange, run creation, inference, telemetry, logout revocation, and expiry recovery.
-- Block direct provider access on the participant test machine and confirm inference still succeeds.
+- Block direct provider access on the participant test machine and confirm inference still succeeds — for a Goose arm through the research inference gateway, and confirm the study's budget ledger shows the settled call.
 - Scan the plugin and runtime artifacts for `.env` files, provider credentials, source-checkout paths, and `local-dev` references.
 
 Record the server commit, Alembic head, plugin commit, runtime version, runtime checksums, IDE version, and tested operating systems with each release.

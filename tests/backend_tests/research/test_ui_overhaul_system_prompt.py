@@ -498,6 +498,7 @@ def test_study_freeze_refuses_a_byoa_profile_carrying_a_prompt(http_runtime):
         "/api/research/studies",
         json={
             "name": "byoa-prompt-freeze",
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(smuggled)],
         },
@@ -572,6 +573,7 @@ def _joined_arm(client, session_factory, current_user, seeded, *, label, system_
         "/api/research/studies",
         json={
             "name": f"prompt-study-{label}",
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [profile["profile_id"]],
         },

@@ -121,6 +121,8 @@ def test_release_catalogue_returns_qualified_release_with_zero_profiles(http_run
         "compatible_frameworks",
         "configurable_fields",
         "required_bindings_missing",
+        # Whether the release's agent calls the research inference gateway.
+        "inference_gateway",
     }
     assert entry["release_id"] == release_id
     assert entry["version"] == "2.1.0"
@@ -210,6 +212,16 @@ def test_http_import_rolls_back_managed_row_when_external_identity_conflicts(htt
     payload = dict(MANIFEST, agents=[{
         "framework": "goose", "version": "1.0.0", "agent_command": "goose",
         "adapter": {"adapter_id": "goose", "version": "1"},
+        "byoa_config": [
+            {"field": "model", "transport": "env", "key": "GOOSE_MODEL"},
+            {"field": "max_steps", "transport": "env", "key": "GOOSE_MAX_TURNS"},
+            {"field": "approval_policy", "transport": "env", "key": "GOOSE_MODE"},
+            {"field": "inference_gateway_host", "transport": "env", "key": "OPENAI_HOST"},
+            {"field": "inference_gateway_base_path", "transport": "env", "key": "OPENAI_BASE_PATH"},
+            {"field": "inference_gateway_credential", "transport": "env", "key": "OPENAI_API_KEY"},
+            {"field": "provider_kind", "transport": "env", "key": "GOOSE_PROVIDER", "value_map": {"openai_compatible": "openai"}},
+            {"field": "state_dir", "transport": "env", "key": "GOOSE_PATH_ROOT"},
+        ],
         "tests": [dict(MANIFEST["artifacts"][0]["tests"], os="linux", arch="x64")],
     }])
     conflict_id = "goose-1.0.0-" + manifest_digest(payload).removeprefix("sha256:")[:12]

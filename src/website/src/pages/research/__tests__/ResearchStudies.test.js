@@ -207,7 +207,8 @@ test("the analytics tab compares arms on participant-level metrics", async () =>
 
   expect(await screen.findByText("Arm comparison")).toBeInTheDocument();
   expect(screen.getByText("Tool calls per prompt")).toBeInTheDocument();
-  expect(screen.getByText("Not observable (BYOA)")).toBeInTheDocument();
+  // Codex signs in with ChatGPT and bypasses the metered relay.
+  expect(screen.getByText("Not observable (Codex)")).toBeInTheDocument();
   // "All time" reuses the summary the overview loaded: one request, not two.
   expect(api.getStudyAnalyticsSummary).toHaveBeenCalledTimes(1);
   expect(api.getStudyAnalyticsSummary).toHaveBeenCalledWith("study-1", {});
@@ -445,6 +446,9 @@ test("creates a Draft study through the lifecycle API", async () => {
     telemetryPolicy: {},
     sessionPolicy: VALID_SESSION_POLICY,
     profileIds: ["profile-1"],
+    // No metered arm selected: no budget, no warning threshold.
+    defaultBudgetUsd: "",
+    budgetWarningFraction: null,
   }));
 });
 
@@ -473,6 +477,8 @@ test("selects agent profiles when creating a study", async () => {
     telemetryPolicy: {},
     sessionPolicy: VALID_SESSION_POLICY,
     profileIds: ["profile-1"],
+    defaultBudgetUsd: "",
+    budgetWarningFraction: null,
   }));
 });
 
@@ -774,4 +780,296 @@ test("a profile-less clone is shown as not joinable", async () => {
   fireEvent.click(await screen.findByText("Pilot study (copy)"));
 
   expect(screen.getByText(/cannot be joined/i)).toBeInTheDocument();
+});
+
+// ---- Participant budgets ----------------------------------------------------
+
+const GOOSE_PROFILE = {
+  profile_id: "profile-goose",
+  name: "Goose arm",
+  model: "openai/gpt-4o-mini",
+  framework_version: "goose",
+  model_priced: true,
+  is_active: true,
+};
+const CODEX_PROFILE = {
+  profile_id: "profile-codex",
+  name: "Codex arm",
+  model: "gpt-5-codex",
+  framework_version: "codex",
+  model_priced: null,
+  is_active: true,
+};
+
+const BUDGET = {
+  study_id: "study-1",
+  metered: true,
+  metered_profile_ids: ["profile-1"],
+  default_budget_micro_usd: 10000000,
+  default_budget_usd: "10.00",
+  warning_fraction: 0.8,
+  updated_at: null,
+  updated_by: null,
+  editable: true,
+  participants: { total: 3, on_default: 1, on_old_default: 2, custom: 0, exhausted: 1 },
+  metered_spend_micro_usd: 3120000,
+  metered_spend_usd: "3.12",
+  metered_calls: 7,
+  reserved_micro_usd: 0,
+  pricing: { complete: true, missing: [] },
+};
+
+test("the create form asks for a budget only for metered arms and sends it as a decimal string", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
+  api.getAgentProfiles.mockResolvedValue({ ok: true, data: [GOOSE_PROFILE, CODEX_PROFILE] });
+  api.createResearchStudy.mockResolvedValue({ ok: true, data: { study: STUDY } });
+
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Metered pilot" } });
+
+  // Codex only: nothing to budget or price.
+  fireEvent.click(await screen.findByLabelText("Codex arm"));
+  expect(screen.queryByLabelText("Default budget per participant (USD)")).not.toBeInTheDocument();
+  expect(screen.getByText(/signs in with the participant's ChatGPT account and is not metered/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Create Draft study" })).not.toBeDisabled();
+
+  // A Goose arm spends from the shared key: the budget becomes required.
+  fireEvent.click(screen.getByLabelText("Goose arm"));
+  const budget = screen.getByLabelText("Default budget per participant (USD)");
+  const submit = screen.getByRole("button", { name: "Create Draft study" });
+  expect(submit).toBeDisabled();
+  fireEvent.change(budget, { target: { value: "abc" } });
+  expect(budget).toHaveAttribute("aria-invalid", "true");
+  expect(submit).toBeDisabled();
+  fireEvent.change(budget, { target: { value: "0" } });
+  expect(screen.getByText("The budget must be greater than zero.")).toBeInTheDocument();
+  expect(submit).toBeDisabled();
+  fireEvent.change(budget, { target: { value: "12.5" } });
+  fireEvent.change(screen.getByLabelText("Warn participants at (% of budget used)"), { target: { value: "90" } });
+  expect(submit).not.toBeDisabled();
+  fireEvent.click(submit);
+
+  await waitFor(() => expect(api.createResearchStudy).toHaveBeenCalled());
+  expect(api.createResearchStudy.mock.calls[0][0]).toMatchObject({
+    profileIds: ["profile-codex", "profile-goose"],
+    defaultBudgetUsd: "12.50",
+    budgetWarningFraction: 0.9,
+  });
+});
+
+test("an unpriced metered model blocks study creation until an administrator prices it", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
+  api.getAgentProfiles.mockResolvedValue({ ok: true, data: [{ ...GOOSE_PROFILE, model_priced: false }] });
+
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Unpriced" } });
+  fireEvent.click(await screen.findByLabelText("Goose arm"));
+  fireEvent.change(screen.getByLabelText("Default budget per participant (USD)"), { target: { value: "10" } });
+
+  expect(screen.getByText("Price missing")).toBeInTheDocument();
+  expect(screen.getByText("A selected model has no price on the server.")).toBeInTheDocument();
+  expect(screen.getByText(/ask an administrator to price this model/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Create Draft study" })).toBeDisabled();
+});
+
+test("a typed budget error from the server lands on the budget field", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
+  api.getAgentProfiles.mockResolvedValue({ ok: true, data: [GOOSE_PROFILE] });
+  api.createResearchStudy.mockResolvedValue({
+    ok: false,
+    status: 422,
+    code: "BUDGET_PRICE_MISSING",
+    error:
+      "these profiles' models have no budget price on their provider connection; ask an administrator to price them first: Goose arm (openai/gpt-4o-mini)",
+    errors: [{ field: "default_budget_usd", code: "BUDGET_PRICE_MISSING", message: "no price" }],
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Server says no" } });
+  fireEvent.click(await screen.findByLabelText("Goose arm"));
+  const budget = screen.getByLabelText("Default budget per participant (USD)");
+  fireEvent.change(budget, { target: { value: "10" } });
+  fireEvent.click(screen.getByRole("button", { name: "Create Draft study" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(/ask an administrator to price them first/);
+  expect(budget).toHaveAttribute("aria-invalid", "true");
+  expect(budget).toHaveAccessibleDescription(/ask an administrator to price them first/);
+  // The banner is not used for a field error.
+  expect(screen.getAllByRole("alert")).toHaveLength(1);
+});
+
+test("a clone prefills the source study's default budget for its metered arms", async () => {
+  const stopped = {
+    ...STUDY,
+    research_status: "STUDY_STOPPED",
+    budget_policy: { metered: true, default_budget_micro_usd: 20000000, default_budget_usd: "20.00", warning_fraction: 0.8 },
+  };
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [stopped] });
+  api.getAgentProfiles.mockResolvedValue({ ok: true, data: [GOOSE_PROFILE] });
+  api.cloneResearchStudy.mockResolvedValue({ ok: true, data: { study: { ...STUDY, study_id: "study-2" } } });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("button", { name: "Clone as new Draft" }));
+  fireEvent.click(await screen.findByLabelText("Goose arm"));
+
+  const budget = screen.getByLabelText("Default budget per participant (USD)");
+  expect(budget).toHaveValue("20.00");
+  // The warning threshold is copied by the server, so the clone form has no field for it.
+  expect(screen.queryByLabelText("Warn participants at (% of budget used)")).not.toBeInTheDocument();
+  fireEvent.change(budget, { target: { value: "25" } });
+  fireEvent.click(screen.getByRole("button", { name: "Clone Draft study" }));
+
+  await waitFor(() =>
+    expect(api.cloneResearchStudy).toHaveBeenCalledWith("study-1", { profileIds: ["profile-goose"], defaultBudgetUsd: "25.00" }),
+  );
+});
+
+test("the settings tab loads the budget policy and saves a new default after the consent lock", async () => {
+  api.listResearchStudies.mockResolvedValue({
+    ok: true,
+    data: [{ ...STUDY, research_status: "ACTIVE", consent_locked_at: "2026-09-02T10:00:00Z" }],
+  });
+  api.getStudyBudget.mockResolvedValue({ ok: true, data: BUDGET });
+  api.updateStudyBudget.mockResolvedValue({
+    ok: true,
+    data: { ...BUDGET, default_budget_micro_usd: 12500000, default_budget_usd: "12.50", warning_fraction: 0.9 },
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  await waitFor(() => expect(api.getStudyAnalyticsSummary).toHaveBeenCalled());
+  expect(api.getStudyBudget).not.toHaveBeenCalled();
+  openSettings();
+  await waitFor(() => expect(api.getStudyBudget).toHaveBeenCalledWith("study-1"));
+
+  const input = await screen.findByLabelText("Default budget per participant (USD)");
+  expect(input).toHaveValue("10.00");
+  expect(input).not.toBeDisabled();
+  expect(screen.getByText("$3.12")).toBeInTheDocument();
+  expect(screen.getByText("1 exhausted")).toBeInTheDocument();
+  // Metadata is locked after the first consent; the budget is not.
+  expect(screen.getByLabelText("Name")).toBeDisabled();
+  const save = screen.getByRole("button", { name: "Save budget defaults" });
+  expect(save).toBeDisabled();
+  fireEvent.change(input, { target: { value: "12.5" } });
+  fireEvent.change(screen.getByLabelText("Warn participants at (% of budget used)"), { target: { value: "90" } });
+  expect(save).not.toBeDisabled();
+  fireEvent.click(save);
+
+  await waitFor(() =>
+    expect(api.updateStudyBudget).toHaveBeenCalledWith("study-1", { defaultBudgetUsd: "12.50", warningFraction: 0.9 }),
+  );
+  expect(await screen.findByText("Participant budget defaults saved.")).toBeInTheDocument();
+});
+
+test("applying a new default asks for a reason, confirms and sends a fresh idempotency key", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [{ ...STUDY, research_status: "ACTIVE" }] });
+  api.getStudyBudget.mockResolvedValue({ ok: true, data: BUDGET });
+  api.applyStudyDefaultBudget.mockResolvedValue({
+    ok: true,
+    data: { applied: 2, skipped: 1, default_budget_micro_usd: 10000000, default_budget_usd: "10.00" },
+  });
+  jest.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  openSettings();
+  const apply = await screen.findByRole("button", { name: "Apply new default to 2 participants still on the old default" });
+  expect(apply).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Reason for applying the default"), { target: { value: "Term budget raised" } });
+  expect(apply).not.toBeDisabled();
+
+  // Declined: nothing is sent.
+  fireEvent.click(apply);
+  expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("$10.00"));
+  expect(api.applyStudyDefaultBudget).not.toHaveBeenCalled();
+
+  fireEvent.click(apply);
+  await waitFor(() => expect(api.applyStudyDefaultBudget).toHaveBeenCalledTimes(1));
+  const [studyId, payload] = api.applyStudyDefaultBudget.mock.calls[0];
+  expect(studyId).toBe("study-1");
+  expect(payload.reason).toBe("Term budget raised");
+  expect(payload.idempotencyKey).toMatch(/^[A-Za-z0-9_-]{8,128}$/);
+  expect(await screen.findByText("Applied the default budget to 2 participants (1 left unchanged).")).toBeInTheDocument();
+  expect(screen.getByLabelText("Reason for applying the default")).toHaveValue("");
+  window.confirm.mockRestore();
+});
+
+test("a study without metered arms explains why there is no budget to set", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.getStudyBudget.mockResolvedValue({ ok: true, data: { ...BUDGET, metered: false, metered_profile_ids: [] } });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  openSettings();
+
+  expect(
+    await screen.findByText(/signs in with the participant's ChatGPT account and is not metered, so there is nothing to budget/),
+  ).toBeInTheDocument();
+  expect(screen.queryByLabelText("Default budget per participant (USD)")).not.toBeInTheDocument();
+});
+
+test("a stopped study shows its budget read-only", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [{ ...STUDY, research_status: "STUDY_STOPPED" }] });
+  api.getStudyBudget.mockResolvedValue({ ok: true, data: { ...BUDGET, editable: false } });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  openSettings();
+
+  const input = await screen.findByLabelText("Default budget per participant (USD)");
+  expect(input).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Save budget defaults" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: /Apply new default/ })).not.toBeInTheDocument();
+});
+
+test("the overview shows the metered spend from the analytics totals", async () => {
+  api.listResearchStudies.mockResolvedValue({
+    ok: true,
+    data: [
+      {
+        ...STUDY,
+        budget_policy: { metered: true, default_budget_micro_usd: 10000000, default_budget_usd: "10.00", warning_fraction: 0.8 },
+      },
+    ],
+  });
+  api.getStudyAnalyticsSummary.mockResolvedValue({
+    ok: true,
+    data: {
+      totals: { prompts: 2, tool_calls: 0, sessions: 1, metered_spend_micro_usd: 3120000, metered_calls: 7 },
+      arms: [],
+      daily: [],
+      tools: [],
+      coverage: {},
+    },
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+
+  expect(await screen.findByText("$3.12")).toBeInTheDocument();
+  expect(screen.getByText("7 model calls")).toBeInTheDocument();
+  expect(screen.getByText("$10.00 (warn at 80%)")).toBeInTheDocument();
+});
+
+test("the overview says Codex arms are not metered", async () => {
+  api.listResearchStudies.mockResolvedValue({
+    ok: true,
+    data: [
+      {
+        ...STUDY,
+        budget_policy: { metered: false, default_budget_micro_usd: 0, default_budget_usd: "0.00", warning_fraction: 0.8 },
+      },
+    ],
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+
+  expect(await screen.findByText("Codex arms are not metered")).toBeInTheDocument();
+  expect(screen.queryByText("Budget per participant")).not.toBeInTheDocument();
 });

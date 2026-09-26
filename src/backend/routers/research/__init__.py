@@ -10,6 +10,8 @@ from fastapi import APIRouter
 
 from .agents import router as agents_router
 from .bootstrap import router as bootstrap_router
+from .budgets import router as budgets_router
+from .inference import router as inference_router
 from .join import router as join_router
 from .operations import operations_router as pilot_operations_router
 from .packages import packages_router
@@ -34,6 +36,13 @@ router.include_router(
     study_analytics_router,
     prefix="/studies",
     tags=["Research Study Analytics"],
+)
+# Participant budgets on the shared provider key (study owner/admin):
+# study default, apply-default, per-enrollment balance/adjustments/ledger.
+router.include_router(
+    budgets_router,
+    prefix="/studies",
+    tags=["Research Budgets"],
 )
 # Participant self-enrollment by shared join code. ``/join/{code}`` is readable
 # by any authenticated user; ``POST /join`` enrolls the caller.
@@ -96,4 +105,11 @@ router.include_router(
     packages_router,
     prefix="/packages",
     tags=["Research Packages"],
+)
+# The metered, server-keyed Chat Completions gateway a Goose study arm is
+# pointed at (bearer = the inference capability minted at bootstrap).
+router.include_router(
+    inference_router,
+    prefix="/inference",
+    tags=["Research Inference Gateway"],
 )

@@ -15,8 +15,9 @@ cloned study's identity/profile selection/status, the participant's own
 enrollment projection and the owner-scoped participant coverage model.
 
 A: researcher create/edit/lock, B: participant web join, C: stop/clone,
-D: authorization, E: study workspace tabs (participants, dashboard, analytics)
-and the participant's My studies page.
+D: authorization, E: study workspace tabs (participants, dashboard, analytics),
+participant budgets (spent/budget columns, a top-up from the drawer re-read
+through the budget API) and the participant's My studies page.
 """
 
 from __future__ import annotations
@@ -109,6 +110,26 @@ def study_detail(page, study_id: str) -> dict:
     )
 
 
+def participant_budget(page, study_id: str, enrollment_id: str | None) -> dict:
+    """The owner-scoped budget of one enrollment (resolved from the table when unknown)."""
+    return page.evaluate(
+        """async ({ id, enrollmentId }) => {
+            let eid = enrollmentId;
+            if (!eid) {
+                const rows = await fetch(`/api/research/studies/${id}/analytics/participants`, { credentials: 'include' });
+                let data = {};
+                try { data = await rows.json(); } catch (_) { data = {}; }
+                eid = ((data.participants || [])[0] || {}).enrollment_id || null;
+            }
+            if (!eid) return {};
+            const res = await fetch(`/api/research/studies/${id}/enrollments/${eid}/budget`, { credentials: 'include' });
+            if (!res.ok) return {};
+            return await res.json();
+        }""",
+        {"id": study_id, "enrollmentId": enrollment_id},
+    )
+
+
 def participant_coverage(page, study_id: str) -> dict:
     return page.evaluate(
         """async (id) => {
@@ -168,6 +189,10 @@ def main() -> int:
             study_name = f"Browser study {int(time.time())}"
             owner.locator("form.research-card input").first.fill(study_name)
             owner.locator("fieldset.research-profile-selection input[type=checkbox]").first.check()
+            # The seeded arm runs the built-in agent (metered), so the form
+            # requires a default budget per participant before it submits.
+            owner.locator("#study-default-budget").wait_for(timeout=20000)
+            owner.locator("#study-default-budget").fill("5")
             owner.click('button:has-text("Create Draft study")')
             owner.wait_for_selector("text=Study created in Draft state.", timeout=20000)
 
@@ -176,7 +201,14 @@ def main() -> int:
                 None,
             )
             create_body = json.loads(create_req["body"]) if create_req and create_req["body"] else {}
-            record("A3", "create posts the complete setup once (with profiles)", bool(create_req) and len(create_body.get("profile_ids", [])) >= 1)
+            record(
+                "A3",
+                "create posts the complete setup once (with profiles and the default budget)",
+                bool(create_req)
+                and len(create_body.get("profile_ids", [])) >= 1
+                # The form normalises the amount ("5" → "5.00"); compare the value, not the spelling.
+                and str(create_body.get("default_budget_usd") or "").replace(",", "") in ("5", "5.0", "5.00"),
+            )
             record("A4", "create body carries no revision/condition key", bool(create_req) and not re.search(r"revision|condition", create_req["body"]))
 
             study_id = find_study_id(owner, study_name)
@@ -356,6 +388,13 @@ def main() -> int:
                 and "@" not in table_text,
                 f"arm={arm_cell.splitlines()[0] if arm_cell else ''}",
             )
+            table_lower = table_text.lower()  # header cells render uppercased by CSS
+            record(
+                "E5",
+                "participants tab shows the participant's spent amount and budget",
+                "spent" in table_lower and "budget" in table_lower and "$5.00" in table_text and "$0.00" in table_text,
+                "table=" + " ".join(table_text.split())[:260],
+            )
             rows.first.get_by_role("button", name=re.compile("open dashboard", re.I)).click()
             drawer = owner.get_by_role("dialog")
             drawer.wait_for(timeout=20000)
@@ -369,6 +408,27 @@ def main() -> int:
                 "E2",
                 "the participant dashboard opens with metadata-only telemetry",
                 "Participant" in drawer_text and ("Prompts" in drawer_text or "No telemetry" in drawer_text),
+            )
+            # ---- Budgets: top up from the drawer, then re-read the budget API ----
+            drawer.get_by_role("button", name=re.compile("adjust budget", re.I)).click()
+            adjust_form = drawer.get_by_role("form", name="Adjust budget")
+            adjust_form.wait_for(timeout=20000)
+            adjust_form.locator("#adjust-budget-amount").fill("2.50")
+            adjust_form.locator("#adjust-budget-reason").fill("browser top-up")
+            adjust_form.get_by_role("button", name=re.compile("top up budget", re.I)).click()
+            owner.wait_for_selector("text=Topped up by $2.50", timeout=20000)
+            budget_state = participant_budget(owner, study_id, enrollment_id)
+            budget_balance = budget_state.get("balance") or {}
+            record(
+                "E6",
+                "owner tops up the participant's budget from the drawer and the ledger records the reason",
+                budget_balance.get("limit_micro_usd") == 7_500_000
+                and budget_balance.get("consumed_micro_usd") == 0
+                and any(
+                    item.get("kind") == "TOP_UP" and item.get("reason") == "browser top-up"
+                    for item in budget_state.get("recent_adjustments", [])
+                ),
+                f"limit={budget_balance.get('limit_micro_usd')}",
             )
             owner.keyboard.press("Escape")
             drawer.wait_for(state="detached", timeout=20000)
@@ -385,6 +445,14 @@ def main() -> int:
                 "E4",
                 "My studies shows the joined study and its schedule",
                 participant.get_by_text("Study ends").count() >= 1 and participant.locator('input[type="checkbox"]').count() == 0,
+            )
+            record(
+                "E7",
+                "My studies shows the remaining budget without any arm detail",
+                participant.get_by_text("Budget remaining").count() >= 1
+                and participant.get_by_text(re.compile(r"provided by the study")).count() >= 1
+                and participant.get_by_text("$7.50").count() >= 1
+                and participant.get_by_text(re.compile(r"own account|profile", re.I)).count() == 0,
             )
 
             # ---- Scenario C: stop, retained data, clone ----

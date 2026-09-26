@@ -84,10 +84,8 @@ def test_acp_chat_completions_gates_lifecycle_before_provider_resolution():
     with patch.object(
         acp_router.registry, "resolve_assignment_context", return_value=assignment
     ), patch.object(
-        acp_router.operations_store, "db_kill_switch_check", return_value=None
-    ), patch.object(
         acp_router.access,
-        "require_live_enrollment",
+        "require_funded_access",
         side_effect=access.FundedAccessRefused("STUDY_STOPPED", "the study has stopped"),
     ), patch.object(
         acp_router.provider_module, "funding_owner_for_profile"
@@ -154,9 +152,15 @@ def test_kill_switch_release_still_works_for_a_live_study():
 
 
 def test_acp_funded_gate_scopes_the_kill_switch_to_the_accounts_enrollment():
-    """An enrollment-scoped kill switch must block ACP chat completions too."""
+    """An enrollment-scoped kill switch must block ACP chat completions too.
+
+    The shared gate (``access.require_funded_access``) resolves the account's
+    live enrollment and evaluates the switch at both the study scope and that
+    enrollment's scope; the ACP wrapper maps the refusal to a 403.
+    """
     from backend.routers import acp as acp_router
     from backend.routers.research import access
+    from research.analysis.operations import store as operations_store
     from research.participants import identity as identity_store
 
     account_id = uuid.uuid4()
@@ -171,17 +175,16 @@ def test_acp_funded_gate_scopes_the_kill_switch_to_the_accounts_enrollment():
     ), patch.object(
         identity_store, "list_enrollments", return_value=[active]
     ), patch.object(
-        acp_router.operations_store, "db_kill_switch_check", return_value=lambda: True
-    ) as kill_switch, patch.object(
-        acp_router.access,
-        "require_live_enrollment",
-        side_effect=access.FundedAccessRefused("KILL_SWITCH_ENGAGED", "engaged"),
-    ):
+        access.protocol_store, "research_study_is_open", return_value=True
+    ), patch.object(
+        operations_store, "is_kill_switch_engaged", return_value=True
+    ) as kill_switch:
         with pytest.raises(HTTPException) as error:
             acp_router._require_funded_access(
                 MagicMock(), account_id=account_id, study_id=study_id
             )
 
+    assert error.value.status_code == 403
     assert error.value.detail["code"] == "KILL_SWITCH_ENGAGED"
     assert kill_switch.call_args.kwargs["study_id"] == study_id
     assert kill_switch.call_args.kwargs["enrollment_id"] == enrollment_id
@@ -196,14 +199,17 @@ def test_funded_task_gate_passes_the_tasks_enrollment_scope():
     task = MagicMock(
         study_id=study_id, enrollment_id=enrollment_id, owner_user_id=uuid.uuid4()
     )
+    live = MagicMock(enrollment_id=enrollment_id, study_id=study_id)
     with patch.object(
-        acp_router.operations_store, "db_kill_switch_check", return_value=lambda: False
-    ) as kill_switch, patch.object(
-        acp_router.access, "require_live_enrollment", return_value=MagicMock()
-    ):
-        acp_router._require_funded_task(MagicMock(), task)
+        acp_router.access, "require_funded_access", return_value=live
+    ) as gate:
+        assert acp_router._require_funded_task(MagicMock(), task) is live
 
-    assert kill_switch.call_args.kwargs["enrollment_id"] == enrollment_id
+    # The gate resolves the account's live enrollment for the task's study and
+    # scopes the kill switch to it (see access.require_funded_access).
+    assert gate.call_args.kwargs["account_id"] == task.owner_user_id
+    assert gate.call_args.kwargs["study_id"] == study_id
+    assert acp_router._require_funded_task(MagicMock(), MagicMock(study_id=None)) is None
 
 
 def test_session_creation_refuses_a_study_outside_its_window():

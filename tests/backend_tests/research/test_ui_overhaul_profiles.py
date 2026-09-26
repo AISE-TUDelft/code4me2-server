@@ -305,6 +305,7 @@ def test_study_freeze_refuses_a_byoa_profile_carrying_max_context_tokens(http_ru
             "/api/research/studies",
             json={
                 "name": f"freeze-{profile_id}",
+                "default_budget_usd": "10",
                 "session_policy": VALID_SESSION_POLICY,
                 "profile_ids": [str(profile_id)],
             },

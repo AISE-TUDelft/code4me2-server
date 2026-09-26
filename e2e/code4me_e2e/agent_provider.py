@@ -18,11 +18,35 @@ from typing import Any, Dict, List, Optional
 __all__ = ["AgentProvider", "NativeAgentProvider"]
 
 
-class AgentProvider:
-    """A deterministic, ephemeral-port OpenAI-compatible loopback provider."""
+#: The research inference gateway's Chat Completions path (no leading slash
+#: on the Goose side; the provider serves it with one).
+GATEWAY_CHAT_ROUTE = "/api/research/inference/v1/chat/completions"
 
-    def __init__(self, token: Optional[str] = None) -> None:
+
+class AgentProvider:
+    """A deterministic, ephemeral-port OpenAI-compatible loopback provider.
+
+    ``chat_routes`` are the Chat Completions paths it answers (the classic
+    ``/v1/chat/completions`` and the research gateway path by default).
+    ``expected_bearer`` lets a receipt record whether the ``Authorization``
+    header matched (equality only; the value is never stored). With
+    ``quota_exhausted`` every chat call is refused with the research gateway's
+    ``402 quota_exhausted`` body, which is how a used-up participant budget
+    looks to the agent.
+    """
+
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        *,
+        chat_routes: Optional[List[str]] = None,
+        expected_bearer: Optional[str] = None,
+        quota_exhausted: bool = False,
+    ) -> None:
         self.token = token or f"E2E_NATIVE_ANSWER_{uuid.uuid4().hex}"
+        self.chat_routes = list(chat_routes or ["/v1/chat/completions", GATEWAY_CHAT_ROUTE])
+        self.expected_bearer = expected_bearer
+        self.quota_exhausted = bool(quota_exhausted)
         self.requests: List[Dict[str, Any]] = []
         self.port: Optional[int] = None
         self._server: Optional[ThreadingHTTPServer] = None
@@ -63,8 +87,10 @@ class AgentProvider:
             raise RuntimeError("AgentProvider has not been started")
         return f"http://127.0.0.1:{self.port}"
 
-    def record(self, *, route: str, model: Any, stream: bool) -> None:
-        """Add a metadata-only, monotonic request receipt."""
+    def record(
+        self, *, route: str, model: Any, stream: bool, auth_matched: Optional[bool] = None
+    ) -> None:
+        """Add a metadata-only, monotonic request receipt (never a header value)."""
         with self._lock:
             self._request_count += 1
             receipt = {
@@ -74,8 +100,23 @@ class AgentProvider:
                 "count": self._request_count,
                 # Kept for drop-in compatibility with ``StubProvider`` callers.
                 "receipt": self._request_count,
+                # None when no expected bearer was configured.
+                "auth_matched": auth_matched,
             }
             self.requests.append(receipt)
+
+    def quota_refusal(self) -> Dict[str, Any]:
+        """The research gateway's refusal body for a used-up budget."""
+        return {
+            "error": {
+                "message": (
+                    "Your study's AI budget is used up (available $0.00; this request "
+                    "needs at least $0.01). Ask the study team for a top-up."
+                ),
+                "type": "insufficient_quota",
+                "code": "quota_exhausted",
+            }
+        }
 
     def request_count(self) -> int:
         with self._lock:
@@ -161,9 +202,13 @@ def _make_handler(provider: AgentProvider):
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
             route = self.path.split("?", 1)[0]
-            if route not in ("/v1/chat/completions", "/v1/responses"):
+            if route not in (*provider.chat_routes, "/v1/responses"):
                 self._send_json(404, {"error": {"message": "unsupported route", "type": "invalid_request_error"}})
                 return
+            auth_matched: Optional[bool] = None
+            if provider.expected_bearer is not None:
+                header = self.headers.get("Authorization") or ""
+                auth_matched = header == f"Bearer {provider.expected_bearer}"
             try:
                 length = int(self.headers.get("Content-Length") or "0")
                 if length < 0:
@@ -178,8 +223,13 @@ def _make_handler(provider: AgentProvider):
 
             model, stream = payload.get("model"), bool(payload.get("stream"))
             # Do not retain ``payload``, headers, or any prompt/auth values.
-            provider.record(route=route, model=model, stream=stream)
-            if route == "/v1/chat/completions":
+            provider.record(route=route, model=model, stream=stream, auth_matched=auth_matched)
+            if route in provider.chat_routes:
+                if provider.quota_exhausted:
+                    # The research gateway refuses before anything reaches a
+                    # provider; 402 is deliberately not a retried status.
+                    self._send_json(402, provider.quota_refusal())
+                    return
                 self._chat(model, stream)
             else:
                 self._responses(model, stream)

@@ -234,3 +234,21 @@
   font-size: 12.5px;
   margin: 0;
 }
+
+/* ---- Provider connections: model prices --------------------------------- */
+
+.price-table th[scope="row"] {
+  font-weight: 500;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.price-table .ui-money {
+  max-width: 150px;
+}
+
+.ui-chip.is-unpriced {
+  border-color: color-mix(in srgb, var(--warning-color) 40%, transparent);
+}

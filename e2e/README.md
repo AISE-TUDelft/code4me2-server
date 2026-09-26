@@ -81,7 +81,7 @@ diagnosis. A nonzero exit code means the gate did not pass.
 | `./test --layer backend` | 17 HTTP workflow steps (imports the producer-built agent release; no IDE) |
 | `./test --layer plugin` | Kotlin IntelliJ fixture + HTTP workflow, no IDE UI |
 | `./test --layer agents` | real Goose and Codex over ACP against a local provider; no Docker |
-| `./test --layer browser` | `browser/` suite: 37 headless Chromium checks + persisted read models |
+| `./test --layer browser` | `browser/` suite: 40 headless Chromium checks + persisted read models |
 | `./test --json` | Same gate, with a JSON summary on stdout |
 | `./test --keep-stack` | Preserve the disposable backend after success |
 | `./test --no-setup` | Check prerequisites but provision nothing (missing ones block their layers) |
@@ -122,7 +122,7 @@ The browser suite covers:
 - stopping and cloning a study;
 - authorization controls.
 
-It must run its exact 37-check inventory once each. It then re-reads the real
+It must run its exact 40-check inventory once each. It then re-reads the real
 API read models:
 - edited metadata;
 - stopped study retention;
@@ -232,10 +232,26 @@ releases can only be imported through the release manifest, and their arms are
 not run by the managed relay, so `--set agent.framework_version=goose|codex`
 is refused with `FRAMEWORK_NOT_IN_WORKFLOW`.
 
+For Goose the probe uses the *gateway shape* a study arm receives: `OPENAI_HOST`
+is the provider origin, `OPENAI_BASE_PATH` is the research gateway path
+(`api/research/inference/v1/chat/completions`), `OPENAI_API_KEY` is a random
+bearer the provider must see back, `GOOSE_PROVIDER=openai` and
+`GOOSE_PATH_ROOT` isolates Goose's own state while the isolated home carries a
+deliberately *poisoned* `.config/goose/config.yaml` (another provider, a dead
+host). A pass proves the pinned Goose honours the env-driven gateway
+configuration over its own config. `--quota-exhausted` makes the provider answer
+`402 quota_exhausted` (the research gateway's refusal) and passes only when the
+probe is `BLOCKED` with reason `quota` after no more than Goose's two calls of a
+normal turn (the reply and the session-description call) — no retry storm.
+Goose 1.51 reports that refusal over ACP as `credits_exhausted` with its own
+generic "add more credits" wording; the study-specific explanation reaches the
+participant through the plugin's status banner.
+
 ### Unverified boundaries
 
-- **Provider authentication and quota** are not exercised. A passing probe is
-  not evidence that a paid provider works for a participant.
+- **Real provider authentication** is not exercised (the provider is a local
+  fixture); the budget refusal *shape* is, through `--quota-exhausted`. A passing
+  probe is not evidence that a paid provider works for a participant.
 - **Codex model binding:** the adapter's `CODEX_MODEL` is not applied when it
   talks to a custom gateway. The local provider sees Codex's default model name,
   so the probe does not assert the model.

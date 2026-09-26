@@ -1885,3 +1885,64 @@ ul.research-error {
 .shell a.ghost-button {
   color: var(--text-color);
 }
+
+/* ------------------------------------------------------------------ */
+/* Meter (budgets) and money input                                     */
+/* ------------------------------------------------------------------ */
+
+.ui-meter {
+  background-color: var(--surface-sunken);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  display: block;
+  height: 8px;
+  min-width: 64px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.ui-meter-fill {
+  background-color: var(--success-color);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 0.2s ease;
+}
+
+.ui-meter.is-warning .ui-meter-fill {
+  background-color: var(--warning-color);
+}
+
+.ui-meter.is-exhausted {
+  border-color: color-mix(in srgb, var(--error-color) 40%, transparent);
+}
+
+.ui-meter.is-exhausted .ui-meter-fill {
+  background-color: var(--error-color);
+}
+
+.ui-money {
+  align-items: center;
+  display: inline-flex;
+  max-width: 220px;
+  position: relative;
+  width: 100%;
+}
+
+.ui-money-prefix {
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 600;
+  left: 11px;
+  pointer-events: none;
+  position: absolute;
+}
+
+.ui-money > .ui-input {
+  font-variant-numeric: tabular-nums;
+  padding-left: 24px;
+}
+
+.ui-money.is-disabled .ui-money-prefix {
+  opacity: 0.6;
+}

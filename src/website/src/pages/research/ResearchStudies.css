@@ -425,3 +425,45 @@
 .research-layout.is-list-collapsed .study-list-panel {
   display: none;
 }
+
+/* ---- Participant budgets ------------------------------------------------ */
+
+.study-budget-cell {
+  min-width: 150px;
+}
+
+.study-budget-cell .ui-meter {
+  margin-top: 4px;
+  max-width: 140px;
+}
+
+.study-budget-fieldset .ui-form-grid {
+  margin-top: 8px;
+}
+
+.study-budget-facts {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.study-budget-apply {
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.study-budget-adjust-wrap {
+  background-color: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.study-ledger-table td,
+.study-history-table td {
+  font-size: 12.5px;
+}

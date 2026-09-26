@@ -118,6 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
     agent_probe.add_argument("--json", action="store_true", dest="as_json")
     agent_probe.add_argument("--local-provider", action="store_true",
                              help="use a local streaming model fixture and require its unique answer")
+    agent_probe.add_argument("--quota-exhausted", action="store_true", dest="quota_exhausted",
+                             help="with --local-provider: the fixture answers the research gateway's "
+                                  "402 quota_exhausted; pass only on a typed quota block after one request")
 
     return parser
 
@@ -133,6 +136,7 @@ def run_agent_probe(
     detect_only: bool = False,
     as_json: bool = False,
     local_provider: bool = False,
+    quota_exhausted: bool = False,
 ) -> int:
     """Standalone probe for a real participant-installed agent.
 
@@ -186,7 +190,7 @@ def run_agent_probe(
             from . import native_agents
             result = native_agents.probe(framework, run_path, executable=agent_executable, timeout=timeout,
                                         command=agent.agent_command, package=agent.agent_package,
-                                        argv=agent_args, home=agent_home)
+                                        argv=agent_args, home=agent_home, quota_exhausted=quota_exhausted)
         else:
             result = acp_probe.run_probe(
                 framework,
@@ -279,6 +283,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
             detect_only=args.detect_only,
             as_json=args.as_json,
             local_provider=args.local_provider,
+            quota_exhausted=args.quota_exhausted,
         )
 
     if args.command == "run":

@@ -13,6 +13,8 @@ never trusted.
 
 from __future__ import annotations
 
+import logging
+
 import uuid  # noqa: TC003 - FastAPI evaluates route annotations at runtime
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -47,6 +49,17 @@ if TYPE_CHECKING:
     from research.runtime.sessions.models import ResearchSessionV1, SessionPolicyV1
 
 router = APIRouter()
+
+
+def _budget_block(db, enrollment_id, now):
+    """The participant's arm-blind budget numbers, or ``None`` (never raises)."""
+    from research.budget import ledger as budget_ledger
+
+    try:
+        return budget_ledger.participant_view(db, enrollment_id=enrollment_id, now=now)
+    except Exception:  # noqa: BLE001 - a budget read must never break a session signal
+        logging.exception("[Research/sessions] budget view failed for %s", enrollment_id)
+        return None
 
 AUDIENCE = "research-runtime"
 _SCOPE_WRITE = "telemetry:write"
@@ -287,6 +300,7 @@ def create_research_session(
                     "session": session_store.session_summary(existing_row),
                     "next_actions": _next_actions(existing, policy, now),
                     "heartbeat_seconds": policy.heartbeat_seconds,
+                    "budget": _budget_block(db, enrollment.enrollment_id, now),
                 },
             )
 
@@ -320,6 +334,7 @@ def create_research_session(
                 "session": session_store.session_summary(row),
                 "next_actions": _next_actions(session, policy, now),
                 "heartbeat_seconds": policy.heartbeat_seconds,
+                "budget": _budget_block(db, enrollment.enrollment_id, now),
             },
         )
     finally:
@@ -390,6 +405,7 @@ def heartbeat(
                     "session": session_store.session_summary(row),
                     "next_actions": [],
                     "heartbeat_seconds": policy.heartbeat_seconds,
+                    "budget": _budget_block(db, session.enrollment_id, now),
                 },
             )
 
@@ -416,6 +432,7 @@ def heartbeat(
                 "session": session_store.session_summary(row),
                 "next_actions": _next_actions(updated, policy, now),
                 "heartbeat_seconds": policy.heartbeat_seconds,
+                "budget": _budget_block(db, session.enrollment_id, now),
             },
         )
     finally:
@@ -490,6 +507,7 @@ def report_activity(
                     "session": session_store.session_summary(row),
                     "next_actions": [],
                     "heartbeat_seconds": policy.heartbeat_seconds,
+                    "budget": _budget_block(db, session.enrollment_id, now),
                 },
             )
 
@@ -517,6 +535,7 @@ def report_activity(
                 "session": session_store.session_summary(row),
                 "next_actions": _next_actions(activity.session, policy, now),
                 "heartbeat_seconds": policy.heartbeat_seconds,
+                "budget": _budget_block(db, session.enrollment_id, now),
             },
         )
     finally:

@@ -1339,10 +1339,13 @@ def participant_header(
     sessions: Sequence[SessionRow],
     analysis: ParticipantAnalysis,
     now: datetime,
+    budget: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """One participants-table row (study-local identity only)."""
     return {
         "enrollment_id": enrollment.enrollment_id,
+        # Metered budget (shared provider key): ``None`` for unmetered arms.
+        "budget": dict(budget) if budget is not None else None,
         "participant_code": enrollment.participant_code,
         "status": enrollment.status,
         "enrolled_at": iso(enrollment.enrolled_at),
@@ -1399,6 +1402,7 @@ def build_participants(
     *,
     study_id: str,
     now: datetime,
+    budgets: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> dict[str, Any]:
     events_by_enrollment = _group(events, "enrollment_id")
     daily_by_enrollment = _group(daily, "enrollment_id")
@@ -1426,6 +1430,7 @@ def build_participants(
                 sessions,
                 analysis,
                 now,
+                budget=(budgets or {}).get(str(enrollment.enrollment_id)),
             )
         )
     return {
@@ -1645,6 +1650,7 @@ def build_study_summary(
     study_id: str,
     now: datetime,
     window: Optional[DateWindow] = None,
+    spend: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     window = window or DateWindow()
     events_by_enrollment = _group(events, "enrollment_id")
@@ -1851,6 +1857,12 @@ def build_study_summary(
             sum(1 for call, _ in all_calls if call.tool_kind is not None), len(all_calls)
         ),
     }
+
+    if spend is not None:
+        # Exact metered spend from the budget ledger (all time, not windowed).
+        totals["metered_spend_micro_usd"] = int(spend.get("metered_spend_micro_usd", 0))
+        totals["metered_calls"] = int(spend.get("metered_calls", 0))
+        totals["metered_reserved_micro_usd"] = int(spend.get("reserved_micro_usd", 0))
 
     return {
         "study_id": study_id,

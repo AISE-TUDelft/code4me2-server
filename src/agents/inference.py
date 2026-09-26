@@ -58,6 +58,8 @@ from database import crud
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from research.budget.meter import InferenceMeter
+
     from App import App
 
 # Upstream request timeout. Agent turns with large contexts are slow, and a
@@ -95,9 +97,17 @@ async def run_inference(
     content_included: bool = False,
     profile_tools_json: Optional[str] = None,
     record_observation_events: bool = True,
+    meter: Optional["InferenceMeter"] = None,
+    tool_filtering: bool = True,
     app: App,
 ) -> Response:
     """Forward one agent inference call upstream and record it as an agent_event.
+
+    ``meter`` (research budgets) reserves the call's worst-case cost before the
+    body is serialised and settles/forfeits/voids the hold afterwards; without
+    a meter the relay behaves as before. ``tool_filtering=False`` passes the
+    agent's tool definitions upstream untouched (the research gateway: Goose
+    owns its tools and the arm's tool selection is applied on the Goose side).
 
     The task and session are pre-validated by the route handler, so this
     function trusts its inputs — except ``content_included``, which the route
@@ -320,7 +330,7 @@ async def run_inference(
     tools_kept = 0
     tools_stripped = 0
 
-    if original_tools and not is_responses_api:
+    if original_tools and not is_responses_api and tool_filtering:
         # Tool filtering and schema sanitisation apply only to Chat Completions.
         # Codex manages its own tool schemas for the Responses API — those are
         # passed through as-is (already normalized above where needed).
@@ -378,6 +388,22 @@ async def run_inference(
         for msg in openai_body["messages"]:
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 msg.pop("reasoning_content", None)
+
+    # Research budgets: the body is final here (model, temperature, tools and
+    # stream options applied), so the hold estimate sees exactly what goes
+    # upstream. A refusal (402 budget, 503 price missing) is returned before
+    # anything is sent; on success the meter has capped max_tokens in place.
+    if meter is not None:
+        refusal = await meter.reserve(
+            openai_body, request_id=request_id, upstream_base_url=upstream.base_url
+        )
+        if refusal is not None:
+            logging.info(
+                f"[Agent/inference] refused by budget meter request_id={request_id} "
+                f"task={task_uuid} status={refusal.status_code}"
+            )
+            return refusal
+        max_tokens = openai_body.get("max_tokens") or openai_body.get("max_completion_tokens")
 
     # Schema size is structural telemetry. Token count is estimated in the
     # analytics layer because providers use different tokenizers.
@@ -516,6 +542,8 @@ async def run_inference(
             upstream_stream = await stream_client.send(stream_request, stream=True)
         except httpx.HTTPError as error:
             await stream_client.aclose()
+            if meter is not None:
+                await meter.resolve_transport_error(error)
             return _upstream_unreachable(error)
 
         # Do not turn an upstream 429 into a successful-looking SSE response.
@@ -526,6 +554,9 @@ async def run_inference(
             retry_after = _retry_after_seconds(upstream_stream.headers, error_body)
             await upstream_stream.aclose()
             await stream_client.aclose()
+            if meter is not None:
+                # The provider refused before generating: nothing was billed.
+                await meter.resolve_upstream_error(upstream_stream.status_code)
             latency_ms = int((time.monotonic() - t0) * 1000)
             record = _build_record(None, None, None, None, None, latency_ms, upstream_stream.status_code)
             _log_record(record)
@@ -541,13 +572,32 @@ async def run_inference(
                 media_type=upstream_stream.headers.get("content-type", "application/json"),
             )
 
+        stream_timed_out: list[bool] = [False]
+        stream_timeout = (
+            meter.settings.stream_total_timeout_seconds if meter is not None else None
+        )
+
         async def _stream():
             try:
                 logging.info(
                     f"[Agent/inference] ← upstream "
                     f"status={upstream_stream.status_code} (stream)"
                 )
+                # A metered stream may not outlive its reservation deadline: the
+                # wall-clock cap (checked per chunk; each read is already bounded
+                # by the httpx timeout) turns a hung provider into a forfeit
+                # instead of an open hold. No cancel scope wraps the yields, so
+                # a generator finalised from another task after a client
+                # disconnect still settles cleanly in `finally`.
                 async for chunk in upstream_stream.aiter_bytes():
+                    if stream_timeout is not None and (time.monotonic() - t0) > stream_timeout:
+                        stream_aborted[0] = True
+                        stream_timed_out[0] = True
+                        logging.warning(
+                            f"[Agent/inference] stream exceeded {stream_timeout}s — "
+                            f"request_id={request_id}"
+                        )
+                        break
                     sse_buffer.append(chunk)
                     yield chunk
             except Exception as e:
@@ -585,8 +635,23 @@ async def run_inference(
                     write_model_call_event(
                         app, task_uuid, record, latency_ms, span, extra
                     )
+                # Budget settlement runs whatever ended the stream (completion,
+                # upstream read error, client disconnect via aclose(), shutdown):
+                # a stream without a usage chunk forfeits its hold. The meter
+                # shields this await from cancellation and never raises.
+                if meter is not None:
+                    if stream_timed_out[0]:
+                        await meter.resolve_timeout()
+                    else:
+                        await meter.resolve_stream(
+                            raw_sse, upstream_status=upstream_stream.status_code
+                        )
 
-        return StreamingResponse(_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            _stream(),
+            media_type="text/event-stream",
+            headers=meter.response_headers() if meter is not None else None,
+        )
 
     try:
         async with httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT_SECONDS) as client:
@@ -594,6 +659,8 @@ async def run_inference(
                 upstream_url, content=body_bytes, headers=upstream_headers
             )
     except httpx.HTTPError as error:
+        if meter is not None:
+            await meter.resolve_transport_error(error)
         return _upstream_unreachable(error)
 
     latency_ms = int((time.monotonic() - t0) * 1000)
@@ -604,14 +671,27 @@ async def run_inference(
             f"{upstream_resp.text}"
         )
 
+    resp_json = None
+    try:
+        resp_json = upstream_resp.json()
+    except Exception as e:  # noqa: BLE001 - an unparseable body is handled below
+        logging.warning(f"[Agent/inference] could not parse upstream response — {e}")
+
+    if meter is not None:
+        if upstream_resp.status_code >= 400:
+            await meter.resolve_upstream_error(upstream_resp.status_code)
+        else:
+            await meter.resolve_response(resp_json, upstream_status=upstream_resp.status_code)
+
     prompt_tok = completion_tok = total_tok = finish_reason = response_text = None
     try:
         extractor = (
             extract_from_responses_api if is_responses_api else extract_from_response
         )
-        prompt_tok, completion_tok, total_tok, finish_reason, response_text = extractor(
-            upstream_resp.json()
-        )
+        if resp_json is not None:
+            prompt_tok, completion_tok, total_tok, finish_reason, response_text = extractor(
+                resp_json
+            )
     except Exception as e:
         # A body we can't parse costs telemetry detail, not the response — the
         # agent still gets whatever the upstream said.
@@ -635,6 +715,8 @@ async def run_inference(
         retry_after = _retry_after_seconds(upstream_resp.headers, upstream_resp.content)
         if retry_after is not None:
             response_headers["Retry-After"] = str(retry_after)
+    if meter is not None:
+        response_headers.update(meter.response_headers())
 
     return Response(
         content=upstream_resp.content,
