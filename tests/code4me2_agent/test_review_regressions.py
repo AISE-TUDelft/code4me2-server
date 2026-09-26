@@ -697,7 +697,7 @@ def test_a_failed_step_is_skipped_only_when_disk_and_ide_are_both_unchanged(tmp_
     workspace = (tmp_path / "ws").resolve()
     workspace.mkdir()
     target = workspace / "y.py"
-    target.write_text("b")  # the local fallback truncated it
+    target.write_bytes(b"b")  # the local fallback truncated it (exact bytes: no CRLF on Windows)
     config = AgentConfig(workspace_root=workspace, trace_path=tmp_path / "t.jsonl", session_id="s")
     tools = WorkspaceFileTools(
         config,
@@ -705,7 +705,7 @@ def test_a_failed_step_is_skipped_only_when_disk_and_ide_are_both_unchanged(tmp_
         telemetry=AgentTelemetryRecorder(config, sinks=[]),
     )
     assert tools._holds_original(target, "b = 1\n") is False
-    target.write_text("b = 1\n")
+    target.write_bytes(b"b = 1\n")
     assert tools._holds_original(target, "b = 1\n") is True
 
 

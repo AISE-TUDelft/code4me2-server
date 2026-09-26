@@ -373,9 +373,10 @@ def test_apply_patch_changes_several_files_atomically_in_one_card(tmp_path):
         harness=HarnessOptions(self_review=False, verify_on_stop=False),
     )
     (loop.workspace / "src").mkdir()
-    (loop.workspace / "src/app.py").write_text("def handler(event):\n    return None\n")
-    (loop.workspace / "notes.md").write_text("title\ndraft\n")
-    (loop.workspace / "old.txt").write_text("bye\n")
+    # Exact bytes: text mode would write CRLF on Windows, which the patch keeps.
+    (loop.workspace / "src/app.py").write_bytes(b"def handler(event):\n    return None\n")
+    (loop.workspace / "notes.md").write_bytes(b"title\ndraft\n")
+    (loop.workspace / "old.txt").write_bytes(b"bye\n")
 
     loop.run()
 

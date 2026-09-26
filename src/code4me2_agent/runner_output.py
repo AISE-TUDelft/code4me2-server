@@ -291,10 +291,8 @@ _RUNNERS = {
     "py.test": (_pytest,),
     "gradle": (_gradle,),
     "gradlew": (_gradle,),
-    "gradlew.bat": (_gradle,),
     "mvn": (_maven,),
     "mvnw": (_maven,),
-    "mvnw.cmd": (_maven,),
     "go": (_go,),
     "cargo": (_cargo,),
     "jest": (_jest,),
@@ -302,6 +300,8 @@ _RUNNERS = {
 }
 _JS_LAUNCHERS = frozenset({"npm", "npx", "yarn", "pnpm", "bun", "node"})
 _PYTHON_LAUNCHERS = frozenset({"python", "python3", "py", "uv", "poetry", "hatch", "tox"})
+# Windows launch names (python.exe, gradlew.bat, mvnw.cmd, npm.cmd) match without the suffix.
+_WINDOWS_SUFFIXES = (".exe", ".bat", ".cmd", ".com")
 
 
 def summarize_test_output(argv: list[str], stdout: str, stderr: str) -> RunnerSummary | None:
@@ -309,6 +309,8 @@ def summarize_test_output(argv: list[str], stdout: str, stderr: str) -> RunnerSu
     if not argv:
         return None
     program = PurePath(argv[0]).name.lower()
+    if program.endswith(_WINDOWS_SUFFIXES):
+        program = program.rsplit(".", 1)[0]
     text = f"{stdout}\n{stderr}"
     parsers: tuple = _RUNNERS.get(program, ())
     if not parsers and program in _PYTHON_LAUNCHERS:

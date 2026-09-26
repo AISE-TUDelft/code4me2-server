@@ -167,6 +167,16 @@ def test_python_module_pytest_and_unittest_are_recognised():
     assert summary.failures[0]["name"].endswith("test_x")
 
 
+def test_windows_launch_names_are_recognised():
+    assert summarize_test_output(["python.exe", "-m", "pytest"], PYTEST_FAILING, "").framework == "pytest"
+    assert summarize_test_output(["pytest.EXE"], PYTEST_FAILING, "").framework == "pytest"
+    gradle = "5 tests completed, 1 failed\n\nBUILD FAILED in 3s\n"
+    assert summarize_test_output(["gradlew.bat", "test"], gradle, "").framework == "gradle"
+    jest = "Tests:       1 failed, 3 passed, 4 total\n"
+    assert summarize_test_output(["npm.cmd", "test"], jest, "").framework == "jest"
+    assert summarize_test_output(["notepad.exe", "x.txt"], PYTEST_FAILING, "") is None
+
+
 def test_gradle_maven_jest_go_and_cargo_summaries():
     gradle = (
         "> Task :test\n\nCalculatorTest > addsNumbers() FAILED\n"
