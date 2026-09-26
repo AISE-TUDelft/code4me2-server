@@ -170,7 +170,8 @@ def test_delete_file_preview_tolerates_directories():
 
 @pytest.mark.parametrize("name", tool_names())
 def test_event_metadata_kinds_titles_and_absolute_paths(name):
-    metadata = _tool_event_metadata(name, VALID_ARGUMENTS[name], workspace_root=Path("/ws"))
+    workspace_root = Path("/ws")
+    metadata = _tool_event_metadata(name, VALID_ARGUMENTS[name], workspace_root=workspace_root)
 
     if name == "update_plan":
         assert metadata is None
@@ -178,9 +179,12 @@ def test_event_metadata_kinds_titles_and_absolute_paths(name):
     assert metadata["kind"] in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "other"}
     assert metadata["title"]
     if metadata.get("path"):
-        assert metadata["path"].startswith("/ws")
+        Path(metadata["path"]).relative_to(workspace_root)
     if name == "move_file":
-        assert metadata["locations"] == ("/ws/a.txt", "/ws/b/a.txt")
+        assert metadata["locations"] == (
+            str(workspace_root / "a.txt"),
+            str(workspace_root / "b" / "a.txt"),
+        )
         assert metadata["kind"] == "move"
     if name == "delete_file":
         assert metadata["kind"] == "delete"

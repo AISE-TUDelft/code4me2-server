@@ -1256,7 +1256,7 @@ class WorkspaceFileTools:
                     operation="write_text_file",
                 )
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
-        resolved_path.write_text(content, encoding="utf-8")
+        resolved_path.write_bytes(content.encode("utf-8"))
         return "local"
 
     def _exists_for_create(self, resolved_path: Path) -> bool:
