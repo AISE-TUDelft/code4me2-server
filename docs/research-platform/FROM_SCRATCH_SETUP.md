@@ -48,7 +48,10 @@ OPENROUTER_API_KEY=...  # your provider's key (never written to the database)
 ```
 
 - Provider keys live **only** here; the database stores the *name* (`secret_ref`)
-  and the backend resolves the value from its own environment.
+  and the backend resolves the value from its own environment. Goose and
+  built-in study arms spend from this one key through a metered relay; the
+  optional `INFERENCE_*` knobs in `.env.example` tune the hold estimate, output
+  cap, reservation deadline and the inference capability lifetime.
 - `CODE4ME_DEV_RELOAD=1` (dev compose default): the backend restarts on source
   changes, so a long-running stack never serves stale in-memory code.
 
@@ -96,7 +99,7 @@ docker exec backend bash -lc "source activate myenv && cd /app && \
   python src/database/migration/migration_manager.py migrate"
 ```
 
-Expected `status`: `Database: Connected` · `Tables: 41` · `At expected head`.
+Expected `status`: `Database: Connected` · `Tables: 45` · `At expected head`.
 
 There is a single revision, `8a0084080b46_consolidated_schema.py`. It **refuses
 to run** against a database that still holds the previous research tables — use a
@@ -149,7 +152,15 @@ table). Administrators bypass ownership checks.
 After saving, the row must show **"Ready — secret present in deployment"** (the
 named env var exists and the backend can read it).
 
-**API:** `POST /api/research/provider-connections` → `{label, base_url, secret_ref, models, is_active}`
+**Model prices (required for Goose and built-in arms):** in the same editor,
+enter each model's price in **USD per million tokens** (input, output, and
+optionally cached input). A metered arm whose model has no price refuses every
+call with `503 price_missing`, and the study form warns before creation. The
+connection card shows **"Prices: N of M models"** and a *price missing* chip per
+unpriced model.
+
+**API:** `POST /api/research/provider-connections` → `{label, base_url, secret_ref, models, is_active, model_prices?}`
+(`model_prices` = `{model: {input_usd_per_million, output_usd_per_million, cached_input_usd_per_million?}}`; omitted = unchanged)
 
 Selection rule: every **active** connection can be selected in any signed-in
 user's profile (there is no per-user grant flow). The secret value never enters
@@ -289,8 +300,18 @@ The dev backend URL is already `http://localhost:8008` in
 | tools, max_steps, temperature | from the framework catalogue / limits |
 
 **Study (researcher):** Dashboard → **Research Control Plane** → **New study** →
-name/dates → select the profile → telemetry policy + session policy → create →
-**Join code**.
+name/dates → select the profile → **default budget per participant (USD)** →
+telemetry policy + session policy → create → **Join code**.
+
+The default budget is required (> 0) whenever a selected profile runs Goose or
+the built-in agent (Codex arms sign in with ChatGPT and are not metered). It is
+editable at any time in the study's **Settings → Participant budgets** card,
+which also applies a new default to the participants still on the old one; the
+**Participants** tab shows spent/budget per participant and the drawer's
+**Adjust budget** tops up or sets an individual limit (with a reason).
+Participants see "Budget remaining" on *My studies*. Every enrollment is born
+with a balance at the study default; a participant whose budget is used up gets
+`402 quota_exhausted` from the agent until topped up — nothing else changes.
 
 **Participant:**
 1. Account at `/signup` (or an existing account).
@@ -350,6 +371,10 @@ MANIFEST=dist/release-1.2.3/native-macos-arm64.json scripts/dev/seed_local_dev.s
 | `unrecognized arguments: --status-file / --agent-run-id / --telemetry-policy-digest` | The packaged proxy bundle is stale (no such CLI flags) | `./gradlew buildResearchProxyBundle`, then rebuild/reinstall the plugin |
 | `ARTIFACT_UNAVAILABLE` (bootstrap) | No packaged archive for the participant's platform | Build a plugin that includes that platform |
 | `401` from the provider | `secret_ref` env var is empty/wrong | Put the key in `.env`, `docker restart backend` |
+| `402 quota_exhausted` in the agent chat | The participant's budget is used up (or the study default is still 0) | Study → Settings → Participant budgets (set/apply the default) or the participant drawer → Adjust budget |
+| `503 price_missing` in the agent chat | The arm's model has no price on its provider connection | Provider Connections → enter the model's prices |
+| `INFERENCE_GATEWAY_UNBOUND` (bootstrap / profile) | The Goose release does not bind the research inference gateway | Re-import a recipe whose Goose agent declares the runtime bindings (see `docs/participant-release.example.json`) and re-pin the study |
+| `BUDGET_REQUIRED` / `BUDGET_PRICE_MISSING` (create study) | A selected Goose/built-in profile needs a default budget / a priced model | Enter the default budget; price the model on its connection |
 | Migration "refuses to run" | The database still holds old research tables | Use a new database/volume (no in-place production reset) |
 
 ---

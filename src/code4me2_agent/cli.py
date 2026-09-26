@@ -47,7 +47,7 @@ DEFAULT_AGENT_CONFIG: dict[str, object] = {
             "scope": "session",
             "strategy": "token_window",
             "max_messages": 20,
-            "max_tokens": 6000,
+            "max_tokens": 32000,
         },
     },
     "commands": {
@@ -170,7 +170,8 @@ def _do_setup() -> None:
     print("     (Settings → Tools → AI Assistant → Custom Agent Server)")
     print("  2. Restart IntelliJ")
     print("  3. Run: docker compose -f docker-compose.dev-arm.yaml up")
-    print("  4. Run: ollama serve")
+    print("  4. Assign an agent profile in the backend (it selects the model/provider;")
+    print("     the agent has no local model default)")
     print("  5. Run: ./gradlew runIde")
 
 
@@ -214,7 +215,7 @@ def _managed_config() -> AgentConfig:
             name="openai_compatible_react",
             max_iterations=1,
             memory_window=MemoryWindowConfig(
-                scope="session", strategy="token_window", max_messages=20, max_tokens=6000
+                scope="session", strategy="token_window", max_messages=20, max_tokens=32000
             ),
             provider=OpenAICompatibleProviderConfig(kind="managed_backend"),
         ),

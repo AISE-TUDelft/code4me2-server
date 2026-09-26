@@ -35,11 +35,20 @@ from research.study.protocol.models import ResolvedAgentConfig
 from research.study.protocol.validation import DistributionResolution
 
 from .enums import (
+    INFERENCE_GATEWAY_FRAMEWORKS,
     MANAGED_RUNTIME_FRAMEWORK,
     DistributionMode,
     QualificationStatus,
 )
-from .models import BYOA_CONFIG_FIELDS, BYOA_CONFIG_TRANSPORTS
+from .models import (
+    BYOA_BINDING_FIELDS,
+    BYOA_CONFIG_FIELDS,
+    BYOA_CONFIG_TRANSPORTS,
+    BYOA_CREDENTIAL_FIELD,
+    BYOA_PROVIDER_KIND_FIELD,
+    BYOA_PROVIDER_KIND_OPENAI_COMPATIBLE,
+    BYOA_RUNTIME_FIELDS,
+)
 from .registry import (
     ALL_APPROVAL_OPTIONS,
     AgentRegistry,
@@ -50,10 +59,16 @@ if TYPE_CHECKING:
     from .models import AgentReleaseV1
 
 __all__ = [
+    "BYOA_ALWAYS_SET_FIELDS",
     "FRAMEWORK_DISTRIBUTION_MODES",
+    "PACKAGED_CONFIGURABLE_FIELDS",
     "ProfileConfigurationError",
     "distribution_supported_platforms",
     "parse_command_args",
+    "release_profile_configurability",
+    "missing_gateway_bindings",
+    "release_bindings",
+    "requires_inference_gateway",
     "resolve_distribution_view",
     "validate_profile_configuration",
 ]
@@ -72,6 +87,29 @@ FRAMEWORK_DISTRIBUTION_MODES: dict[str, str] = {
     "goose": DistributionMode.BYOA_EXTERNAL.value,
     "codex": DistributionMode.BYOA_EXTERNAL.value,
 }
+
+#: Profile fields that govern the managed (``PACKAGED``) runtime: all of them
+#: reach it through the managed policy, including the per-turn context window
+#: and the researcher-authored system prompt.
+PACKAGED_CONFIGURABLE_FIELDS: tuple[str, ...] = (
+    "model",
+    "temperature",
+    "max_steps",
+    "tools",
+    "approval_policy",
+    "max_context_tokens",
+    "system_prompt",
+)
+
+#: Profile fields every profile sets (``model``/``max_steps``/``approval_policy``
+#: are required on the profile), so a BYOA release that does not bind one of them
+#: can never be pinned: :func:`validate_profile_configuration` rejects it as
+#: ``BYOA_CONFIG_UNMAPPED``.
+BYOA_ALWAYS_SET_FIELDS: tuple[str, ...] = ("model", "max_steps", "approval_policy")
+
+#: Launcher suffixes stripped from a BYOA command before it is compared with a
+#: framework name (``codex.exe`` declares ``codex``).
+_COMMAND_SUFFIXES = (".exe", ".cmd", ".bat")
 
 
 class ProfileConfigurationError(ValueError):
@@ -161,9 +199,48 @@ def _byoa_bindings(release: Any, document: Optional[Mapping[str, Any]]) -> dict[
             field = str(item.get("field") or "").strip().lower()
             transport = str(item.get("transport") or "").strip().lower()
             key = str(item.get("key") or "").strip()
-            if field in BYOA_CONFIG_FIELDS and transport in BYOA_CONFIG_TRANSPORTS and key:
+            if field in BYOA_BINDING_FIELDS and transport in BYOA_CONFIG_TRANSPORTS and key:
                 bindings[field] = item
     return bindings
+
+
+def release_bindings(release: Any, document: Optional[Mapping[str, Any]] = None) -> dict[str, Mapping[str, Any]]:
+    """Public accessor for a release's declared bindings keyed by field."""
+    return _byoa_bindings(release, document)
+
+
+def requires_inference_gateway(framework: Optional[str]) -> bool:
+    """Whether profiles of ``framework`` call the research inference gateway."""
+    return str(framework or "").strip().lower() in INFERENCE_GATEWAY_FRAMEWORKS
+
+
+def missing_gateway_bindings(bindings: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """The runtime bindings a gateway-bound release lacks (empty when complete).
+
+    Every field in ``BYOA_RUNTIME_FIELDS`` must be bound with the ``env``
+    transport (the plugin fills them at launch; the credential must never be
+    an argv token), and the ``provider_kind`` binding must translate the
+    server's ``openai_compatible`` value into the agent's own vocabulary.
+    """
+    missing: list[str] = []
+    for field in BYOA_RUNTIME_FIELDS:
+        binding = bindings.get(field)
+        if binding is None:
+            missing.append(field)
+            continue
+        transport = str(binding.get("transport") or "").strip().lower()
+        if transport != "env":
+            missing.append(f"{field} (env transport required)")
+            continue
+        if field == BYOA_PROVIDER_KIND_FIELD:
+            value_map = binding.get("value_map") or {}
+            if not isinstance(value_map, Mapping) or not str(
+                value_map.get(BYOA_PROVIDER_KIND_OPENAI_COMPATIBLE) or ""
+            ).strip():
+                missing.append(
+                    f"{field} (value_map must translate {BYOA_PROVIDER_KIND_OPENAI_COMPATIBLE!r})"
+                )
+    return missing
 
 
 def validate_profile_configuration(
@@ -183,7 +260,10 @@ def validate_profile_configuration(
     * the selected release must be qualified (never withdrawn);
     * selected tools must belong to the framework's catalogue;
     * for BYOA, every field the profile sets must be covered by a declared
-      configuration binding.
+      configuration binding;
+    * for BYOA, ``max_context_tokens`` and ``system_prompt`` must stay unset: no
+      binding can forward them to an externally installed agent, so they would
+      only be labels.
 
     Raises :class:`ProfileConfigurationError` (a ``ValueError`` whose ``str`` is
     ``"CODE: message"``). Nothing is mutated and no database session is needed.
@@ -221,11 +301,7 @@ def validate_profile_configuration(
             "release_id",
         )
 
-    mode = _release_mode(release)
-    if not mode and document is not None:
-        mode = str(
-            document.get("distribution_mode") or DistributionMode.PACKAGED.value
-        ).strip().upper()
+    mode = _document_mode(release, document)
     if mode != expected_mode:
         raise ProfileConfigurationError(
             "FRAMEWORK_DISTRIBUTION_MISMATCH",
@@ -249,12 +325,36 @@ def validate_profile_configuration(
                 "release_id",
             )
 
+        # ``max_context_tokens`` has no BYOA binding vocabulary at all: only the
+        # managed runtime receives it (through its managed policy); it is never
+        # forwarded to an externally installed agent. Refuse it instead of
+        # storing a label that does not govern the external process.
+        if getattr(profile, "max_context_tokens", None) is not None:
+            raise ProfileConfigurationError(
+                "BYOA_FIELD_UNSUPPORTED",
+                "max_context_tokens is not forwarded to externally installed "
+                "agents (goose/codex); leave it empty for a BYOA runtime",
+                "max_context_tokens",
+            )
+        # The researcher-authored system prompt likewise only reaches the
+        # managed runtime (agent-config + run policy); an external agent keeps
+        # its own prompt, so a stored value would be a label, not a condition.
+        if getattr(profile, "system_prompt", None) is not None:
+            raise ProfileConfigurationError(
+                "BYOA_FIELD_UNSUPPORTED",
+                "system_prompt is not forwarded to externally installed "
+                "agents (goose/codex); leave it empty for a BYOA runtime",
+                "system_prompt",
+            )
+
         # ISSUE-03 Path A: every frozen profile field the profile actually sets
         # must be covered by a declared translation. A field with no binding is
         # refused here, before enrollment, instead of becoming an experimental
         # label that does not govern the external process. The provider
-        # connection is deliberately *not* translatable: a participant-installed
-        # agent uses the participant's own credentials.
+        # connection itself is never translated: a gateway-bound agent (Goose)
+        # receives the research inference gateway address plus a per-participant
+        # capability through the runtime bindings below, and the server-held
+        # key stays on the server.
         bindings = _byoa_bindings(release, document)
         tools = _profile_tools(profile)
         required_fields = {
@@ -277,6 +377,18 @@ def validate_profile_configuration(
                 + "; the profile's values would not govern the external agent",
                 "release_id",
             )
+        # A gateway-bound framework (Goose) must be able to reach the research
+        # inference gateway: without the runtime bindings the participant's own
+        # provider configuration would be used, unmetered. Fail closed.
+        if requires_inference_gateway(getattr(profile, "framework_version", None)):
+            gateway_missing = missing_gateway_bindings(bindings)
+            if gateway_missing:
+                raise ProfileConfigurationError(
+                    "INFERENCE_GATEWAY_UNBOUND",
+                    "the release does not bind the research inference gateway: "
+                    + ", ".join(gateway_missing),
+                    "release_id",
+                )
         for field, binding in bindings.items():
             if field != "tools":
                 continue
@@ -306,6 +418,102 @@ def validate_profile_configuration(
             "approval_policy must be one of " + ", ".join(ALL_APPROVAL_OPTIONS),
             "approval_policy",
         )
+
+
+def _document_mode(release: Any, document: Optional[Mapping[str, Any]]) -> str:
+    """The release's distribution mode, resolved exactly as validation does."""
+    mode = _release_mode(release)
+    if not mode and document is not None:
+        mode = str(
+            document.get("distribution_mode") or DistributionMode.PACKAGED.value
+        ).strip().upper()
+    return mode
+
+
+def _declared_identity_tokens(
+    release: Any, document: Optional[Mapping[str, Any]]
+) -> set[str]:
+    """Lower-cased agent identity names a BYOA release declares.
+
+    ``agent_package`` and ``agent_id`` are compared as-is; ``agent_command`` is
+    reduced to its executable name (no directory, no launcher suffix).
+    """
+    tokens: set[str] = set()
+    for attribute in ("agent_package", "agent_id", "agent_command"):
+        value = getattr(release, attribute, None)
+        if value is None and document is not None:
+            value = document.get(attribute)
+        token = str(value or "").strip().lower()
+        if attribute == "agent_command":
+            token = token.replace("\\", "/").rsplit("/", 1)[-1]
+            for suffix in _COMMAND_SUFFIXES:
+                if token.endswith(suffix):
+                    token = token[: -len(suffix)]
+        if token:
+            tokens.add(token)
+    return tokens
+
+
+def release_profile_configurability(
+    release: Any, *, release_json: Optional[Mapping[str, Any]] = None
+) -> dict[str, list[str]]:
+    """Which profiles may pin ``release`` and which profile fields govern it.
+
+    Derived with the same framework↔mode table and binding parser as
+    :func:`validate_profile_configuration`, so a field is advertised only when
+    the release declares a valid binding for it (a ``tools`` binding whose
+    format cannot render a list is still refused by validation as
+    ``BYOA_CONFIG_FORMAT_INVALID``):
+
+    * ``compatible_frameworks`` — the ``framework_version`` values that may pin
+      the release. ``PACKAGED`` → the managed runtime. ``BYOA_EXTERNAL`` → the
+      one BYOA framework its declared identity names; when the identity names
+      none or several, every BYOA framework (never a guess).
+    * ``configurable_fields`` — profile field names that actually reach the
+      runtime: every managed field for ``PACKAGED``; exactly the release's valid
+      ``byoa_config`` binding fields for BYOA. Field names only, never binding
+      keys, environment variable names or commands.
+    * ``required_bindings_missing`` — for BYOA, the always-set profile fields
+      the release does not bind (a profile pinned to it would be rejected as
+      ``BYOA_CONFIG_UNMAPPED``); empty otherwise.
+    """
+    document = _release_document(release, release_json)
+    mode = _document_mode(release, document)
+    candidates = [
+        framework
+        for framework, framework_mode in FRAMEWORK_DISTRIBUTION_MODES.items()
+        if framework_mode == mode
+    ]
+    if mode != DistributionMode.BYOA_EXTERNAL.value:
+        return {
+            "compatible_frameworks": candidates,
+            "configurable_fields": (
+                list(PACKAGED_CONFIGURABLE_FIELDS)
+                if mode == DistributionMode.PACKAGED.value
+                else []
+            ),
+            "required_bindings_missing": [],
+        }
+
+    tokens = _declared_identity_tokens(release, document)
+    declared = [framework for framework in candidates if framework in tokens]
+    bindings = _byoa_bindings(release, document)
+    # Only a release that uniquely names a gateway-bound framework is held to
+    # the gateway bindings; an ambiguous identity never gains requirements.
+    gateway = len(declared) == 1 and requires_inference_gateway(declared[0])
+    required_missing = [field for field in BYOA_ALWAYS_SET_FIELDS if field not in bindings]
+    if gateway:
+        required_missing.extend(missing_gateway_bindings(bindings))
+    return {
+        "compatible_frameworks": declared if len(declared) == 1 else candidates,
+        # Profile fields only: the runtime (gateway) bindings are filled by the
+        # plugin and are never offered as configurable profile fields.
+        "configurable_fields": [
+            field for field in BYOA_CONFIG_FIELDS if field in bindings
+        ],
+        "required_bindings_missing": required_missing,
+        "inference_gateway": gateway,
+    }
 
 
 def parse_command_args(value: Any) -> list[str]:

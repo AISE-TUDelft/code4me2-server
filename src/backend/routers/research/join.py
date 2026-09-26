@@ -17,27 +17,83 @@ from research.study.lifecycle import (
     open_study_enrollment,
 )
 from research.study.protocol import store as study_store
+from research.telemetry.enums import FieldClass
+from research.telemetry.privacy.engine import PrivacyPolicy
 
 router = APIRouter()
 
+# The consent notice is composed from the study's frozen policy as ingestion
+# resolves it (PrivacyPolicy.from_study_policy), so it states what is stored.
 GLOBAL_CONSENT_TEXT = (
     "This study collects metadata about how you use the research agent and the "
-    "IDE. Provider credentials are never collected. Your study-local pseudonym "
-    "is used in research data; your account identity remains private."
+    "IDE: which events happen and when (for example prompts you send, tools the "
+    "agent runs, approvals, errors, and files you open, edit and save), with "
+    "timings, counts and token usage. You are randomly assigned to one of the "
+    "study's agent configurations. The research agent sends your prompts and the "
+    "code it works with to an AI model provider to produce its responses, "
+    "whether or not this study stores them. Provider credentials are never "
+    "collected, and values that look like secrets (such as API keys and tokens) "
+    "are removed, although that filter only recognises common formats. Your "
+    "study-local pseudonym is used in research data; your account identity "
+    "remains private."
+)
+
+TOOL_TITLES_CONSENT_TEXT = (
+    "The metadata includes the titles of the agent's tool calls and its error "
+    "messages, which can contain command lines, file paths (which can include "
+    "your computer's user name), search terms and URLs."
+)
+
+CODE_METADATA_CONSENT_TEXT = (
+    "The metadata also includes code metadata such as file paths, file types, "
+    "languages and symbol names."
+)
+
+HASHED_CODE_METADATA_CONSENT_TEXT = (
+    "Code metadata such as file types and languages is stored only as hashes, "
+    "which can be reversed for common values."
 )
 
 METADATA_ONLY_CONSENT_TEXT = (
-    GLOBAL_CONSENT_TEXT
-    + " This study is configured for metadata only: prompts, tool arguments and "
-    "results, model responses and file contents are not stored."
+    "This study is configured for metadata only: the text of your prompts, the "
+    "agent's responses and reasoning, tool arguments and results, and file "
+    "contents are not stored"
 )
 
+#: Appended to the metadata-only sentence when tool titles are kept.
+METADATA_ONLY_TITLES_CAVEAT = ", apart from what tool titles and error messages may contain"
+
 CONTENT_CAPTURE_CONSENT_TEXT = (
-    GLOBAL_CONSENT_TEXT
-    + " This study is configured to store content: prompts, tool arguments and "
-    "results, model responses and file contents may be stored under the study's "
-    "approved telemetry policy."
+    "This study is configured to store content: your prompts, the agent's "
+    "responses and reasoning, tool arguments and results, and file contents may "
+    "be stored under the study's approved telemetry policy."
 )
+
+
+def consent_text(telemetry_policy: Any) -> str:
+    """The participant-facing notice for a frozen study telemetry policy."""
+    raw = telemetry_policy if isinstance(telemetry_policy, dict) else {}
+    allowed = set(
+        PrivacyPolicy.from_study_policy(raw, consent_active=True).allowed_field_classes
+    )
+    titles_kept = FieldClass.BEHAVIORAL in allowed
+    parts = [GLOBAL_CONSENT_TEXT]
+    if titles_kept:
+        parts.append(TOOL_TITLES_CONSENT_TEXT)
+    parts.append(
+        CODE_METADATA_CONSENT_TEXT
+        if FieldClass.CODE_METADATA in allowed
+        else HASHED_CODE_METADATA_CONSENT_TEXT
+    )
+    if raw.get("content_capture") is True:
+        parts.append(CONTENT_CAPTURE_CONSENT_TEXT)
+    else:
+        parts.append(
+            METADATA_ONLY_CONSENT_TEXT
+            + (METADATA_ONLY_TITLES_CAVEAT if titles_kept else "")
+            + "."
+        )
+    return " ".join(parts)
 
 
 def _collection_policy(study: Any) -> dict[str, Any]:
@@ -54,13 +110,11 @@ def _collection_policy(study: Any) -> dict[str, Any]:
 
 def _consent_payload(study: Any) -> dict[str, Any]:
     """Render the actual frozen collection policy in participant-facing text."""
-    policy = _collection_policy(study)
-    text = (
-        CONTENT_CAPTURE_CONSENT_TEXT
-        if policy["content_capture"]
-        else METADATA_ONLY_CONSENT_TEXT
-    )
-    return {"text": text, "collection_policy": policy}
+    config = getattr(study, "research_config_json", None) or {}
+    return {
+        "text": consent_text(config.get("telemetry_policy")),
+        "collection_policy": _collection_policy(study),
+    }
 
 
 def _require_authenticated_user(current_user: AuthenticatedUser) -> AuthenticatedUser:

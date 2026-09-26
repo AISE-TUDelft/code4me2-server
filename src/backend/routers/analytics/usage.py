@@ -8,6 +8,7 @@ Provides endpoints for:
 - Session and user behavior patterns
 """
 
+import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -131,6 +132,8 @@ def get_queries_over_time(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving usage data: {str(e)}")
@@ -241,6 +244,8 @@ def get_acceptance_rates(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving acceptance rates: {str(e)}")
@@ -273,20 +278,7 @@ def get_latency_distribution(
             query_params["user_id"] = user_id
         query_params = apply_user_filter(query_params, current_user)
         
-        query = """
-        SELECT 
-            mn.model_name,
-            c.config_id,
-            hg.generation_time,
-            mq.total_serving_time,
-            PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY hg.generation_time) 
-                OVER (PARTITION BY mn.model_name) as p50_generation,
-            PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY hg.generation_time) 
-                OVER (PARTITION BY mn.model_name) as p90_generation,
-            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY hg.generation_time) 
-                OVER (PARTITION BY mn.model_name) as p95_generation,
-            PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY hg.generation_time) 
-                OVER (PARTITION BY mn.model_name) as p99_generation
+        base_from = """
         FROM had_generation hg
         JOIN meta_query mq ON hg.meta_query_id = mq.meta_query_id
         JOIN model_name mn ON hg.model_id = mn.model_id
@@ -294,43 +286,64 @@ def get_latency_distribution(
         JOIN config c ON u.config_id = c.config_id
         WHERE mq.timestamp BETWEEN :start_time AND :end_time
         """
-        
         if query_params.get("user_id"):
-            query += " AND mq.user_id = :user_id"
+            base_from += " AND mq.user_id = :user_id"
         if model_id:
-            query += " AND hg.model_id = :model_id"
+            base_from += " AND hg.model_id = :model_id"
             query_params["model_id"] = model_id
-            
-        query += " ORDER BY hg.generation_time"
-        
-        result = db_session.execute(text(query), query_params).fetchall()
-        
-        # Group data by model
+
+        # PERCENTILE_CONT is an ordered-set aggregate; PostgreSQL rejects it as
+        # a window function, so the percentiles come from one grouped query and
+        # the (bounded) raw sample from another.
+        percentile_query = """
+        SELECT
+            mn.model_name,
+            PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY hg.generation_time) AS p50_generation,
+            PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY hg.generation_time) AS p90_generation,
+            PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY hg.generation_time) AS p95_generation,
+            PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY hg.generation_time) AS p99_generation
+        """ + base_from + """
+        GROUP BY mn.model_name
+        ORDER BY mn.model_name
+        """
+        raw_query = """
+        SELECT
+            mn.model_name,
+            c.config_id,
+            hg.generation_time,
+            mq.total_serving_time
+        """ + base_from + """
+        ORDER BY hg.generation_time
+        LIMIT 1000
+        """
+
+        percentile_rows = db_session.execute(text(percentile_query), query_params).fetchall()
+        raw_rows = db_session.execute(text(raw_query), query_params).fetchall()
+
         model_stats = {}
-        raw_data = []
-        
-        for row in result:
-            raw_data.append({
+        for row in percentile_rows:
+            model_stats[row.model_name] = {
+                "model_name": row.model_name,
+                "p50": float(row.p50_generation) if row.p50_generation else 0,
+                "p90": float(row.p90_generation) if row.p90_generation else 0,
+                "p95": float(row.p95_generation) if row.p95_generation else 0,
+                "p99": float(row.p99_generation) if row.p99_generation else 0
+            }
+        raw_data = [
+            {
                 "model_name": row.model_name,
                 "config_id": row.config_id,
                 "generation_time": row.generation_time,
                 "total_serving_time": row.total_serving_time
-            })
-            
-            if row.model_name not in model_stats:
-                model_stats[row.model_name] = {
-                    "model_name": row.model_name,
-                    "p50": float(row.p50_generation) if row.p50_generation else 0,
-                    "p90": float(row.p90_generation) if row.p90_generation else 0,
-                    "p95": float(row.p95_generation) if row.p95_generation else 0,
-                    "p99": float(row.p99_generation) if row.p99_generation else 0
-                }
-        
+            }
+            for row in raw_rows
+        ]
+
         return JsonResponseWithStatus(
             status_code=200,
             content={
                 "percentiles": list(model_stats.values()),
-                "raw_data": raw_data[:1000],  # Limit raw data for performance
+                "raw_data": raw_data,  # Bounded by the query (LIMIT 1000)
                 "filters": {
                     "start_time": start_time,
                     "end_time": end_time,
@@ -340,9 +353,12 @@ def get_latency_distribution(
             }
         )
         
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         db_session.rollback()
-        raise HTTPException(status_code=500, detail=f"Error retrieving latency data: {str(e)}")
+        logging.exception("Error retrieving latency distribution")
+        raise HTTPException(status_code=500, detail="Error retrieving latency distribution")
     finally:
         db_session.close()
 
@@ -425,6 +441,8 @@ def get_user_behavior_metrics(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving behavior metrics: {str(e)}")

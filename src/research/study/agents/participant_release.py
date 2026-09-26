@@ -105,6 +105,17 @@ class AgentInput(BaseModel):
                 raise ValueError("installed agents need an explicit ACP command")
             if self.adapter is None:
                 raise ValueError("installed agents need an explicit adapter")
+            from .distributions import missing_gateway_bindings, requires_inference_gateway
+
+            if requires_inference_gateway(self.framework):
+                missing = missing_gateway_bindings(
+                    {binding.field: binding.model_dump(mode="json") for binding in self.byoa_config}
+                )
+                if missing:
+                    raise ValueError(
+                        f"{self.framework} releases must bind the research inference gateway: "
+                        + ", ".join(missing)
+                    )
         elif self.agent_command or self.agent_command_args or self.byoa_config:
             raise ValueError("the managed runtime uses its packaged --managed entrypoint")
         if len({(test.os, test.arch) for test in self.tests}) != len(self.tests):
@@ -220,7 +231,7 @@ def prepare(
             raise ValueError(f"runtime archive size mismatch: {archive}")
         os_name, arch = expected[archive].split("-")
         shutil.copyfile(source, resources / Path(archive).name)
-        artifacts.append({
+        artifact_document = {
             "runtime_id": str(projected.get("runtime_id") or "code4me-agent"),
             "version": managed.version,
             "platform": os_name,
@@ -234,7 +245,11 @@ def prepare(
             ),
             "managed_protocol": "1",
             "tests": projected.get("tests"),
-        })
+        }
+        if managed.adapter is not None:
+            # The plugin verifies the bootstrap's adapter pin per artifact.
+            artifact_document["adapter"] = managed.adapter.model_dump(mode="json")
+        artifacts.append(artifact_document)
 
     agents: list[dict[str, Any]] = []
     for agent in recipe.agents:
@@ -278,22 +293,34 @@ def prepare(
         json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     ).hexdigest()
     write_json(output / "recipe.json", document)
-    # The admin-import recipe uses bare ZIP names. The plugin resource manifest
-    # names the same payloads relative to the root of the packaged JAR.
-    resource_manifest = dict(
-        document,
-        artifacts=[
-            dict(artifact, archive=f"code4me-runtime/{artifact['archive']}")
-            for artifact in artifacts
-        ],
-    )
-    write_json(resources / "manifest.json", resource_manifest)
+    # The participant plugin build copies ``resources/code4me-runtime`` into the
+    # plugin and its runtime installer reads ``code4me-runtime/manifest.json``
+    # with archive paths relative to the resource root: the same recipe, in the
+    # plugin's spelling.
+    write_json(resources / "manifest.json", runtime_manifest_for_plugin(document))
     write_json(output / "prepared-inputs.json", {
         file.relative_to(output).as_posix(): file_sha256(file)
         for file in sorted(output.rglob("*")) if file.is_file()
     })
     return document
 
+
+def runtime_manifest_for_plugin(document: dict) -> dict:
+    """The prepared recipe as the plugin's bundled ``code4me-runtime/manifest.json``."""
+    manifest = {
+        "manifest_version": 1,
+        "runtime_version": document["runtime_version"],
+        "managed_protocol_version": document["managed_protocol_version"],
+        "server_commit": document.get("server_commit"),
+        "plugin_commit": document.get("plugin_commit"),
+        "artifacts": [
+            {**artifact, "archive": f"code4me-runtime/{artifact['archive']}"}
+            for artifact in document["artifacts"]
+        ],
+    }
+    if "adapter" in document:
+        manifest["adapter"] = document["adapter"]
+    return manifest
 
 def load_prepared(output: Path) -> dict:
     """Catch changed/missing prepared inputs before building or any API write."""

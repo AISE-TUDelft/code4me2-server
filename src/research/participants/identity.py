@@ -24,24 +24,30 @@ from __future__ import annotations
 import secrets
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import String, and_, case, cast, distinct, func, not_, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+from database.db_schemas import Study as StudyRow
 from database.research_schemas import (
     RECORD_KIND_RETENTION_EVIDENCE,
     ResearchEnrollment,
+    ResearchEvent,
     ResearchParticipant,
     ResearchRecord,
     ResearchRetentionJob,
+    StudyAssignment,
 )
 from database.research_schemas import (
     ResearchSessionV1 as ResearchSessionRow,
 )
+from database.db_schemas import Study as StudyRow
+from research.budget import ledger as budget_ledger
 from research.canonical import canonical_hash
+from research.study.agents.enums import METERED_FRAMEWORKS
 from research.runtime.sessions.enums import (
     CloseReason,
     SessionReasonCode,
@@ -49,6 +55,7 @@ from research.runtime.sessions.enums import (
 )
 from research.runtime.sessions.models import SessionTransition
 from research.study.protocol.enums import RetentionAction
+from research.telemetry.enums import CanonicalEventType, EventSource
 
 from .enums import (
     EnrollmentStatus,
@@ -201,6 +208,270 @@ def researcher_projection(enrollment: Enrollment) -> dict[str, Any]:
         "retention_action": enrollment.retention_action.value,
         "enrolled_at": _isoformat(enrollment.enrolled_at),
         "updated_at": _isoformat(enrollment.updated_at),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Participant self-view ("My studies")
+# ---------------------------------------------------------------------------
+
+#: Participant-facing runtime names. A participant learns only the runtime
+#: *kind* (whether an agent must be installed), never the arm it was randomized
+#: to: no profile name/id, model or digest is ever derived from here.
+RUNTIME_DISPLAY_NAMES: dict[str, str] = {
+    "code4me2-agent": "Code4Me agent (built-in)",
+    "goose": "Goose (install on your machine)",
+    "codex": "Codex (install on your machine)",
+}
+
+#: A participant prompt is one ACP ``session/prompt`` observation. Streamed
+#: assistant/thought chunks share the event type but carry ``message_kind`` or
+#: the ``started`` lifecycle state (the study analytics apply the same rule).
+PROMPT_EVENT_TYPE = CanonicalEventType.AGENT_MESSAGE_STARTED.value
+#: A tool call is counted once across all of its ``tool.*`` lifecycle events.
+TOOL_CALL_EVENT_TYPES = (
+    CanonicalEventType.TOOL_CREATED.value,
+    CanonicalEventType.TOOL_STARTED.value,
+    CanonicalEventType.TOOL_COMPLETED.value,
+    CanonicalEventType.TOOL_FAILED.value,
+)
+_TERMINAL_SESSION_STATES = (SessionState.ENDED.value, SessionState.REVOKED.value)
+
+
+def participant_runtime_view(snapshot: Any) -> Optional[dict[str, str]]:
+    """Runtime kind of a frozen assignment snapshot, or ``None``.
+
+    Only ``framework_version`` is read from the snapshot; everything else in it
+    (profile identity, model, tools, digest) is arm detail the participant must
+    stay blind to.
+    """
+    if not isinstance(snapshot, Mapping):
+        return None
+    framework = str(snapshot.get("framework_version") or "").strip().lower()
+    if not framework:
+        return None
+    return {
+        "framework_version": framework,
+        "display_name": RUNTIME_DISPLAY_NAMES.get(framework, framework),
+        # "shared": the study provides model access through its own key;
+        # "own": the participant signs in with their own account (Codex).
+        "credentials": "shared" if framework in METERED_FRAMEWORKS else "own",
+    }
+
+
+def get_studies_by_id(
+    session: Session, study_ids: Iterable[uuid.UUID]
+) -> dict[uuid.UUID, StudyRow]:
+    """Fetch study rows by id in one query (missing ids are simply absent)."""
+    ids = list({study_id for study_id in study_ids if study_id is not None})
+    if not ids:
+        return {}
+    statement = select(StudyRow).where(StudyRow.study_id.in_(ids))
+    return {row.study_id: row for row in session.execute(statement).scalars().all()}
+
+
+def get_assignment_frameworks(
+    session: Session, enrollment_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, Optional[dict[str, str]]]:
+    """``{enrollment_id: participant runtime view}`` from the frozen assignment.
+
+    Reads only the snapshot's framework; enrollments without an assignment are
+    absent from the result.
+    """
+    if not enrollment_ids:
+        return {}
+    statement = select(
+        StudyAssignment.enrollment_id,
+        StudyAssignment.profile_snapshot_json["framework_version"].astext,
+    ).where(StudyAssignment.enrollment_id.in_(list(enrollment_ids)))
+    return {
+        enrollment_id: participant_runtime_view({"framework_version": framework})
+        for enrollment_id, framework in session.execute(statement).all()
+    }
+
+
+def summarize_enrollment_sessions(
+    session: Session, enrollment_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """``{enrollment_id: {total, active, last_activity_at}}`` in one query.
+
+    ``active`` counts non-terminal sessions (neither ``ended`` nor ``revoked``),
+    the same rule as the study read metrics.
+    """
+    if not enrollment_ids:
+        return {}
+    statement = (
+        select(
+            ResearchSessionRow.enrollment_id,
+            func.count(ResearchSessionRow.session_id),
+            func.count(ResearchSessionRow.session_id).filter(
+                ResearchSessionRow.state.not_in(_TERMINAL_SESSION_STATES)
+            ),
+            func.max(ResearchSessionRow.last_activity_at),
+        )
+        .where(ResearchSessionRow.enrollment_id.in_(list(enrollment_ids)))
+        .group_by(ResearchSessionRow.enrollment_id)
+    )
+    return {
+        enrollment_id: {
+            "total": int(total or 0),
+            "active": int(active or 0),
+            "last_activity_at": _isoformat(last_activity_at),
+        }
+        for enrollment_id, total, active, last_activity_at in session.execute(
+            statement
+        ).all()
+    }
+
+
+def summarize_enrollment_activity(
+    session: Session, enrollment_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """``{enrollment_id: {prompts, tool_calls, last_event_at}}`` in two queries.
+
+    Retention tombstones (``retention_state = 'DELETED'``) are excluded. The
+    counts follow the study analytics (``research.analysis.study_analytics``
+    ``analyze_participant``) so a participant and their researcher see the
+    same numbers:
+
+    * ``prompts`` counts ACP ``agent.message.started`` events that are not
+      streamed chunks (no ``payload.message_kind``, lifecycle not ``started``).
+    * ``tool_calls`` counts distinct calls over the ``tool.*`` events. The id is
+      ``correlations.tool_call_id``, else ``payload.tool_call_id`` (an empty
+      id is no id). An ACP call is one (emitter, id) of its session; an id-less
+      ACP event (such as ``terminal/create``) belongs to the call that owns it
+      and is not counted. The inference relay counts one call per id, or per
+      id-less event, and only in sessions without ACP calls: where the ACP
+      proxy observed the session, its calls are the authoritative ones.
+    """
+    if not enrollment_ids:
+        return {}
+    ids = list(enrollment_ids)
+    envelope = ResearchEvent.envelope_json
+    retained = ResearchEvent.retention_state != "DELETED"
+    is_chunk = or_(
+        envelope[("payload", "message_kind")].astext.isnot(None),
+        func.coalesce(envelope["lifecycle_state"].astext, "") == "started",
+    )
+    activity_statement = (
+        select(
+            ResearchEvent.enrollment_id,
+            func.count(ResearchEvent.event_id).filter(
+                ResearchEvent.event_type == PROMPT_EVENT_TYPE,
+                ResearchEvent.source == EventSource.ACP.value,
+                not_(is_chunk),
+            ),
+            func.max(ResearchEvent.occurred_at),
+        )
+        .where(ResearchEvent.enrollment_id.in_(ids), retained)
+        .group_by(ResearchEvent.enrollment_id)
+    )
+
+    is_relay = ResearchEvent.source == EventSource.RELAY.value
+    tool_call_id = func.nullif(
+        func.coalesce(
+            envelope[("correlations", "tool_call_id")].astext,
+            envelope[("payload", "tool_call_id")].astext,
+        ),
+        "",
+    )
+    # JSON arrays keep the key parts unambiguous whatever the ids contain.
+    acp_key = case(
+        (
+            and_(not_(is_relay), tool_call_id.isnot(None)),
+            cast(func.jsonb_build_array(ResearchEvent.emitter_id, tool_call_id), String),
+        ),
+        else_=None,
+    )
+    relay_key = case(
+        (
+            and_(is_relay, tool_call_id.isnot(None)),
+            cast(func.jsonb_build_array("id", tool_call_id), String),
+        ),
+        (
+            is_relay,
+            cast(
+                func.jsonb_build_array(
+                    "run", ResearchEvent.emitter_id, ResearchEvent.emitter_sequence
+                ),
+                String,
+            ),
+        ),
+        else_=None,
+    )
+    per_session = (
+        select(
+            ResearchEvent.enrollment_id.label("enrollment_id"),
+            func.count(distinct(acp_key)).label("acp_calls"),
+            func.count(distinct(relay_key)).label("relay_calls"),
+        )
+        .where(
+            ResearchEvent.enrollment_id.in_(ids),
+            retained,
+            ResearchEvent.event_type.in_(TOOL_CALL_EVENT_TYPES),
+        )
+        .group_by(ResearchEvent.enrollment_id, ResearchEvent.research_session_id)
+        .subquery()
+    )
+    calls_statement = select(
+        per_session.c.enrollment_id,
+        func.sum(
+            case(
+                (per_session.c.acp_calls > 0, per_session.c.acp_calls),
+                else_=per_session.c.relay_calls,
+            )
+        ),
+    ).group_by(per_session.c.enrollment_id)
+    tool_calls = {
+        enrollment_id: int(total or 0)
+        for enrollment_id, total in session.execute(calls_statement).all()
+    }
+    return {
+        enrollment_id: {
+            "prompts": int(prompts or 0),
+            "tool_calls": tool_calls.get(enrollment_id, 0),
+            "last_event_at": _isoformat(last_event_at),
+        }
+        for enrollment_id, prompts, last_event_at in session.execute(
+            activity_statement
+        ).all()
+    }
+
+
+def participant_enrollment_details(
+    session: Session, enrollments: Sequence[Enrollment]
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """Batched per-enrollment facts for the participant's own study view.
+
+    Five queries regardless of the number of enrollments. Each entry holds
+    ``study_row`` (the study row or ``None``), ``runtime`` (the runtime-kind
+    view or ``None``), ``sessions`` and ``activity`` summaries (zero-valued
+    when nothing was recorded). No arm detail is selected.
+    """
+    enrollment_ids = [enrollment.enrollment_id for enrollment in enrollments]
+    studies = get_studies_by_id(
+        session, (enrollment.study_id for enrollment in enrollments)
+    )
+    runtimes = get_assignment_frameworks(session, enrollment_ids)
+    sessions = summarize_enrollment_sessions(session, enrollment_ids)
+    activity = summarize_enrollment_activity(session, enrollment_ids)
+    budgets = budget_ledger.participant_views(session, enrollment_ids)
+    return {
+        enrollment.enrollment_id: {
+            "study_row": studies.get(enrollment.study_id),
+            "runtime": runtimes.get(enrollment.enrollment_id),
+            # Arm-blind budget numbers (unit, limit, consumed, remaining, flags).
+            "budget": budgets.get(enrollment.enrollment_id),
+            "sessions": sessions.get(
+                enrollment.enrollment_id,
+                {"total": 0, "active": 0, "last_activity_at": None},
+            ),
+            "activity": activity.get(
+                enrollment.enrollment_id,
+                {"prompts": 0, "tool_calls": 0, "last_event_at": None},
+            ),
+        }
+        for enrollment in enrollments
     }
 
 
@@ -359,6 +630,19 @@ def create_enrollment(session: Session, enrollment: Enrollment) -> ResearchEnrol
     try:
         with session.begin_nested():
             session.add(row)
+            session.flush()
+            # The inference budget is born with the enrollment, in the same
+            # transaction, at the study's current default (0 = refuse until set).
+            study = session.get(StudyRow, enrollment.study_id)
+            budget_ledger.create_balance(
+                session,
+                enrollment_id=row.enrollment_id,
+                study_id=enrollment.study_id,
+                limit_micro_usd=int(
+                    getattr(study, "inference_budget_default_micro_usd", 0) or 0
+                ),
+                now=enrollment.enrolled_at,
+            )
     except IntegrityError as error:
         raise ActiveEnrollmentConflict(
             "this account already has an active enrollment"

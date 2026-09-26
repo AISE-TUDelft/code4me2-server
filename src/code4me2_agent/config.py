@@ -22,7 +22,10 @@ class UploadConfig:
 @dataclass(frozen=True)
 class CommandConfig:
     allowlisted_commands: list[str] = field(default_factory=list)
-    timeout_seconds: float = 10.0
+    # Default per-command timeout; the model may raise it per call up to
+    # ``max_timeout_seconds`` (builds and test suites routinely exceed 10 s).
+    timeout_seconds: float = 120.0
+    max_timeout_seconds: float = 600.0
     max_output_bytes: int = 16384
 
 
@@ -31,7 +34,9 @@ class MemoryWindowConfig:
     scope: str = "prompt"
     strategy: str = "last_messages"
     max_messages: int = 12
-    max_tokens: int = 16000
+    # Estimated tokens (chars/4) of conversation kept per request; the server
+    # profile's max_context_tokens overrides this.
+    max_tokens: int = 32000
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,9 @@ class OpenAICompatibleProviderConfig:
     timeout_seconds: float = 90.0
     temperature: float | None = None
     auth_headers: dict[str, str] = field(default_factory=dict)
+    # Forwarded as ``max_tokens`` only when set: newer OpenAI models reject it in
+    # favour of ``max_completion_tokens`` and the relay hides which upstream is used.
+    max_output_tokens: int | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -91,6 +99,10 @@ class AdapterConfig:
     provider: OpenAICompatibleProviderConfig = field(
         default_factory=OpenAICompatibleProviderConfig
     )
+    # Researcher-authored system prompt override (ported from origin/sys_prompt).
+    # None = the runtime's built-in prompt; when set it replaces the persona
+    # paragraph, while the operational tool/policy instructions are kept.
+    system_prompt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +126,9 @@ class ServerAgentConfig:
     max_context_tokens: int | None = None
     approval_policy: str | None = None
     temperature: float | None = None
+    # Researcher-authored system prompt for the assigned arm (agent-config and
+    # the managed run policy both carry it). None = built-in default.
+    system_prompt: str | None = None
     # Advisory: the server enforces content storage itself. Used only to avoid
     # transmitting content that would be discarded anyway — never to enable
     # capture, which the agent has no power to do.
@@ -161,6 +176,10 @@ class ServerAgentConfig:
                 )
             )
             or not isinstance(merged.get("store_agent_content"), bool)
+            or (
+                merged.get("system_prompt") is not None
+                and not isinstance(merged.get("system_prompt"), str)
+            )
         ):
             raise ValueError("Managed agent policy contains invalid executable settings.")
         return cls.from_payload(merged)
@@ -214,6 +233,7 @@ class ServerAgentConfig:
             max_context_tokens=_clean_positive_int("max_context_tokens"),
             approval_policy=_clean_str("approval_policy"),
             temperature=float(temperature) if temperature is not None else None,
+            system_prompt=_clean_str("system_prompt"),
             store_agent_content=bool(payload.get("store_agent_content", True)),
         )
 
@@ -231,6 +251,7 @@ class ServerAgentConfig:
                 self.max_context_tokens,
                 self.approval_policy,
                 self.temperature,
+                self.system_prompt,
             )
         )
 
@@ -307,6 +328,11 @@ class AgentConfig:
             provider=provider,
             memory_window=memory_window,
             max_iterations=server.max_iterations or self.adapter.max_iterations,
+            system_prompt=(
+                server.system_prompt
+                if server.system_prompt is not None
+                else self.adapter.system_prompt
+            ),
         )
 
         commands = self.commands
@@ -405,13 +431,12 @@ class AgentConfig:
                 if isinstance(command, str) and command.strip()
             ]
 
-        raw_command_timeout = commands_data.get("timeout_seconds", 10.0)
-        try:
-            command_timeout_seconds = float(raw_command_timeout)
-            if command_timeout_seconds <= 0:
-                command_timeout_seconds = 10.0
-        except (TypeError, ValueError):
-            command_timeout_seconds = 10.0
+        command_timeout_seconds = _positive_float(
+            commands_data.get("timeout_seconds", 120.0), default=120.0
+        )
+        max_command_timeout_seconds = _positive_float(
+            commands_data.get("max_timeout_seconds", 600.0), default=600.0
+        )
 
         raw_max_output_bytes = commands_data.get("max_output_bytes", 16384)
         try:
@@ -422,6 +447,7 @@ class AgentConfig:
         commands = CommandConfig(
             allowlisted_commands=allowlisted_commands,
             timeout_seconds=command_timeout_seconds,
+            max_timeout_seconds=max(command_timeout_seconds, max_command_timeout_seconds),
             max_output_bytes=max_output_bytes,
         )
 
@@ -451,11 +477,11 @@ class AgentConfig:
             max_messages = max(1, int(raw_max_messages))
         except (TypeError, ValueError):
             max_messages = 12
-        raw_max_tokens = memory_window_data.get("max_tokens", 4000)
+        raw_max_tokens = memory_window_data.get("max_tokens", 32000)
         try:
             max_tokens = max(1, int(raw_max_tokens))
         except (TypeError, ValueError):
-            max_tokens = 4000
+            max_tokens = 32000
 
         fake_provider_data = adapter_data.get("fake_provider", {})
         if not isinstance(fake_provider_data, dict):
@@ -511,6 +537,13 @@ class AgentConfig:
                     else None
                 ),
                 auth_headers=provider_auth_headers,
+                max_output_tokens=(
+                    int(provider_data["max_output_tokens"])
+                    if isinstance(provider_data.get("max_output_tokens"), int)
+                    and not isinstance(provider_data.get("max_output_tokens"), bool)
+                    and provider_data["max_output_tokens"] > 0
+                    else None
+                ),
             ),
         )
 

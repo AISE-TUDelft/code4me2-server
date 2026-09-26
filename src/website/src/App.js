@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from "react";
 import Auth from "./components/auth/Auth";
 import Dashboard from "./pages/Dashboard";
-import ThemeToggle from "./components/common/ThemeToggle";
 import ResearchStudies from "./pages/research/ResearchStudies";
 import ResearchStudyEditor from "./pages/research/ResearchStudyEditor";
 import ResearchJoin from "./pages/research/ResearchJoin";
+import AppShell from "./components/layout/AppShell";
 import "./App.css";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { ThemeProvider } from "./context/ThemeContext";
@@ -14,187 +14,132 @@ import {
   Routes,
   Route,
   Navigate,
-  NavLink,
   Outlet,
   useNavigate,
 } from "react-router-dom";
 import Start from "./pages/Start";
+
+const USER_STORAGE_KEY = "user";
+const RESEARCH_JOIN_INTENT_KEY = "code4me.research.join.intent";
+
+// The session lives in the httpOnly auth cookie. Only non-secret profile
+// fields are cached locally: the login response also carries the live auth
+// token (and a masked password), which must never be copied into
+// localStorage where any script on the origin could read it.
+// React Router 6.26 warns about its v7 behaviours until they are opted in.
+const ROUTER_FUTURE = { v7_startTransition: true, v7_relativeSplatPath: true };
+
+const PUBLIC_USER_FIELDS = ["user_id", "email", "name", "is_admin", "can_research", "verified", "joined_at"];
+
+export const sanitizeUser = (user) => {
+  if (!user || typeof user !== "object") return null;
+  return PUBLIC_USER_FIELDS.reduce((safe, key) => {
+    if (user[key] !== undefined) safe[key] = user[key];
+    return safe;
+  }, {});
+};
+
+const rememberUser = (user) => {
+  try {
+    const safe = sanitizeUser(user);
+    if (safe) localStorage.setItem(USER_STORAGE_KEY, JSON.stringify({ user: safe }));
+    else localStorage.removeItem(USER_STORAGE_KEY);
+  } catch (_) {
+    // Storage can be unavailable (private mode); the cookie session still works.
+  }
+};
+
+const forgetUser = () => {
+  try {
+    localStorage.removeItem(USER_STORAGE_KEY);
+  } catch (_) {
+    // ignore
+  }
+};
+
 function App() {
-  const RESEARCH_JOIN_INTENT_KEY = "code4me.research.join.intent";
-  // we manage the state for the uer but setting it to null by default
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // useEffect to check if the user is already logged in via auth token cookie
+  // Resolve the session from the server-side auth cookie on load.
   useEffect(() => {
     const checkAuthStatus = async () => {
       try {
-        // First check if we have a valid server session
         const response = await getCurrentUser();
         if (response.ok) {
           setUser(response.user);
-          // Store user data in localStorage for quick access
-          localStorage.setItem("user", JSON.stringify({
-            user: response.user,
-            config: response.config
-          }));
+          rememberUser(response.user);
         } else {
-          // Server says no valid session, clear everything
           setUser(null);
-          localStorage.removeItem("user");
+          forgetUser();
         }
       } catch (error) {
         console.error("Error checking auth status:", error);
-        // Network error or server issue, clear local state to be safe
         setUser(null);
-        localStorage.removeItem("user");
+        forgetUser();
       } finally {
         setIsLoading(false);
       }
     };
-
-    // Always check server-side auth status first
     checkAuthStatus();
   }, []);
 
-  // handleAuthenticated function to set the user state
   const handleAuthenticated = (userData) => {
     setUser(userData.user);
-    localStorage.setItem("user", JSON.stringify(userData));
+    rememberUser(userData.user);
   };
 
-  // handleLogout function to properly clear user session
   const handleLogout = async () => {
-    console.log("Logging out user...");
-    
     try {
-      // Call the logout API - this will clear server-side session and cookies
       const logoutResponse = await logoutUser();
-      console.log("Logout API response:", logoutResponse);
-      
       if (!logoutResponse.ok) {
         console.warn("Logout API failed, but continuing with local cleanup");
       }
     } catch (error) {
       console.error("Error during logout API call:", error);
-      console.log("Continuing with local cleanup despite API error");
     }
-    
-    // Clear local state (server handles cookie clearing now)
     setUser(null);
-    localStorage.removeItem("user");
+    forgetUser();
     sessionStorage.clear();
-    
-    console.log("Logout completed successfully");
   };
 
-  // Small helper components for routing
   const ProtectedRoute = ({ children }) => {
     if (!user) return <Navigate to="/login" replace />;
     return children;
   };
 
-  const ResearchLayout = () => {
-    const navigate = useNavigate();
-    const onLogoutWrapped = async () => {
-      await handleLogout();
-      navigate("/", { replace: true });
-    };
-    const linkClass = ({ isActive }) =>
-      `nav-item research-nav-link${isActive ? " active" : ""}`;
-    return (
-      <div className="dashboard-container">
-        <header className="dashboard-header">
-          <div className="header-content">
-            <div className="header-left">
-              <h1>Research Control Plane</h1>
-              <span className="header-subtitle">
-                {user?.is_admin || user?.can_research ? "Researcher" : "Restricted"}
-              </span>
-            </div>
-            <div className="header-right">
-              <ThemeToggle />
-              <span className="user-name">
-                {user ? user.name || user.email : "Loading user..."}
-              </span>
-              <NavLink to="/dashboard" className="logout-button">
-                Dashboard
-              </NavLink>
-              <button onClick={onLogoutWrapped} className="logout-button">
-                Logout
-              </button>
-            </div>
-          </div>
-        </header>
-
-        <div className="dashboard-content">
-          <nav className="analytics-navigation" aria-label="Research navigation">
-            <div className="nav-header">
-              <h2>Research</h2>
-              <span className="admin-badge">
-                {user?.is_admin ? "Admin View" : "Researcher View"}
-              </span>
-            </div>
-            <div className="nav-items">
-              <NavLink to="/research/studies" className={linkClass}>
-                <span className="nav-icon" aria-hidden="true">🔬</span>
-                <div className="nav-content">
-                  <span className="nav-label">Studies</span>
-                  <span className="nav-description">
-                      Create studies, manage metadata and stop collection
-                  </span>
-                </div>
-              </NavLink>
-            </div>
-          </nav>
-
-          <main className="analytics-main">
-            <Outlet />
-          </main>
-        </div>
-      </div>
-    );
-  };
-
-  // Participant-facing research shell. Unlike ResearchLayout this is not
-  // admin-gated: any signed-in account can redeem a study join code.
-  const ResearchParticipantLayout = () => {
+  // Every signed-in page renders inside the same shell (header + sidebar).
+  const ShellLayout = () => {
     const navigate = useNavigate();
     const onLogoutWrapped = async () => {
       await handleLogout();
       navigate("/", { replace: true });
     };
     return (
-      <div className="dashboard-container">
-        <header className="dashboard-header">
-          <div className="header-content">
-            <div className="header-left">
-              <h1>Research Participant</h1>
-              <span className="header-subtitle">Join a study</span>
-            </div>
-            <div className="header-right">
-              <ThemeToggle />
-              <span className="user-name">
-                {user ? user.name || user.email : "Loading user..."}
-              </span>
-              <NavLink to="/dashboard" className="logout-button">
-                Dashboard
-              </NavLink>
-              <button onClick={onLogoutWrapped} className="logout-button">
-                Logout
-              </button>
-            </div>
-          </div>
-        </header>
-
-        <div className="dashboard-content">
-          <main className="analytics-main">
-            <Outlet />
-          </main>
-        </div>
-      </div>
+      <AppShell user={user} onLogout={onLogoutWrapped}>
+        <Outlet />
+      </AppShell>
     );
   };
+
+  // The join page must stay reachable without a session: a visitor enters a
+  // join code first and is sent to login (intent preserved) only when the
+  // server asks for authentication.
+  const PublicJoinLayout = () => (
+    <div className="shell public-shell">
+      <main className="public-shell-main">
+        <div className="public-shell-brand">
+          <span className="shell-logo" aria-hidden="true">
+            C4
+          </span>
+          <span className="shell-brand-name">Code4Me research</span>
+        </div>
+        <Outlet />
+      </main>
+    </div>
+  );
+
+  const JoinLayout = () => (user ? <ShellLayout /> : <PublicJoinLayout />);
 
   const AuthPage = ({ mode }) => {
     const navigate = useNavigate();
@@ -206,16 +151,6 @@ function App() {
     return <Auth onAuthenticated={onAuth} initialMode={mode} />;
   };
 
-  const DashboardPage = () => {
-    const navigate = useNavigate();
-    const onLogoutWrapped = async () => {
-      await handleLogout();
-      navigate("/", { replace: true });
-    };
-    return <Dashboard user={user} onLogout={onLogoutWrapped} />;
-  };
-
-  // Show loading screen while checking authentication status
   if (isLoading) {
     return (
       <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}>
@@ -231,51 +166,34 @@ function App() {
     );
   }
 
-  // Render application with routing
   return (
     <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}>
       <ThemeProvider>
-        <BrowserRouter>
+        <BrowserRouter future={ROUTER_FUTURE}>
           <div className="App">
             <Routes>
               <Route
                 path="/"
-                element={
-                  user ? <Navigate to="/dashboard" replace /> : <Start isAuthenticated={!!user} />
-                }
+                element={user ? <Navigate to="/dashboard" replace /> : <Start isAuthenticated={!!user} />}
               />
               <Route path="/login" element={<AuthPage mode="login" />} />
               <Route path="/signup" element={<AuthPage mode="signup" />} />
               <Route
-                path="/dashboard"
                 element={
                   <ProtectedRoute>
-                    <DashboardPage />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/research"
-                element={
-                  <ProtectedRoute>
-                    <ResearchLayout />
+                    <ShellLayout />
                   </ProtectedRoute>
                 }
               >
-                <Route index element={<Navigate to="/research/studies" replace />} />
-                <Route path="studies" element={<ResearchStudies />} />
-                <Route
-                  path="studies/:studyId/editor"
-                  element={<ResearchStudyEditor />}
-                />
+                <Route path="/dashboard" element={<Dashboard user={user} />} />
+                <Route path="/research" element={<Navigate to="/research/studies" replace />} />
+                <Route path="/research/studies" element={<ResearchStudies />} />
+                <Route path="/research/studies/:studyId" element={<ResearchStudies />} />
+                <Route path="/research/studies/:studyId/editor" element={<ResearchStudyEditor />} />
+                <Route path="/research/my-studies" element={<ResearchJoin user={user} />} />
               </Route>
-              <Route
-                path="/research/join"
-                element={
-                  <ResearchParticipantLayout />
-                }
-              >
-                <Route index element={<ResearchJoin />} />
+              <Route path="/research/join" element={<JoinLayout />}>
+                <Route index element={<ResearchJoin user={user} />} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

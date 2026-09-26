@@ -56,6 +56,9 @@ class BootstrapReasonCode(str, Enum):
     SIGNING_SECRET_MISSING = "SIGNING_SECRET_MISSING"
     # Operator kill switch: no new session may be bootstrapped while engaged.
     KILL_SWITCH_ENGAGED = "KILL_SWITCH_ENGAGED"
+    # A gateway-bound release (Goose) does not bind the research inference
+    # gateway runtime fields, so the agent could not be pointed at it.
+    INFERENCE_GATEWAY_UNBOUND = "INFERENCE_GATEWAY_UNBOUND"
 
 
 class ManifestReasonCode(str, Enum):
@@ -260,6 +263,28 @@ class BootstrapCompatibility(BaseModel):
     reason: Optional[str] = None
 
 
+#: Relative path (no leading slash: the plugin's manifest scanner rejects
+#: absolute-path strings) Goose joins to the research server origin.
+INFERENCE_GATEWAY_BASE_PATH = "api/research/inference/v1/chat/completions"
+
+
+class BootstrapInferenceGateway(BaseModel):
+    """How a gateway-bound agent (Goose) reaches the study's provider key.
+
+    The manifest carries no gateway origin on purpose: the plugin points the
+    agent at the origin it bootstrapped from, so a manifest can never redirect
+    prompts elsewhere. ``capability`` is the inference capability (audience
+    ``inference``); the plugin encodes it as the agent's bearer token and hands
+    it over through an owner-only file, never argv.
+    """
+
+    model_config = _FROZEN
+
+    provider_kind: str = "openai_compatible"
+    base_path: str = INFERENCE_GATEWAY_BASE_PATH
+    capability: SessionCapability
+
+
 class BootstrapManifestV1(BaseModel):
     """Signed, short-lived, secret-free launch contract (schema version 1)."""
 
@@ -283,6 +308,9 @@ class BootstrapManifestV1(BaseModel):
     compatibility_receipt_ref: Optional[str] = None
     compatibility: BootstrapCompatibility = Field(default_factory=BootstrapCompatibility)
     session_capability: SessionCapability
+    # Present only for arms whose agent calls the research inference gateway
+    # (Goose); ``null`` for the managed runtime (ACP relay) and for Codex.
+    inference_gateway: Optional[BootstrapInferenceGateway] = None
 
 
 class ManifestSignature(BaseModel):

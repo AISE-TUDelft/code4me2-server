@@ -512,16 +512,17 @@ def parse_stream(raw_sse: str) -> _ParsedResponse:
         except json.JSONDecodeError:
             continue
 
-        # Usage chunk (sent when stream_options.include_usage=true): carries
-        # usage with an empty choices array.
-        if "usage" in chunk and chunk.get("choices") == []:
-            u = chunk["usage"] or {}
-            prompt_tokens = u.get("prompt_tokens")
-            completion_tokens = u.get("completion_tokens")
-            total_tokens = u.get("total_tokens")
-            continue
+        # Usage chunk. OpenAI (stream_options.include_usage) sends it with an
+        # empty choices array; OpenRouter attaches it to the final chunk next
+        # to a choice with an empty delta. Either way: the last chunk whose
+        # ``usage`` is an object wins, and its choices are still processed.
+        usage = chunk.get("usage")
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("prompt_tokens")
+            completion_tokens = usage.get("completion_tokens")
+            total_tokens = usage.get("total_tokens")
 
-        for choice in chunk.get("choices", []):
+        for choice in chunk.get("choices") or []:
             delta_content = choice.get("delta", {}).get("content")
             if delta_content:
                 content_parts.append(delta_content)

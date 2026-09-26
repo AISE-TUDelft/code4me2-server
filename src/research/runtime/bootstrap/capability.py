@@ -22,14 +22,24 @@ from .models import (
 )
 
 __all__ = [
+    "INFERENCE_AUDIENCE",
+    "INFERENCE_SCOPE",
     "capability_payload",
     "compute_capability_signature",
     "issue_capability",
+    "issue_inference_capability",
     "verify_capability",
 ]
 
 DEFAULT_AUDIENCE = "research-runtime"
 DEFAULT_SCOPE = ("telemetry:write", "session:heartbeat", "session:close")
+
+#: The inference capability a Goose study arm presents to the research
+#: inference gateway (``/api/research/inference/v1/chat/completions``). Same
+#: signing, binding and revocation rules as the session capability; a distinct
+#: audience/scope so neither capability can be replayed as the other.
+INFERENCE_AUDIENCE = "inference"
+INFERENCE_SCOPE = ("inference:relay",)
 
 
 def _now(now: Optional[datetime]) -> datetime:
@@ -93,6 +103,30 @@ def issue_capability(
         signature="",
     )
     return capability.model_copy(update={"signature": _signature_for(capability, secret)})
+
+
+def issue_inference_capability(
+    *,
+    secret: str,
+    ttl_seconds: int,
+    revocation_epoch: int,
+    enrollment_id: uuid.UUID,
+    research_session_id: uuid.UUID,
+    study_id: uuid.UUID,
+    now: Optional[datetime] = None,
+) -> SessionCapability:
+    """Issue the gateway bearer capability (audience ``inference``)."""
+    return issue_capability(
+        INFERENCE_AUDIENCE,
+        list(INFERENCE_SCOPE),
+        ttl_seconds,
+        revocation_epoch,
+        secret,
+        now,
+        enrollment_id=enrollment_id,
+        research_session_id=research_session_id,
+        study_id=study_id,
+    )
 
 
 def verify_capability(

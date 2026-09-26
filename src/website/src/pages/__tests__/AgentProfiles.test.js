@@ -1,5 +1,5 @@
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import * as api from "../../utils/api";
 import AgentProfiles from "../AgentProfiles";
 
@@ -257,4 +257,180 @@ test("approval options not verified for the release are disabled", async () => {
   expect(perStep).toBeDisabled();
   expect(suggestion).toBeDisabled();
   expect(auto).not.toBeDisabled();
+});
+
+const GOOSE_RELEASE = {
+  release_id: "goose-1",
+  version: "1.0.0",
+  agent_id: "goose",
+  distribution_mode: "BYOA_EXTERNAL",
+  qualification_status: "QUALIFIED",
+  supported_platforms: [],
+  verified_approval_options: null,
+  is_byoa: true,
+  compatible_frameworks: ["goose"],
+  configurable_fields: ["model", "max_steps", "approval_policy", "tools"],
+  required_bindings_missing: [],
+};
+
+const gooseProfile = (overrides) => ({
+  ...PROFILE,
+  framework_version: "goose",
+  release_id: "goose-1",
+  release_version: "1.0.0",
+  tools_json: '["read_file"]',
+  ...overrides,
+});
+
+test("a locked setting is saved unset even when the stored profile carries it", async () => {
+  api.getReleaseCatalogue.mockResolvedValue({ ok: true, data: [...CATALOGUE, GOOSE_RELEASE] });
+  api.getAgentAvailableTools.mockResolvedValue({ ok: true, data: { tools: ["read_file", "write_file"] } });
+  api.getAgentProfiles.mockResolvedValue({
+    ok: true,
+    data: [
+      gooseProfile({ profile_id: "g1", name: "goose-clean" }),
+      // Written before the runtime refused these settings for BYOA agents.
+      gooseProfile({ profile_id: "g2", name: "goose-stale", max_context_tokens: 32000, temperature: 0.7 }),
+    ],
+  });
+  render(<AgentProfiles user={{ is_admin: true }} />);
+  await screen.findByText("goose-clean");
+  await screen.findByRole("option", { name: /goose-1/ });
+
+  // Same runtime and release as the profile opened before it.
+  const editButtons = screen.getAllByRole("button", { name: /^edit$/i });
+  fireEvent.click(editButtons[0]);
+  await waitFor(() => expect(screen.getByLabelText(/Profile name/i).value).toBe("goose-clean"));
+  expect(await screen.findByRole("checkbox", { name: "write_file" })).toBeInTheDocument();
+  fireEvent.click(editButtons[1]);
+  await waitFor(() => expect(screen.getByLabelText(/Profile name/i).value).toBe("goose-stale"));
+  // The stale value is cleared in the form too, not only in the payload.
+  await waitFor(() => expect(screen.getByLabelText(/Max context tokens/i).value).toBe(""));
+  fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+  await waitFor(() => expect(api.updateAgentProfile).toHaveBeenCalled());
+  const [profileId, payload] = api.updateAgentProfile.mock.calls[0];
+  expect(profileId).toBe("g2");
+  expect(payload.max_context_tokens).toBeNull();
+  expect(payload.temperature).toBeNull();
+  expect(payload.tools_json).toBe('["read_file"]');
+});
+
+test("a failed tool list keeps the profile's tools instead of clearing them", async () => {
+  api.getAgentProfiles.mockResolvedValue({ ok: true, data: [{ ...PROFILE, tools_json: '["read_file"]' }] });
+  api.getAgentAvailableTools.mockResolvedValue({ ok: false, error: "Network error" });
+  await renderPage();
+
+  fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+  expect(await screen.findByText("The tools this runtime offers could not be loaded.")).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "read_file" })).toBeChecked();
+
+  api.getAgentAvailableTools.mockResolvedValue({ ok: true, data: { tools: ["read_file", "write_file"] } });
+  fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+  expect(await screen.findByRole("checkbox", { name: "write_file" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "read_file" })).toBeChecked();
+
+  fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+  await waitFor(() => expect(api.updateAgentProfile).toHaveBeenCalled());
+  expect(api.updateAgentProfile.mock.calls[0][1].tools_json).toBe('["read_file"]');
+});
+
+test("editing a profile while another runtime's tool list is shown keeps its tools", async () => {
+  api.getAgentProfiles.mockResolvedValue({ ok: true, data: [{ ...PROFILE, tools_json: '["read_file"]' }] });
+  let builtInLists = 0;
+  let releaseBuiltIn;
+  api.getAgentAvailableTools.mockImplementation((framework) => {
+    if (framework !== "code4me2-agent") return Promise.resolve({ ok: true, data: { tools: [] } });
+    builtInLists += 1;
+    const list = { ok: true, data: { tools: ["read_file", "write_file"] } };
+    // The first (page load) list answers at once; the one for the edit waits.
+    if (builtInLists === 1) return Promise.resolve(list);
+    return new Promise((resolve) => (releaseBuiltIn = () => resolve(list)));
+  });
+  await renderPage();
+
+  // The new-profile form first shows Codex, whose tool list is empty (locked).
+  fireEvent.change(screen.getByLabelText("Agent runtime"), { target: { value: "codex" } });
+  await waitFor(() => expect(api.getAgentAvailableTools).toHaveBeenLastCalledWith("codex"));
+  expect(await screen.findByText("Codex manages its own tools; there is nothing to select.")).toBeInTheDocument();
+
+  // Opening the built-in profile must not apply Codex's empty list to it, and
+  // bulk controls wait for the built-in list.
+  fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+  await waitFor(() => expect(builtInLists).toBe(2));
+  expect(screen.getByText("Loading tools…")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Select all" })).not.toBeInTheDocument();
+  await act(async () => releaseBuiltIn());
+  expect(await screen.findByRole("checkbox", { name: "read_file" })).toBeChecked();
+  expect(screen.getByRole("button", { name: "Select all" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+  await waitFor(() => expect(api.updateAgentProfile).toHaveBeenCalled());
+  expect(api.updateAgentProfile.mock.calls[0][1].tools_json).toBe('["read_file"]');
+});
+
+test("bulk tool controls wait for the current runtime's list", async () => {
+  api.getAgentProfiles.mockResolvedValue({ ok: true, data: [{ ...PROFILE, tools_json: '["read_file"]' }] });
+  let builtInLists = 0;
+  let releaseBuiltIn;
+  api.getAgentAvailableTools.mockImplementation((framework) => {
+    if (framework === "goose") return Promise.resolve({ ok: true, data: { tools: ["goose_shell", "goose_read"] } });
+    if (framework !== "code4me2-agent") return Promise.resolve({ ok: true, data: { tools: [] } });
+    builtInLists += 1;
+    const list = { ok: true, data: { tools: ["read_file", "write_file"] } };
+    if (builtInLists === 1) return Promise.resolve(list);
+    return new Promise((resolve) => (releaseBuiltIn = () => resolve(list)));
+  });
+  await renderPage();
+
+  fireEvent.change(screen.getByLabelText("Agent runtime"), { target: { value: "goose" } });
+  expect(await screen.findByRole("checkbox", { name: "goose_shell" })).toBeInTheDocument();
+
+  // While the built-in list loads, Goose's list must not drive "Select all".
+  fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+  await waitFor(() => expect(builtInLists).toBe(2));
+  expect(screen.queryByRole("button", { name: "Select all" })).not.toBeInTheDocument();
+  expect(screen.getByText("1 selected")).toBeInTheDocument();
+  await act(async () => releaseBuiltIn());
+  expect(await screen.findByRole("button", { name: "Select all" })).toBeInTheDocument();
+  expect(screen.getByText("1 / 2 selected")).toBeInTheDocument();
+});
+
+test("a metered profile whose model has no server price says so in the list", async () => {
+  api.getReleaseCatalogue.mockResolvedValue({ ok: true, data: [...CATALOGUE, GOOSE_RELEASE] });
+  api.getAgentProfiles.mockResolvedValue({
+    ok: true,
+    data: [
+      gooseProfile({ profile_id: "g1", name: "goose-unpriced", model_priced: false }),
+      // The built-in agent is metered too.
+      { ...PROFILE, model_priced: false },
+      // Codex is never metered (the server reports null).
+      { ...PROFILE, profile_id: "p2", name: "codex-arm", framework_version: "codex", model_priced: null },
+    ],
+  });
+  render(<AgentProfiles user={{ is_admin: true }} />);
+  await screen.findByText("goose-unpriced");
+
+  expect(screen.getAllByText("Price missing on the server")).toHaveLength(2);
+});
+
+test("the profile form warns when the selected model has no price on its connection", async () => {
+  api.getProviderConnections.mockResolvedValue({
+    ok: true,
+    data: [
+      {
+        ...CONNECTION,
+        model_prices: {
+          "model-a": { input_usd_per_million: "0.50", output_usd_per_million: "1.50", cached_input_usd_per_million: null },
+          "model-b": null,
+        },
+        pricing: { complete: false, missing_models: ["model-b"] },
+      },
+    ],
+  });
+  await renderPage();
+  fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+
+  expect(screen.queryByText(/Price missing on the server for/)).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText(/^Model$/i), { target: { value: "model-b" } });
+  expect(screen.getByText(/Price missing on the server for model-b/)).toBeInTheDocument();
 });

@@ -1,42 +1,108 @@
 /* App.css - Main application styles */
 
-/* Theme variables */
+/* Theme variables. The original names stay the public contract for older
+   views; the semantic tokens below them drive the shared UI kit (styles/ui.css). */
 :root {
   /* Light theme (default) */
   --primary-color: #4285f4;
-  --primary-hover: #3367d6;
-  --secondary-color: #f5f5f5;
+  --primary-hover: #2f6fd8;
+  --primary-contrast: #ffffff;
+  --primary-soft: rgba(66, 133, 244, 0.1);
+  --secondary-color: #f1f3f6;
   --background-color: #f5f7fa;
   --card-background: #ffffff;
-  --text-color: #333333;
-  --text-secondary: #666666;
-  --border-color: #dddddd;
-  --error-color: #d32f2f;
-  --success-color: #2e7d32;
-  --info-color: #1976d2;
-  --hover-color: rgba(0, 0, 0, 0.05);
-  --focus-color: rgba(66, 133, 244, 0.4);
-  --shadow-color: rgba(0, 0, 0, 0.1);
+  --surface-muted: #f8f9fb;
+  --surface-sunken: #eef1f5;
+  --text-color: #1f2733;
+  --text-secondary: #5b6573;
+  --text-muted: #8a939f;
+  --border-color: #e1e5eb;
+  --border-strong: #cfd5dd;
+  --error-color: #c62828;
+  --success-color: #1e7b34;
+  --info-color: #1767c6;
+  --warning-color: #9a5b00;
+  --danger-soft: rgba(198, 40, 40, 0.08);
+  --success-soft: rgba(30, 123, 52, 0.09);
+  --warning-soft: rgba(214, 138, 0, 0.12);
+  --info-soft: rgba(23, 103, 198, 0.08);
+  --violet-color: #5b45c2;
+  --violet-soft: rgba(91, 69, 194, 0.1);
+  --hover-color: rgba(15, 23, 42, 0.04);
+  --focus-color: rgba(66, 133, 244, 0.35);
+  --shadow-color: rgba(15, 23, 42, 0.08);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.16);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
   --chart-grid: rgba(0, 0, 0, 0.05);
+  /* Chart palette (validated with the dataviz six-checks script against
+     #ffffff: all hard gates pass; slots 3-5 need visible labels/table view). */
+  --viz-1: #2a78d6;
+  --viz-2: #eb6834;
+  --viz-3: #1baf7a;
+  --viz-4: #eda100;
+  --viz-5: #e87ba4;
+  --viz-6: #008300;
+  --viz-7: #4a3aa7;
+  --viz-8: #e34948;
+  --viz-muted: #c3c7ce;
+  --viz-grid: #e8ebef;
+  --viz-axis: #c9ced6;
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
 }
 
 /* Dark theme */
 [data-theme="dark"] {
   --primary-color: #5c9aff;
   --primary-hover: #7eadff;
-  --secondary-color: #333333;
-  --background-color: #121212;
-  --card-background: #1e1e1e;
-  --text-color: #f5f5f5;
-  --text-secondary: #bbbbbb;
-  --border-color: #444444;
-  --error-color: #f44336;
-  --success-color: #4caf50;
-  --info-color: #2196f3;
-  --hover-color: rgba(255, 255, 255, 0.1);
-  --focus-color: rgba(92, 154, 255, 0.4);
-  --shadow-color: rgba(0, 0, 0, 0.3);
+  --primary-contrast: #0b1220;
+  --primary-soft: rgba(92, 154, 255, 0.14);
+  --secondary-color: #262a31;
+  --background-color: #111317;
+  --card-background: #1a1d23;
+  --surface-muted: #1f2329;
+  --surface-sunken: #15181d;
+  --text-color: #eceef1;
+  --text-secondary: #a9b1bc;
+  --text-muted: #7c8591;
+  --border-color: #2d323b;
+  --border-strong: #3a414c;
+  --error-color: #ff6b6b;
+  --success-color: #4cc26a;
+  --info-color: #6aa8ff;
+  --warning-color: #f2b64a;
+  --danger-soft: rgba(255, 107, 107, 0.12);
+  --success-soft: rgba(76, 194, 106, 0.13);
+  --warning-soft: rgba(242, 182, 74, 0.13);
+  --info-soft: rgba(106, 168, 255, 0.13);
+  --violet-color: #a99cf5;
+  --violet-soft: rgba(169, 156, 245, 0.14);
+  --hover-color: rgba(255, 255, 255, 0.06);
+  --focus-color: rgba(92, 154, 255, 0.45);
+  --shadow-color: rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
   --chart-grid: rgba(255, 255, 255, 0.1);
+  /* Dark steps of the same eight hues, validated against the dark card
+     surface #1a1d23: all checks pass, every slot >= 3:1. */
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-3: #199e70;
+  --viz-4: #c98500;
+  --viz-5: #d55181;
+  --viz-6: #008300;
+  --viz-7: #9085e9;
+  --viz-8: #e66767;
+  --viz-muted: #4a515c;
+  --viz-grid: #2a2f37;
+  --viz-axis: #3a414c;
 }
 
 * {

@@ -29,32 +29,31 @@ from App import App
 from backend.routers.agent.consent import resolve_store_agent_content
 from backend.routers.research import access
 from database import crud
-from research.analysis.operations import store as operations_store
+from research.budget.meter import InferenceMeter
+from research.study.agents.enums import METERED_FRAMEWORKS
 from research.telemetry.adapters import LegacyFact, record_legacy_facts
 from research.telemetry.enums import CoverageState
-from research.telemetry.models import Coverage, EventMetrics
+from research.telemetry.models import Correlations, Coverage, EventMetrics
 
 router = APIRouter(tags=["Agent"])
 
 
-def _require_funded_task(db, task) -> None:
+def _require_funded_task(db, task):
     """Re-check live enrollment/window/kill switch for a study-funded task.
 
-    Non-research operational tasks (no ``study_id``) are unaffected. A research
-    task must resolve an ACTIVE enrollment in its own study, with the study
-    window open and no operator kill switch engaged.
+    Non-research operational tasks (no ``study_id``) are unaffected and yield
+    ``None``. A research task must resolve an ACTIVE enrollment in its own
+    study, with the study window open and no operator kill switch engaged at
+    the study scope or at that enrollment's scope (``access.require_funded_access``
+    scopes the switch to the live enrollment). Returns the live enrollment row.
     """
     if getattr(task, "study_id", None) is None:
-        return
-    kill_switch_check = operations_store.db_kill_switch_check(
-        db, study_id=task.study_id, enrollment_id=None
-    )
+        return None
     try:
-        access.require_live_enrollment(
+        return access.require_funded_access(
             db,
             account_id=getattr(task, "owner_user_id", None),
             study_id=task.study_id,
-            kill_switch_check=kill_switch_check,
         )
     except access.FundedAccessRefused as exc:
         raise HTTPException(
@@ -274,7 +273,7 @@ async def run_agent_inference(
         # Funded research use requires a live enrollment and an open study
         # window, re-checked here on every call (a previously issued capability
         # never substitutes for current server state).
-        _require_funded_task(db, task)
+        enrollment = _require_funded_task(db, task)
         # Resolved server-side from the stored preference, never from the
         # request body — see backend.routers.agent.consent. The research
         # enrollment gate is applied on top.
@@ -311,14 +310,45 @@ async def run_agent_inference(
             "tools_json": task.tools_json,
             "framework_version": task.framework_version
             or (profile.framework_version if profile else None),
+            "research_session_id": getattr(task, "research_session_id", None),
         }
     finally:
         db.close()
 
+    # A study-funded task may only relay Chat Completions calls from a metered
+    # runtime (Goose, built-in agent), and those are always metered against the
+    # participant's budget. Anything else on a study task (a Responses-shaped
+    # body, a Codex arm) is refused: the study's key is never spent unmetered.
+    # Non-study developer tasks are unmetered as before.
+    meter = None
+    if enrollment is not None:
+        framework = str(task_snapshot["framework_version"] or "").strip().lower()
+        chat_body = "input" not in body.request and isinstance(body.request.get("messages"), list)
+        if framework not in METERED_FRAMEWORKS or not chat_body:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "RELAY_NOT_METERED",
+                    "message": (
+                        "study-funded relay calls must be Chat Completions requests "
+                        "from a Goose or built-in agent arm"
+                    ),
+                },
+            )
+        meter = InferenceMeter(
+            app=app,
+            enrollment_id=enrollment.enrollment_id,
+            study_id=task.study_id,
+            connection_id=connection.connection_id,
+            model=task_snapshot["model"],
+            entry_point="agent_inference",
+            research_session_id=task_snapshot["research_session_id"],
+        )
+
     logging.info(
         f"[Agent/inference] task validated — profile={task_snapshot['agent_profile']} "
         f"runtime={task_snapshot['framework_version']} "
-        f"content={content_included}"
+        f"content={content_included} metered={meter is not None}"
     )
     return await inference.run_inference(
         task_uuid=body.task_id,
@@ -332,6 +362,7 @@ async def run_agent_inference(
         framework_version=task_snapshot["framework_version"],
         profile_tools_json=task_snapshot["tools_json"],
         content_included=content_included,
+        meter=meter,
         app=app,
     )
 
@@ -347,8 +378,19 @@ _SPAN_EVENT_TYPE: dict[str, str] = {
 }
 
 
-def _span_fact(span: "SpanPayload", event_type: str) -> "LegacyFact":
-    """Build the canonical fact for one OTel child span (structural only)."""
+def _span_fact(
+    span: "SpanPayload",
+    event_type: str,
+    trace_id: Optional[str] = None,
+    model_call_id: Optional[str] = None,
+) -> "LegacyFact":
+    """Build the canonical fact for one OTel child span (structural only).
+
+    ``trace_id`` scopes the whole upload; ``model_call_id`` links one model
+    invocation with the tool calls it caused (the llm span's own id for model
+    events, the enclosing llm span for tools where the reporter provides it).
+    Both are opaque id strings, never content.
+    """
     attrs = span.attributes or {}
     payload: dict[str, Any] = {}
     model = attrs.get("llm.model") or attrs.get("model")
@@ -364,6 +406,8 @@ def _span_fact(span: "SpanPayload", event_type: str) -> "LegacyFact":
         counts["prompt_tokens"] = prompt
     if completion is not None:
         counts["completion_tokens"] = completion
+    if total is not None:
+        counts["total_tokens"] = total
     return LegacyFact(
         kind=event_type,
         occurred_at=datetime.now(timezone.utc),
@@ -377,11 +421,22 @@ def _span_fact(span: "SpanPayload", event_type: str) -> "LegacyFact":
                     else CoverageState.UNAVAILABLE
                 ),
                 capability="usage",
+                reason=(
+                    None
+                    if total is not None
+                    else "upstream did not report usage"
+                ),
             ),
             latency_ms=span.duration_ms if span.duration_ms > 0 else None,
             counts=counts,
         ),
         coverage=Coverage(state=CoverageState.AVAILABLE, capability="span"),
+        correlations=Correlations(
+            trace_id=trace_id,
+            span_id=span.span_id,
+            parent_span_id=span.parent_span_id,
+            model_call_id=model_call_id,
+        ),
         source_event_id=span.span_id,
         emitter_id="proxy",
     )
@@ -478,10 +533,31 @@ def upload_agent_telemetry(
             )
 
         task_row = crud.get_agent_task(db, task_id)
-        span_facts = [
-            _span_fact(span, _SPAN_EVENT_TYPE.get(span.name, "observation"))
-            for span in child_spans
-        ]
+        span_names = {span.span_id: span.name for span in body.spans}
+        span_facts = []
+        for span in child_spans:
+            event_type = _SPAN_EVENT_TYPE.get(span.name, "observation")
+            # A model invocation is its own call; a tool belongs to the llm
+            # call that caused it when the reporter parents it there,
+            # otherwise the link is left null rather than invented.
+            if event_type == "model_call":
+                model_call_id: Optional[str] = span.span_id
+            elif (
+                event_type == "tool_call"
+                and span.parent_span_id is not None
+                and span_names.get(span.parent_span_id) == "agent.llm.invoke"
+            ):
+                model_call_id = span.parent_span_id
+            else:
+                model_call_id = None
+            span_facts.append(
+                _span_fact(
+                    span,
+                    event_type,
+                    trace_id=body.trace_id,
+                    model_call_id=model_call_id,
+                )
+            )
         if task_row is not None:
             result = record_legacy_facts(db, task=task_row, facts=span_facts)
             if result is not None:

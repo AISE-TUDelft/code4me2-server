@@ -48,7 +48,7 @@ from research.study.agents.models import (
 )
 from research.study.protocol.enums import ReleaseResolutionStatus
 
-from ._byoa_contract import BYOA_CONFIG_BINDINGS
+from ._byoa_contract import BYOA_CONFIG_BINDINGS, GOOSE_BYOA_CONFIG_BINDINGS, INFERENCE_GATEWAY_BINDINGS
 
 
 def _profile(**overrides):
@@ -104,7 +104,7 @@ def _release(
         agent_command_args=["acp"] if byoa else [],
         agent_package="goose" if byoa else None,
         byoa_config=(
-            [AgentConfigBinding(**item) for item in BYOA_CONFIG_BINDINGS]
+            [AgentConfigBinding(**item) for item in GOOSE_BYOA_CONFIG_BINDINGS]
             if byoa
             else []
         ),
@@ -294,6 +294,12 @@ def test_bootstrap_projects_the_byoa_configuration_contract():
         "max_steps",
         "tools",
         "approval_policy",
+        # Runtime bindings the plugin fills for the research inference gateway.
+        "inference_gateway_host",
+        "inference_gateway_base_path",
+        "inference_gateway_credential",
+        "provider_kind",
+        "state_dir",
     }
     tools_binding = next(item for item in bindings if item.field == "tools")
     assert tools_binding.transport == "env"
@@ -463,6 +469,11 @@ def test_profile_configuration_accepts_a_complete_byoa_mapping():
         "max_steps",
         "tools",
         "approval_policy",
+        "inference_gateway_host",
+        "inference_gateway_base_path",
+        "inference_gateway_credential",
+        "provider_kind",
+        "state_dir",
     }
     validate_profile_configuration(
         _profile(framework_version="goose", release_id=release.release_id),
@@ -553,3 +564,155 @@ def test_config_binding_rejects_ambiguous_or_malformed_keys():
         AgentConfigBinding(
             field="approval_policy", transport="arg", key="--approval=always"
         )
+
+
+# ---------------------------------------------------------------------------
+# Research inference gateway bindings (Goose spends from the study's key)
+# ---------------------------------------------------------------------------
+
+
+def _without_gateway(release):
+    release.byoa_config = [
+        binding for binding in release.byoa_config
+        if binding.field in {"model", "temperature", "max_steps", "tools", "approval_policy"}
+    ]
+    return release
+
+
+def test_goose_profile_requires_inference_gateway_bindings():
+    release = _without_gateway(_release(qualified=True, byoa=True))
+    with pytest.raises(ProfileConfigurationError) as error:
+        validate_profile_configuration(
+            _profile(framework_version="goose", release_id=release.release_id),
+            release,
+            release_json=_evidence(release),
+        )
+    assert error.value.code == "INFERENCE_GATEWAY_UNBOUND"
+    assert "inference_gateway_credential" in str(error.value)
+
+
+def test_codex_profile_does_not_require_gateway_bindings():
+    release = _without_gateway(_release(qualified=True, byoa=True))
+    release.agent_command = "codex"
+    release.agent_package = "codex"
+    validate_profile_configuration(
+        _profile(framework_version="codex", release_id=release.release_id),
+        release,
+        release_json=_evidence(release),
+    )
+
+
+def test_credential_binding_must_use_env_transport_and_provider_kind_must_translate():
+    with pytest.raises(PydanticValidationError):
+        AgentConfigBinding(field="inference_gateway_credential", transport="arg", key="--api-key")
+    release = _release(qualified=True, byoa=True)
+    release.byoa_config = [
+        binding.model_copy(update={"value_map": {}}) if binding.field == "provider_kind" else binding
+        for binding in release.byoa_config
+    ]
+    with pytest.raises(ProfileConfigurationError) as error:
+        validate_profile_configuration(
+            _profile(framework_version="goose", release_id=release.release_id),
+            release,
+            release_json=_evidence(release),
+        )
+    assert error.value.code == "INFERENCE_GATEWAY_UNBOUND"
+    assert "provider_kind" in str(error.value)
+
+
+def test_release_model_rejects_two_bindings_on_one_env_key():
+    base = dict(
+        agent_id="goose",
+        release_id="rel-env-dup",
+        version="1.0.0",
+        source_manifest_digest="sha256:" + "1" * 64,
+        distribution_mode=DistributionMode.BYOA_EXTERNAL,
+        agent_command="goose",
+    )
+    with pytest.raises(PydanticValidationError):
+        AgentReleaseV1(
+            **base,
+            byoa_config=[
+                AgentConfigBinding(field="model", transport="env", key="SAME"),
+                AgentConfigBinding(field="state_dir", transport="env", key="SAME"),
+            ],
+        )
+
+
+def test_bootstrap_emits_inference_gateway_for_goose_only():
+    release = _release(qualified=True, byoa=True)
+    manifest = _bootstrap_manifest(
+        _profile(framework_version="goose", release_id=release.release_id), release
+    )
+    gateway = manifest.inference_gateway
+    assert gateway is not None
+    assert gateway.provider_kind == "openai_compatible"
+    assert gateway.base_path == "api/research/inference/v1/chat/completions"
+    assert not gateway.base_path.startswith("/")
+    capability = gateway.capability
+    assert capability.audience == "inference"
+    assert capability.scope == ["inference:relay"]
+    assert capability.enrollment_id == manifest.enrollment_id
+    assert capability.study_id == manifest.study_id
+    assert capability.research_session_id == manifest.research_session.research_session_id
+    assert (capability.expires_at - capability.issued_at).total_seconds() == 7 * 24 * 3600
+    assert capability.signature and capability.signature != manifest.session_capability.signature
+    # Digest-covered: tampering with the block invalidates the manifest.
+    from research.runtime.bootstrap import verify_manifest
+
+    assert verify_manifest(manifest, "distribution-view-secret").ok
+    tampered = manifest.model_copy(
+        update={"inference_gateway": gateway.model_copy(update={"base_path": "evil/path"})}
+    )
+    assert not verify_manifest(tampered, "distribution-view-secret").ok
+
+    codex_release = _without_gateway(_release(qualified=True, byoa=True))
+    codex_release.agent_command = "codex"
+    codex_release.agent_package = "codex"
+    codex_manifest = _bootstrap_manifest(
+        _profile(framework_version="codex", release_id=codex_release.release_id), codex_release
+    )
+    assert codex_manifest.inference_gateway is None
+    packaged = _bootstrap_manifest(_profile(), _release(qualified=True))
+    assert packaged.inference_gateway is None
+
+
+def test_bootstrap_blocks_a_goose_release_without_gateway_bindings():
+    release = _without_gateway(_release(qualified=True, byoa=True))
+    profile = _profile(framework_version="goose", release_id=release.release_id)
+    snapshot = {
+        "profile_id": str(profile.profile_id), "name": profile.name, "model": profile.model,
+        "framework_version": "goose", "release_id": release.release_id, "tools_json": "[]",
+        "approval_policy": "auto", "max_steps": 1, "temperature": None,
+    }
+    enrollment_id, study_id = uuid.uuid4(), uuid.uuid4()
+    result = compose_bootstrap(
+        SimpleNamespace(enrollment_id=enrollment_id, study_id=study_id, status=EnrollmentStatus.ACTIVE, revocation_epoch=0),
+        SimpleNamespace(study_id=study_id, is_research=True, research_status="ACTIVE", is_active=True, starts_at=None, ends_at=None, research_config_json={}, research_config_digest="d"),
+        SimpleNamespace(assignment_id=uuid.uuid4(), enrollment_id=enrollment_id, study_id=study_id, agent_profile_id=profile.profile_id, strategy="RANDOMIZED", randomization_epoch=1, profile_snapshot_json=snapshot, profile_digest=canonical_hash(snapshot)),
+        release,
+        None,
+        EphemeralSessionFactory(),
+        BootstrapSigningContext(secret="distribution-view-secret"),
+        platform=("macos", "aarch64"),
+    )
+    assert result.outcome == BootstrapOutcome.BLOCKED
+    assert result.issue.code == "INFERENCE_GATEWAY_UNBOUND"
+
+
+def test_configurability_never_lists_runtime_fields_as_profile_fields():
+    from research.study.agents.distributions import release_profile_configurability
+
+    # The shared fixture names both codex (agent_id) and goose (command/package),
+    # an ambiguous identity that is deliberately never held to the gateway
+    # bindings; a release that uniquely names Goose is.
+    ambiguous = _release(qualified=True, byoa=True)
+    assert release_profile_configurability(ambiguous, release_json=_evidence(ambiguous))["inference_gateway"] is False
+    release = ambiguous.model_copy(update={"agent_id": "goose"})
+    view = release_profile_configurability(release, release_json=None)
+    assert view["inference_gateway"] is True
+    assert set(view["configurable_fields"]) <= {"model", "temperature", "max_steps", "tools", "approval_policy"}
+    assert view["required_bindings_missing"] == []
+    unbound = _without_gateway(_release(qualified=True, byoa=True)).model_copy(update={"agent_id": "goose"})
+    missing = release_profile_configurability(unbound, release_json=None)["required_bindings_missing"]
+    assert "inference_gateway_credential" in missing

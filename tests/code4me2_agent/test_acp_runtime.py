@@ -110,7 +110,15 @@ class AcpRuntimeCompatibilityTest(TestCase):
             self.assertIsNotNone(response.agent_capabilities.session_capabilities.resume)
             self.assertIsNotNone(response.agent_capabilities.session_capabilities.close)
             self.assertEqual("AuthMethodAgent", type(response.auth_methods[0]).__name__)
-            self.assertEqual((), AcpUpdateBuilder().helper_gaps)
+            # The pinned SDK must keep exposing the update helpers the runtime relies on.
+            from acp import (  # noqa: F401
+                plan_entry,
+                update_agent_message_text,
+                update_plan,
+                update_tool_call,
+            )
+            plan = AcpUpdateBuilder().agent_plan([{"content": "step", "status": "pending"}])
+            self.assertEqual("plan", plan.session_update)
 
         asyncio.run(scenario())
 
@@ -162,12 +170,13 @@ class AcpRuntimeCompatibilityTest(TestCase):
         self.assertTrue(decision.accepted)
         self.assertEqual("session", decision.scope)
 
-        self.assertTrue(
-            sink.request_approval(
-                SimpleNamespace(name="write_file", tool_call_id="tool-2"),
-                {"path": "other.md", "content": "private"},
-            ).accepted
+        cached = sink.request_approval(
+            SimpleNamespace(name="write_file", tool_call_id="tool-2"),
+            {"path": "other.md", "content": "private"},
         )
+        self.assertTrue(cached.accepted)
+        # Answered by the session approval: no one is asked again.
+        self.assertEqual("session_cached", cached.scope)
         self.assertEqual(1, runner.calls)
 
     def test_permission_reuses_the_native_edit_diff(self) -> None:
@@ -318,9 +327,9 @@ class AcpRuntimeCompatibilityTest(TestCase):
                 )
                 self.messages: list[list[dict[str, Any]]] = []
 
-            def generate(self, messages):
+            def generate(self, messages, **kwargs):
                 self.messages.append(messages)
-                return super().generate(messages)
+                return super().generate(messages, **kwargs)
 
         config = AgentConfig(
             workspace_root=self.workspace,
@@ -515,3 +524,265 @@ class AcpRuntimeCompatibilityTest(TestCase):
             self.assertNotIn(new_session.session_id, self.agent._sessions)
 
         asyncio.run(scenario())
+
+
+class AcpRuntimeStreamingTest(TestCase):
+    """Behaviour added by the agent upgrade: progress text, plans, usage, cancel."""
+
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name).resolve()
+        self.client = _FakeClient()
+        self.authorization = _FakeAuthorization(self.workspace)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _agent(self, script: list[dict[str, Any]], *, tools: list[str] | None = None):
+        agent = create_acp_agent(
+            AgentConfig(
+                workspace_root=self.workspace,
+                trace_path=self.workspace / "agent-events.jsonl",
+                session_id="bootstrap",
+                tools=tools,
+                adapter=AdapterConfig(
+                    name="openai_compatible_react",
+                    fake_provider=FakeProviderConfig(enabled=True, script=script),
+                ),
+            ),
+            authorization=self.authorization,
+        )
+        agent.on_connect(self.client)
+        return agent
+
+    def _sink(self, connection=None):
+        class Runner:
+            def run(self, awaitable, **_kwargs):
+                return asyncio.run(awaitable)
+
+        return AcpSessionEventSink(
+            conn=connection or self.client,
+            session_id="session-1",
+            updates=AcpUpdateBuilder(),
+            telemetry=object(),
+            async_runner=Runner(),
+        )
+
+    def test_sink_emits_progress_text_plan_and_usage_updates(self) -> None:
+        from code4me2_agent.events import AssistantTextEvent, PlanEntrySpec, PlanEvent, UsageEvent
+
+        sink = self._sink()
+        sink.assistant_text(
+            AssistantTextEvent(
+                run_id="run-1", request_id="req-1", message_id="req-1", text="Looking…", final=False, iteration=1
+            )
+        )
+        sink.plan(
+            PlanEvent(
+                run_id="run-1",
+                request_id="req-1",
+                tool_call_id="c1",
+                entries=(PlanEntrySpec("read", "completed", "high"), PlanEntrySpec("edit", "in_progress")),
+            )
+        )
+        sink.usage(
+            UsageEvent(
+                run_id="run-1",
+                request_id="req-1",
+                iteration=1,
+                model="m",
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                turn_total_tokens=120,
+                context_budget_tokens=32000,
+            )
+        )
+
+        kinds = [entry["update"].session_update for entry in self.client.updates]
+        self.assertEqual(["agent_message_chunk", "plan", "usage_update"], kinds)
+        text_update = self.client.updates[0]["update"]
+        self.assertEqual("req-1", text_update.message_id)
+        self.assertEqual("progress", text_update.field_meta["code4me2"]["phase"])
+        plan_update = self.client.updates[1]["update"]
+        self.assertEqual(["completed", "in_progress"], [entry.status for entry in plan_update.entries])
+        usage_update = self.client.updates[2]["update"]
+        self.assertEqual((120, 32000), (usage_update.used, usage_update.size))
+
+    def test_tool_call_start_carries_multiple_absolute_locations(self) -> None:
+        sink = self._sink()
+        sink.tool_call(
+            ToolCallEvent(
+                phase="started",
+                tool_call_id="tool-1",
+                tool_name="move_file",
+                run_id="run-1",
+                request_id="request-1",
+                title="Move a.txt → b/a.txt",
+                kind="move",
+                status="in_progress",
+                path="/ws/a.txt",
+                locations=("/ws/a.txt", "/ws/b/a.txt"),
+            )
+        )
+
+        update = self.client.updates[0]["update"]
+        self.assertEqual(["/ws/a.txt", "/ws/b/a.txt"], [location.path for location in update.locations])
+        self.assertEqual("move", update.kind)
+
+    def test_react_prompt_streams_progress_tool_cards_and_final_text(self) -> None:
+        (self.workspace / "a.txt").write_text("hello\n")
+        agent = self._agent(
+            [
+                {
+                    "final_answer": "Reading a.txt first.",
+                    "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "a.txt"}}],
+                },
+                {"final_answer": "It says hello."},
+            ],
+            tools=["read_file"],
+        )
+
+        async def scenario() -> None:
+            await agent.initialize(protocol_version=1, client_capabilities=None)
+            new_session = await agent.new_session(cwd=str(self.workspace))
+            response = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="what does a.txt say?")],
+                session_id=new_session.session_id,
+            )
+
+            kinds = [entry["update"].session_update for entry in self.client.updates]
+            self.assertEqual(
+                ["agent_message_chunk", "tool_call", "tool_call_update", "agent_message_chunk"], kinds
+            )
+            first, last = self.client.updates[0]["update"], self.client.updates[-1]["update"]
+            self.assertEqual("progress", first.field_meta["code4me2"]["phase"])
+            self.assertEqual("final", last.field_meta["code4me2"]["phase"])
+            self.assertEqual(first.message_id, last.message_id)
+            card = self.client.updates[1]["update"]
+            self.assertEqual("read", card.kind)
+            self.assertTrue(card.locations[0].path.startswith(str(self.workspace)))
+            self.assertEqual("end_turn", response.stop_reason)
+            self.assertEqual("completed", response.field_meta["code4me2"]["outcome"])
+            self.assertIsNone(response.usage)
+
+        asyncio.run(scenario())
+
+    def test_provider_failure_surfaces_error_message_and_end_turn(self) -> None:
+        agent = self._agent([], tools=["read_file"])
+
+        async def scenario() -> None:
+            await agent.initialize(protocol_version=1, client_capabilities=None)
+            new_session = await agent.new_session(cwd=str(self.workspace))
+            response = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="hello")],
+                session_id=new_session.session_id,
+            )
+
+            self.assertEqual(1, len(self.client.updates))
+            update = self.client.updates[0]["update"]
+            self.assertEqual("agent_message_chunk", update.session_update)
+            self.assertIn("fake provider", update.content.text)
+            self.assertEqual("end_turn", response.stop_reason)
+            self.assertEqual("failed", response.field_meta["code4me2"]["outcome"])
+            self.assertEqual("provider_exhausted", response.field_meta["code4me2"]["adapterStopReason"])
+
+        asyncio.run(scenario())
+
+    def test_permission_wait_is_interrupted_by_cancel(self) -> None:
+        import threading
+        import time
+
+        from code4me2_agent.async_bridge import EventLoopAsyncRunner
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        try:
+
+            class Connection:
+                async def request_permission(self, **_kwargs):
+                    await asyncio.Event().wait()
+
+            cancel = Event()
+            sink = AcpSessionEventSink(
+                conn=Connection(),
+                session_id="session-1",
+                updates=AcpUpdateBuilder(),
+                telemetry=object(),
+                async_runner=EventLoopAsyncRunner(loop),
+                cancel_event=cancel,
+            )
+            threading.Timer(0.3, cancel.set).start()
+            started = time.monotonic()
+
+            decision = sink.request_approval(
+                SimpleNamespace(name="write_file", tool_call_id="tool-1"),
+                {"path": "README.md", "content": "x"},
+            )
+
+            self.assertEqual("cancelled", decision.decision)
+            self.assertLess(time.monotonic() - started, 3.0)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+
+    def test_approval_summary_and_raw_input_for_new_tools(self) -> None:
+        from code4me2_agent.acp_runtime import _approval_raw_input, _approval_summary
+
+        self.assertEqual(
+            "Move file: a.txt → b/a.txt",
+            _approval_summary("move_file", {"source_path": "a.txt", "destination_path": "b/a.txt"}),
+        )
+        self.assertEqual(
+            "Edit file: x.py (3 edits)",
+            _approval_summary("edit_file", {"path": "x.py", "edits": [{}, {}, {}]}),
+        )
+        self.assertEqual("Delete file: a.txt", _approval_summary("delete_file", {"path": "a.txt"}))
+        self.assertEqual(
+            "Run command: pytest -q (timeout 300s)",
+            _approval_summary("run_command", {"argv": ["pytest", "-q"], "timeout_seconds": 300}),
+        )
+        self.assertEqual(
+            {"source_path": "a.txt", "destination_path": "b/a.txt", "overwrite": False},
+            _approval_raw_input("move_file", {"source_path": "a.txt", "destination_path": "b/a.txt"}),
+        )
+        self.assertEqual({"path": "x.py", "edit_count": 2}, _approval_raw_input("edit_file", {"path": "x.py", "edits": [{}, {}]}))
+        self.assertEqual(
+            {"argv": ["pytest"], "cwd": ".", "timeout_seconds": 30},
+            _approval_raw_input("run_command", {"argv": ["pytest"], "timeout_seconds": 30}),
+        )
+
+    def test_session_edit_approval_covers_delete_and_move_but_not_commands(self) -> None:
+        class Connection:
+            async def request_permission(self, **_kwargs):
+                return None
+
+        class Runner:
+            calls = 0
+
+            def run(self, awaitable, **_kwargs):
+                self.calls += 1
+                awaitable.close()
+                return {"outcome": {"outcome": "selected", "optionId": "allow_session"}}
+
+        runner = Runner()
+        sink = AcpSessionEventSink(
+            conn=Connection(),
+            session_id="session-1",
+            updates=AcpUpdateBuilder(),
+            telemetry=object(),
+            async_runner=runner,
+        )
+
+        self.assertTrue(sink.request_approval(SimpleNamespace(name="delete_file", tool_call_id="t1"), {"path": "a"}).accepted)
+        self.assertTrue(
+            sink.request_approval(
+                SimpleNamespace(name="move_file", tool_call_id="t2"),
+                {"source_path": "a", "destination_path": "b"},
+            ).accepted
+        )
+        self.assertEqual(1, runner.calls)
+        self.assertTrue(sink.request_approval(SimpleNamespace(name="run_command", tool_call_id="t3"), {"argv": ["ls"]}).accepted)
+        self.assertEqual(2, runner.calls)

@@ -191,6 +191,34 @@ def require_live_enrollment(
     return active
 
 
+def require_funded_access(
+    db: Any,
+    *,
+    account_id: Optional[uuid.UUID],
+    study_id: Optional[uuid.UUID] = None,
+    now: Optional[datetime] = None,
+):
+    """The single funded gate for every relay/grant path.
+
+    Resolves the account's live enrollment (:func:`require_live_enrollment`)
+    and then evaluates the operator kill switch at both the study scope and the
+    enrollment scope of that very enrollment, so an enrollment-scoped switch is
+    never missed because a caller had no enrollment id at hand. Returns the
+    live enrollment row (``enrollment_id``/``study_id`` feed the budget meter).
+    """
+    from research.analysis.operations import store as operations_store
+
+    active = require_live_enrollment(db, account_id=account_id, study_id=study_id, now=now)
+    if operations_store.is_kill_switch_engaged(
+        db, study_id=active.study_id, enrollment_id=active.enrollment_id, now=now
+    ):
+        raise FundedAccessRefused(
+            "KILL_SWITCH_ENGAGED",
+            "an operator kill switch is engaged for this study or enrollment",
+        )
+    return active
+
+
 def _sweep_ended_study(db, study, study_id, *, now: datetime) -> None:
     """Complete enrollments for a study that is no longer open for execution.
 

@@ -132,11 +132,60 @@ docker-compose ps
 #### 🤖 Agent Subsystem (ACP)
 The `backend` service is also a relay + telemetry sink for an autonomous coding agent (it does not run agent inference loops itself):
 
-- **Third-party agents** (e.g. Goose, Codex) run inside the IDE plugin process and call back through `POST /api/agent/inference`, which the backend proxies to an OpenAI-compatible upstream (Ollama, OpenAI, Groq, OpenRouter, or any compatible endpoint).
+- **Goose** (participant-installed) is pointed at the research inference gateway, `POST /api/research/inference/v1/chat/completions`, with a per-participant inference capability as its API key; the backend forwards the call to the study's OpenAI-compatible provider connection with the server-held key and meters it against the participant's budget. **Codex** signs in with the participant's ChatGPT account and is neither relayed nor metered. (The developer-only path still relays through `POST /api/agent/inference`.)
 - **The built-in `code4me2-agent`** runs as a separate local OS process, launched by the IDE plugin, speaking ACP over stdio. It authenticates via a grant → session handoff: the plugin calls `POST /api/acp/grant`, the agent process exchanges it for a bearer token at `POST /api/acp/session/exchange`, then fetches its assigned model/provider/tools from `GET /api/acp/agent-config`.
 - An **agent profile** (`agent_profile` table) defines a runtime + provider + model + tools + approval policy — used as an A/B study arm. An **agent assignment** is a sticky, server-authoritative per-user draw; the client never self-selects.
-- Provider API keys are never stored in the database — a profile stores only the *name* of an environment variable (`api_key_ref`), resolved from the backend's own environment at request time. See [`.env.example`](.env.example).
+- Provider API keys are never stored in the database — an administrator's *provider connection* stores only the *name* of an environment variable (`secret_ref`), resolved from the backend's own environment at request time. See [`.env.example`](.env.example).
+- **Participant budgets.** Goose and built-in arms spend from the study's shared key, so every enrollment carries a USD budget (study default, per-participant top-ups from the website). Each call reserves its worst-case cost before it is forwarded and settles the actual usage afterwards; a participant can never exceed their budget. Prices per model live on the provider connection; see `docs/research-platform/RELEASES.md` for the fail-closed rollout notes.
 - Installing and running the local `code4me2-agent` CLI is a separate, standalone step — see "Running the Agent CLI (`code4me2-agent`)" under Development below.
+
+#### 🧩 Provider-backed classic chat/completion models
+
+The classic endpoints (`POST /api/chat/request`, `POST /api/completion/request`) can be served by an OpenAI-compatible provider (OpenRouter, Ollama, OpenAI, Groq, vLLM) instead of a local HuggingFace model. A `model_name` row opts in through its `model_parameters` JSON; every other row keeps the local path unchanged. **No plugin change is required** — the plugin keeps sending `model_ids` and the server resolves the row.
+
+**Default:** the rows the plugin uses by default are seeded provider-backed through OpenRouter (key from `OPENROUTER_API_KEY`): id 1 `deepseek-ai/deepseek-coder-1.3b-base` (completion) is answered by `mistralai/codestral-2508`, and id 3 `mistralai/Ministral-8B-Instruct-2410` (chat) by `mistralai/ministral-8b-2512`. Rows keep their names; `provider_model` records the model that answers. The other rows (StarCoder2, Mellum) run locally and are used only when explicitly chosen. `CLASSIC_MODELS_ENABLED=false` refuses the classic endpoints entirely (HTTP 503) without loading anything.
+
+```json
+{
+  "provider": "openai_compatible",
+  "kind": "chat",                          // "chat" | "completion"; default: "chat" for *instruct* model names, else "completion"
+  "base_url": "https://openrouter.ai/api/v1",
+  "api_key_ref": "OPENROUTER_API_KEY",     // optional; name of the env var holding the key (never the key itself)
+  "provider_model": "mistralai/ministral-8b-2512",  // optional; default = model_name
+  "endpoint": "chat",                      // "chat" (chat-completions) | "completions" (legacy /completions); default "chat"
+  "max_new_tokens": 256,
+  "temperature": 0.2,
+  "top_p": 0.95,
+  "timeout_seconds": 60
+}
+```
+
+- `base_url` is required. `api_key_ref` is optional (a local Ollama needs no key), and like agent profiles it stores only the environment-variable *name*: the value is read from the backend's environment at request time and is never stored or logged. A referenced variable that is missing is a hard error — there is no unauthenticated fallback.
+- `kind` selects the model class (chat vs. FIM completion) and defaults from the model name. `endpoint` selects the wire format for completion rows: `chat` sends one system message plus the formatted FIM prompt as a user message, `completions` posts the formatted prompt to `/completions` with `stop` sequences.
+- Provider rows report no `confidence` (stored as NULL and left out of the calibration and model analytics) and empty `logprobs` (token logprobs exist only on the local path). A database created before this change needs `ALTER TABLE had_generation ALTER COLUMN confidence DROP NOT NULL;` once (the schema has a single consolidated revision, so existing databases are not migrated automatically); until then provider generations fail to save.
+- Unknown `model_parameters` keys are rejected, so a typo cannot silently change the wire shape.
+
+A database seeded before this default keeps local rows; adopt the default once with:
+
+```sql
+UPDATE model_name
+SET model_parameters = '{"provider": "openai_compatible", "kind": "completion", "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "OPENROUTER_API_KEY", "provider_model": "mistralai/codestral-2508", "max_new_tokens": 64}'
+WHERE model_name = 'deepseek-ai/deepseek-coder-1.3b-base';
+UPDATE model_name
+SET model_parameters = '{"provider": "openai_compatible", "kind": "chat", "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "OPENROUTER_API_KEY", "provider_model": "mistralai/ministral-8b-2512", "max_new_tokens": 256}'
+WHERE model_name = 'mistralai/Ministral-8B-Instruct-2410';
+```
+
+To host a row locally instead (a HuggingFace model on this server; practical only with a GPU), set it back explicitly:
+
+```sql
+UPDATE model_name SET model_parameters = '{"max_new_tokens": 64}'
+WHERE model_name = 'deepseek-ai/deepseek-coder-1.3b-base';
+UPDATE model_name SET model_parameters = '{"max_new_tokens": 256}'
+WHERE model_name = 'mistralai/Ministral-8B-Instruct-2410';
+```
+
+Set the referenced variable in `.env` (e.g. `OPENROUTER_API_KEY=...`) and restart the `backend` service. The `backend` container must be able to reach `base_url`; a host-run Ollama is `http://host.docker.internal:11434/v1` from inside Docker. The live end-to-end check is `E2E_CLASSIC_PROVIDER=1 python3 -m unittest tests.test_classic_provider_e2e -v`, run from `e2e/`.
 
 #### 📊 Analytics & Telemetry
 - **Behavioral Analytics**: Typing patterns, acceptance rates, interaction timings

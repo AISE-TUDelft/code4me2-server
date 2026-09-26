@@ -379,9 +379,12 @@ def ingest_agent_events(
         # A run reporting a terminal status is finished, so aggregate it now
         # rather than waiting for a close call the runtime may never make.
         if body.run.status.strip().lower() in _TERMINAL_RUN_STATUSES:
+            reported = body.run.status.strip().lower()
             status = (
                 "failed"
-                if body.run.status.strip().lower() in ("failed", "error")
+                if reported in ("failed", "error")
+                else "cancelled"
+                if reported == "cancelled"
                 else "done"
             )
             lifecycle.finalize_agent_task(db, task.task_id, status=status)

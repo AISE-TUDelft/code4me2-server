@@ -898,6 +898,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResendVerificationEmailError"
+                }
+              }
+            },
+            "description": "Bad Gateway"
           }
         }
       }

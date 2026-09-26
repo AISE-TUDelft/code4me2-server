@@ -13,7 +13,8 @@ The schema supports:
 - Session management and tracking
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 
 from pgvector.sqlalchemy import Vector
@@ -28,6 +29,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -620,7 +622,7 @@ class HadGeneration(Base):
     was_accepted = Column(
         Boolean, nullable=False
     )  # Whether user accepted the completion
-    confidence = Column(Double, nullable=False)  # Model confidence score
+    confidence = Column(Double, nullable=True)  # Model confidence score; NULL when the model reports none
     logprobs = Column(ARRAY(Double), nullable=False)  # Log probabilities for tokens
 
 
@@ -737,6 +739,19 @@ class Study(Base):
     consent_locked_at = Column(DateTime(timezone=True), nullable=True)
     stopped_at = Column(DateTime(timezone=True), nullable=True)
     stopped_by = Column(String, nullable=True)
+    # Participant inference budgets (shared provider key). Editable at any time
+    # and deliberately outside the digested ``research_config_json``. The default
+    # is 0 so an unconfigured study cannot spend (fail closed); balances for new
+    # enrollments copy this default. ``warning_fraction`` drives the participant
+    # warning surfaces only.
+    inference_budget_default_micro_usd = Column(
+        BigInteger, nullable=False, server_default="0", default=0
+    )
+    inference_budget_warning_fraction = Column(
+        Numeric(4, 3), nullable=False, server_default="0.800", default=Decimal("0.800")
+    )
+    inference_budget_updated_at = Column(DateTime(timezone=True), nullable=True)
+    inference_budget_updated_by = Column(String, nullable=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=datetime.now, server_default=func.now()
     )
@@ -834,6 +849,45 @@ class ProviderConnection(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
 
 
+class ProviderModelPrice(Base):
+    """Per-model prices for one provider connection (USD per million tokens).
+
+    Prices size the worst-case hold and settle the actual charge of every
+    metered inference call. A metered model without a price row fails closed
+    (503 ``price_missing``); there is never a default price. ``usd_per_million``
+    equals micro-USD per token, so ``cost_micro_usd = ceil(tokens * price)``.
+    ``cached_input_usd_per_million`` NULL means cached prompt tokens bill at
+    the input price. Prices are not secret: researchers see them to size
+    budgets; only administrators write them.
+    """
+
+    __tablename__ = "provider_model_price"
+    __table_args__ = (
+        CheckConstraint("input_usd_per_million >= 0", name="ck_provider_model_price_input"),
+        CheckConstraint("output_usd_per_million >= 0", name="ck_provider_model_price_output"),
+        CheckConstraint(
+            "cached_input_usd_per_million IS NULL OR cached_input_usd_per_million >= 0",
+            name="ck_provider_model_price_cached_input",
+        ),
+        Index("idx_provider_model_price_connection", "connection_id"),
+        {"schema": "public"},
+    )
+
+    connection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.provider_connection.connection_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    model = Column(String, primary_key=True)
+    input_usd_per_million = Column(Numeric(14, 6), nullable=False)
+    output_usd_per_million = Column(Numeric(14, 6), nullable=False)
+    cached_input_usd_per_million = Column(Numeric(14, 6), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_by = Column(String, nullable=True)
+
+
 class AgentProfile(Base):
     """A researcher-owned, editable agent configuration template.
 
@@ -889,6 +943,11 @@ class AgentProfile(Base):
     max_context_tokens = Column(
         Integer, nullable=True
     )  # per-turn rolling window; NULL = model max
+    # Researcher-authored system prompt (managed runtime only; BYOA refuses it).
+    # NULL = no prompt: the runtime keeps its built-in one. It joins the
+    # configuration digest and study snapshots only when set, so profiles
+    # without a prompt keep their existing digests.
+    system_prompt = Column(Text, nullable=True)
     configuration_digest = Column(String, nullable=False, server_default="")
     # Only active profiles are candidates for new study selections. Inactive
     # profiles stay in the table for historical snapshots.

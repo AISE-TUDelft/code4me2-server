@@ -60,6 +60,9 @@ class FrozenAgentConfig:
     agent_command_args: list[str] = field(default_factory=list)
     # The researcher whose connection grant funds execution (study owner).
     funding_owner_user_id: Optional[uuid.UUID] = None
+    # Researcher-authored system prompt frozen with the study selection; None =
+    # no prompt (snapshots taken before the field existed never carry one).
+    system_prompt: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,7 @@ def _frozen_config_from_snapshot(
     tools_json = profile_snapshot.get("tools_json", "[]")
     if not isinstance(tools_json, str):
         tools_json = json.dumps(tools_json, separators=(",", ":"))
+    system_prompt = profile_snapshot.get("system_prompt")
     return FrozenAgentConfig(
         profile_id=uuid.UUID(str(profile_id)),
         name=profile_snapshot.get("name", "assigned-profile"),
@@ -114,6 +118,7 @@ def _frozen_config_from_snapshot(
         ),
         release_id=profile_snapshot.get("release_id"),
         funding_owner_user_id=funding_owner_user_id,
+        system_prompt=system_prompt if isinstance(system_prompt, str) else None,
     )
 
 

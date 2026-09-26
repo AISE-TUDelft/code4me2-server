@@ -33,6 +33,19 @@ if TYPE_CHECKING:
 
 PASSING_TESTS = {"self_check": "PASS", "acp_initialize": "PASS", "ran_at": "2026-09-21T00:00:00Z"}
 
+# A Goose release is gateway-bound: the recipe must declare how the plugin
+# points it at the research inference gateway.
+GOOSE_GATEWAY_BINDINGS = [
+    {"field": "model", "transport": "env", "key": "GOOSE_MODEL"},
+    {"field": "max_steps", "transport": "env", "key": "GOOSE_MAX_TURNS"},
+    {"field": "approval_policy", "transport": "env", "key": "GOOSE_MODE"},
+    {"field": "inference_gateway_host", "transport": "env", "key": "OPENAI_HOST"},
+    {"field": "inference_gateway_base_path", "transport": "env", "key": "OPENAI_BASE_PATH"},
+    {"field": "inference_gateway_credential", "transport": "env", "key": "OPENAI_API_KEY"},
+    {"field": "provider_kind", "transport": "env", "key": "GOOSE_PROVIDER", "value_map": {"openai_compatible": "openai"}},
+    {"field": "state_dir", "transport": "env", "key": "GOOSE_PATH_ROOT"},
+]
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows CI does not create symlinks")
 def test_runtime_archive_materializes_external_framework_links(tmp_path):
@@ -121,6 +134,7 @@ def make_inputs(root: Path) -> ParticipantRecipe:
                         "digest": "sha256:" + "c" * 64,
                     },
                     **({"agent_command": framework} if framework != "code4me2-agent" else {}),
+                    **({"byoa_config": GOOSE_GATEWAY_BINDINGS} if framework == "goose" else {}),
                 }
                 for framework in ("code4me2-agent", "goose", "codex")
             ],
@@ -185,16 +199,19 @@ def test_prepare_emits_one_recipe_with_verified_archives(tmp_path):
 
     written = json.loads((tmp_path / "prepared" / "recipe.json").read_text())
     assert written == document
+    # The adapter pin travels per artifact: the plugin checks it there.
+    assert all(a["adapter"]["digest"] == "sha256:" + "c" * 64 for a in document["artifacts"])
+    # The plugin build reads the same recipe from the resource overlay, with
+    # archive paths relative to the resource root.
     runtime_manifest = json.loads(
         (tmp_path / "prepared" / "resources" / "code4me-runtime" / "manifest.json").read_text()
     )
-    assert runtime_manifest == dict(
-        document,
-        artifacts=[
-            dict(artifact, archive=f"code4me-runtime/{artifact['archive']}")
-            for artifact in document["artifacts"]
-        ],
-    )
+    assert runtime_manifest["runtime_version"] == document["runtime_version"]
+    assert runtime_manifest["adapter"] == document["adapter"]
+    assert [a["archive"] for a in runtime_manifest["artifacts"]] == [
+        f"code4me-runtime/{a['archive']}" for a in document["artifacts"]
+    ]
+    assert all(a["adapter"] == document["adapter"] for a in runtime_manifest["artifacts"])
     assert written["recipe_digest"].startswith("sha256:")
     # The prepared inputs are re-checkable and the recipe is the single document.
     assert load_prepared(tmp_path / "prepared") == document
@@ -223,6 +240,11 @@ def test_prepare_does_not_invent_a_managed_adapter(tmp_path):
     prepared = prepare(ParticipantRecipe.model_validate(recipe), inputs, tmp_path / "prepared")
 
     assert "adapter" not in prepared
+    plugin_manifest = json.loads(
+        (tmp_path / "prepared" / "resources" / "code4me-runtime" / "manifest.json").read_text()
+    )
+    assert "adapter" not in plugin_manifest
+    assert all("adapter" not in artifact for artifact in plugin_manifest["artifacts"])
 
 
 def test_prepare_requires_passing_platform_tests(tmp_path):
@@ -320,3 +342,44 @@ def test_changed_prepared_input_cannot_be_loaded(tmp_path):
     staged.write_bytes(b"changed after preparation")
     with pytest.raises(ValueError, match="prepared input changed"):
         load_prepared(tmp_path / "prepared")
+
+
+def test_installed_agent_requires_explicit_adapter(tmp_path):
+    recipe = make_inputs(tmp_path / "inputs").model_dump(mode="json")
+    goose = next(agent for agent in recipe["agents"] if agent["framework"] == "goose")
+    goose.pop("adapter")
+
+    with pytest.raises(ValueError, match="installed agents need an explicit adapter"):
+        ParticipantRecipe.model_validate(recipe)
+
+
+def test_recipe_requires_goose_gateway_bindings(tmp_path):
+    """A Goose agent without the gateway runtime bindings is refused at recipe time."""
+    inputs = tmp_path / "inputs"
+    recipe = make_inputs(inputs)
+    document = recipe.model_dump(mode="json")
+    for agent in document["agents"]:
+        if agent["framework"] == "goose":
+            agent["byoa_config"] = [b for b in agent["byoa_config"] if b["field"] != "inference_gateway_credential"]
+    with pytest.raises(ValueError) as error:
+        ParticipantRecipe.model_validate(document)
+    assert "inference gateway" in str(error.value)
+    for agent in document["agents"]:
+        if agent["framework"] == "goose":
+            agent["byoa_config"] = GOOSE_GATEWAY_BINDINGS
+    ParticipantRecipe.model_validate(document)
+
+
+def test_recipe_rejects_a_credential_binding_on_argv(tmp_path):
+    inputs = tmp_path / "inputs"
+    recipe = make_inputs(inputs)
+    document = recipe.model_dump(mode="json")
+    for agent in document["agents"]:
+        if agent["framework"] == "goose":
+            agent["byoa_config"] = [
+                dict(b, transport="arg") if b["field"] == "inference_gateway_credential" else b
+                for b in agent["byoa_config"]
+            ]
+    with pytest.raises(ValueError) as error:
+        ParticipantRecipe.model_validate(document)
+    assert "world-readable" in str(error.value) or "env transport" in str(error.value)

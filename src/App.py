@@ -162,8 +162,9 @@ class App:
         # Initialize completion models for AI functionality
         self.__completion_models = CompletionModels(config=config)
 
-        # Preload models if configured to do so for faster response times
-        if config.preload_models:
+        # Preload models if configured to do so for faster response times; switched-off
+        # classic models are never loaded
+        if config.preload_models and config.classic_models_enabled:
             logging.log(logging.INFO, "Preloading llm models...")
 
             db = self.get_db_session()
@@ -317,11 +318,16 @@ class App:
             This method performs cleanup in the reverse order of initialization
             to ensure dependencies are properly handled.
         """
-        # Clean up Redis manager with a database session for final operations
-        self.__redis_manager.cleanup(db_session=self.__db_session_factory())
+        if os.getenv("TEST_MODE", "false").lower() == "true":
+            # A test process must never flush the Redis it may share with a
+            # development server (that logs every user out): only close.
+            self.__redis_manager.close()
+        else:
+            # Clean up Redis manager with a database session for final operations
+            self.__redis_manager.cleanup(db_session=self.__db_session_factory())
 
-        # Close Redis connection to stop background threads gracefully
-        self.__redis_manager.close()
+            # Close Redis connection to stop background threads gracefully
+            self.__redis_manager.close()
 
         # Clean up Celery broker connections
         self.__celery_broker.cleanup()

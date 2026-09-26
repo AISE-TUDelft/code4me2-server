@@ -111,7 +111,11 @@ def get_completions_by_query(
                         model_name=str(model.model_name) if model else "Unknown Model",
                         completion=str(generation.completion),
                         generation_time=int(str(generation.generation_time)),
-                        confidence=float(str(generation.confidence)),
+                        confidence=(
+                            float(str(generation.confidence))
+                            if generation.confidence is not None
+                            else 0.0
+                        ),
                     )
                 )
 

@@ -1,22 +1,29 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
 import os
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from threading import Event, Thread
+from time import monotonic, perf_counter
+from typing import IO, TYPE_CHECKING, Any
 from uuid import uuid4
 
 from code4me2_agent.acp_utils import capability_value
 from code4me2_agent.async_bridge import run_awaitable_blocking
 from code4me2_agent.telemetry import AgentTelemetryRecorder
+from code4me2_agent.tool_errors import CommandNotFoundError, ToolError
 
 if TYPE_CHECKING:
     from code4me2_agent.config import AgentConfig
+
+
+_POLL_SECONDS = 0.25
+_KILL_GRACE_SECONDS = 5.0
+_PIPE_CHUNK_BYTES = 65536
 
 
 @dataclass(frozen=True)
@@ -29,6 +36,9 @@ class CommandResult:
     stderr: str
     timed_out: bool
     output_truncated: bool
+    duration_ms: float = 0.0
+    timeout_seconds: float = 0.0
+    status: str = "completed"
 
 
 @dataclass(frozen=True)
@@ -258,6 +268,7 @@ class WorkspaceCommandTools:
         telemetry: AgentTelemetryRecorder | None = None,
         allowlisted_commands: set[str] | None = None,
         timeout_seconds: float | None = None,
+        max_timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
     ) -> None:
         self._config = config
@@ -266,15 +277,27 @@ class WorkspaceCommandTools:
         command_config = config.commands
         self._allowlisted_commands = set(allowlisted_commands or command_config.allowlisted_commands)
         selected_timeout_seconds = command_config.timeout_seconds if timeout_seconds is None else timeout_seconds
+        selected_max_timeout_seconds = (
+            getattr(command_config, "max_timeout_seconds", 600.0)
+            if max_timeout_seconds is None
+            else max_timeout_seconds
+        )
         selected_max_output_bytes = command_config.max_output_bytes if max_output_bytes is None else max_output_bytes
-        self._timeout_seconds = float(selected_timeout_seconds)
+        self._timeout_seconds = max(1.0, float(selected_timeout_seconds))
+        self._max_timeout_seconds = max(self._timeout_seconds, float(selected_max_timeout_seconds))
         self._max_output_bytes = max(1, int(selected_max_output_bytes))
+
+    @property
+    def workspace_root(self) -> Path:
+        return self._config.workspace_root
 
     def run_command(
         self,
         argv: object,
         *,
         cwd: str = ".",
+        timeout_seconds: float | None = None,
+        cancel_event: Event | None = None,
         tool_call_id: str | None = None,
         run_id: str | None = None,
         request_id: str | None = None,
@@ -316,9 +339,11 @@ class WorkspaceCommandTools:
             request_id=request_id,
             started_at=started_at,
         )
+        effective_timeout = self._effective_timeout(timeout_seconds)
 
         relative_cwd = "." if resolved_cwd == self._config.workspace_root else self._relative_path(resolved_cwd)
         acp_run_command = self._acp_run_command()
+        cancelled = False
         if acp_run_command is not None:
             backend_type = "acp"
             acp_result = acp_run_command(
@@ -326,25 +351,34 @@ class WorkspaceCommandTools:
                 args=normalized_argv[1:],
                 cwd=str(resolved_cwd),
                 max_output_bytes=self._max_output_bytes,
-                timeout_seconds=self._timeout_seconds,
+                timeout_seconds=effective_timeout,
             )
-            stdout_raw = acp_result.stdout
-            stderr_raw = acp_result.stderr
+            stdout, stdout_truncated = _truncate_to_max_bytes(acp_result.stdout, self._max_output_bytes)
+            stderr, stderr_truncated = _truncate_to_max_bytes(acp_result.stderr, self._max_output_bytes)
             exit_code = acp_result.exit_code
             timed_out = acp_result.timed_out
-            output_truncated = acp_result.output_truncated
+            output_truncated = acp_result.output_truncated or stdout_truncated or stderr_truncated
         else:
             backend_type = "local"
-            stdout_raw, stderr_raw, exit_code, timed_out = self._run_local(
+            local = self._run_local(
                 argv=normalized_argv,
                 cwd=resolved_cwd,
+                timeout_seconds=effective_timeout,
+                cancel_event=cancel_event,
             )
-            output_truncated = False
+            stdout, stderr = local.stdout, local.stderr
+            exit_code = local.exit_code
+            timed_out = local.timed_out
+            cancelled = local.cancelled
+            output_truncated = local.output_truncated
 
-        stdout, stdout_truncated = _truncate_to_max_bytes(stdout_raw, self._max_output_bytes)
-        stderr, stderr_truncated = _truncate_to_max_bytes(stderr_raw, self._max_output_bytes)
-        output_truncated = output_truncated or stdout_truncated or stderr_truncated
-        status = "timeout" if timed_out else "completed"
+        if cancelled:
+            status = "cancelled"
+        elif timed_out:
+            status = "timeout"
+        else:
+            status = "completed"
+        duration_ms = round((perf_counter() - started_at) * 1000, 3)
 
         self._record_tool_event(
             tool_call_id=tool_call_id,
@@ -365,6 +399,7 @@ class WorkspaceCommandTools:
                 "stdout_bytes": len(stdout.encode("utf-8")),
                 "stderr_bytes": len(stderr.encode("utf-8")),
                 "max_output_bytes": self._max_output_bytes,
+                "timeout_seconds": effective_timeout,
             },
         )
 
@@ -377,41 +412,93 @@ class WorkspaceCommandTools:
             stderr=stderr,
             timed_out=timed_out,
             output_truncated=output_truncated,
+            duration_ms=duration_ms,
+            timeout_seconds=effective_timeout,
+            status=status,
         )
+
+    def _effective_timeout(self, requested: float | None) -> float:
+        if requested is None:
+            value = self._timeout_seconds
+        else:
+            try:
+                value = float(requested)
+            except (TypeError, ValueError):
+                value = self._timeout_seconds
+        return min(max(value, 1.0), self._max_timeout_seconds)
 
     def _run_local(
         self,
         *,
         argv: list[str],
         cwd: Path,
-    ) -> tuple[str, str, int | None, bool]:
+        timeout_seconds: float,
+        cancel_event: Event | None,
+    ) -> "_LocalExecution":
+        popen_kwargs: dict[str, Any] = {
+            "cwd": str(cwd),
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "env": _external_command_environment(),
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
         try:
-            completed = subprocess.run(
-                argv,
-                cwd=str(cwd),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self._timeout_seconds,
-                check=False,
-                env=_external_command_environment(),
-            )
-        except subprocess.TimeoutExpired as exc:
-            return (
-                _coerce_output_text(exc.stdout),
-                _coerce_output_text(exc.stderr),
-                None,
-                True,
-            )
+            process = subprocess.Popen(argv, **popen_kwargs)
+        except FileNotFoundError:
+            raise CommandNotFoundError(
+                f"Command not found on PATH: {argv[0]}. Only allowlisted programs that are "
+                "installed on this machine can run."
+            ) from None
+        except PermissionError as exc:
+            raise ToolError(
+                f"Command is not executable: {argv[0]} ({exc.strerror or exc}).",
+                code="command_not_executable",
+            ) from None
 
-        return (
-            completed.stdout or "",
-            completed.stderr or "",
-            completed.returncode,
-            False,
+        stdout_collector = _PipeCollector(process.stdout, self._max_output_bytes)
+        stderr_collector = _PipeCollector(process.stderr, self._max_output_bytes)
+        stdout_collector.start()
+        stderr_collector.start()
+
+        deadline = monotonic() + timeout_seconds
+        timed_out = False
+        cancelled = False
+        exit_code: int | None = None
+        while True:
+            try:
+                exit_code = process.wait(timeout=_POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                elif monotonic() >= deadline:
+                    timed_out = True
+                else:
+                    continue
+                _terminate_process_tree(process)
+                try:
+                    process.wait(timeout=_KILL_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
+                exit_code = None
+                break
+        stdout_collector.join(timeout=_KILL_GRACE_SECONDS)
+        stderr_collector.join(timeout=_KILL_GRACE_SECONDS)
+        stdout_text, stdout_truncated = stdout_collector.render()
+        stderr_text, stderr_truncated = stderr_collector.render()
+        return _LocalExecution(
+            stdout=stdout_text,
+            stderr=stderr_text,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            cancelled=cancelled,
+            output_truncated=stdout_truncated or stderr_truncated,
         )
-
 
     def _acp_run_command(self) -> Any | None:
         if not bool(getattr(self._acp_backend, "terminal_enabled", False)):
@@ -529,7 +616,10 @@ class WorkspaceCommandTools:
             cwd=cwd,
             denial_reason="command_not_allowlisted",
         )
-        raise PermissionError(f"Command is not in the configured allowlist: {command_name}")
+        allowed = ", ".join(sorted(self._allowlisted_commands)) or "none"
+        raise PermissionError(
+            f"Command is not in the configured allowlist: {command_name}. Allowed: {allowed}."
+        )
 
     def _resolve_cwd_or_record_denial(
         self,
@@ -557,7 +647,7 @@ class WorkspaceCommandTools:
 
     def _resolve_workspace_path(self, path: str) -> Path:
         workspace_root = self._config.workspace_root.resolve()
-        requested_path = Path(path).expanduser()
+        requested_path = Path(str(path)).expanduser()
         if not requested_path.is_absolute():
             requested_path = workspace_root / requested_path
         resolved_path = requested_path.resolve()
@@ -566,7 +656,10 @@ class WorkspaceCommandTools:
         return resolved_path
 
     def _relative_path(self, path: Path) -> str:
-        return path.relative_to(self._config.workspace_root).as_posix()
+        try:
+            return path.relative_to(self._config.workspace_root).as_posix()
+        except ValueError:
+            return path.as_posix()
 
     def _record_denial(
         self,
@@ -644,21 +737,189 @@ class WorkspaceCommandTools:
         )
 
 
+@dataclass(frozen=True)
+class _LocalExecution:
+    stdout: str
+    stderr: str
+    exit_code: int | None
+    timed_out: bool
+    cancelled: bool
+    output_truncated: bool
+
+
+class _PipeCollector(Thread):
+    """Drain a pipe keeping the first and last bytes within a fixed memory budget."""
+
+    def __init__(self, pipe: IO[bytes] | None, max_bytes: int) -> None:
+        super().__init__(daemon=True)
+        self._pipe = pipe
+        self._max_bytes = max(1, int(max_bytes))
+        self._head_limit = max(1, self._max_bytes // 3)
+        self._tail_limit = max(1, self._max_bytes - self._head_limit)
+        self._head = bytearray()
+        self._tail = bytearray()
+        self._total = 0
+
+    def run(self) -> None:
+        if self._pipe is None:
+            return
+        try:
+            while True:
+                chunk = self._pipe.read(_PIPE_CHUNK_BYTES)
+                if not chunk:
+                    break
+                self._total += len(chunk)
+                if len(self._head) < self._head_limit:
+                    take = self._head_limit - len(self._head)
+                    self._head += chunk[:take]
+                    chunk = chunk[take:]
+                if chunk:
+                    self._tail += chunk
+                    if len(self._tail) > 2 * self._tail_limit:
+                        del self._tail[: len(self._tail) - self._tail_limit]
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                self._pipe.close()
+            except OSError:
+                pass
+
+    def render(self) -> tuple[str, bool]:
+        tail = bytes(self._tail[-self._tail_limit :]) if self._tail else b""
+        if self._total <= self._max_bytes:
+            return (bytes(self._head) + tail).decode("utf-8", errors="replace"), False
+        dropped = self._total - len(self._head) - len(tail)
+        text = (
+            bytes(self._head).decode("utf-8", errors="replace")
+            + f"\n[... {dropped} bytes truncated ...]\n"
+            + tail.decode("utf-8", errors="replace")
+        )
+        return text, True
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            process.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except (PermissionError, OSError):
+        try:
+            process.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def available_commands(commands: list[str]) -> list[str]:
     """Return policy commands which can actually launch on this machine."""
     return [command for command in commands if shutil.which(command)]
 
 
-def _external_command_environment() -> dict[str, str]:
-    """Undo PyInstaller loader changes before spawning participant tools."""
-    environment = dict(os.environ)
-    environment.pop("_MEIPASS2", None)
-    original_library_path = environment.pop("LD_LIBRARY_PATH_ORIG", None)
-    if original_library_path is None:
-        environment.pop("LD_LIBRARY_PATH", None)
-    else:
-        environment["LD_LIBRARY_PATH"] = original_library_path
-    return environment
+_ENV_EXACT = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "LANG",
+        "LANGUAGE",
+        "TZ",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "USERNAME",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_RUNTIME_DIR",
+        "JAVA_HOME",
+        "JDK_HOME",
+        "KOTLIN_HOME",
+        "ANDROID_HOME",
+        "ANDROID_SDK_ROOT",
+        "M2_HOME",
+        "MAVEN_HOME",
+        "MAVEN_OPTS",
+        "GOPATH",
+        "GOROOT",
+        "NVM_DIR",
+        "VIRTUAL_ENV",
+        "CONDA_PREFIX",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+    }
+)
+_ENV_PREFIXES = (
+    "LC_",
+    "GIT_",
+    "GRADLE_",
+    "JAVA_",
+    "PYTHON",
+    "NODE_",
+    "NPM_CONFIG_",
+    "SBT_",
+    "DOTNET_",
+    "CARGO_",
+    "RUSTUP_",
+)
+_ENV_BLOCKED_EXACT = frozenset({"PYTHONHOME", "PYTHONEXECUTABLE", "LD_LIBRARY_PATH"})
+_ENV_BLOCKED_PREFIXES = ("CODE4ME_", "_MEIPASS", "DYLD_", "PYINSTALLER")
+
+
+def _external_command_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Build the child environment: an allowlist of shell/toolchain variables.
+
+    Credentials the runtime itself needs (``CODE4ME_ACP_TOKEN`` and friends) and
+    PyInstaller loader variables never reach participant tools; a PyInstaller
+    ``LD_LIBRARY_PATH_ORIG`` is restored as the child's ``LD_LIBRARY_PATH``.
+    """
+    environment = dict(os.environ if source is None else source)
+    original_library_path = environment.get("LD_LIBRARY_PATH_ORIG")
+    child_environment: dict[str, str] = {}
+    for key, value in environment.items():
+        upper = key.upper()
+        if upper in _ENV_BLOCKED_EXACT or upper.startswith(_ENV_BLOCKED_PREFIXES):
+            continue
+        if upper in _ENV_EXACT or upper.startswith(_ENV_PREFIXES):
+            child_environment[key] = value
+    if original_library_path:
+        child_environment["LD_LIBRARY_PATH"] = original_library_path
+    return child_environment
 
 
 def _resolve_method(client: object, names: list[str]) -> Any | None:
@@ -705,11 +966,3 @@ def _truncate_to_max_bytes(value: str, max_output_bytes: int) -> tuple[str, bool
         except UnicodeDecodeError:
             truncated_bytes = truncated_bytes[1:]
     return "", True
-
-
-def _coerce_output_text(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value

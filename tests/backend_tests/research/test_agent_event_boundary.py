@@ -74,7 +74,9 @@ def test_a_research_bound_task_records_only_through_the_canonical_writer():
         return_value=SimpleNamespace(policy=None, allowed=True),
     ), patch.object(
         adapters, "_kill_switch_check", return_value=lambda: False
-    ), patch.object(adapters, "ingest_events_for_context", return_value=ack) as canonical_writer:
+    ), patch.object(adapters, "ingest_events_for_context", return_value=ack) as canonical_writer, patch.object(
+        adapters.crud, "reserve_agent_event_indexes", return_value=1
+    ):
         recorded = adapters.record_legacy_facts(object(), task=task, facts=[_fact()])
 
     assert recorded is not None and recorded.written is True
@@ -245,7 +247,9 @@ def test_record_legacy_facts_locks_the_lifecycle_rows():
         return_value=_SimpleNamespace(policy=None, allowed=False),
     ), patch.object(
         adapters, "_kill_switch_check", return_value=lambda: False
-    ), patch.object(adapters, "ingest_events_for_context", return_value=ack):
+    ), patch.object(adapters, "ingest_events_for_context", return_value=ack), patch.object(
+        adapters.crud, "reserve_agent_event_indexes", return_value=1
+    ):
         result = adapters.record_legacy_facts(object(), task=task, facts=[_fact()])
 
     assert result is not None and result.written is True

@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 ACP_TASK_SOURCE = "research-acp"
 
+#: The plugin mirrors the end of a native agent run as this canonical event; an
+#: acknowledged one means the run's task can be finalized.
+RUN_COMPLETED_EVENT_TYPE = "agent.run.completed"
+
 PLACEHOLDER_PROFILE = {
     "agent_profile": "acp-external",
     "model": "",
@@ -90,7 +94,9 @@ def ensure_agent_tasks_for_ack(
         participant = identity_store.get_participant(db, enrollment.participant_id)
         if participant is None or participant.account_id is None:
             continue
-        if crud.get_agent_task_by_external_run_id(db, run_id) is not None:
+        existing = crud.get_agent_task_by_external_run_id(db, run_id)
+        if existing is not None:
+            _finalize_if_completed(db, existing, events)
             continue
         try:
             task = crud.create_agent_task(
@@ -114,4 +120,30 @@ def ensure_agent_tasks_for_ack(
         logger.info(
             "linked ACP run %s to agent_task %s", run_id, getattr(task, "task_id", "?")
         )
+        _finalize_if_completed(db, task, events)
     return created
+
+
+def _finalize_if_completed(db: Session, task, events: list) -> None:
+    """Finalize ``task`` once its run's completion event was acknowledged."""
+    if getattr(task, "status", None) not in (None, "pending", "running"):
+        return
+    completed = next(
+        (event for event in events if getattr(event, "event_type", None) == RUN_COMPLETED_EVENT_TYPE),
+        None,
+    )
+    if completed is None:
+        return
+    payload = getattr(completed, "payload", None) or {}
+    outcome = str(payload.get("outcome") or payload.get("status") or "").lower()
+    status = (
+        "cancelled" if "cancel" in outcome
+        else "failed" if ("fail" in outcome or "error" in outcome or "crash" in outcome)
+        else "done"
+    )
+    try:
+        from agents import lifecycle
+
+        lifecycle.finalize_agent_task(db, task.task_id, status=status)
+    except Exception as error:  # noqa: BLE001 - the ack must never fail on this
+        logger.warning("could not finalize ACP run task %s: %s", getattr(task, "task_id", "?"), error)

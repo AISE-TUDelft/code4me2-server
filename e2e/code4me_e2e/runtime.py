@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import platform
 import shutil
 import subprocess
-from pathlib import Path
-from typing import Tuple
+from typing import TYPE_CHECKING, Tuple
 
 from . import process
 from .paths import E2E_DIR, require_workspace
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _fingerprint(paths: list[Path], root: Path) -> str:
@@ -32,10 +33,18 @@ def _fingerprint(paths: list[Path], root: Path) -> str:
 
 
 def _harness_python(server: Path) -> str:
-    python = os.environ.get("CODE4ME_E2E_PYTHON") or str(server / ".venv/bin/python")
-    if not Path(python).is_file():
-        raise RuntimeError("Set CODE4ME_E2E_PYTHON to Python with the server runtime and PyInstaller installed.")
-    return python
+    """The native build interpreter the prerequisite check selects.
+
+    CODE4ME_E2E_PYTHON, else the first of the server venv and the harness's
+    e2e/.venv that imports every build input.
+    """
+    from .prereqs import resolve_native_python
+
+    chosen = resolve_native_python()
+    if chosen is None:
+        raise RuntimeError("No native build Python imports PyInstaller and the server runtime: run "
+                           "`python3 -m code4me_e2e setup` or set CODE4ME_E2E_PYTHON.")
+    return chosen[0]
 
 
 def _platform_tag() -> Tuple[str, str]:
@@ -152,5 +161,4 @@ def prepare(run_path: Path) -> list[str]:
     serialized = json.dumps(manifest, indent=2) + "\n"
     if not manifest_path.is_file() or manifest_path.read_text() != serialized:
         manifest_path.write_text(serialized)
-    return [f"-PresearchAgentDir={binary.parent}", f"-PresearchAgentBinary={binary}",
-            f"-Pcode4me.localRuntimeDir={overlay}", "--no-configuration-cache"]
+    return [f"-Pcode4me.localRuntimeDir={overlay}", "--no-configuration-cache"]

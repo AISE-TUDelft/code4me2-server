@@ -31,6 +31,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from App import App
+from backend.classic_models_gate import ClassicModelsGate
 from backend.Responses import JsonResponseWithStatus, TooManyRequests
 from backend.routers import router
 from Code4meV2Config import Code4meV2Config
@@ -75,6 +76,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         logging.warning("Shutting down the server and cleaning up resources...")
         _app.cleanup()
+
+
+# Relay paths metered per enrollment (research budgets). See
+# SimpleRateLimiter._get_rate_limit for why they get a higher per-IP floor.
+METERED_INFERENCE_PATHS = frozenset(
+    {
+        "/api/research/inference/v1/chat/completions",
+        "/api/agent/inference",
+        "/api/acp/inference",
+        "/api/acp/chat/completions",
+    }
+)
+METERED_INFERENCE_DEFAULT_RATE_PER_HOUR = 20000
 
 
 class SimpleRateLimiter(BaseHTTPMiddleware):
@@ -131,15 +145,26 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         """
         Get the rate limit for a specific endpoint.
 
+        Metered inference paths get a higher floor unless configured
+        explicitly: an agent loop makes hundreds of model calls per hour and a
+        lab behind one NAT shares the per-IP counter, while those paths are
+        already protected by authentication and per-enrollment budgets.
+
         Args:
             endpoint: The API endpoint path
 
         Returns:
             The maximum number of requests allowed per hour for this endpoint
         """
-        return config.max_request_rate_per_hour_config.get(
-            endpoint, config.default_max_request_rate_per_hour
-        )
+        configured = config.max_request_rate_per_hour_config.get(endpoint)
+        if configured is not None:
+            return configured
+        if endpoint in METERED_INFERENCE_PATHS:
+            return max(
+                config.default_max_request_rate_per_hour,
+                METERED_INFERENCE_DEFAULT_RATE_PER_HOUR,
+            )
+        return config.default_max_request_rate_per_hour
 
     def _get_client_key(self, request: Request) -> str:
         """
@@ -225,6 +250,12 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
     )
+
+    # Refuse the classic model endpoints when they are switched off (e.g. the no-GPU dev
+    # stack). Added first so it runs innermost, behind CORS and rate limiting.
+    if not config.classic_models_enabled:
+        app.add_middleware(ClassicModelsGate)
+        logging.info("Classic completion/chat models disabled (CLASSIC_MODELS_ENABLED=false)")
 
     # Configure CORS middleware
     # IMPORTANT: When allow_credentials=True, Access-Control-Allow-Origin cannot be '*'.

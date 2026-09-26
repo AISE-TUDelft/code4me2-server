@@ -48,6 +48,7 @@ def _prepare_enrolled_running_session(client, session_factory, current_user, nam
         "/api/research/studies",
         json={
             "name": f"{name} study",
+            "default_budget_usd": "10",
             "session_policy": {
                 "idle_timeout_seconds": 600,
                 "resume_grace_seconds": 120,

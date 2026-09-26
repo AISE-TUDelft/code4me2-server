@@ -57,6 +57,12 @@
     "artifact_path": null,
     "artifact_size": 1024,
     "profile_name": "e2e-profile",
+    "_probe_comment": "Inputs of the standalone agent-probe only (--layer agents runs both frameworks and uses discovery plus CODE4ME_E2E_<FRAMEWORK>_EXECUTABLE). executable replaces discovery; agent_command/agent_package name the agent like a BYOA release; agent_command_args replaces the default ACP argv; agent_home replaces the isolated per-run home (must be empty).",
+    "agent_command": null,
+    "agent_command_args": [],
+    "agent_package": null,
+    "executable": null,
+    "agent_home": null,
     "adapter_id": null,
     "adapter_version": "1.0.0",
     "adapter_digest": null

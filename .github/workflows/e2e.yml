@@ -6,9 +6,14 @@ name: E2E harness
 #
 # Layers:
 #   backend  - 17 HTTP workflow steps against the disposable Compose stack
-#   browser  - 27 headless Chromium website checks
+#   browser  - 37 headless Chromium website checks + persisted read models
 #   plugin   - Kotlin IntelliJ fixture + HTTP workflow
-#   all      - real IDE + native ACP + fixture + HTTP (needs a graphical runner)
+#   agents   - real Goose/Codex ACP probes (needs a host Goose; not offered here)
+#   all      - every layer (needs a graphical runner)
+#
+# `test` provisions missing prerequisites itself (e.g. e2e/.venv for the native
+# agent build); the explicit image/Playwright steps below just keep CI fast and
+# its Playwright interpreter explicit.
 #
 # The full IDE layer runs under Xvfb on a Linux runner. Pin the plugin ref for
 # that manual gate so its result identifies the exact pair of source commits.
