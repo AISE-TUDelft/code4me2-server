@@ -137,6 +137,10 @@ SYSTEM_TOKENS = frozenset(
         "arch",
         "trace",
         "span",
+        # Protocol metadata: the relay's ``streaming`` flag describes how the
+        # call was transported, not content. Without this the fail-closed
+        # default classifies it CONTENT and the whole relay fact is rejected.
+        "streaming",
         "level",
         "tokens",
         "tokens_used",
@@ -146,7 +150,19 @@ SYSTEM_TOKENS = frozenset(
 # rather than via a bare ``exit`` token: that token would also reclassify the
 # proxy's ``exit_status`` payload key from BEHAVIORAL to SYSTEM. Mirrors the
 # Kotlin FieldClassifier's ``systemKeyExact``.
-SYSTEM_KEY_EXACT = frozenset({"exit_code"})
+SYSTEM_KEY_EXACT = frozenset(
+    {
+        "exit_code",
+        # Markers the server stamps on its own relay/self-report observations:
+        # which legacy fact a row is and the HTTP status of the server's own
+        # upstream call. They describe the relay's bookkeeping, never the
+        # participant; the dashboards read ``legacy_kind`` to find model and
+        # tool calls and reported zero under a METRICS-only policy while the
+        # ``kind``/``status`` tokens made them BEHAVIORAL.
+        "legacy_kind",
+        "upstream_status",
+    }
+)
 BEHAVIORAL_TOKENS = frozenset(
     {
         "tool",
@@ -225,6 +241,16 @@ def classify_field(name: Any, value: Any = None) -> FieldClass:
         return FieldClass.SECRET
     if _normalize_key(name) in SYSTEM_KEY_EXACT:
         return FieldClass.SYSTEM
+
+    # A bare magnitude of something ("tool_result_length": 42, "step_index": 0)
+    # is structural metadata, never content — even when the measured thing
+    # (arguments, results, ...) would itself be content. Without this, numeric
+    # telemetry like the relay's length-only tool metadata or step counters is
+    # rejected as CONTENT and takes the whole event down with it.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        suffixes = ("_length", "_count", "_counts", "_bytes", "_size", "_ms", "_index")
+        if _normalize_key(name).endswith(suffixes):
+            return FieldClass.SYSTEM
 
     tokens = _tokens(name)
     if tokens & CONTENT_TOKENS:

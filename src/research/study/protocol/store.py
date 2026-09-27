@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+from agents.tools import set_harness_profile_fields
 from database.db_schemas import AgentProfile, Study as StudyRow
 from database import crud as database_crud
 from database.research_schemas import (
@@ -177,6 +178,13 @@ def build_profile_selections(
             "temperature": profile.temperature,
             "max_context_tokens": profile.max_context_tokens,
         }
+        # Only a set prompt is frozen, so a profile without one keeps the exact
+        # snapshot (and profile_digest) it produced before the column existed.
+        if getattr(profile, "system_prompt", None) is not None:
+            snapshot["system_prompt"] = profile.system_prompt
+        # Likewise the built-in runtime's command/harness settings (D-01),
+        # validated above with the profile↔release contract.
+        snapshot.update(set_harness_profile_fields(profile))
         selections.append(
             StudyAgentProfile(
                 study_id=study_id,
@@ -209,6 +217,9 @@ def create_study(
     profile_ids: Optional[Sequence[uuid.UUID]] = None,
     allow_shared_profiles: bool = False,
     now: Optional[datetime] = None,
+    inference_budget_default_micro_usd: int = 0,
+    inference_budget_warning_fraction: Optional[Any] = None,
+    inference_budget_updated_by: Optional[str] = None,
 ) -> StudyView:
     """Insert the real ``public.study`` identity row.
 
@@ -237,7 +248,14 @@ def create_study(
         research_config_digest=config_digest,
         join_code=join_code,
         created_at=timestamp,
+        # Participant budgets (shared provider key): editable later and kept
+        # outside the digested research configuration on purpose.
+        inference_budget_default_micro_usd=int(inference_budget_default_micro_usd or 0),
+        inference_budget_updated_at=timestamp if inference_budget_default_micro_usd else None,
+        inference_budget_updated_by=inference_budget_updated_by,
     )
+    if inference_budget_warning_fraction is not None:
+        row.inference_budget_warning_fraction = inference_budget_warning_fraction
     session.add(row)
     for selection in build_profile_selections(
         session,

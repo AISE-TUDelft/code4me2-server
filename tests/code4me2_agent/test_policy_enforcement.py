@@ -1,6 +1,7 @@
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import json
 
 import pytest
 
@@ -59,7 +60,7 @@ def test_per_step_policy_keeps_read_tools_automatic():
 
 def test_per_step_policy_executes_mutation_after_allow_once():
     file_tools = MagicMock()
-    file_tools.read_file.return_value = SimpleNamespace(content="before")
+    file_tools.read_text.return_value = ("before", False)
     file_tools.write_file.return_value = {"status": "ok"}
     sink = ApprovalSink(ApprovalDecision("accepted", "once"))
     registry = ToolRegistry(
@@ -198,6 +199,8 @@ def test_policy_refresh_rebuilds_session_memory_limit(tmp_path):
     core.load_session_memory(
         [
             {"role": "system", "content": "system"},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
             {"role": "user", "content": "first message"},
             {"role": "assistant", "content": "second message"},
         ]
@@ -212,9 +215,12 @@ def test_policy_refresh_rebuilds_session_memory_limit(tmp_path):
 
     core.apply_config(restricted)
 
+    # The current turn (from the last user message) is always kept; older
+    # exchanges are dropped when the budget shrinks.
     assert core._session_memory is not None
     assert core._session_memory.window() == [
         {"role": "system", "content": "system"},
+        {"role": "user", "content": "first message"},
         {"role": "assistant", "content": "second message"},
     ]
 
@@ -259,9 +265,9 @@ def test_system_context_reports_host_and_available_commands(tmp_path):
     ):
         context = adapter._system_context()
 
-    assert "operating system is Windows" in context
-    assert "executable commands allowed by policy are: git" in context
-    assert "Never assume Bash" in context
+    assert "host OS: Windows" in context
+    assert "Allowlisted executables: git" in context
+    assert "no shell" in context
 
 
 def test_managed_telemetry_does_not_write_project_trace(tmp_path):
@@ -323,3 +329,115 @@ def test_content_preference_redacts_before_telemetry_sink(tmp_path):
         "exit_code": 0,
     }
     assert captured[0]["raw_payload"] is None
+
+
+class RecordingTelemetry:
+    """Minimal telemetry double capturing record() calls with event ids."""
+
+    def __init__(self):
+        self.events = []
+
+    def record(self, *, event_type, run_id, request_id, parent_event_id, payload, **kwargs):
+        event = {
+            "event_id": f"event-{len(self.events)}",
+            "event_type": event_type,
+            "run_id": run_id,
+            "request_id": request_id,
+            "parent_event_id": parent_event_id,
+            "payload": dict(payload),
+        }
+        self.events.append(event)
+        return event
+
+
+def _read_registry(telemetry=None, decision=ApprovalDecision("accepted", "once")):
+    file_tools = MagicMock()
+    file_tools.write_file.return_value = {"status": "ok"}
+    sink = ApprovalSink(decision)
+    registry = ToolRegistry(
+        file_tools,
+        MagicMock(),
+        event_sink=sink,
+        allowed_tools=frozenset({"write_file"}),
+        approval_policy="per_step",
+        telemetry=telemetry,
+    )
+    return registry, sink
+
+
+def test_per_step_allow_once_emits_requested_then_decided():
+    telemetry = RecordingTelemetry()
+    registry, _ = _read_registry(telemetry=telemetry)
+    registry.execute(
+        ToolCall("call-1", "write_file", {"path": "README.md", "content": "hi"}),
+        run_id="run-1",
+        request_id="request-1",
+    )
+    kinds = [e["event_type"] for e in telemetry.events]
+    assert kinds == ["agent.permission.requested", "agent.permission.decided"]
+    requested, decided = telemetry.events
+    assert requested["payload"] == {
+        "tool_name": "write_file",
+        "tool_call_id": "call-1",
+        "kind": "edit",
+    }
+    assert decided["payload"] == {
+        "tool_name": "write_file",
+        "tool_call_id": "call-1",
+        "kind": "edit",
+        "decision": "accepted",
+        "decision_scope": "once",
+    }
+    assert decided["parent_event_id"] == requested["event_id"]
+    assert requested["run_id"] == decided["run_id"] == "run-1"
+
+
+def test_per_step_reject_emits_decided_rejected():
+    telemetry = RecordingTelemetry()
+    registry, _ = _read_registry(
+        telemetry=telemetry, decision=ApprovalDecision("rejected")
+    )
+    with pytest.raises(ToolRegistryError):
+        registry.execute(
+            ToolCall("call-2", "write_file", {"path": "secret.txt", "content": "x"}),
+            run_id="run-2",
+            request_id="request-2",
+        )
+    kinds = [e["event_type"] for e in telemetry.events]
+    assert kinds == ["agent.permission.requested", "agent.permission.decided"]
+    decided = telemetry.events[1]
+    assert decided["payload"]["decision"] == "rejected"
+    # File paths are content: they must never ride along in permission metadata.
+    assert "secret.txt" not in json.dumps(telemetry.events)
+
+
+def test_auto_policy_emits_policy_accept_without_request():
+    telemetry = RecordingTelemetry()
+    file_tools = MagicMock()
+    file_tools.read_file.return_value = {"content": "ok"}
+    registry = ToolRegistry(
+        file_tools,
+        MagicMock(),
+        allowed_tools=frozenset({"read_file"}),
+        approval_policy="auto",
+        telemetry=telemetry,
+    )
+    registry.execute(
+        ToolCall("call-3", "read_file", {"path": "README.md"}),
+        run_id="run-3",
+        request_id="request-3",
+    )
+    kinds = [e["event_type"] for e in telemetry.events]
+    assert kinds == ["agent.permission.decided"]
+    assert telemetry.events[0]["payload"]["decision"] == "accepted"
+    assert telemetry.events[0]["payload"]["decision_scope"] == "policy"
+
+
+def test_permission_events_absent_without_telemetry_wiring():
+    registry, _ = _read_registry(telemetry=None)
+    # Existing behavior unchanged: no telemetry object means no emission.
+    registry.execute(
+        ToolCall("call-4", "write_file", {"path": "README.md", "content": "hi"}),
+        run_id="run-4",
+        request_id="request-4",
+    )

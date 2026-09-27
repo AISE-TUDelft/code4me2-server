@@ -42,7 +42,12 @@ from sqlalchemy.exc import IntegrityError
 import Queries  # noqa: TC001 - FastAPI evaluates route annotations at runtime
 from agents import provider as provider_module
 from agents import registry
-from agents.tools import CODE4ME2_AGENT_TOOLS
+from agents.tools import (
+    CODE4ME2_AGENT_TOOLS,
+    validate_command_timeout_seconds,
+    validate_commands_allowlist,
+    validate_harness_options,
+)
 from App import App
 from backend.acp_authorization import (
     AcpAuthorizationDenied,
@@ -67,7 +72,8 @@ from backend.routers.analytics.auth_utils import (
 )
 from backend.routers.research import access
 from database import crud
-from research.analysis.operations import store as operations_store
+from privacy import collection
+from research.budget.meter import InferenceMeter
 from research.runtime.sessions import store as session_store
 from research.study.agents.enums import MANAGED_RUNTIME_FRAMEWORK
 from utils import create_uuid
@@ -75,58 +81,21 @@ from utils import create_uuid
 router = APIRouter()
 
 
-def _active_enrollment_id(db, *, account_id, study_id):
-    """Resolve the account's live enrollment id for kill-switch scoping.
-
-    Best-effort: ``None`` (no participant, no active enrollment, or a store
-    error) simply means the enrollment-scoped kill switch cannot be matched,
-    and the study-scoped check plus ``require_live_enrollment`` stay decisive.
-    """
-    if account_id is None:
-        return None
-    try:
-        from research.participants import identity as identity_store
-        from research.participants.enums import EnrollmentStatus
-
-        participant = identity_store.get_participant_by_account(db, account_id)
-        if participant is None:
-            return None
-        for row in identity_store.list_enrollments(db, participant.participant_id):
-            if row.status != EnrollmentStatus.ACTIVE.value:
-                continue
-            if study_id is not None and row.study_id != study_id:
-                continue
-            return row.enrollment_id
-    except Exception:  # noqa: BLE001 - the funded gate below is decisive
-        return None
-    return None
-
-
-def _require_funded_access(
-    db, *, account_id, study_id, enrollment_id=None
-) -> None:
+def _require_funded_access(db, *, account_id, study_id, enrollment_id=None):
     """Re-check live enrollment/window/kill switch for a study-funded operation.
 
-    The single funded gate for ACP paths: the account must have an ACTIVE
-    enrollment, the study must not be ``STUDY_STOPPED`` and must still be open,
-    and no operator kill switch may be engaged — at study scope or for the
-    account's own enrollment. A previously issued run/capability never bypasses
-    current server state.
+    The single funded gate for ACP paths (``access.require_funded_access``):
+    the account must have an ACTIVE enrollment, the study must not be
+    ``STUDY_STOPPED`` and must still be open, and no operator kill switch may be
+    engaged — at study scope or for that very enrollment. A previously issued
+    run/capability never bypasses current server state. Returns the live
+    enrollment row so callers can meter the call against its budget.
+    ``enrollment_id`` is accepted for call-site compatibility; the switch is
+    always scoped to the enrollment the gate resolves.
     """
-    scoped_enrollment_id = enrollment_id
-    if scoped_enrollment_id is None:
-        scoped_enrollment_id = _active_enrollment_id(
-            db, account_id=account_id, study_id=study_id
-        )
-    kill_switch_check = operations_store.db_kill_switch_check(
-        db, study_id=study_id, enrollment_id=scoped_enrollment_id
-    )
     try:
-        access.require_live_enrollment(
-            db,
-            account_id=account_id,
-            study_id=study_id,
-            kill_switch_check=kill_switch_check,
+        return access.require_funded_access(
+            db, account_id=account_id, study_id=study_id
         )
     except access.FundedAccessRefused as exc:
         raise HTTPException(
@@ -135,15 +104,16 @@ def _require_funded_access(
         ) from exc
 
 
-def _require_funded_task(db, task) -> None:
+def _require_funded_task(db, task):
     """Re-check live enrollment/window/kill switch for a study-funded task.
 
     Applied to the managed run replay and inference paths so a previously issued
-    run/capability never bypasses current server state.
+    run/capability never bypasses current server state. Returns the live
+    enrollment row, or ``None`` for a non-research task.
     """
     if getattr(task, "study_id", None) is None:
-        return
-    _require_funded_access(
+        return None
+    return _require_funded_access(
         db,
         account_id=getattr(task, "owner_user_id", None),
         study_id=task.study_id,
@@ -159,7 +129,7 @@ FALLBACK_COMMANDS_ALLOWLIST = ["pwd", "ls", "cat", "grep", "rg"]
 FALLBACK_TOOLS = ["read_file", "list_files", "search_files"]
 FALLBACK_MODEL = "qwen2.5-coder:7b"
 FALLBACK_MAX_ITERATIONS = 6
-FALLBACK_MAX_CONTEXT_TOKENS = 16_000
+FALLBACK_MAX_CONTEXT_TOKENS = 32_000
 MANAGED_PROTOCOL_VERSION = "1"
 MANAGED_RUNTIME = MANAGED_RUNTIME_FRAMEWORK
 SUPPORTED_APPROVAL_POLICIES = frozenset({"auto", "per_step", "suggestion_only"})
@@ -196,7 +166,7 @@ async def acp_chat_completions(
             raise HTTPException(status_code=503, detail="No active agent profile is configured.")
         # Live enrollment/window/kill-switch gate BEFORE provider resolution: a
         # stopped or closed study never reaches a provider connection.
-        _require_funded_access(
+        enrollment = _require_funded_access(
             db, account_id=user_uuid, study_id=assignment.study_id
         )
         profile = assignment.profile
@@ -226,16 +196,58 @@ async def acp_chat_completions(
     payload["model"] = profile.model
     if profile.temperature is not None:
         payload["temperature"] = profile.temperature
-    async with httpx.AsyncClient(timeout=120) as client:
-        upstream_response = await client.post(
-            upstream.endpoint(responses_api=False),
-            json=payload,
-            headers={"Authorization": f"Bearer {upstream.api_key}"},
+    # Research budgets: reserve the worst-case cost before the call, settle the
+    # actual usage afterwards (or void/forfeit the hold, see the meter).
+    meter = InferenceMeter(
+        app=app,
+        enrollment_id=enrollment.enrollment_id,
+        study_id=assignment.study_id,
+        connection_id=connection.connection_id,
+        model=profile.model,
+        entry_point="acp_chat_completions",
+    )
+    refusal = await meter.reserve(
+        payload, request_id=str(uuid.uuid4()), upstream_base_url=upstream.base_url
+    )
+    if refusal is not None:
+        return refusal
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            upstream_response = await client.post(
+                upstream.endpoint(responses_api=False),
+                json=payload,
+                headers={"Authorization": f"Bearer {upstream.api_key}"},
+            )
+    except httpx.HTTPError as error:
+        await meter.resolve_transport_error(error)
+        return JSONResponse(
+            {
+                "error": {
+                    "message": (
+                        "The model provider could not be reached "
+                        f"({type(error).__name__}). Try again shortly."
+                    ),
+                    "type": "upstream_unavailable",
+                    "code": 502,
+                }
+            },
+            status_code=502,
+        )
+    if upstream_response.status_code >= 400:
+        await meter.resolve_upstream_error(upstream_response.status_code)
+    else:
+        try:
+            upstream_json = upstream_response.json()
+        except ValueError:
+            upstream_json = None
+        await meter.resolve_response(
+            upstream_json, upstream_status=upstream_response.status_code
         )
     return Response(
         content=upstream_response.content,
         status_code=upstream_response.status_code,
         media_type=upstream_response.headers.get("content-type", "application/json"),
+        headers=meter.response_headers(),
     )
 
 
@@ -403,10 +415,8 @@ def prepare_acp_grant(
     if user_id is not None:
         db = app.get_db_session()
         try:
-            kill_switch_check = operations_store.db_kill_switch_check(db)
-            access.require_live_enrollment(
-                db, account_id=user_id, kill_switch_check=kill_switch_check
-            )
+            # Study- and enrollment-scoped kill switches both refuse the grant.
+            access.require_funded_access(db, account_id=user_id)
         except access.FundedAccessRefused as exc:
             raise HTTPException(
                 status_code=403,
@@ -537,8 +547,14 @@ def get_acp_agent_config(
        normal path, and it's what makes the assignment govern the runtime;
     2. the user's ``config`` row, whose optional ``agent`` section can override
        the command allowlist (an operational safety setting rather than an
-       experimental condition, so it stays outside the profile);
+       experimental condition, so it stays outside the profile). When the
+       profile sets its own ``commands_allowlist`` the config row can only
+       narrow it (intersection, profile order); otherwise it replaces the
+       fallback list;
     3. the conservative fallback constants above.
+
+    ``command_timeout_seconds`` and ``harness_options`` are returned only when
+    the profile sets them, so a config without them is unchanged.
 
     No API key is ever returned — only ``api_key_ref``, the environment
     variable name the agent reads it from locally.
@@ -572,6 +588,10 @@ def get_acp_agent_config(
     approval_policy: Optional[str] = None
     temperature: Optional[float] = None
     max_context_tokens: Optional[int] = None
+    system_prompt: Optional[str] = None
+    profile_allowlist: Optional[list[str]] = None
+    command_timeout_seconds: Optional[int] = None
+    harness_options: Optional[dict] = None
     store_agent_content = False
 
     db = app.get_db_session()
@@ -598,6 +618,7 @@ def get_acp_agent_config(
                 approval_policy = profile.approval_policy
                 temperature = profile.temperature
                 max_context_tokens = profile.max_context_tokens
+                system_prompt = getattr(profile, "system_prompt", None)
                 max_iterations = max(1, int(profile.max_steps or max_iterations))
                 try:
                     parsed_tools = json.loads(profile.tools_json or "[]")
@@ -610,6 +631,21 @@ def get_acp_agent_config(
                     logging.warning(
                         f"[ACP/agent-config] profile {profile.name!r} has invalid "
                         f"tools_json — using fallback tool set"
+                    )
+                try:
+                    (
+                        profile_allowlist,
+                        command_timeout_seconds,
+                        harness_options,
+                    ) = _profile_harness_settings(profile)
+                except ValueError:
+                    if managed_protocol_version is not None:
+                        # Fail closed (503 below) rather than run the arm
+                        # without its frozen command/harness settings.
+                        raise
+                    logging.warning(
+                        f"[ACP/agent-config] profile {profile.name!r} has invalid "
+                        f"command/harness settings — ignoring them"
                     )
                 logging.info(
                     f"[ACP/agent-config] profile={profile.name!r} "
@@ -630,6 +666,7 @@ def get_acp_agent_config(
 
             # The command allowlist is an operational guardrail, so it can be
             # narrowed per-user via the config row independently of the profile.
+            config_allowlist: Optional[list[str]] = None
             user = crud.get_user_by_id(db, user_uuid) if user_uuid else None
             if user is not None:
                 config_row = crud.get_config_by_id(db, user.config_id)
@@ -637,9 +674,12 @@ def get_acp_agent_config(
                     overrides = _parse_agent_config_section(config_row.config_data)
                     raw_allowlist = overrides.get("commands_allowlist")
                     if isinstance(raw_allowlist, list):
-                        commands_allowlist = [
+                        config_allowlist = [
                             str(c).strip() for c in raw_allowlist if c
                         ]
+            commands_allowlist = _effective_commands_allowlist(
+                profile_allowlist, config_allowlist
+            )
     except Exception as error:
         if managed_protocol_version is not None:
             raise HTTPException(
@@ -703,6 +743,9 @@ def get_acp_agent_config(
             max_context_tokens=max_context_tokens,
             approval_policy=approval_policy,
             temperature=temperature,
+            system_prompt=system_prompt,
+            command_timeout_seconds=command_timeout_seconds,
+            harness_options=harness_options,
             store_agent_content=store_agent_content,
             transport=transport,
             managed_protocol_version=(
@@ -710,6 +753,66 @@ def get_acp_agent_config(
             ),
         ),
     )
+
+
+class _InvalidHarnessSetting(ValueError):
+    """A frozen command/harness setting is malformed; ``detail`` is the 503 text."""
+
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
+
+
+def _profile_harness_settings(
+    profile,
+) -> tuple[Optional[list[str]], Optional[int], Optional[dict]]:
+    """The profile's built-in runtime command/harness settings (decision D-01).
+
+    Returns ``(commands_allowlist, command_timeout_seconds, harness_options)``,
+    each ``None`` when unset. Raises :class:`_InvalidHarnessSetting` (a
+    ``ValueError``) when a frozen value is malformed, so callers fail closed
+    instead of dropping an arm's setting. The verify command is checked against
+    the profile's own allowlist, never against the (possibly narrower)
+    effective one.
+    """
+    allowlist = getattr(profile, "commands_allowlist", None)
+    timeout = getattr(profile, "command_timeout_seconds", None)
+    options = getattr(profile, "harness_options", None)
+    try:
+        if allowlist is not None:
+            allowlist = validate_commands_allowlist(allowlist)
+    except ValueError as error:
+        raise _InvalidHarnessSetting("Assigned command policy is invalid") from error
+    try:
+        if timeout is not None:
+            timeout = validate_command_timeout_seconds(timeout)
+    except ValueError as error:
+        raise _InvalidHarnessSetting("Assigned profile command timeout is invalid") from error
+    try:
+        if options is not None:
+            options = validate_harness_options(options, commands_allowlist=allowlist)
+    except ValueError as error:
+        raise _InvalidHarnessSetting("Assigned profile harness options are invalid") from error
+    return allowlist, timeout, options
+
+
+def _effective_commands_allowlist(
+    profile_allowlist: Optional[list[str]], config_allowlist: Optional[list[str]]
+) -> list[str]:
+    """The command allowlist a runtime receives.
+
+    A profile allowlist is the arm's condition: the user's config row can only
+    narrow it (intersection, profile order kept). Without one the previous
+    behaviour holds: the config row replaces the fallback list.
+    """
+    if profile_allowlist is None:
+        if config_allowlist is not None:
+            return list(config_allowlist)
+        return list(FALLBACK_COMMANDS_ALLOWLIST)
+    if config_allowlist is None:
+        return list(profile_allowlist)
+    permitted = set(config_allowlist)
+    return [command for command in profile_allowlist if command in permitted]
 
 
 def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.UUID] = None) -> dict:
@@ -758,8 +861,14 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
         or max_iterations < 1
     ):
         raise HTTPException(status_code=503, detail="Assigned profile policy is incomplete")
+    try:
+        profile_allowlist, command_timeout_seconds, harness_options = (
+            _profile_harness_settings(profile)
+        )
+    except _InvalidHarnessSetting as error:
+        raise HTTPException(status_code=503, detail=error.detail) from error
 
-    commands_allowlist = list(FALLBACK_COMMANDS_ALLOWLIST)
+    config_allowlist: Optional[list[str]] = None
     user = crud.get_user_by_id(db, user_id)
     if user is not None:
         config_row = crud.get_config_by_id(db, user.config_id)
@@ -770,9 +879,10 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
             if isinstance(raw_allowlist, list):
                 if not all(isinstance(command, str) and command.strip() for command in raw_allowlist):
                     raise HTTPException(status_code=503, detail="Assigned command policy is invalid")
-                commands_allowlist = [command.strip() for command in raw_allowlist]
+                config_allowlist = [command.strip() for command in raw_allowlist]
+    commands_allowlist = _effective_commands_allowlist(profile_allowlist, config_allowlist)
 
-    return {
+    policy = {
         "version": MANAGED_PROTOCOL_VERSION,
         "transport": "managed_backend",
         "agent_profile": profile.name,
@@ -788,6 +898,19 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
             db, str(user_id), study_id=study_id
         ),
     }
+    # The managed runtime re-applies this run policy before every prompt, so
+    # the frozen prompt travels with it (and is recorded on the task). A
+    # prompt-less arm keeps exactly the policy it had before the field existed.
+    system_prompt = getattr(profile, "system_prompt", None)
+    if system_prompt is not None:
+        policy["system_prompt"] = system_prompt
+    # Likewise the command timeout and harness switches (decision D-01): an arm
+    # without them keeps a byte-identical policy.
+    if command_timeout_seconds is not None:
+        policy["command_timeout_seconds"] = command_timeout_seconds
+    if harness_options is not None:
+        policy["harness_options"] = harness_options
+    return policy
 
 
 @router.get("/readiness")
@@ -917,6 +1040,11 @@ def create_managed_run(
                 status_code=503, detail="No active study agent profile is assigned to this user"
             )
         profile = assignment.profile
+        # Serialize with a concurrent erase: from here to the task insert nothing
+        # commits (the assignment lookup above may, on first use), so a task either
+        # commits before the erase (and is erased with the rest) or waits for it and
+        # then sees the opt-out.
+        collection.lock_account(db, user_id)
         if assignment.study_id is None:
             raise HTTPException(
                 status_code=409,
@@ -1074,7 +1202,7 @@ async def run_managed_inference(
     try:
         task = _require_managed_task(db, body, scope)
         # Live enrollment/window/kill-switch gate for funded managed inference.
-        _require_funded_task(db, task)
+        enrollment = _require_funded_task(db, task)
         policy = task.policy_snapshot
         if not _valid_managed_policy_snapshot(policy):
             raise HTTPException(status_code=503, detail="Managed run policy is unavailable")
@@ -1103,11 +1231,28 @@ async def run_managed_inference(
             "framework_version": task.framework_version,
             "connection": connection,
             "content_included": bool(policy.get("store_agent_content", False)),
+            "study_id": getattr(task, "study_id", None),
+            "enrollment_id": None if enrollment is None else enrollment.enrollment_id,
+            "research_session_id": getattr(task, "research_session_id", None),
         }
     finally:
         db.close()
 
     from agents import inference
+
+    # Research budgets: a study-funded managed call is metered against the
+    # participant's balance (reserve → forward → settle/void/forfeit).
+    meter = None
+    if snapshot["enrollment_id"] is not None:
+        meter = InferenceMeter(
+            app=app,
+            enrollment_id=snapshot["enrollment_id"],
+            study_id=snapshot["study_id"],
+            connection_id=snapshot["connection"].connection_id,
+            model=snapshot["model"],
+            entry_point="acp_inference",
+            research_session_id=snapshot["research_session_id"],
+        )
 
     model_request = dict(body.request)
     model_request["model"] = snapshot["model"]
@@ -1133,8 +1278,22 @@ async def run_managed_inference(
         profile_tools_json=snapshot["tools_json"],
         content_included=snapshot["content_included"],
         record_observation_events=False,
+        meter=meter,
         app=app,
     )
+
+
+def _valid_harness_options_snapshot(options: object) -> bool:
+    """Whether a run policy's ``harness_options`` has a valid shape.
+
+    The verify command is not re-checked against the policy's allowlist: that
+    list may already be narrowed by the user's config row.
+    """
+    try:
+        validate_harness_options(options, require_allowlisted_verify=False)
+    except ValueError:
+        return False
+    return True
 
 
 def _valid_managed_policy_snapshot(policy: object) -> bool:
@@ -1144,6 +1303,10 @@ def _valid_managed_policy_snapshot(policy: object) -> bool:
     context_limit = policy.get("max_context_tokens")
     iterations = policy.get("max_iterations")
     tools = policy.get("tools")
+    # Optional keys (decision D-01): absent (or null) in policies of arms that
+    # do not set them and in every policy written before they existed.
+    command_timeout = policy.get("command_timeout_seconds")
+    harness_options = policy.get("harness_options")
     return bool(
         policy.get("version") == MANAGED_PROTOCOL_VERSION
         and isinstance(policy.get("model"), str)
@@ -1166,7 +1329,17 @@ def _valid_managed_policy_snapshot(policy: object) -> bool:
         and isinstance(tools, list)
         and all(isinstance(tool, str) and tool.strip() for tool in tools)
         and set(tools).issubset(CODE4ME2_AGENT_TOOLS)
+        and (command_timeout is None or _valid_command_timeout(command_timeout))
+        and (harness_options is None or _valid_harness_options_snapshot(harness_options))
     )
+
+
+def _valid_command_timeout(value: object) -> bool:
+    try:
+        validate_command_timeout_seconds(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _enforce_inference_tool_policy(

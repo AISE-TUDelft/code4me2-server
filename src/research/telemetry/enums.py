@@ -49,6 +49,9 @@ class CanonicalEventType(str, Enum):
     INTERACTION_STARTED = "interaction.started"
     INTERACTION_COMPLETED = "interaction.completed"
 
+    AGENT_RUN_STARTED = "agent.run.started"
+    AGENT_RUN_COMPLETED = "agent.run.completed"
+
     AGENT_MESSAGE_STARTED = "agent.message.started"
     AGENT_MESSAGE_COMPLETED = "agent.message.completed"
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -30,6 +31,7 @@ from backend.acp_authorization import AcpSessionAuthorization
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.agent.acp_auth import require_acp_scope
 from database import crud
+from privacy import collection
 
 router = APIRouter()
 
@@ -121,9 +123,27 @@ def upsert_agent_memory(
     conversation itself, not telemetry about it, and gating it would silently
     break the feature rather than protect anything. It is scoped to its owner,
     replaced wholesale on every write, and deletable via DELETE.
+
+    An account that opted out of data collection is the exception: new snapshots
+    are acknowledged but not stored, so the running turn is unaffected. A
+    snapshot saved before the opt-out stays readable until the account erases
+    its data; after an erase the runtime starts fresh.
     """
     db = app.get_db_session()
     try:
+        # The share lock, held until the upsert commits, keeps a save from
+        # slipping past a concurrent erase.
+        if not collection.lock_collection_allowed(db, uuid.UUID(str(scope.user_id))):
+            db.rollback()
+            return JsonResponseWithStatus(
+                status_code=200,
+                content={
+                    "session_id": session_id,
+                    "messages": [],
+                    "message_count": len(body.messages),
+                    "stored": False,
+                },
+            )
         existing = crud.get_agent_memory_by_session_id(db, session_id)
         if existing is not None and not _scope_owns(scope, existing):
             raise HTTPException(

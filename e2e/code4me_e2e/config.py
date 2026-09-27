@@ -15,10 +15,24 @@ import json
 import platform as host_platform
 import re
 from dataclasses import asdict, dataclass, field, is_dataclass
+from enum import Enum
 from typing import Any, List, Optional
 
 #: Sentinel secret value stored in run state / reports as ``<redacted>``.
 REDACTED = "<redacted>"
+
+
+class AgentProbeReason(str, Enum):
+    """Typed reasons a real-agent (Goose/Codex) probe can be BLOCKED.
+
+    A missing prerequisite must surface one of these instead of a pass or a
+    bare crash.
+    """
+
+    MISSING_BINARY = "missing_binary"
+    MISSING_AUTH = "missing_auth"
+    QUOTA = "quota"
+    PROTOCOL = "protocol"
 
 
 def sha256_of(*parts: str) -> str:
@@ -78,6 +92,18 @@ class AgentConfig:
     artifact_digest: Optional[str] = None
     artifact_path: Optional[str] = None
     artifact_size: int = 1024
+    #: Inputs of the standalone ``agent-probe`` (``--layer agents`` probes both
+    #: frameworks and only honours ``CODE4ME_E2E_<FRAMEWORK>_EXECUTABLE``).
+    #: ``agent_command``/``agent_package`` name a participant-installed agent the
+    #: way a BYOA release declares it; ``agent_command_args`` replaces the
+    #: framework's default ACP argv. ``executable`` replaces discovery
+    #: (``CODE4ME_E2E_<FRAMEWORK>_EXECUTABLE`` also works) and ``agent_home``
+    #: replaces the per-run isolated agent home.
+    agent_command: Optional[str] = None
+    agent_command_args: List[str] = field(default_factory=list)
+    agent_package: Optional[str] = None
+    executable: Optional[str] = None
+    agent_home: Optional[str] = None
     #: Name of the agent profile created by the ``create_profile`` step. A
     #: distinct name lets one stack carry several self-consistent e2e identities
     #: (for example the ``plugin-test`` release and the ``ui-test`` release)
@@ -145,7 +171,14 @@ class Scenario:
 
 
 class ScenarioError(ValueError):
-    """Raised for an unusable scenario document or override."""
+    """Raised for an unusable scenario document or override.
+
+    ``code`` is a stable machine-readable reason (empty for plain messages).
+    """
+
+    def __init__(self, message: str, *, code: str = ""):
+        super().__init__(message)
+        self.code = code
 
 
 # ---------------------------------------------------------------------------
@@ -264,8 +297,25 @@ def _validate(scenario: Scenario) -> None:
         )
     if scenario.agent.framework_version not in ("code4me2-agent", "goose", "codex"):
         raise ScenarioError("agent.framework_version must be code4me2-agent, goose or codex")
+    if scenario.agent.framework_version != "code4me2-agent":
+        # Workflow releases come from the packaged producer manifest; Goose/Codex
+        # arms are BYOA and not managed by the relay, so this would only fail
+        # later at create_profile/send_message with a server 4xx.
+        raise ScenarioError(
+            "the workflow layers import the packaged code4me2-agent release; Goose and Codex "
+            "are exercised by `--layer agents` and `agent-probe --framework goose|codex`",
+            code="FRAMEWORK_NOT_IN_WORKFLOW",
+        )
     if scenario.agent.max_steps < 1:
         raise ScenarioError("agent.max_steps must be >= 1")
+    args = scenario.agent.agent_command_args
+    if not isinstance(args, list) or any(not isinstance(item, str) or not item or "\x00" in item for item in args):
+        raise ScenarioError("agent.agent_command_args must be a list of non-empty strings without NUL",
+                            code="AGENT_COMMAND_ARGS_INVALID")
+    for key in ("executable", "agent_home", "agent_command", "agent_package"):
+        value = getattr(scenario.agent, key)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ScenarioError(f"agent.{key} must be a non-empty string or null")
 
 
 def scenario_dict(scenario: Scenario) -> dict:

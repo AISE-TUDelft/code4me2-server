@@ -108,12 +108,30 @@ class TestUserVerificationEndpoints:
 
         with patch("database.crud.get_user_by_id", return_value=user):
             with patch(
-                "celery_app.tasks.db_tasks.send_verification_email_task.delay"
-            ) as mock_task:
+                "backend.routers.user.verify.send_verification_email", return_value=True
+            ) as mock_send:
                 response = client.post("/api/user/verify/resend")
                 assert response.status_code == 200
                 assert response.json() == ResendVerificationEmailPostResponse()
-                mock_task.assert_called_once()
+                mock_send.assert_called_once()
+                assert mock_send.call_args.args[0] == "test@example.com"
+
+    def test_resend_reports_delivery_failure(self, client):
+        user_id = str(uuid4())
+        user = MagicMock(user_id=user_id, email="test@example.com", name="Test")
+
+        client.mock_app.get_redis_manager().get.side_effect = lambda key, token: {
+            "auth_token": {"user_id": user_id}
+        }.get(key)
+        client.mock_app.get_db_session.return_value = MagicMock()
+
+        with patch("database.crud.get_user_by_id", return_value=user):
+            with patch(
+                "backend.routers.user.verify.send_verification_email", return_value=False
+            ):
+                response = client.post("/api/user/verify/resend")
+                assert response.status_code == 502
+                assert response.json() == ResendVerificationEmailError()
 
     def test_resend_exception(self, client):
         client.mock_app.get_redis_manager().get.side_effect = Exception("Redis failure")

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Run from any directory: ./e2e/test [--layer backend|plugin|browser|all] [--json]."""
+"""Run from any directory: ./e2e/test [--layer all|backend|plugin|agents|browser] [--json] [--no-setup].
+
+Checks and provisions each layer's prerequisites first (see README "For coding agents").
+"""
 from code4me_e2e.cli import main
 import sys
 

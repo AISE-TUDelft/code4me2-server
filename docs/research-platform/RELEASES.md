@@ -129,3 +129,221 @@ platform results remain unqualified; import a newly tested manifest rather than
 converting old manual approvals into passing tests. Legacy aggregate test verdicts
 also stay unqualified. Existing `DISABLED`, `BLOCKED`, and `RETIRED` states remain
 terminal on reads.
+
+Agent profiles now store an optional `system_prompt` (packaged releases only). The
+column is part of the consolidated revision, so a fresh database gets it, but a
+database that is already at that revision does not: every profile query fails
+with an undefined-column error until you add it. Before deploying to an existing
+database, run:
+
+```sql
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS system_prompt TEXT;
+```
+
+The column is nullable and the previous code ignores it, so it is safe to add
+while the old backend is still running. Existing profiles, their configuration
+digests and frozen studies are unchanged: a prompt only enters a digest when set.
+
+Built-in (`code4me2-agent`) profiles can also set the commands the agent may run
+(`commands_allowlist`), the default command timeout (`command_timeout_seconds`,
+1–600 s) and the harness behaviour switches (`harness_options`); Goose and Codex
+profiles refuse all three. These columns are part of the consolidated revision
+too, so a database already at that revision needs them before the new backend
+starts:
+
+```sql
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS commands_allowlist_json TEXT;
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS command_timeout_seconds INTEGER;
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS harness_options_json TEXT;
+```
+
+The columns are nullable and the previous code ignores them, so they are safe to
+add while the old backend is still running. NULL keeps the previous behaviour
+(the server fallback allowlist, which a user's config row may replace, and the
+runtime defaults). A value joins the configuration digest, the study snapshot,
+`GET /api/acp/agent-config` and the managed run policy only when set, so existing
+profiles, digests, frozen studies and run policies are unchanged. When a profile
+sets `commands_allowlist`, a user's config-row allowlist can only narrow it.
+
+## Emitter-sequence uniqueness dropped (production-readiness C-01)
+
+Alembic revision `b7c1d2e3f4a5` (after `8a0084080b46`) drops the unique
+constraint `uq_research_event_session_emitter_sequence` on `research_event` and
+replaces it with the plain index `idx_research_event_session_emitter_sequence`.
+An emitter whose counter restarts inside a live session (an IDE restart, a
+re-launched proxy) reused `(session, emitter, sequence)` and the constraint made
+ingestion reject, and the client delete, the later facts. Identity is
+`event_id` + digest; overlaps are surfaced as `EVENT_SEQUENCE_GAP` coverage
+diagnostics.
+
+`migration_manager.py migrate` applies it. For a database not tracked by
+Alembic, run the equivalent by hand:
+
+```sql
+ALTER TABLE public.research_event DROP CONSTRAINT IF EXISTS uq_research_event_session_emitter_sequence;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_research_event_session_emitter_sequence
+    ON public.research_event (research_session_id, emitter_id, emitter_sequence);
+```
+
+The `DROP CONSTRAINT` takes a brief exclusive lock; `CONCURRENTLY` keeps event
+inserts flowing while the index builds (the Alembic revision builds it inside
+its transaction, which blocks inserts for the few seconds a study-sized table
+needs). Plan either for a quiet moment. The same
+release also stores the tail of an ended session (events up to
+`TELEMETRY_LATE_EVENT_GRACE_SECONDS`, default 900 s, after `closed_at`, under
+the enrollment's next session capability) and closes an idle-expired context
+session at bootstrap/session create instead of reusing it; neither needs a
+schema change.
+
+## Participant inference budgets (shared provider key)
+
+Goose and built-in (`code4me2-agent`) study arms now spend from the study's
+server-held provider key through a metered relay, and every enrollment carries
+a USD budget. The consolidated revision creates the tables and columns below, so
+a fresh database gets them; a database that is already at that revision does
+not. Before deploying to an existing database, run:
+
+```sql
+CREATE TABLE IF NOT EXISTS public.provider_model_price (
+    connection_id UUID NOT NULL REFERENCES public.provider_connection(connection_id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    input_usd_per_million NUMERIC(14,6) NOT NULL CHECK (input_usd_per_million >= 0),
+    output_usd_per_million NUMERIC(14,6) NOT NULL CHECK (output_usd_per_million >= 0),
+    cached_input_usd_per_million NUMERIC(14,6) NULL CHECK (cached_input_usd_per_million IS NULL OR cached_input_usd_per_million >= 0),
+    updated_at TIMESTAMPTZ NOT NULL,
+    updated_by TEXT NULL,
+    PRIMARY KEY (connection_id, model)
+);
+CREATE INDEX IF NOT EXISTS idx_provider_model_price_connection ON public.provider_model_price (connection_id);
+
+ALTER TABLE public.study
+    ADD COLUMN IF NOT EXISTS inference_budget_default_micro_usd BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS inference_budget_warning_fraction NUMERIC(4,3) NOT NULL DEFAULT 0.800,
+    ADD COLUMN IF NOT EXISTS inference_budget_updated_at TIMESTAMPTZ NULL,
+    ADD COLUMN IF NOT EXISTS inference_budget_updated_by TEXT NULL;
+
+CREATE TABLE IF NOT EXISTS public.enrollment_inference_balance (
+    enrollment_id UUID PRIMARY KEY REFERENCES public.research_enrollment(enrollment_id) ON DELETE CASCADE,
+    study_id UUID NOT NULL REFERENCES public.study(study_id) ON DELETE CASCADE,
+    unit TEXT NOT NULL DEFAULT 'micro_usd',
+    limit_micro_usd BIGINT NOT NULL CHECK (limit_micro_usd >= 0),
+    settled_micro_usd BIGINT NOT NULL DEFAULT 0 CHECK (settled_micro_usd >= 0),
+    reserved_micro_usd BIGINT NOT NULL DEFAULT 0 CHECK (reserved_micro_usd >= 0),
+    settled_prompt_tokens BIGINT NOT NULL DEFAULT 0,
+    settled_completion_tokens BIGINT NOT NULL DEFAULT 0,
+    call_count INTEGER NOT NULL DEFAULT 0,
+    refused_count INTEGER NOT NULL DEFAULT 0,
+    last_call_at TIMESTAMPTZ NULL,
+    limit_source TEXT NOT NULL DEFAULT 'STUDY_DEFAULT',
+    exhausted_at TIMESTAMPTZ NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_enrollment_inference_balance_study_id ON public.enrollment_inference_balance (study_id);
+
+CREATE TABLE IF NOT EXISTS public.inference_reservation (
+    reservation_id UUID PRIMARY KEY,
+    enrollment_id UUID NOT NULL REFERENCES public.enrollment_inference_balance(enrollment_id) ON DELETE CASCADE,
+    study_id UUID NOT NULL,
+    connection_id UUID NULL REFERENCES public.provider_connection(connection_id) ON DELETE SET NULL,
+    model TEXT NOT NULL,
+    entry_point TEXT NOT NULL,
+    request_id TEXT NOT NULL UNIQUE,
+    research_session_id UUID NULL,
+    state TEXT NOT NULL CHECK (state IN ('RESERVED', 'SETTLED', 'FORFEITED', 'VOIDED', 'EXPIRED')),
+    hold_micro_usd BIGINT NOT NULL CHECK (hold_micro_usd >= 0),
+    estimated_prompt_tokens INTEGER NOT NULL,
+    output_cap_tokens INTEGER NOT NULL,
+    charged_micro_usd BIGINT NULL CHECK (charged_micro_usd IS NULL OR charged_micro_usd >= 0),
+    prompt_tokens INTEGER NULL,
+    completion_tokens INTEGER NULL,
+    cached_prompt_tokens INTEGER NULL,
+    usage_source TEXT NULL,
+    resolution_reason TEXT NULL,
+    upstream_status INTEGER NULL,
+    finish_reason TEXT NULL,
+    reserved_at TIMESTAMPTZ NOT NULL,
+    deadline_at TIMESTAMPTZ NOT NULL,
+    resolved_at TIMESTAMPTZ NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inference_reservation_enrollment_state ON public.inference_reservation (enrollment_id, state);
+CREATE INDEX IF NOT EXISTS idx_inference_reservation_open_deadline ON public.inference_reservation (deadline_at) WHERE state = 'RESERVED';
+CREATE INDEX IF NOT EXISTS idx_inference_reservation_study_reserved_at ON public.inference_reservation (study_id, reserved_at);
+
+CREATE TABLE IF NOT EXISTS public.inference_budget_adjustment (
+    adjustment_id UUID PRIMARY KEY,
+    enrollment_id UUID NOT NULL REFERENCES public.enrollment_inference_balance(enrollment_id) ON DELETE CASCADE,
+    study_id UUID NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('TOP_UP', 'SET_LIMIT', 'APPLY_DEFAULT', 'BACKFILL')),
+    delta_micro_usd BIGINT NOT NULL,
+    limit_before_micro_usd BIGINT NOT NULL,
+    limit_after_micro_usd BIGINT NOT NULL,
+    in_flight_micro_usd BIGINT NOT NULL DEFAULT 0,
+    reason TEXT NULL,
+    actor TEXT NULL,
+    idempotency_key TEXT NULL,
+    request_digest TEXT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (study_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_inference_budget_adjustment_enrollment ON public.inference_budget_adjustment (enrollment_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_inference_budget_adjustment_study ON public.inference_budget_adjustment (study_id, occurred_at);
+
+-- Give every existing enrollment a balance row at its study's default.
+INSERT INTO public.enrollment_inference_balance (enrollment_id, study_id, limit_micro_usd, limit_source, created_at, updated_at)
+SELECT e.enrollment_id, e.study_id, s.inference_budget_default_micro_usd, 'BACKFILL', now(), now()
+FROM public.research_enrollment e
+JOIN public.study s ON s.study_id = e.study_id
+ON CONFLICT (enrollment_id) DO NOTHING;
+```
+
+This is fail-closed on purpose. A study's default budget is 0 until a
+researcher sets it (study Settings → Participant budgets, then "Apply new
+default" for the participants already enrolled), and a model without a price
+row on its provider connection refuses every call with `503 price_missing`.
+Until both are configured, Goose and built-in arms receive `402 quota_exhausted`
+or `503 price_missing` and spend nothing. Codex arms are unaffected: they sign in
+with ChatGPT and are not metered.
+
+## Self-service privacy controls (GDPR)
+
+Every account can now opt out of data collection and erase what Code4Me
+collected about it, from the website ("Privacy & data") or the plugin
+(`GET /api/user/privacy`, `PUT /api/user/privacy/collection`,
+`POST /api/user/privacy/erase`). The opt-out is stored in a new account column
+that only these endpoints write:
+
+```sql
+ALTER TABLE public."user" ADD COLUMN IF NOT EXISTS data_collection_opted_out_at TIMESTAMPTZ NULL;
+```
+
+The column is part of the consolidated revision, so a fresh database gets it; a
+database already at that revision needs the statement above before the new
+backend starts, or every account query fails with an undefined-column error. It
+is nullable and the previous code ignores it, so it is safe to add while the old
+backend is still running.
+
+Erasing an account deletes its context and telemetry rows, and each delete
+checks `meta_query` for references. `init.sql` now indexes those foreign keys; an
+existing database should add the indexes (without them an erase scans
+`meta_query` once per deleted row, which takes minutes on a large table):
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_meta_query_context_id ON public.meta_query (context_id) WHERE context_id IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_meta_query_contextual_telemetry_id ON public.meta_query (contextual_telemetry_id) WHERE contextual_telemetry_id IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_meta_query_behavioral_telemetry_id ON public.meta_query (behavioral_telemetry_id) WHERE behavioral_telemetry_id IS NOT NULL;
+```
+
+A concurrent build that fails leaves an invalid index under that name, which a
+re-run then skips. Check with
+`SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;` and drop and
+re-create any of the three it lists.
+
+While an account is opted out the server stores nothing about its completion,
+chat and feedback requests, denies agent content and agent memory, never flushes
+its project context, and refuses study joins; opting out withdraws an active
+enrollment (new status `WITHDRAWN`). Erasing deletes the account's classic, agent and
+research data in one transaction and leaves one content-free deletion-ledger
+record per erased enrollment. `DELETE /api/user/delete` now always erases the
+data (`delete_data` is ignored), revokes the account's tokens, and refuses with
+`409` an account that owns research studies or agent profiles.

@@ -28,6 +28,7 @@ from .engine import (
     PrivacyPolicy,
     filter_event,
     filter_payload,
+    runtime_field_classes,
 )
 
 __all__ = [
@@ -45,6 +46,7 @@ __all__ = [
     "contains_secret_value",
     "filter_event",
     "filter_payload",
+    "runtime_field_classes",
     "is_secret_key",
     "looks_secret_value",
 ]

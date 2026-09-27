@@ -156,6 +156,12 @@ def print_summary(report: Dict[str, Any], as_json: bool) -> None:
             "findings": [finding.get("id") for finding in report.get("findings", [])],
             "next_actions": report.get("next_actions", []),
         }
+        if report.get("layers") is not None:
+            summary["layers"] = report["layers"]
+        if report.get("prerequisites") is not None:
+            summary["prerequisites"] = report["prerequisites"]
+        if report.get("report_path"):
+            summary["report_path"] = report["report_path"]
         print(json.dumps(summary, indent=2, default=str))
         return
     statuses = {step["id"]: step["status"] for step in report["steps"]}
@@ -163,6 +169,11 @@ def print_summary(report: Dict[str, Any], as_json: bool) -> None:
     for step_id, status in statuses.items():
         print(f"{step_id:<{width}}  {status}")
     print()
+    for layer in report.get("layers") or []:
+        reason = f"  ({layer['reason']})" if layer.get("reason") else ""
+        print(f"layer {layer['layer']:<8} {layer['status']}{reason}")
+    if report.get("layers"):
+        print()
     if report["failed_step"] or report.get("blocked_by"):
         print(f"FAILED at {report['failed_step'] or report['blocked_by']}")
     else:

@@ -42,6 +42,7 @@ from database import crud
 from research.study.agents import store
 from research.study.agents.distributions import (
     distribution_supported_platforms,
+    release_profile_configurability,
     resolve_distribution_view,
 )
 from research.study.agents.enums import DistributionMode, RegistryReasonCode
@@ -196,6 +197,10 @@ def _release_catalogue_entry(row: Any) -> dict[str, Any]:
     Derived, read-only fields only: no artifact bytes, command line, endpoint or
     credential material. ``qualification_status`` is recomputed from the stored
     producer test results so legacy rows stay unqualified.
+    ``compatible_frameworks`` / ``configurable_fields`` /
+    ``required_bindings_missing`` tell the profile editor which runtimes may pin
+    the release and which profile fields actually govern it (field names only,
+    never binding keys, environment variable names or commands).
     """
     release = store.row_to_release(row)
     summary = store.release_summary(row)
@@ -209,6 +214,7 @@ def _release_catalogue_entry(row: Any) -> dict[str, Any]:
         "verified_approval_options": verified_approval_options(row.release_json),
         "tests": summary["tests"],
         "is_byoa": release.is_byoa,
+        **release_profile_configurability(release, release_json=row.release_json),
     }
 
 

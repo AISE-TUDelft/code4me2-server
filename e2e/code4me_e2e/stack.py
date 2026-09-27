@@ -41,8 +41,22 @@ def compose_command() -> List[str]:
 
 def compose_env(scenario: Scenario) -> Dict[str, str]:
     """Interpolation variables passed to every ``docker compose`` invocation."""
+    backend_image = scenario.stack.image
+    if backend_image == "code4me2-server-backend:latest":
+        # The tag is convenient for local builds but moves on every rebuild.
+        # Resolve it once per compose invocation so this E2E run uses immutable
+        # bytes even if another terminal retags latest while the suite runs.
+        inspected = subprocess.run(
+            ["docker", "image", "inspect", backend_image, "--format", "{{.Id}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        image_id = inspected.stdout.strip()
+        if inspected.returncode == 0 and image_id.startswith("sha256:"):
+            backend_image = image_id
     return {
-        "E2E_BACKEND_IMAGE": scenario.stack.image,
+        "E2E_BACKEND_IMAGE": backend_image,
         "E2E_BACKEND_PORT": str(scenario.stack.backend_port),
         "E2E_DB_PORT": str(scenario.stack.db_port),
         "E2E_REDIS_PORT": str(scenario.stack.redis_port),

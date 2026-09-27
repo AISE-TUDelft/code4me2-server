@@ -18,7 +18,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
@@ -60,6 +60,16 @@ class FrozenAgentConfig:
     agent_command_args: list[str] = field(default_factory=list)
     # The researcher whose connection grant funds execution (study owner).
     funding_owner_user_id: Optional[uuid.UUID] = None
+    # Researcher-authored system prompt frozen with the study selection; None =
+    # no prompt (snapshots taken before the field existed never carry one).
+    system_prompt: Optional[str] = None
+    # Built-in runtime command/harness settings frozen with the selection
+    # (decision D-01); None = not set (older snapshots never carry them). Copied
+    # verbatim: the agent-config and run-policy builders validate them and fail
+    # closed on a malformed snapshot instead of silently dropping a setting.
+    commands_allowlist: Optional[list[str]] = None
+    command_timeout_seconds: Optional[int] = None
+    harness_options: Optional[dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +107,7 @@ def _frozen_config_from_snapshot(
     tools_json = profile_snapshot.get("tools_json", "[]")
     if not isinstance(tools_json, str):
         tools_json = json.dumps(tools_json, separators=(",", ":"))
+    system_prompt = profile_snapshot.get("system_prompt")
     return FrozenAgentConfig(
         profile_id=uuid.UUID(str(profile_id)),
         name=profile_snapshot.get("name", "assigned-profile"),
@@ -114,6 +125,10 @@ def _frozen_config_from_snapshot(
         ),
         release_id=profile_snapshot.get("release_id"),
         funding_owner_user_id=funding_owner_user_id,
+        system_prompt=system_prompt if isinstance(system_prompt, str) else None,
+        commands_allowlist=profile_snapshot.get("commands_allowlist"),
+        command_timeout_seconds=profile_snapshot.get("command_timeout_seconds"),
+        harness_options=profile_snapshot.get("harness_options"),
     )
 
 

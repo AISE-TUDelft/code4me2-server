@@ -80,6 +80,15 @@ WAVE1_TABLES = (
     "study_assignment",
 )
 
+# Participant inference budgets (shared provider key): prices, balances,
+# reservation ledger and adjustment audit.
+BUDGET_TABLES = (
+    "provider_model_price",
+    "enrollment_inference_balance",
+    "inference_reservation",
+    "inference_budget_adjustment",
+)
+
 
 def _table_names() -> set[str]:
     # Metadata tables are schema-qualified ("public.<name>").
@@ -101,6 +110,38 @@ def test_wave1_tables_are_present_in_metadata():
     names = _table_names()
     missing = sorted(name for name in WAVE1_TABLES if name not in names)
     assert missing == [], f"wave-1 tables missing: {missing}"
+
+
+def test_budget_tables_are_present_in_metadata_and_migration():
+    names = _table_names()
+    missing = sorted(name for name in BUDGET_TABLES if name not in names)
+    assert missing == [], f"budget tables missing: {missing}"
+    migration = (
+        PROJECT_ROOT
+        / "src"
+        / "database"
+        / "migration"
+        / "versions"
+        / "8a0084080b46_consolidated_schema.py"
+    ).read_text()
+    for name in BUDGET_TABLES:
+        assert f"op.create_table('{name}'" in migration, name
+        assert f"op.drop_table('{name}'" in migration, name
+    study_columns = set(Study.__table__.c.keys())
+    assert {
+        "inference_budget_default_micro_usd",
+        "inference_budget_warning_fraction",
+        "inference_budget_updated_at",
+        "inference_budget_updated_by",
+    } <= study_columns
+    for column in (
+        "inference_budget_default_micro_usd",
+        "inference_budget_warning_fraction",
+        "inference_budget_updated_at",
+        "inference_budget_updated_by",
+    ):
+        assert f"op.add_column('study', sa.Column('{column}'" in migration, column
+        assert f"op.drop_column('study', '{column}'" in migration, column
 
 
 def test_research_study_lifecycle_contract_is_present():

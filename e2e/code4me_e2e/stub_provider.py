@@ -33,6 +33,10 @@ class StubProvider:
         self._thread: Optional[threading.Thread] = None
         self.port: Optional[int] = None
         self._lock = threading.Lock()
+        #: Monotonic receipt for every accepted request. A caller records
+        #: :meth:`request_count` before an action and asserts the delta, so a
+        #: proof is per-turn instead of "the stub was reached at some point".
+        self._request_count = 0
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -67,7 +71,18 @@ class StubProvider:
 
     def record(self, entry: Dict[str, Any]) -> None:
         with self._lock:
-            self.requests.append(entry)
+            self._request_count += 1
+            self.requests.append({**entry, "receipt": self._request_count})
+
+    def request_count(self) -> int:
+        """The latest monotonic receipt number (0 before any request)."""
+        with self._lock:
+            return self._request_count
+
+    def requests_since(self, receipt: int) -> List[Dict[str, Any]]:
+        """Requests received after ``receipt`` (strictly greater)."""
+        with self._lock:
+            return [item for item in self.requests if int(item.get("receipt", 0)) > int(receipt)]
 
     def completion_body(self, requested_model: str) -> Dict[str, Any]:
         return {

@@ -11,13 +11,14 @@ unresolvable profile is stored as non-secret placeholders.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import uuid
+from typing import TYPE_CHECKING, Callable
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from database import crud
-from database.research_schemas import ResearchEvent
+from database.research_schemas import ResearchEnrollment, ResearchEvent
 from research.participants import identity as identity_store
 
 if TYPE_CHECKING:
@@ -30,6 +31,10 @@ __all__ = ["ensure_agent_tasks_for_ack"]
 logger = logging.getLogger(__name__)
 
 ACP_TASK_SOURCE = "research-acp"
+
+#: The plugin mirrors the end of a native agent run as this canonical event; an
+#: acknowledged one means the run's task can be finalized.
+RUN_COMPLETED_EVENT_TYPE = "agent.run.completed"
 
 PLACEHOLDER_PROFILE = {
     "agent_profile": "acp-external",
@@ -62,8 +67,16 @@ def ensure_agent_tasks_for_ack(
     db: Session,
     payload: TelemetryBatchRequestV1,
     ack: TelemetryBatchAckV1,
+    *,
+    before_create: Callable[[uuid.UUID], None] = lambda account_id: None,
 ) -> list:
-    """Ensure one linkable ``agent_task`` exists per acknowledged run id."""
+    """Ensure one linkable ``agent_task`` exists per acknowledged run id.
+
+    ``before_create(account_id)`` runs before a task is created for an account;
+    the router uses it to lock the account against a concurrent erasure. The
+    enrollment is then read again, because an erasure that committed meanwhile
+    has removed it and its run must not get a task.
+    """
     grouped = _acknowledged_run_events(payload, ack)
     if not grouped:
         return []
@@ -90,7 +103,16 @@ def ensure_agent_tasks_for_ack(
         participant = identity_store.get_participant(db, enrollment.participant_id)
         if participant is None or participant.account_id is None:
             continue
-        if crud.get_agent_task_by_external_run_id(db, run_id) is not None:
+        existing = crud.get_agent_task_by_external_run_id(db, run_id)
+        if existing is not None:
+            _finalize_if_completed(db, existing, events)
+            continue
+        before_create(participant.account_id)
+        if db.execute(
+            select(ResearchEnrollment.enrollment_id).where(
+                ResearchEnrollment.enrollment_id == enrollment.enrollment_id
+            )
+        ).first() is None:
             continue
         try:
             task = crud.create_agent_task(
@@ -114,4 +136,30 @@ def ensure_agent_tasks_for_ack(
         logger.info(
             "linked ACP run %s to agent_task %s", run_id, getattr(task, "task_id", "?")
         )
+        _finalize_if_completed(db, task, events)
     return created
+
+
+def _finalize_if_completed(db: Session, task, events: list) -> None:
+    """Finalize ``task`` once its run's completion event was acknowledged."""
+    if getattr(task, "status", None) not in (None, "pending", "running"):
+        return
+    completed = next(
+        (event for event in events if getattr(event, "event_type", None) == RUN_COMPLETED_EVENT_TYPE),
+        None,
+    )
+    if completed is None:
+        return
+    payload = getattr(completed, "payload", None) or {}
+    outcome = str(payload.get("outcome") or payload.get("status") or "").lower()
+    status = (
+        "cancelled" if "cancel" in outcome
+        else "failed" if ("fail" in outcome or "error" in outcome or "crash" in outcome)
+        else "done"
+    )
+    try:
+        from agents import lifecycle
+
+        lifecycle.finalize_agent_task(db, task.task_id, status=status)
+    except Exception as error:  # noqa: BLE001 - the ack must never fail on this
+        logger.warning("could not finalize ACP run task %s: %s", getattr(task, "task_id", "?"), error)

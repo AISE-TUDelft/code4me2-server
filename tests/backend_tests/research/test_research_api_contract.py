@@ -184,6 +184,14 @@ def _connected_profile(session, owner_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UU
     )
     session.execute(
         text(
+            "INSERT INTO public.provider_model_price "
+            "(connection_id, model, input_usd_per_million, output_usd_per_million, updated_at) "
+            "VALUES (:connection_id, 'model', 1.0, 4.0, now())"
+        ),
+        {"connection_id": connection_id},
+    )
+    session.execute(
+        text(
             "INSERT INTO public.agent_profile "
             "(profile_id, owner_user_id, name, model, framework_version, release_id, connection_id, tools_json, approval_policy, max_steps) "
             "VALUES (:profile_id, :owner_id, 'http-locked', 'model', 'codex', :release_id, :connection_id, '[]', 'auto', 1)"
@@ -257,6 +265,14 @@ def _release_profile(
     )
     session.execute(
         text(
+            "INSERT INTO public.provider_model_price "
+            "(connection_id, model, input_usd_per_million, output_usd_per_million, updated_at) "
+            "VALUES (:connection_id, 'model', 1.0, 4.0, now())"
+        ),
+        {"connection_id": connection_id},
+    )
+    session.execute(
+        text(
             "INSERT INTO public.agent_profile "
             "(profile_id, owner_user_id, name, model, framework_version, release_id, connection_id, tools_json, approval_policy, max_steps) "
             "VALUES (:profile_id, :owner_id, 'Codex', 'model', :framework, :release_id, :connection_id, '[]', 'auto', 1)"
@@ -318,6 +334,7 @@ def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
         "/api/research/studies",
         json={
             "name": "HTTP lifecycle study",
+            "default_budget_usd": "10",
             "description": "contract",
             "telemetry_policy": {"metadata_only": True},
             "session_policy": {
@@ -345,6 +362,7 @@ def test_http_lifecycle_join_stop_and_clone_contract(http_runtime):
         "stoppable": True,
         "cloneable": False,
         "joinable": True,
+        "budget_editable": True,
     }
     assert study["kill_switch"] is None
 
@@ -616,6 +634,7 @@ def test_http_web_join_contract_matrix(http_runtime):
             "/api/research/studies",
             json={
                 "name": name,
+                "default_budget_usd": "10",
                 "session_policy": VALID_SESSION_POLICY,
                 "profile_ids": [str(selected_profile_id)],
             },
@@ -740,6 +759,7 @@ def test_http_web_join_contract_matrix(http_runtime):
         "/api/research/studies",
         json={
             "name": "Revoke study",
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(stopped_profile_id)],
         },
@@ -792,6 +812,7 @@ def test_http_profile_update_returns_typed_lock_after_study_consent(http_runtime
         "/api/research/studies",
         json={
             "name": "HTTP lock study",
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(profile_id)],
         },
@@ -843,6 +864,7 @@ def test_http_bootstrap_qualified_codex_manifest_is_revision_free(http_runtime):
         "/api/research/studies",
         json={
             "name": "Codex HTTP study",
+            "default_budget_usd": "10",
             "session_policy": {
                 "idle_timeout_seconds": 60,
                 "resume_grace_seconds": 60,
@@ -918,6 +940,7 @@ def test_http_create_study_orders_multiple_profile_selections(http_runtime):
         "/api/research/studies",
         json={
             "name": "Multi-profile study",
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(second_profile), str(first_profile)],
         },
@@ -998,6 +1021,7 @@ def test_http_configuration_is_frozen_after_create_and_only_metadata_is_writable
         "/api/research/studies",
         json={
             "name": "Frozen study",
+            "default_budget_usd": "10",
             "telemetry_policy": telemetry_policy,
             "session_policy": session_policy,
             "profile_ids": [str(selected_profile)],
@@ -1071,6 +1095,7 @@ def test_http_stopped_study_cannot_be_reactivated_or_reconfigured(http_runtime):
         "/api/research/studies",
         json={
             "name": "Terminal study",
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(profile_id)],
         },
@@ -1122,6 +1147,7 @@ def test_http_participant_cannot_revoke_and_no_leave_route_exists(http_runtime):
         "/api/research/studies",
         json={
             "name": "No-leave study",
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(profile_id)],
         },
@@ -1231,6 +1257,7 @@ def test_http_researcher_read_models_keep_retained_rows_after_stop(http_runtime)
         "/api/research/studies",
         json={
             "name": "Retained study",
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(profile_id)],
         },

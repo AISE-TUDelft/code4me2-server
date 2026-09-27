@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import platform
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -9,14 +11,26 @@ from threading import Event
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from code4me2_agent import slash_commands
 from code4me2_agent.acp_updates import AcpUpdateBuilder
 from code4me2_agent.acp_utils import capability_value
-from code4me2_agent.async_bridge import EventLoopAsyncRunner
+from code4me2_agent.async_bridge import EventLoopAsyncRunner, OperationCancelled
 from code4me2_agent.command_tools import available_commands, build_acp_command_backend
 from code4me2_agent.echo import EchoAgentCore
-from code4me2_agent.events import ApprovalDecision
+from code4me2_agent.events import (
+    ApprovalDecision,
+    AssistantTextEvent,
+    PlanEvent,
+    ThoughtEvent,
+    UsageEvent,
+)
+from code4me2_agent.tool_catalog import approval_kind, tool_kind
 from code4me2_agent.file_tools import build_acp_file_system_backend
-from code4me2_agent.mcp_tools import StdioMcpToolBroker, serialize_mcp_servers
+from code4me2_agent.mcp_tools import (
+    StdioMcpToolBroker,
+    mcp_server_transport,
+    serialize_mcp_servers,
+)
 from code4me2_agent.runtime_auth import (
     AcpAuthorizationFailure,
     AcpBackendAuthorization,
@@ -42,57 +56,77 @@ if TYPE_CHECKING:
     from code4me2_agent.telemetry import AgentTelemetryRecorder
 
 
-def _prompt_text(prompt: list[Any]) -> str:
+# Attached file contents inlined into a prompt, in characters (about a quarter
+# of the context budget, never more than this cap).
+_MAX_ATTACHMENT_CHARS = 60_000
+_MIN_ATTACHMENT_CHARS = 4_000
+
+
+async def _prompt_text_async(
+    prompt: list[Any],
+    *,
+    workspace_root: Path | None = None,
+    attachment_budget_chars: int = 32_000,
+) -> str:
     parts: list[str] = []
+    budget = [max(_MIN_ATTACHMENT_CHARS, min(_MAX_ATTACHMENT_CHARS, int(attachment_budget_chars)))]
     for block in prompt:
         if isinstance(block, dict):
             block_type = block.get("type", "")
             text = block.get("text", "")
-            if block_type == "resource_link":
-                text = _resource_link_text(block)
         else:
             block_type = getattr(block, "type", "")
             text = getattr(block, "text", "")
-            if block_type == "resource_link":
-                text = _resource_link_text(block)
+        if block_type == "resource_link":
+            text = await _resource_link_text_async(block)
+        elif block_type == "resource":
+            text = _embedded_resource_text(block, workspace_root=workspace_root, budget=budget)
         if text:
             parts.append(text)
     return "\n".join(parts)
 
 
-async def _prompt_text_async(prompt: list[Any]) -> str:
-    parts: list[str] = []
-    for block in prompt:
-        if isinstance(block, dict):
-            block_type = block.get("type", "")
-            text = block.get("text", "")
-            if block_type == "resource_link":
-                text = await _resource_link_text_async(block)
-        else:
-            block_type = getattr(block, "type", "")
-            text = getattr(block, "text", "")
-            if block_type == "resource_link":
-                text = await _resource_link_text_async(block)
-        if text:
-            parts.append(text)
-    return "\n".join(parts)
+def _embedded_resource_text(block: object, *, workspace_root: Path | None, budget: list[int]) -> str:
+    """Inline an ``@file``/selection attachment so the model needs no read call."""
+    resource = capability_value(block, "resource")
+    uri = str(capability_value(resource, "uri") or "").strip()
+    mime_type = capability_value(resource, "mimeType") or capability_value(resource, "mime_type")
+    label = _attachment_label(uri, workspace_root)
+    text = capability_value(resource, "text")
+    if not isinstance(text, str):
+        detail = f", {mime_type}" if mime_type else ""
+        return f"[Attached binary resource: {label}{detail}; its content is not shown.]"
+    remaining = budget[0]
+    shown = text[:remaining] if remaining > 0 else ""
+    budget[0] = max(0, remaining - len(shown))
+    header = f'<attached_file path="{label}"' + (f' mime="{mime_type}"' if mime_type else "") + ">"
+    body = shown
+    if len(shown) < len(text):
+        body += (
+            f"\n[attachment truncated: showing {len(shown)} of {len(text)} characters; "
+            "read the file for the rest]"
+        )
+    return f"{header}\n{body}\n</attached_file>"
 
 
-def _resource_link_text(block: object) -> str:
-    uri = str(capability_value(block, "uri") or "").strip()
-    name = str(capability_value(block, "name") or uri or "resource").strip()
-    details = []
-    mime_type = capability_value(block, "mimeType") or capability_value(
-        block, "mime_type"
-    )
-    description = capability_value(block, "description")
-    if mime_type:
-        details.append(f"mimeType={mime_type}")
-    if description:
-        details.append(f"description={description}")
-    suffix = f"; {'; '.join(details)}" if details else ""
-    resource_link = f"[Resource link: {name} <{uri}>{suffix}]"
-    return resource_link
+def _attachment_label(uri: str, workspace_root: Path | None) -> str:
+    if uri.startswith("file://"):
+        from urllib.parse import unquote, urlparse
+        from urllib.request import url2pathname
+
+        raw_path = urlparse(uri).path
+        try:
+            # "/C:/Users/..." -> "C:\Users\..." on Windows; plain unquote on POSIX.
+            path = Path(url2pathname(raw_path))
+        except OSError:  # older Windows Pythons reject some colon placements
+            path = Path(unquote(raw_path))
+        if workspace_root is not None:
+            try:
+                return path.resolve().relative_to(workspace_root.resolve()).as_posix()
+            except (OSError, ValueError):
+                pass
+        return path.as_posix()
+    return uri or "attachment"
 
 
 async def _resource_link_text_async(block: object) -> str:
@@ -111,18 +145,30 @@ async def _resource_link_text_async(block: object) -> str:
     resource_link = f"[Resource link: {name} <{uri}>{suffix}]"
     return resource_link
 
+_ACP_STOP_REASONS = frozenset(
+    {"end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled"}
+)
+_USAGE_UPDATES_ENABLED = os.getenv("CODE4ME_ACP_USAGE_UPDATES", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+
 def _acp_stop_reason(adapter_stop_reason: str) -> str:
+    """Map adapter outcomes onto the ACP StopReason vocabulary.
+
+    Failures (``error``, ``provider_exhausted``) have already been shown to the
+    user as a final agent message, so the turn ended normally from the client's
+    point of view; the cause travels in ``PromptResponse._meta``. ``refusal`` is
+    reserved for a model content-filter refusal.
+    """
     if adapter_stop_reason == "max_iterations":
         return "max_turn_requests"
-    if adapter_stop_reason in {
-        "end_turn",
-        "max_tokens",
-        "max_turn_requests",
-        "refusal",
-        "cancelled",
-    }:
+    if adapter_stop_reason in _ACP_STOP_REASONS:
         return adapter_stop_reason
-    return "refusal"
+    return "end_turn"
 
 
 @dataclass
@@ -134,6 +180,7 @@ class AgentSession:
     prompt_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active_prompt_task: asyncio.Task[Any] | None = None
     authorization: Any | None = None
+    title: str | None = None
 
 
 class AcpSessionEventSink:
@@ -145,17 +192,95 @@ class AcpSessionEventSink:
         updates: AcpUpdateBuilder,
         telemetry: object,
         async_runner: EventLoopAsyncRunner,
+        cancel_event: Event | None = None,
     ) -> None:
         self._conn = conn
         self._session_id = session_id
         self._updates = updates
         self._telemetry = telemetry
         self._async_runner = async_runner
+        self._cancel_event = cancel_event
         self._session_approved_kinds: set[str] = set()
         self._tool_content: dict[str, list[Any] | None] = {}
 
+    def _run_blocking(self, awaitable: Any) -> Any:
+        if self._cancel_event is None:
+            return self._async_runner.run(awaitable)
+        return self._async_runner.run(awaitable, cancel_event=self._cancel_event)
+
+    def assistant_text(self, event: AssistantTextEvent) -> None:
+        update = self._updates.agent_message(
+            event.text,
+            message_id=event.message_id,
+            metadata={
+                "code4me2": {
+                    "phase": "final" if event.final else "progress",
+                    "iteration": event.iteration,
+                }
+            },
+        )
+        self._send_session_update(
+            update,
+            run_id=event.run_id,
+            request_id=event.request_id,
+            update_type="agent_message_chunk",
+        )
+
+    def plan(self, event: PlanEvent) -> None:
+        update = self._updates.agent_plan(list(event.entries))
+        self._send_session_update(
+            update,
+            run_id=event.run_id,
+            request_id=event.request_id,
+            update_type="plan",
+            extra={"tool_call_id": event.tool_call_id},
+        )
+
+    def usage(self, event: UsageEvent) -> None:
+        if not _USAGE_UPDATES_ENABLED:
+            return
+        update = self._updates.usage_update(
+            used=event.prompt_tokens + event.completion_tokens,
+            size=event.context_budget_tokens,
+            metadata={
+                "code4me2": {
+                    "iteration": event.iteration,
+                    "model": event.model,
+                    "promptTokens": event.prompt_tokens,
+                    "completionTokens": event.completion_tokens,
+                    "totalTokens": event.total_tokens,
+                    "turnTotalTokens": event.turn_total_tokens,
+                }
+            },
+        )
+        self._send_session_update(
+            update,
+            run_id=event.run_id,
+            request_id=event.request_id,
+            update_type="usage_update",
+        )
+
     def tool_call(self, event: ToolCallEvent) -> None:
         content = self._tool_call_content(event)
+        if event.phase == "progress":
+            # Streamed output of a running command: replace the card body only.
+            update = self._updates.update_tool_call(
+                tool_call_id=event.tool_call_id,
+                status="in_progress",
+                content=content,
+            )
+            self._send_session_update(
+                update,
+                run_id=event.run_id,
+                request_id=event.request_id,
+                update_type="tool_call_update",
+                extra={
+                    "tool_call_id": event.tool_call_id,
+                    "tool_name": event.tool_name,
+                    "phase": event.phase,
+                },
+            )
+            return
         if event.phase == "started":
             self._tool_content[event.tool_call_id] = content
             update = self._updates.start_tool_call(
@@ -164,6 +289,7 @@ class AcpSessionEventSink:
                 kind=event.kind,
                 status=event.status,
                 path=event.path,
+                locations=event.locations,
                 content=content,
                 raw_input=event.raw_input,
             )
@@ -176,22 +302,37 @@ class AcpSessionEventSink:
                 content=content,
                 raw_output=event.raw_output,
             )
-        self._send_update(event=event, update=update)
+        self._send_session_update(
+            update,
+            run_id=event.run_id,
+            request_id=event.request_id,
+            update_type=str(getattr(update, "session_update", "tool_call")),
+            extra={
+                "tool_call_id": event.tool_call_id,
+                "tool_name": event.tool_name,
+                "phase": event.phase,
+            },
+        )
         if event.phase != "started":
             self._tool_content.pop(event.tool_call_id, None)
 
     def _tool_call_content(self, event: ToolCallEvent) -> list[Any] | None:
+        content: list[Any] = []
         if event.path and event.diff_new_text is not None:
-            return [
+            content.append(
                 self._updates.diff_tool_content(
                     event.path,
                     old_text=event.diff_old_text,
                     new_text=event.diff_new_text,
                 )
-            ]
+            )
+            for path, old_text, new_text in getattr(event, "extra_diffs", ()) or ():
+                content.append(
+                    self._updates.diff_tool_content(path, old_text=old_text, new_text=new_text)
+                )
         if event.content_text:
-            return [self._updates.text_tool_content(event.content_text)]
-        return None
+            content.append(self._updates.text_tool_content(event.content_text))
+        return content or None
 
     def thought(self, event: object) -> None:
         phase = getattr(event, "phase", None)
@@ -206,27 +347,12 @@ class AcpSessionEventSink:
             getattr(event, "text", ""),
             metadata=timing_metadata,
         )
-        try:
-            self._async_runner.run(
-                self._conn.session_update(
-                    session_id=self._session_id,
-                    update=update,
-                    source="code4me2_agent",
-                )
-            )
-        except Exception as exc:
-            record = getattr(self._telemetry, "record", None)
-            if callable(record):
-                record(
-                    event_type="agent.acp.update_failed",
-                    run_id=getattr(event, "run_id", None),
-                    request_id=getattr(event, "request_id", None),
-                    parent_event_id=None,
-                    payload={
-                        "update_type": "agent_thought",
-                        "error_message": str(exc),
-                    },
-                )
+        self._send_session_update(
+            update,
+            run_id=getattr(event, "run_id", None),
+            request_id=getattr(event, "request_id", None),
+            update_type="agent_thought",
+        )
 
     def request_approval(
         self, tool_call: object, arguments: dict[str, Any]
@@ -234,33 +360,32 @@ class AcpSessionEventSink:
         """Synchronously bridge a worker-thread tool decision to ACP/JetBrains."""
         name = str(getattr(tool_call, "name", "tool"))
         tool_call_id = str(getattr(tool_call, "tool_call_id", ""))
-        metadata = {
-            "run_command": "execute",
-            "create_file": "edit",
-            "write_file": "edit",
-            "replace_text": "edit",
-        }.get(name, "other")
+        metadata = approval_kind(name)
         if metadata in self._session_approved_kinds:
-            return ApprovalDecision("accepted", "session")
+            # Answered by the user's earlier "allow for this session": no one is
+            # asked, so telemetry must not report a new decision.
+            return ApprovalDecision("accepted", "session_cached")
         summary = _approval_summary(name, arguments)
         permission = self._updates.permission_request(
             session_id=self._session_id,
             tool_call_id=tool_call_id,
             title=summary,
-            kind=metadata,
+            kind=tool_kind(name),
             summary=summary,
             raw_input=_approval_raw_input(name, arguments),
             session_option_name=_session_option_name(metadata),
             content=self._tool_content.get(tool_call_id),
         )
         try:
-            response = self._async_runner.run(
+            response = self._run_blocking(
                 self._conn.request_permission(
                     session_id=permission.session_id,
                     tool_call=permission.tool_call,
                     options=permission.options,
                 )
             )
+        except OperationCancelled:
+            return ApprovalDecision("cancelled")
         except Exception:  # noqa: BLE001
             logger.exception("ACP permission request failed for tool %s", name)
             return ApprovalDecision("unavailable")
@@ -283,28 +408,37 @@ class AcpSessionEventSink:
             self._session_approved_kinds.add(metadata)
         return ApprovalDecision("accepted", scope) if scope else ApprovalDecision("rejected")
 
-    def _send_update(self, *, event: ToolCallEvent, update: object) -> None:
+    def _send_session_update(
+        self,
+        update: object,
+        *,
+        run_id: str | None,
+        request_id: str | None,
+        update_type: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         try:
-            self._async_runner.run(
+            self._run_blocking(
                 self._conn.session_update(
                     session_id=self._session_id,
                     update=update,
                     source="code4me2_agent",
                 )
             )
-        except Exception as exc:
+        except OperationCancelled:
+            return
+        except Exception as exc:  # noqa: BLE001
             record = getattr(self._telemetry, "record", None)
             if callable(record):
                 record(
                     event_type="agent.acp.update_failed",
-                    run_id=event.run_id,
-                    request_id=event.request_id,
+                    run_id=run_id,
+                    request_id=request_id,
                     parent_event_id=None,
                     payload={
-                        "tool_call_id": event.tool_call_id,
-                        "tool_name": event.tool_name,
-                        "phase": event.phase,
+                        "update_type": update_type,
                         "error_message": str(exc),
+                        **(extra or {}),
                     },
                 )
 
@@ -329,12 +463,26 @@ def _record_acp_runtime_event(
 def _approval_raw_input(name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
     if name == "run_command":
         argv = arguments.get("argv")
-        return {
+        raw: dict[str, Any] = {
             "argv": [str(arg) for arg in argv] if isinstance(argv, (list, tuple)) else [],
             "cwd": str(arguments.get("cwd", ".")),
         }
-    if name in {"create_file", "write_file", "replace_text"}:
+        if arguments.get("timeout_seconds") is not None:
+            raw["timeout_seconds"] = arguments["timeout_seconds"]
+        return raw
+    if name in {"create_file", "write_file", "replace_text", "delete_file"}:
         return {"path": str(arguments.get("path", ""))}
+    if name == "edit_file":
+        return {
+            "path": str(arguments.get("path", "")),
+            "edit_count": len(arguments.get("edits") or []),
+        }
+    if name == "move_file":
+        return {
+            "source_path": str(arguments.get("source_path", "")),
+            "destination_path": str(arguments.get("destination_path", "")),
+            "overwrite": bool(arguments.get("overwrite", False)),
+        }
     return None
 
 
@@ -342,12 +490,25 @@ def _approval_summary(name: str, arguments: dict[str, Any]) -> str:
     if name == "run_command":
         argv = arguments.get("argv")
         command = " ".join(str(arg) for arg in argv) if isinstance(argv, (list, tuple)) else "command"
-        return f"Run command: {command}"
+        timeout = arguments.get("timeout_seconds")
+        suffix = f" (timeout {int(float(timeout))}s)" if isinstance(timeout, (int, float)) else ""
+        return f"Run command: {command}{suffix}"
+    if name == "move_file":
+        source = str(arguments.get("source_path", "")).strip()
+        destination = str(arguments.get("destination_path", "")).strip()
+        return f"Move file: {source} → {destination}"
     path = str(arguments.get("path", "")).strip()
+    if name == "edit_file":
+        edit_count = len(arguments.get("edits") or [])
+        return f"Edit file: {path} ({edit_count} edit{'s' if edit_count != 1 else ''})"
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        return f"Call {parts[1]}: {parts[2]}" if len(parts) == 3 else f"Run tool: {name}"
     labels = {
         "create_file": "Create file",
         "write_file": "Write file",
         "replace_text": "Edit file",
+        "delete_file": "Delete file",
     }
     return f"{labels.get(name, f'Run tool: {name}')}{f': {path}' if path else ''}"
 
@@ -406,16 +567,21 @@ def _persisted_memory_messages(payload: dict) -> list[dict[str, Any]]:
 
 
 def _is_supported_stdio_mcp_server(server: object) -> bool:
-    """Check the 0.12.1 stdio shape (name/command/args/env) without spawning.
+    """Whether an ACP MCP entry is well formed for its transport, without connecting.
 
-    HTTP, SSE and malformed entries are rejected as unsupported before the
-    broker ever runs: only validated stdio reaches process startup, whose own
-    failures (missing binary, timeout, duplicates) stay mcp_server_start_failed.
+    stdio needs name/command/args/env, HTTP and SSE need name/url/headers (the
+    0.12.1 shapes). Malformed entries are rejected up front; a well-formed
+    entry that later fails to start (missing binary, unreachable URL) only
+    costs its own tools, reported by the broker.
     """
-    for key in ("name", "command", "args", "env"):
-        if capability_value(server, key) is None:
-            return False
-    return True
+    transport = mcp_server_transport(server)
+    if transport == "stdio":
+        keys: tuple[str, ...] = ("name", "command", "args", "env")
+    elif transport in ("http", "sse"):
+        keys = ("name", "url", "headers")
+    else:
+        return False
+    return all(capability_value(server, key) is not None for key in keys)
 
 
 def _should_record_runtime_context(
@@ -431,11 +597,11 @@ def create_acp_agent(
     *,
     authorization: Any | None = None,
 ) -> Any:
-    # TODO new agent -> a lot of changes to here.
     try:
         from acp import (
             AuthenticateResponse,
             InitializeResponse,
+            LoadSessionResponse,
             NewSessionResponse,
             PromptResponse,
             RequestError,
@@ -450,6 +616,7 @@ def create_acp_agent(
             SessionCapabilities,
             SessionCloseCapabilities,
             SessionResumeCapabilities,
+            Usage,
         )
     except ImportError as exc:
         raise SystemExit(
@@ -480,6 +647,7 @@ def create_acp_agent(
             )
             self._authorized_workspace = None
             self._current_config = config
+            self._background_tasks: set[asyncio.Task[Any]] = set()
             self._bootstrap_core = EchoAgentCore(config)
             self.file_tools = self._bootstrap_core.file_tools
             self.command_tools = self._bootstrap_core.command_tools
@@ -493,12 +661,14 @@ def create_acp_agent(
             session_authorization: Any | None = None,
         ) -> AgentSession:
             async_runner = EventLoopAsyncRunner(asyncio.get_running_loop())
+            cancel_event = Event()
             event_sink = AcpSessionEventSink(
                 conn=self._conn,
                 session_id=session_id,
                 updates=self._updates,
                 telemetry=None,
                 async_runner=async_runner,
+                cancel_event=cancel_event,
             )
             core = EchoAgentCore(session_config, event_sink=event_sink)
             event_sink._telemetry = core._telemetry
@@ -521,6 +691,7 @@ def create_acp_agent(
                 session_id=session_id,
                 core=core,
                 mcp_tools=mcp_tools,
+                cancel_event=cancel_event,
                 authorization=session_authorization or self._authorization,
             )
 
@@ -680,6 +851,7 @@ def create_acp_agent(
                     "Assigned policy disabled %d client-supplied MCP server(s) before launch.",
                     len(requested_mcp_servers),
                 )
+            mcp_failures: list[dict[str, str]] = []
             try:
                 mcp_tools = await asyncio.to_thread(
                     StdioMcpToolBroker.open,
@@ -687,6 +859,7 @@ def create_acp_agent(
                     cwd=workspace_root,
                 )
             except (RuntimeError, TimeoutError, ValueError) as exc:
+                mcp_failures = list(getattr(exc, "failures", None) or [])
                 # Best effort: a failing tool sidecar (e.g. the IDE-bundled MCP
                 # server binary refusing a second instance) must not take down
                 # the whole chat. The session keeps its native file/terminal
@@ -738,6 +911,11 @@ def create_acp_agent(
                         "mcp_backend": "broker"
                         if session.mcp_tools is not None
                         else "none",
+                        "mcp_servers_connected": list(
+                            getattr(session.mcp_tools, "connected_servers", None) or []
+                        ),
+                        "mcp_server_failures": mcp_failures
+                        or list(getattr(session.mcp_tools, "failures", None) or []),
                         **_prompt_backend_state(session),
                     },
                 )
@@ -832,21 +1010,21 @@ def create_acp_agent(
             return InitializeResponse(
                 protocol_version=negotiated_protocol_version,
                 agent_capabilities=AgentCapabilities(
-                    # This agent restores model memory, but does not yet persist the
-                    # client-visible update stream required by session/load replay.
-                    loadSession=False,
+                    # session/load replays the conversation from the persisted
+                    # model memory (user and agent messages, completed tool cards).
+                    loadSession=True,
                     promptCapabilities=PromptCapabilities(
                         image=False,
                         audio=False,
-                        embeddedContext=False,
+                        embeddedContext=True,
                     ),
                     sessionCapabilities=SessionCapabilities(
                         resume=SessionResumeCapabilities(),
                         close=SessionCloseCapabilities(),
                     ),
                     mcpCapabilities=McpCapabilities(
-                        http=False,
-                        sse=False,
+                        http=True,
+                        sse=True,
                     ),
                 ),
                 agent_info=Implementation(
@@ -970,8 +1148,7 @@ def create_acp_agent(
             # Rebuild every enforcement point (ToolRegistry allowed_tools /
             # approval, command allowlist, adapter provider) rather than
             # mutating _config in place, which would leave already-constructed
-            # adapters enforcing stale policy. This subsumes upstream's
-            # set_allowed_tools live-update: apply_config refreshes allowed
+            # adapters enforcing stale policy: apply_config refreshes allowed
             # tools plus approval/command/provider state.
             self._bootstrap_core.apply_config(new_config)
             for session in self._sessions.values():
@@ -1013,7 +1190,82 @@ def create_acp_agent(
                 event_type="agent.acp.session_created",
                 mcp_servers=mcp_servers,
             )
+            self._announce_commands_soon(session_id)
             return NewSessionResponse(session_id=session_id)
+
+        async def load_session(
+            self,
+            cwd: str,
+            session_id: str,
+            mcp_servers: list[Any] | None = None,
+            additional_directories: list[str] | None = None,
+            **kwargs: Any,
+        ) -> LoadSessionResponse:
+            """Reopen a chat: restore model memory and replay it to the client."""
+            self._reject_unsupported_session_inputs(
+                mcp_servers=mcp_servers,
+                additional_directories=additional_directories,
+            )
+            session = await self._create_or_resume_session(
+                cwd=cwd,
+                session_id=session_id,
+                event_type="agent.acp.session_resumed",
+                mcp_servers=mcp_servers,
+            )
+            await self._replay_session(session)
+            self._announce_commands_soon(session_id)
+            return LoadSessionResponse()
+
+        def _announce_commands_soon(self, session_id: str) -> None:
+            """Send ``available_commands_update`` right after the session response.
+
+            The SDK enqueues the response before the calling task yields, so a
+            task created here always reaches the client after it.
+            """
+
+            async def announce() -> None:
+                try:
+                    await self._conn.session_update(
+                        session_id=session_id,
+                        update=self._updates.available_commands(
+                            slash_commands.available(managed=config.managed_mode)
+                        ),
+                        source="code4me2_agent",
+                    )
+                except Exception:  # noqa: BLE001 - optional UI hint
+                    logger.debug("Could not send available commands.", exc_info=True)
+
+            task = asyncio.get_running_loop().create_task(announce())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+        async def _replay_session(self, session: AgentSession) -> None:
+            messages = session.core.session_memory_snapshot() or []
+            updates = _replay_updates(
+                messages,
+                updates=self._updates,
+                workspace_root=session.core._config.workspace_root,
+            )
+            for update in updates:
+                try:
+                    await self._conn.session_update(
+                        session_id=session.session_id,
+                        update=update,
+                        source="code4me2_agent",
+                    )
+                except Exception:  # noqa: BLE001 - replay is best effort
+                    logger.warning("Session replay update failed; continuing.", exc_info=True)
+                    return
+            session.title = _session_title(messages)
+            if session.title:
+                try:
+                    await self._conn.session_update(
+                        session_id=session.session_id,
+                        update=self._updates.session_info(title=session.title),
+                        source="code4me2_agent",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("Could not send the session title.", exc_info=True)
 
         async def resume_session(
             self,
@@ -1033,6 +1285,7 @@ def create_acp_agent(
                 event_type="agent.acp.session_resumed",
                 mcp_servers=mcp_servers,
             )
+            self._announce_commands_soon(session_id)
             return ResumeSessionResponse()
 
         @staticmethod
@@ -1137,8 +1390,13 @@ def create_acp_agent(
                                 **_prompt_backend_state(session),
                             },
                         )
-                    prompt_text = await _prompt_text_async(prompt)
-                    logger.info("Prompt text: %s", prompt_text)
+                    session_config = session.core._config
+                    prompt_text = await _prompt_text_async(
+                        prompt,
+                        workspace_root=session_config.workspace_root,
+                        attachment_budget_chars=session_config.adapter.memory_window.max_tokens,
+                    )
+                    logger.info("Prompt received (%d characters).", len(prompt_text))
                     run_id = uuid4().hex
                     if config.managed_mode:
                         run_payload = await asyncio.to_thread(
@@ -1169,7 +1427,7 @@ def create_acp_agent(
                         session.cancel_event,
                     )
                     await asyncio.to_thread(self._save_persisted_memory, session)
-                    if result.final_response:
+                    if result.final_response and not getattr(result, "response_emitted", False):
                         await self._conn.session_update(
                             session_id=session_id,
                             update=self._updates.agent_message(
@@ -1184,14 +1442,131 @@ def create_acp_agent(
                             ),
                             source="code4me2_agent",
                         )
+                    usage = getattr(result, "usage", None)
                     return PromptResponse(
                         stop_reason=_acp_stop_reason(result.stop_reason),
+                        usage=Usage(
+                            total_tokens=int(usage.get("total_tokens", 0)),
+                            input_tokens=int(usage.get("prompt_tokens", 0)),
+                            output_tokens=int(usage.get("completion_tokens", 0)),
+                        )
+                        if isinstance(usage, dict)
+                        else None,
+                        field_meta={
+                            "code4me2": {
+                                "outcome": result.run_status,
+                                "adapterStopReason": result.stop_reason,
+                                "durationMs": result.duration_ms,
+                            }
+                        },
                     )
                 finally:
                     session.active_prompt_task = None
                     session.cancel_event.clear()
 
     return Code4MeEchoAgent()
+
+
+def _title_from_prompt(text: str) -> str | None:
+    first = " ".join((text or "").split())
+    if not first or first.startswith("/"):
+        return None
+    return first if len(first) <= 60 else first[:57].rstrip() + "..."
+
+
+def _session_title(messages: list[dict[str, Any]]) -> str | None:
+    for message in messages:
+        if message.get("role") == "user" and not message.get("code4me_runtime"):
+            title = _title_from_prompt(str(message.get("content") or ""))
+            if title:
+                return title
+    return None
+
+
+def _replay_updates(
+    messages: list[dict[str, Any]],
+    *,
+    updates: AcpUpdateBuilder,
+    workspace_root: Path,
+) -> list[Any]:
+    """Client-visible history rebuilt from the persisted model memory.
+
+    User prompts and agent messages replay as message chunks and every tool
+    call as a completed (or failed) card. Runtime-internal notes (review
+    findings, verification notices, checkpoints, never-run calls) are not
+    replayed. Results are paired with the assistant message that issued them:
+    providers that omit call ids repeat the fallback ids every step.
+    """
+    from code4me2_agent.adapters import _safe_tool_event_metadata, _tool_result_summary
+    from code4me2_agent.tool_catalog import NO_CARD_TOOLS
+
+    replay: list[Any] = []
+    card_ids: dict[str, int] = {}
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        role = message.get("role")
+        content = str(message.get("content") or "")
+        index += 1
+        if role == "tool":
+            continue  # consumed with the assistant message that issued it
+        if role == "assistant" and message.get("tool_calls"):
+            results: dict[str, dict[str, Any]] = {}
+            while index < len(messages) and messages[index].get("role") == "tool":
+                try:
+                    parsed = json.loads(str(messages[index].get("content") or "{}"))
+                except json.JSONDecodeError:
+                    parsed = {}
+                results[str(messages[index].get("tool_call_id", ""))] = (
+                    parsed if isinstance(parsed, dict) else {}
+                )
+                index += 1
+            if message.get("code4me_runtime") == "loop_stop":
+                continue
+        if message.get("code4me_runtime"):
+            continue
+        if role == "user" and content.strip():
+            replay.append(updates.user_message(content))
+            continue
+        if role != "assistant":
+            continue
+        if content.strip():
+            replay.append(updates.agent_message(content))
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            name = str(call.get("name", ""))
+            call_id = str(call.get("id", ""))
+            if not name or not call_id or name in NO_CARD_TOOLS:
+                continue
+            arguments = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+            metadata = _safe_tool_event_metadata(name, arguments, workspace_root=workspace_root)
+            if metadata is None:
+                continue
+            result = results.get(call_id, {})
+            failed = result.get("status") not in (None, "ok")
+            summary = _tool_result_summary(name, result) if not failed else None
+            text = summary or (
+                str(result.get("error") or result.get("reason") or result.get("status") or "")
+                if failed
+                else metadata.get("content_text")
+            )
+            # Card ids must be unique within the replayed chat.
+            seen = card_ids.get(call_id, 0)
+            card_ids[call_id] = seen + 1
+            replay.append(
+                updates.start_tool_call(
+                    tool_call_id=call_id if seen == 0 else f"{call_id}~{seen + 1}",
+                    title=metadata["title"],
+                    kind=metadata["kind"],
+                    status="failed" if failed else "completed",
+                    path=metadata.get("path"),
+                    locations=metadata.get("locations"),
+                    content=[updates.text_tool_content(text)] if text else None,
+                    raw_input=metadata.get("raw_input"),
+                )
+            )
+    return replay
 
 
 def _resolve_session_cwd(cwd: str) -> Path:

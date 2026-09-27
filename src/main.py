@@ -16,27 +16,36 @@ Author: Your Name
 Version: 1.0.0
 """
 
+import ipaddress
 import logging
 import os
 import threading
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict
+from typing import AsyncGenerator, Dict, Optional
 
-import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
 
-from App import App
-from backend.Responses import JsonResponseWithStatus, TooManyRequests
-from backend.routers import router
-from Code4meV2Config import Code4meV2Config
+# Load the deployment `.env` BEFORE any router is imported: several modules
+# (the research bootstrap signer, provider settings) read their environment at
+# import time, and an operator-supplied variable must never be shadowed by a
+# late `.env` load. Explicit environment variables win over the file.
+load_dotenv()
+
+import uvicorn  # noqa: E402
+from fastapi import FastAPI, Request  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+from starlette.responses import Response  # noqa: E402
+
+from App import App  # noqa: E402
+from backend.classic_models_gate import ClassicModelsGate  # noqa: E402
+from backend.Responses import JsonResponseWithStatus, TooManyRequests  # noqa: E402
+from backend.routers import router  # noqa: E402
+from backend.routers.research.bootstrap import signing_secret  # noqa: E402
+from Code4meV2Config import Code4meV2Config  # noqa: E402
 
 # Global configuration
-load_dotenv()
 config = Code4meV2Config()
 
 
@@ -77,6 +86,103 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         _app.cleanup()
 
 
+# Relay paths metered per enrollment (research budgets). See
+# SimpleRateLimiter._get_rate_limit for why they get a higher per-IP floor.
+METERED_INFERENCE_PATHS = frozenset(
+    {
+        "/api/research/inference/v1/chat/completions",
+        "/api/agent/inference",
+        "/api/acp/inference",
+        "/api/acp/chat/completions",
+    }
+)
+METERED_INFERENCE_DEFAULT_RATE_PER_HOUR = 20000
+
+# Research-plane paths every enrolled participant calls continuously (session
+# create/heartbeat/activity, telemetry uploads, bootstrap/capability refresh).
+# They are authenticated by a signed capability or the account session and are
+# bounded by the study's own heartbeat cadence, so they get the same high per-IP
+# floor as the metered inference paths: a lab or office behind one NAT must not
+# exhaust the default hourly quota with a handful of participants.
+RESEARCH_PARTICIPANT_PATH_PREFIXES = (
+    "/api/research/sessions",
+    "/api/research/telemetry/batches",
+    "/api/research/bootstrap",
+)
+
+
+def _parse_trusted_proxies(raw: Optional[str]) -> tuple[bool, frozenset[str]]:
+    """Parse ``FORWARDED_ALLOW_IPS`` (uvicorn's variable, same semantics).
+
+    Returns ``(trust_all, addresses)``. A ``*`` trusts every peer; otherwise the
+    comma-separated addresses/networks are the only peers whose
+    ``X-Forwarded-For`` header is believed. The default is loopback only.
+    """
+    value = (raw if raw is not None else "127.0.0.1").strip()
+    if value == "*":
+        return True, frozenset()
+    entries = frozenset(entry.strip() for entry in value.split(",") if entry.strip())
+    return False, entries
+
+
+def _is_trusted_proxy(peer: Optional[str], trust_all: bool, trusted: frozenset[str]) -> bool:
+    if trust_all:
+        return True
+    if not peer:
+        return False
+    if peer in trusted:
+        return True
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    for entry in trusted:
+        if "/" not in entry:
+            continue
+        try:
+            if address in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def resolve_client_address(
+    peer: Optional[str],
+    forwarded_for: Optional[str],
+    *,
+    trust_all: bool,
+    trusted: frozenset[str],
+) -> str:
+    """The address a request should be rate-limited by.
+
+    Behind a trusted reverse proxy the socket peer is always the proxy, so the
+    real client is taken from ``X-Forwarded-For``: walking from the right, the
+    first entry that is not itself a trusted proxy (the entry our own proxy
+    appended is the one it saw on the wire; anything left of it is
+    client-supplied and forgeable). An untrusted peer's header is ignored.
+
+    With ``*`` every peer is trusted, so the only safe choice is the RIGHTMOST
+    hop: the one the nearest proxy appended. The leftmost hop is whatever the
+    client sent and would let it pick its own rate-limit key. (uvicorn's own
+    proxy-headers middleware takes the leftmost hop under ``*``, which is why
+    ``nginx.prod.conf`` forwards a single hop, ``$remote_addr``, never the
+    client-supplied chain.)
+    """
+    peer_value = peer or "unknown"
+    if not forwarded_for or not _is_trusted_proxy(peer, trust_all, trusted):
+        return peer_value
+    hops = [hop.strip() for hop in forwarded_for.split(",") if hop.strip()]
+    if not hops:
+        return peer_value
+    if trust_all:
+        return hops[-1]
+    for hop in reversed(hops):
+        if not _is_trusted_proxy(hop, trust_all, trusted):
+            return hop
+    return hops[0]
+
+
 class SimpleRateLimiter(BaseHTTPMiddleware):
     """
     Simple rate limiting middleware for FastAPI.
@@ -89,17 +195,32 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         locks: Threading locks for thread-safe request counting
     """
 
-    def __init__(self, app: FastAPI) -> None:
+    def __init__(
+        self,
+        app: FastAPI,
+        *,
+        trusted_proxies: Optional[str] = None,
+        start_reset_thread: bool = True,
+    ) -> None:
         """
         Initialize the rate limiter middleware.
 
         Args:
             app: The FastAPI application instance
+            trusted_proxies: ``FORWARDED_ALLOW_IPS`` value; defaults to the
+                environment variable (uvicorn reads the same one) or loopback.
+            start_reset_thread: tests pass ``False`` to keep the limiter inert.
         """
         super().__init__(app)
         self.request_counts: Dict[str, int] = {}
         self.locks: Dict[str, threading.Lock] = {}
-        self._start_reset_thread()
+        # Guards the two maps above as a whole (creation of per-key locks and
+        # the hourly reset). Per-key locks only serialize one client's counter.
+        self._registry_lock = threading.Lock()
+        raw = trusted_proxies if trusted_proxies is not None else os.environ.get("FORWARDED_ALLOW_IPS")
+        self._trust_all_proxies, self._trusted_proxies = _parse_trusted_proxies(raw)
+        if start_reset_thread:
+            self._start_reset_thread()
 
     def _start_reset_thread(self) -> None:
         """Start the background thread that resets request counts periodically."""
@@ -119,17 +240,26 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         """
         while True:
             time.sleep(3600)  # Wait for 1 hour
-            with threading.Lock():
-                count_before = len(self.request_counts)
-                self.request_counts.clear()
-                # Prune the per-key lock map with the counters: it must not grow
-                # one lock per ip:path for the lifetime of the process.
-                self.locks.clear()
-                logging.info(f"Reset {count_before} rate limit counters")
+            self.reset_counts()
+
+    def reset_counts(self) -> None:
+        """Clear every counter (and the per-key lock map) under the registry lock."""
+        with self._registry_lock:
+            count_before = len(self.request_counts)
+            self.request_counts.clear()
+            # Prune the per-key lock map with the counters: it must not grow
+            # one lock per ip:path for the lifetime of the process.
+            self.locks.clear()
+        logging.info(f"Reset {count_before} rate limit counters")
 
     def _get_rate_limit(self, endpoint: str) -> int:
         """
         Get the rate limit for a specific endpoint.
+
+        Metered inference paths get a higher floor unless configured
+        explicitly: an agent loop makes hundreds of model calls per hour and a
+        lab behind one NAT shares the per-IP counter, while those paths are
+        already protected by authentication and per-enrollment budgets.
 
         Args:
             endpoint: The API endpoint path
@@ -137,8 +267,25 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         Returns:
             The maximum number of requests allowed per hour for this endpoint
         """
-        return config.max_request_rate_per_hour_config.get(
-            endpoint, config.default_max_request_rate_per_hour
+        configured = config.max_request_rate_per_hour_config.get(endpoint)
+        if configured is not None:
+            return configured
+        if endpoint in METERED_INFERENCE_PATHS or endpoint.startswith(
+            RESEARCH_PARTICIPANT_PATH_PREFIXES
+        ):
+            return max(
+                config.default_max_request_rate_per_hour,
+                METERED_INFERENCE_DEFAULT_RATE_PER_HOUR,
+            )
+        return config.default_max_request_rate_per_hour
+
+    def client_address(self, request: Request) -> str:
+        """The rate-limited client address (real client behind a trusted proxy)."""
+        return resolve_client_address(
+            request.client.host if request.client else None,
+            request.headers.get("x-forwarded-for"),
+            trust_all=self._trust_all_proxies,
+            trusted=self._trusted_proxies,
         )
 
     def _get_client_key(self, request: Request) -> str:
@@ -151,7 +298,7 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         Returns:
             A unique string combining client IP and endpoint path
         """
-        ip = request.client.host if request.client else "unknown"
+        ip = self.client_address(request)
         endpoint = request.url.path
         return f"{ip}:{endpoint}"
 
@@ -170,17 +317,17 @@ class SimpleRateLimiter(BaseHTTPMiddleware):
         endpoint = request.url.path
 
         # Ensure thread-safe access to request counts
-        if client_key not in self.locks:
-            self.locks[client_key] = threading.Lock()
+        with self._registry_lock:
+            key_lock = self.locks.setdefault(client_key, threading.Lock())
 
-        with self.locks[client_key]:
+        with key_lock:
             current_count = self.request_counts.get(client_key, 0)
             rate_limit = self._get_rate_limit(endpoint)
             # Never log request cookies or bodies: they carry auth cookies,
-            # session capabilities and canonical telemetry content.
-            logging.info(
-                f"Request sent to {endpoint} from "
-                f"{request.client.host if request.client else 'unknown'}. "
+            # session capabilities and canonical telemetry content. DEBUG: a
+            # line per request would otherwise fill the disk over a study.
+            logging.debug(
+                f"Request sent to {endpoint} from {client_key.rsplit(':', 1)[0]}. "
                 f"Rate limit: {current_count}/{rate_limit}"
             )
             if current_count >= rate_limit:
@@ -225,6 +372,12 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
     )
+
+    # Refuse the classic model endpoints when they are switched off (e.g. the no-GPU dev
+    # stack). Added first so it runs innermost, behind CORS and rate limiting.
+    if not config.classic_models_enabled:
+        app.add_middleware(ClassicModelsGate)
+        logging.info("Classic completion/chat models disabled (CLASSIC_MODELS_ENABLED=false)")
 
     # Configure CORS middleware
     # IMPORTANT: When allow_credentials=True, Access-Control-Allow-Origin cannot be '*'.
@@ -277,6 +430,17 @@ def main() -> None:
         f"Starting Code4Me V2 API server on "
         f"{config.server_host}:{config.server_port}"
     )
+
+    # Fail fast: without the bootstrap signing secret every research bootstrap
+    # answers 503 and every participant spools forever. Only a test process
+    # (TEST_MODE) may run without it.
+    test_mode = os.environ.get("TEST_MODE", "false").strip().lower() in {"1", "true", "yes"}
+    if not test_mode and not signing_secret():
+        raise SystemExit(
+            "BOOTSTRAP_SIGNING_SECRET is not set: the research plane cannot issue or "
+            "verify session capabilities. Set it in the environment or .env "
+            "(see .env.example) and start again."
+        )
 
     # Multiple uvicorn workers are safe because assignment, session/revocation
     # and receipt authority live in PostgreSQL/Redis, never process memory.

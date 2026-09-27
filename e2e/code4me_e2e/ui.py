@@ -10,6 +10,7 @@ import socket
 import subprocess
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,7 +24,7 @@ UI_TEST_STEP_ID = "ui_test"
 UI_TEST_TASK = ":ui-tests:test"
 UI_TEST_CLASS = "ui.Code4MeUiNavigationTest"
 EXPECTED_UI_STEPS = {"plugin_loaded", "settings_navigation", "sign_in", "enrollment_activation",
-                     "status_surface", "acp_registration", "prepare_agent"}
+                     "status_surface", "acp_registration", "prepare_agent", "model_response"}
 
 def parse_results_json(path: Path) -> Dict[str, Any]:
     try:
@@ -104,6 +105,41 @@ def require_test_evidence(exit_code: int, xml: dict, results: dict | None = None
 
 
 # ---------------------------------------------------------------------------
+# Post-UI registered-entry check
+# ---------------------------------------------------------------------------
+
+
+def verify_registered_entry(run_path: Path) -> Dict[str, Any]:
+    """Post-UI check: the IDE-registered ACP entry is executable and identified.
+
+    A registration that merely exists in ``acp.json`` is not enough (the
+    Kotlin ``acp_registration``/``prepare_agent`` steps already check the file
+    and the bridge). This check resolves the exact command the IDE registered,
+    requires the proxy *and* the wrapped agent binary to be executable files,
+    records both digests and ``--version`` outputs, verifies the declared
+    ``--agent-digest``, and requires the one-time spool capability the proxy
+    needs to deliver this run's telemetry.
+    """
+    try:
+        entry = acp.entry_identity(run_path)
+    except RuntimeError as error:
+        raise RuntimeError(f"registered ACP entry is unusable: {error}") from error
+    if "CODE4ME_RESEARCH_CAPABILITY" not in entry.get("env_keys", []):
+        raise RuntimeError(
+            "registered ACP entry carries no CODE4ME_RESEARCH_CAPABILITY; the proxy "
+            "could not deliver this run's telemetry"
+        )
+    try:
+        uuid.UUID(str(entry.get("research_session_id") or ""))
+    except ValueError as error:
+        raise RuntimeError(
+            "registered ACP entry names no valid CODE4ME_RESEARCH_SESSION_ID; its telemetry "
+            "cannot be attributed to this run's research session"
+        ) from error
+    return entry
+
+
+# ---------------------------------------------------------------------------
 # Report recording
 # ---------------------------------------------------------------------------
 
@@ -149,6 +185,13 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
     if home.exists():
         home.rename(run_path / f"ide-home-previous-{time.time_ns()}")
     home.mkdir(mode=0o700)
+    # Keep credentials in memory: on macOS the sandbox otherwise shares the
+    # developer's login keychain (and reads their saved Code4Me account).
+    security_xml = ('<application><component name="PasswordSafe">'
+                    '<option name="PROVIDER" value="MEMORY_ONLY" /></component></application>\n')
+    for config in (home / "config", home / "Library/Application Support/JetBrains/IntelliJIdea2026.2"):
+        (config / "options").mkdir(parents=True, exist_ok=True)
+        (config / "options/security.xml").write_text(security_xml)
     started = time.monotonic()
     child = None
     stub = None
@@ -167,9 +210,12 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
         manifest = json.loads((plugin / "build/research-runtime-staging/proxy-manifest.json").read_text())
         bundle = next(p for p in manifest["platforms"]
                       if p["os"] == scenario.platform.os and p["arch"] == scenario.platform.arch)
-        if not bundle["self_contained"] or not bundle.get("agent"):
-            raise RuntimeError("The staged proxy and agent must be self-contained")
-        digest = bundle["agent"]["digest"]
+        if not bundle["self_contained"]:
+            raise RuntimeError("The staged proxy must be self-contained")
+        # Since plugin a003dd5 the packaged agent is the managed runtime from the
+        # code4me-runtime overlay (-Pcode4me.localRuntimeDir), pinned by archive sha256.
+        overlay_manifest = json.loads((E2E_DIR / ".cache/agent/resources/code4me-runtime/manifest.json").read_text())
+        digest = overlay_manifest["artifacts"][0]["sha256"]
         scenario.agent.artifact_digest = digest
         scenario.agent.release_id = "e2e-ui-" + digest[:20]
         scenario.agent.profile_name = "e2e-ui-" + digest[:20]
@@ -201,7 +247,9 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
                "CODE4ME_E2E_JOIN_CODE": state["join_code"],
                "CODE4ME_UI_ROBOT_URL": robot_url, "CODE4ME_UI_ROBOT_PORT": str(port),
                "CODE4ME_UI_PROJECT_DIR": str(run_path / "ui-project"),
-               "CODE4ME_UI_RESULT_FILE": str(results_file)}
+               "CODE4ME_UI_RESULT_FILE": str(results_file),
+               "CODE4ME_UI_EXPECTED_RESPONSE": scenario.message.expected_substring or state["stub_token"],
+               "CODE4ME_UI_MODEL_PROMPT": scenario.message.prompt}
         stage = "ide_startup"
         with (run_path / "ui-ide.log").open("w") as log:
             child = subprocess.Popen([str(plugin / "gradlew"), ":runIdeForUiTests", *gradle_args,
@@ -230,6 +278,10 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
         xml = parse_gradle_xml(xml_path)
         details["junit"] = xml
         require_test_evidence(rc, xml, results, log_path=run_path / 'ui-test.log')
+        stage = "registered_entry"
+        # A visible registration can still be unusable: resolve the exact entry
+        # command/agent argv, digest and version before launching it.
+        details["registered_entry"] = verify_registered_entry(run_path)
         stage = "acp_conversation"
         print("UI passed; testing registered ACP proxy, model turn and telemetry", file=__import__('sys').stderr)
         details["acp"] = acp.exercise(scenario, run_path, state, stub)

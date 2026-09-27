@@ -37,7 +37,8 @@ def chat_request_task(
     # Import at runtime to avoid circular import
     from backend.routers.chat.request import request_chat_completion
 
-    logging.log(logging.INFO, f"Processing chat completion request: {chat_request}")
+    # Never log the request itself: it carries the user's code and prompts.
+    logging.log(logging.INFO, f"Processing chat completion request for connection {connection_id}")
     app = App.get_instance()
     celery_broker = app.get_celery_broker()
 

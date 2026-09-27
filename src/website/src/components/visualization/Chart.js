@@ -129,12 +129,13 @@ const Chart = ({
     setMaxCharsPerLabel(Math.min(24, maxChars));
   }, [containerWidth, data, xKey, xLabelFormatter, inferredTime, formatXForAxis]);
 
-  // Show placeholder while loading or when no data
+  // Callers render their own loading state; an empty series here means the
+  // period simply has no data (not that it is still loading).
   if (!data || data.length === 0) {
     return (
       <div className="chart-container">
         <h3>{title}</h3>
-        <div className="chart-loading">Loading data...</div>
+        <div className="chart-loading">No data for this period.</div>
       </div>
     );
   }

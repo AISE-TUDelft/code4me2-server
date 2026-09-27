@@ -33,6 +33,47 @@ REDACTED_MARKER = "[REDACTED]"
 _BASE_CONFIG = ConfigDict(extra="forbid")
 
 
+def _declared_field_classes(raw_classes: Any) -> set[FieldClass]:
+    """Map a study's ``allowed_field_classes`` onto runtime field classes.
+
+    Studies are authored in the study vocabulary (STRUCTURAL / METRICS /
+    DIAGNOSTICS / CONTENT) and the study validator also accepts the runtime
+    names (SYSTEM / BEHAVIORAL / CODE_METADATA / CONTENT). Both are honoured,
+    with the same mapping ``from_revision_policy`` uses; unknown names are
+    ignored. Without this, a policy such as ``[STRUCTURAL, …, CONTENT]`` would
+    resolve to ``{CONTENT}`` alone and drop every structural field.
+    """
+    classes: set[FieldClass] = set()
+    for raw in raw_classes if isinstance(raw_classes, (list, tuple, set)) else []:
+        value = raw.value if isinstance(raw, TelemetryFieldClass) else str(raw).upper()
+        if value == TelemetryFieldClass.STRUCTURAL.value:
+            classes.update({FieldClass.SYSTEM, FieldClass.BEHAVIORAL})
+        elif value == TelemetryFieldClass.METRICS.value:
+            classes.add(FieldClass.SYSTEM)
+        elif value == TelemetryFieldClass.DIAGNOSTICS.value:
+            classes.add(FieldClass.BEHAVIORAL)
+        else:
+            try:
+                classes.add(FieldClass(value))
+            except ValueError:
+                continue
+    return classes
+
+
+def runtime_field_classes(raw_classes: Any) -> list[str]:
+    """The runtime class names a study's ``allowed_field_classes`` resolves to.
+
+    Sorted and without ``SECRET``. An empty list means nothing usable was
+    declared, which every consumer reads as the metadata default (SYSTEM,
+    BEHAVIORAL, CODE_METADATA): ingestion here, the IDE plugin and the ACP
+    proxy it configures. The bootstrap manifest carries this list because the
+    plugin only understands the runtime vocabulary; given study names it
+    would keep only the runtime names it recognises and drop the rest.
+    """
+    declared = _declared_field_classes(raw_classes) - {FieldClass.SECRET}
+    return sorted(field_class.value for field_class in declared)
+
+
 class PrivacyPolicy(BaseModel):
     """Resolved field policy for one revision + consent state.
 
@@ -66,15 +107,21 @@ class PrivacyPolicy(BaseModel):
     def from_study_policy(cls, telemetry_policy: Mapping[str, Any], *, consent_active: bool) -> PrivacyPolicy:
         """Resolve the current manifest policy using the IDE's field defaults.
 
+        Accepts both the study-facing authoring vocabulary (STRUCTURAL /
+        METRICS / DIAGNOSTICS / CONTENT, the same names study creation
+        validates) and the runtime vocabulary (SYSTEM / BEHAVIORAL /
+        CODE_METADATA / CONTENT) — mirroring ``from_revision_policy``. An
+        authored allowlist the resolver doesn't understand must not silently
+        degrade to the default: without this, a researcher writing the
+        documented study vocabulary gets broader capture than they declared.
         Content always needs the explicit content_capture flag and consent.
         Code metadata is allowed when declared (or using the legacy/default
         metadata policy); otherwise clients must upload SHA-256 tokens.
         """
-        declared = {
-            field_class for field_class in FieldClass
-            if field_class.value in telemetry_policy.get("allowed_field_classes", [])
-        }
-        allowed = (declared or {FieldClass.SYSTEM, FieldClass.BEHAVIORAL, FieldClass.CODE_METADATA}) - {FieldClass.SECRET}
+        # The same resolution the bootstrap manifest sends the IDE plugin
+        # (``runtime_field_classes``), so client and server agree.
+        declared = _declared_field_classes(telemetry_policy.get("allowed_field_classes") or []) - {FieldClass.SECRET}
+        allowed = declared or {FieldClass.SYSTEM, FieldClass.BEHAVIORAL, FieldClass.CODE_METADATA}
         return cls(
             allowed_field_classes=sorted(allowed, key=lambda item: item.value),
             content_allowed=telemetry_policy.get("content_capture") is True,

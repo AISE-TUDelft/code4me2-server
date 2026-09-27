@@ -138,6 +138,7 @@ def authenticate_user(
                 value=auth_token,
                 httponly=True,
                 samesite="lax",
+                secure=app.get_config().cookie_secure,
                 expires=config.auth_token_expires_in_seconds,
             )
             return response_obj
@@ -179,6 +180,7 @@ def authenticate_user(
                 value=auth_token,
                 httponly=True,
                 samesite="lax",
+                secure=app.get_config().cookie_secure,
                 expires=config.auth_token_expires_in_seconds,
             )
             return response_obj

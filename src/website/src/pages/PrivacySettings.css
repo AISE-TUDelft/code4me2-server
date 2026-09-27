@@ -1,0 +1,55 @@
+/* "Privacy & data" page. Generic controls come from styles/ui.css; this file
+   only adds the page-specific pieces. */
+
+/* A settings page: keep the prose at a readable width. */
+.privacy-page {
+  max-width: 920px;
+}
+
+.privacy-text {
+  color: var(--text-secondary);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.privacy-counts dd {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+/* Inline confirmation that replaces an action button while it is open. */
+.privacy-confirm {
+  background-color: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.privacy-confirm:focus-visible {
+  box-shadow: 0 0 0 3px var(--focus-color);
+  outline: none;
+}
+
+.privacy-confirm-text {
+  color: var(--text-color);
+  font-weight: 500;
+  margin: 0;
+}
+
+/* Destructive cards, styled like the study "Stop the study" card. */
+.privacy-danger {
+  border-color: color-mix(in srgb, var(--error-color) 35%, var(--border-color));
+}
+
+.privacy-danger .ui-card-title {
+  color: var(--error-color);
+}
+
+.privacy-danger .privacy-confirm {
+  background-color: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--error-color) 30%, transparent);
+}

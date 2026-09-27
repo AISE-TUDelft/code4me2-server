@@ -18,7 +18,8 @@ from backend.Responses import (
     VerifyUserError,
     VerifyUserGetHTMLResponse,
 )
-from celery_app.tasks.db_tasks import send_verification_email_task
+from backend.email_utils import send_verification_email
+from utils import create_uuid
 from Queries import UpdateUser
 
 # Initialize API router for user verification routes
@@ -101,6 +102,7 @@ def check_verification(
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": ResendVerificationEmailError},
+        "502": {"model": ResendVerificationEmailError},
     },
     tags=["User Verification"],
 )
@@ -144,10 +146,21 @@ def resend_verification_email(
                 content=UserNotFoundError(),
             )
 
-        # Enqueue a Celery task to send the verification email
-        send_verification_email_task.delay(
-            str(user.user_id), str(user.email), user.name
+        # Send in the request rather than through a background task: a queued
+        # task cannot report a delivery failure back to the person who clicked
+        # "Resend", so the page would claim success while nothing was sent.
+        verification_token = create_uuid()
+        redis_client.set(
+            "email_verification",
+            verification_token,
+            {"user_id": str(user.user_id)},
+            force_reset_exp=True,
         )
+        if not send_verification_email(str(user.email), user.name, verification_token):
+            logging.error(f"Verification email delivery failed for user {user.user_id}")
+            return JsonResponseWithStatus(
+                status_code=502, content=ResendVerificationEmailError()
+            )
 
         # Return success response
         return JsonResponseWithStatus(

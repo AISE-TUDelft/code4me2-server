@@ -20,16 +20,31 @@ __all__ = [
     "DistributionMode",
     "DistributionSourceType",
     "Fidelity",
+    "INFERENCE_GATEWAY_FRAMEWORKS",
     "MANAGED_RUNTIME_FRAMEWORK",
+    "METERED_FRAMEWORKS",
     "QualificationStatus",
     "RegistryReasonCode",
     "SnapshotCapabilityState",
 ]
 
-#: The one agent runtime the managed protocol runs in this release. Goose and
-#: Codex releases exist as BYOA identities but are not participant-ready, so a
-#: study may not bind them until the managed protocol manages them.
+#: The one agent runtime the managed protocol runs (packaged, ACP-relayed).
+#: Goose and Codex are BYOA identities: the participant installs them and the
+#: plugin launches them through the research proxy. Goose is pointed at the
+#: research inference gateway (shared server-held key, per-participant
+#: budgets); Codex signs in with ChatGPT and is neither relayed nor metered.
 MANAGED_RUNTIME_FRAMEWORK = "code4me2-agent"
+
+#: BYOA runtimes whose model calls go through the research inference gateway
+#: (``/api/research/inference/v1/chat/completions``). Their releases must bind
+#: the gateway runtime fields (see ``BYOA_RUNTIME_FIELDS``).
+INFERENCE_GATEWAY_FRAMEWORKS: frozenset[str] = frozenset({"goose"})
+
+#: Runtimes whose model calls spend from the study's server-held provider key
+#: and are metered against the participant's budget: Goose (through the
+#: research inference gateway) and the managed runtime (through the ACP relay).
+#: Codex signs in with ChatGPT and is neither relayed nor metered.
+METERED_FRAMEWORKS: frozenset[str] = frozenset({"goose", MANAGED_RUNTIME_FRAMEWORK})
 
 
 class DistributionMode(str, Enum):

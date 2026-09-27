@@ -13,6 +13,8 @@ never trusted.
 
 from __future__ import annotations
 
+import logging
+
 import uuid  # noqa: TC003 - FastAPI evaluates route annotations at runtime
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -22,6 +24,7 @@ from pydantic import BaseModel
 
 from App import App
 from backend.Responses import JsonResponseWithStatus
+from backend.routers.research import bootstrap as bootstrap_router
 from backend.routers.research.bootstrap import BOOTSTRAP_SIGNING_SECRET
 from database.db_schemas import ResearchStudyStatus, Study as StudyRow
 from research.analysis.operations import store as operations_store
@@ -48,8 +51,29 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 
+
+def _budget_block(db, enrollment_id, now):
+    """The participant's arm-blind budget numbers, or ``None`` (never raises)."""
+    from research.budget import ledger as budget_ledger
+
+    try:
+        return budget_ledger.participant_view(db, enrollment_id=enrollment_id, now=now)
+    except Exception:  # noqa: BLE001 - a budget read must never break a session signal
+        logging.exception("[Research/sessions] budget view failed for %s", enrollment_id)
+        return None
+
 AUDIENCE = "research-runtime"
 _SCOPE_WRITE = "telemetry:write"
+
+
+def _signing_secret() -> str:
+    """The signing secret at request time.
+
+    Delegates to the bootstrap router's resolver so the signer and every
+    verifier agree (an installed test signer wins there too); this module's
+    import-time copy is only a patch target of last resort.
+    """
+    return bootstrap_router.signing_secret() or BOOTSTRAP_SIGNING_SECRET or ""
 _SCOPE_HEARTBEAT = "session:heartbeat"
 _SCOPE_CLOSE = "session:close"
 
@@ -141,7 +165,7 @@ def _authorize(
     """
     verification = verify_capability(
         capability,
-        BOOTSTRAP_SIGNING_SECRET or "",
+        _signing_secret(),
         expected_audience=AUDIENCE,
         expected_scope=[scope],
         now=now,
@@ -275,8 +299,21 @@ def create_research_session(
                 ),
             )
 
-        existing_row = session_store.get_active_session_for_context(
-            db, enrollment.enrollment_id, payload.context_id
+        # An idle-expired context session is ended (IDLE_TIMEOUT) and a fresh
+        # one opened below, instead of handing back a session the next
+        # heartbeat would terminate (review D-01/C-02).
+        kill_switch_check = operations_store.db_kill_switch_check(
+            db,
+            study_id=study.study_id,
+            enrollment_id=enrollment.enrollment_id,
+        )
+        existing_row = session_store.resolve_open_context_session(
+            db,
+            enrollment.enrollment_id,
+            payload.context_id,
+            study=study,
+            now=now,
+            kill_switch_check=kill_switch_check,
         )
         if existing_row is not None:
             existing = session_store.row_to_session(existing_row)
@@ -287,6 +324,7 @@ def create_research_session(
                     "session": session_store.session_summary(existing_row),
                     "next_actions": _next_actions(existing, policy, now),
                     "heartbeat_seconds": policy.heartbeat_seconds,
+                    "budget": _budget_block(db, enrollment.enrollment_id, now),
                 },
             )
 
@@ -299,11 +337,6 @@ def create_research_session(
             now=now,
         )
         # An engaged kill switch blocks new funded session creation.
-        kill_switch_check = operations_store.db_kill_switch_check(
-            db,
-            study_id=study.study_id,
-            enrollment_id=enrollment.enrollment_id,
-        )
         if kill_switch_check():
             raise HTTPException(
                 status_code=403,
@@ -320,6 +353,7 @@ def create_research_session(
                 "session": session_store.session_summary(row),
                 "next_actions": _next_actions(session, policy, now),
                 "heartbeat_seconds": policy.heartbeat_seconds,
+                "budget": _budget_block(db, enrollment.enrollment_id, now),
             },
         )
     finally:
@@ -390,6 +424,7 @@ def heartbeat(
                     "session": session_store.session_summary(row),
                     "next_actions": [],
                     "heartbeat_seconds": policy.heartbeat_seconds,
+                    "budget": _budget_block(db, session.enrollment_id, now),
                 },
             )
 
@@ -416,6 +451,7 @@ def heartbeat(
                 "session": session_store.session_summary(row),
                 "next_actions": _next_actions(updated, policy, now),
                 "heartbeat_seconds": policy.heartbeat_seconds,
+                "budget": _budget_block(db, session.enrollment_id, now),
             },
         )
     finally:
@@ -490,6 +526,7 @@ def report_activity(
                     "session": session_store.session_summary(row),
                     "next_actions": [],
                     "heartbeat_seconds": policy.heartbeat_seconds,
+                    "budget": _budget_block(db, session.enrollment_id, now),
                 },
             )
 
@@ -517,6 +554,7 @@ def report_activity(
                 "session": session_store.session_summary(row),
                 "next_actions": _next_actions(activity.session, policy, now),
                 "heartbeat_seconds": policy.heartbeat_seconds,
+                "budget": _budget_block(db, session.enrollment_id, now),
             },
         )
     finally:

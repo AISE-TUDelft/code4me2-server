@@ -317,7 +317,9 @@ class CreateGeneration(QueryBase):
     generation_time: int = Field(..., description="Generation time (ms)", ge=0)
     shown_at: List[str] = Field(..., description="Timestamps when shown")
     was_accepted: bool = Field(..., description="Whether accepted by user")
-    confidence: float = Field(..., description="Confidence score")
+    confidence: Optional[float] = Field(
+        None, description="Confidence score; null when the model reports none"
+    )
     logprobs: List[float] = Field(..., description="Token log probabilities")
 
 

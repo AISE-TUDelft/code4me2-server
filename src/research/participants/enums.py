@@ -1,10 +1,11 @@
 """Closed vocabularies for participant identity and retention.
 
-Consent is a single acceptance recorded once at join (no document identity, no
-re-consent, no withdrawal), so those vocabularies are gone. What remains is the
-enrollment lifecycle, the stable rejection reasons, and the retention vocabulary
-(re-exported from the study protocol so identity and retention share one
-published contract).
+Consent is a single acceptance recorded once at join (no document identity or
+re-consent), so those vocabularies are gone. A participant withdraws by opting
+the account out of data collection (``privacy.collection``), which ends the
+enrollment as ``WITHDRAWN``. What remains is the enrollment lifecycle, the
+stable rejection reasons, and the retention vocabulary (re-exported from the
+study protocol so identity and retention share one published contract).
 
 Members are part of persisted contracts, so they stay additive.
 """
@@ -31,12 +32,14 @@ class EnrollmentStatus(str, Enum):
 
     ``ACTIVE`` is the only state in which telemetry may be accepted. A study that
     stops marks its enrollments ``STUDY_STOPPED``; an administrative revoke is
-    ``REVOKED``. Both are terminal and accept nothing new.
+    ``REVOKED``; a participant who opts out of data collection is ``WITHDRAWN``.
+    All three are terminal and accept nothing new.
     """
 
     ACTIVE = "ACTIVE"
     REVOKED = "REVOKED"
     STUDY_STOPPED = "STUDY_STOPPED"
+    WITHDRAWN = "WITHDRAWN"
     COMPLETED = "COMPLETED"  # legacy compatibility for non-research callers
 
 

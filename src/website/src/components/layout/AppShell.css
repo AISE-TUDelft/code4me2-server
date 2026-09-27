@@ -1,0 +1,321 @@
+/* Signed-in application frame: sticky header + grouped sidebar + content. */
+
+.shell {
+  background-color: var(--background-color);
+  color: var(--text-color);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.shell-skip {
+  background-color: var(--primary-color);
+  border-radius: var(--radius-md);
+  color: var(--primary-contrast);
+  left: 12px;
+  padding: 8px 12px;
+  position: absolute;
+  top: -48px;
+  z-index: 500;
+}
+
+.shell-skip:focus {
+  top: 8px;
+}
+
+.shell-header {
+  align-items: center;
+  background-color: var(--card-background);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  gap: 12px;
+  height: 58px;
+  padding: 0 20px;
+  position: sticky;
+  top: 0;
+  z-index: 200;
+}
+
+.shell-menu-button {
+  display: none;
+}
+
+.shell-brand {
+  align-items: center;
+  color: var(--text-color);
+  display: inline-flex;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.shell .shell-brand {
+  color: var(--text-color);
+}
+
+.shell-logo {
+  align-items: center;
+  background: linear-gradient(135deg, var(--primary-color), #6a5ae0);
+  border-radius: 9px;
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 800;
+  height: 32px;
+  justify-content: center;
+  letter-spacing: 0.02em;
+  width: 32px;
+}
+
+.shell-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.shell-brand-name {
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.shell-brand-sub {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.shell-header-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.shell-user {
+  align-items: center;
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  gap: 10px;
+  margin-left: 4px;
+  min-width: 0;
+  padding-left: 12px;
+}
+
+.shell-avatar {
+  align-items: center;
+  background-color: var(--primary-soft);
+  border-radius: 50%;
+  color: var(--primary-color);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 750;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.shell-user-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  min-width: 0;
+}
+
+.shell-user-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-user-role {
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.shell-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The column stretches with the page; the inner panel stays in view. */
+.shell-sidebar {
+  align-self: stretch;
+  background-color: var(--card-background);
+  border-right: 1px solid var(--border-color);
+  flex-shrink: 0;
+  width: 244px;
+}
+
+.shell-sidebar-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-height: calc(100vh - 58px);
+  overflow-y: auto;
+  padding: 18px 12px 24px;
+  position: sticky;
+  top: 58px;
+}
+
+.shell-nav-group ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shell-nav-heading {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  margin: 0 0 6px;
+  padding: 0 10px;
+  text-transform: uppercase;
+}
+
+.shell .shell-nav-link {
+  align-items: center;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  display: flex;
+  font-size: 13.5px;
+  font-weight: 550;
+  gap: 10px;
+  min-height: 36px;
+  padding: 7px 10px;
+  position: relative;
+  text-decoration: none;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.shell .shell-nav-link:hover {
+  background-color: var(--hover-color);
+  color: var(--text-color);
+}
+
+.shell .shell-nav-link.is-active {
+  background-color: var(--primary-soft);
+  color: var(--primary-color);
+  font-weight: 650;
+}
+
+.shell .shell-nav-link.is-active::before {
+  background-color: var(--primary-color);
+  border-radius: 0 3px 3px 0;
+  bottom: 8px;
+  content: "";
+  left: -12px;
+  position: absolute;
+  top: 8px;
+  width: 3px;
+}
+
+.shell .shell-nav-link:focus-visible {
+  box-shadow: 0 0 0 3px var(--focus-color);
+  outline: none;
+}
+
+.shell-scrim {
+  display: none;
+}
+
+.shell-main {
+  flex: 1;
+  min-width: 0;
+  padding: 24px 32px 48px;
+}
+
+.shell-content {
+  margin: 0 auto;
+  max-width: 1320px;
+  width: 100%;
+}
+
+/* Existing analytics views carried their own outer spacing; neutralise it. */
+.shell-content > .analytics-main,
+.shell-content > .dashboard-content {
+  margin: 0;
+  max-width: none;
+  padding: 0;
+}
+
+@media (max-width: 960px) {
+  .shell-menu-button {
+    display: inline-flex;
+  }
+
+  .shell-sidebar {
+    bottom: 0;
+    box-shadow: var(--shadow-lg);
+    left: 0;
+    overflow-y: auto;
+    position: fixed;
+    top: 58px;
+    transform: translateX(-105%);
+    transition: transform 0.2s ease;
+    z-index: 150;
+  }
+
+  .shell-sidebar-inner {
+    max-height: none;
+    position: static;
+  }
+
+  .shell.is-nav-open .shell-sidebar {
+    transform: translateX(0);
+  }
+
+  .shell.is-nav-open .shell-scrim {
+    background-color: rgba(10, 14, 20, 0.4);
+    border: none;
+    display: block;
+    inset: 58px 0 0 0;
+    position: fixed;
+    z-index: 140;
+  }
+
+  .shell-main {
+    padding: 18px 16px 40px;
+  }
+
+  .shell-brand-sub,
+  .shell-user-text,
+  .shell-logout span {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-sidebar {
+    transition: none;
+  }
+}
+
+/* Signed-out join page: same tokens, no navigation. */
+.public-shell {
+  align-items: center;
+}
+
+.public-shell-main {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 760px;
+  padding: 40px 20px 60px;
+  width: 100%;
+}
+
+.public-shell-brand {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}

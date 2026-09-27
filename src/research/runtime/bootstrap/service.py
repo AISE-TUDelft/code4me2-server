@@ -12,16 +12,23 @@ from pydantic import BaseModel, ConfigDict, Field
 from research.canonical import canonical_hash
 from research.compatibility.enums import CompatibilityDecision
 from research.participants.enums import EnrollmentStatus
+from research.study.agents.distributions import (
+    missing_gateway_bindings,
+    release_bindings,
+    requires_inference_gateway,
+)
 from research.study.agents.models import normalize_platform
 from research.telemetry.enums import CoverageState
+from research.telemetry.privacy.engine import runtime_field_classes
 
-from .capability import issue_capability
+from .capability import issue_capability, issue_inference_capability
 from .models import (
     BootstrapAgentConfigBinding,
     BootstrapAgentProfile,
     BootstrapAgentRelease,
     BootstrapAssignment,
     BootstrapCompatibility,
+    BootstrapInferenceGateway,
     BootstrapIssue,
     BootstrapManifestV1,
     BootstrapOutcome,
@@ -78,6 +85,9 @@ class BootstrapSigningContext(BaseModel):
 
     secret: str
     capability_ttl_seconds: int = 900
+    # Goose reads its bearer once per process; liveness, budget and revocation
+    # are re-checked on every gateway call, so the TTL is defence in depth.
+    inference_capability_ttl_seconds: int = 7 * 24 * 3600
     audience: str = "research-runtime"
     scope: list[str] = Field(
         default_factory=lambda: [
@@ -153,7 +163,10 @@ def _policies(study: Any, enrollment: Any) -> BootstrapPolicies:
     )
     return BootstrapPolicies(
         telemetry_policy=BootstrapTelemetryPolicy(
-            allowed_field_classes=[str(value) for value in allowed],
+            # Resolved to the runtime vocabulary (SYSTEM/BEHAVIORAL/...): the
+            # plugin and its ACP proxy do not know the study names and would
+            # otherwise drop the metadata those names stand for.
+            allowed_field_classes=runtime_field_classes(allowed),
             content_capture=bool(telemetry.get("content_capture", False)),
             consent_active=consent_active,
         ),
@@ -346,6 +359,30 @@ def compose_bootstrap(
         research_session_id=research_session.research_session_id,
         study_id=enrollment.study_id,
     )
+    # Gateway-bound arms (Goose) get the research inference gateway block with
+    # their own inference capability; a release that cannot be pointed at the
+    # gateway blocks here rather than running on the participant's own key.
+    inference_gateway = None
+    if profile is not None and requires_inference_gateway(profile.framework_version):
+        gateway_missing = missing_gateway_bindings(release_bindings(release))
+        if gateway_missing:
+            return _blocked(
+                BootstrapReasonCode.INFERENCE_GATEWAY_UNBOUND,
+                "the release does not bind the research inference gateway: "
+                + ", ".join(gateway_missing),
+                "release_id",
+            )
+        inference_gateway = BootstrapInferenceGateway(
+            capability=issue_inference_capability(
+                secret=signer.secret,
+                ttl_seconds=signer.inference_capability_ttl_seconds,
+                revocation_epoch=enrollment.revocation_epoch,
+                enrollment_id=enrollment.enrollment_id,
+                research_session_id=research_session.research_session_id,
+                study_id=enrollment.study_id,
+                now=timestamp,
+            )
+        )
     adapter = getattr(release, "adapter", None)
     adapter_id = getattr(adapter, "adapter_id", None)
     adapter_version = getattr(adapter, "version", None)
@@ -395,6 +432,7 @@ def compose_bootstrap(
             reason=None if compatibility_result is not None else "NOT_REQUIRED",
         ),
         session_capability=capability,
+        inference_gateway=inference_gateway,
     )
     signature = sign_manifest(draft, signer.secret)
     return BootstrapResult(

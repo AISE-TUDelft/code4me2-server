@@ -201,6 +201,7 @@ def _create_study(client, profile_id: uuid.UUID, name: str) -> dict:
         "/api/research/studies",
         json={
             "name": name,
+            "default_budget_usd": "10",
             "session_policy": VALID_SESSION_POLICY,
             "profile_ids": [str(profile_id)],
         },
@@ -620,6 +621,8 @@ def test_personal_dashboard_owner_scope_is_unchanged():
                 tool_result_bytes=None,
                 avg_model_latency_ms=None,
                 p95_model_latency_ms=None,
+                permission_decisions=0,
+                permission_accepted=0,
             )
         else:
             result.fetchall.return_value = []

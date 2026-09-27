@@ -13,7 +13,9 @@ The schema supports:
 - Session management and tracking
 """
 
-from datetime import datetime
+import json
+from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 
 from pgvector.sqlalchemy import Vector
@@ -28,6 +30,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -143,6 +146,11 @@ class User(Base):
     can_research = Column(
         Boolean, server_default="false", default=False, nullable=False
     )
+    # When the account opted out of data collection (GDPR consent withdrawal);
+    # NULL while collection follows the preferences. Owned by the privacy
+    # endpoints only: the generic preference update cannot touch it, so a stale
+    # client pushing its local preferences never re-enables collection.
+    data_collection_opted_out_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationship to configuration data
     config = relationship("Config")
@@ -492,6 +500,22 @@ class MetaQuery(Base):
         Index("idx_meta_query_type", "query_type"),
         Index("idx_meta_query_timestamp", "timestamp"),
         Index("idx_meta_query_timestamp_type", "timestamp", "query_type"),
+        # Foreign keys to context/telemetry: their deletes (erasure) check here.
+        Index(
+            "idx_meta_query_context_id",
+            "context_id",
+            postgresql_where=text("context_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_meta_query_contextual_telemetry_id",
+            "contextual_telemetry_id",
+            postgresql_where=text("contextual_telemetry_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_meta_query_behavioral_telemetry_id",
+            "behavioral_telemetry_id",
+            postgresql_where=text("behavioral_telemetry_id IS NOT NULL"),
+        ),
         {"schema": "public"},
     )
 
@@ -620,7 +644,7 @@ class HadGeneration(Base):
     was_accepted = Column(
         Boolean, nullable=False
     )  # Whether user accepted the completion
-    confidence = Column(Double, nullable=False)  # Model confidence score
+    confidence = Column(Double, nullable=True)  # Model confidence score; NULL when the model reports none
     logprobs = Column(ARRAY(Double), nullable=False)  # Log probabilities for tokens
 
 
@@ -737,6 +761,19 @@ class Study(Base):
     consent_locked_at = Column(DateTime(timezone=True), nullable=True)
     stopped_at = Column(DateTime(timezone=True), nullable=True)
     stopped_by = Column(String, nullable=True)
+    # Participant inference budgets (shared provider key). Editable at any time
+    # and deliberately outside the digested ``research_config_json``. The default
+    # is 0 so an unconfigured study cannot spend (fail closed); balances for new
+    # enrollments copy this default. ``warning_fraction`` drives the participant
+    # warning surfaces only.
+    inference_budget_default_micro_usd = Column(
+        BigInteger, nullable=False, server_default="0", default=0
+    )
+    inference_budget_warning_fraction = Column(
+        Numeric(4, 3), nullable=False, server_default="0.800", default=Decimal("0.800")
+    )
+    inference_budget_updated_at = Column(DateTime(timezone=True), nullable=True)
+    inference_budget_updated_by = Column(String, nullable=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, default=datetime.now, server_default=func.now()
     )
@@ -834,6 +871,45 @@ class ProviderConnection(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
 
 
+class ProviderModelPrice(Base):
+    """Per-model prices for one provider connection (USD per million tokens).
+
+    Prices size the worst-case hold and settle the actual charge of every
+    metered inference call. A metered model without a price row fails closed
+    (503 ``price_missing``); there is never a default price. ``usd_per_million``
+    equals micro-USD per token, so ``cost_micro_usd = ceil(tokens * price)``.
+    ``cached_input_usd_per_million`` NULL means cached prompt tokens bill at
+    the input price. Prices are not secret: researchers see them to size
+    budgets; only administrators write them.
+    """
+
+    __tablename__ = "provider_model_price"
+    __table_args__ = (
+        CheckConstraint("input_usd_per_million >= 0", name="ck_provider_model_price_input"),
+        CheckConstraint("output_usd_per_million >= 0", name="ck_provider_model_price_output"),
+        CheckConstraint(
+            "cached_input_usd_per_million IS NULL OR cached_input_usd_per_million >= 0",
+            name="ck_provider_model_price_cached_input",
+        ),
+        Index("idx_provider_model_price_connection", "connection_id"),
+        {"schema": "public"},
+    )
+
+    connection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.provider_connection.connection_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    model = Column(String, primary_key=True)
+    input_usd_per_million = Column(Numeric(14, 6), nullable=False)
+    output_usd_per_million = Column(Numeric(14, 6), nullable=False)
+    cached_input_usd_per_million = Column(Numeric(14, 6), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_by = Column(String, nullable=True)
+
+
 class AgentProfile(Base):
     """A researcher-owned, editable agent configuration template.
 
@@ -889,6 +965,21 @@ class AgentProfile(Base):
     max_context_tokens = Column(
         Integer, nullable=True
     )  # per-turn rolling window; NULL = model max
+    # Researcher-authored system prompt (managed runtime only; BYOA refuses it).
+    # NULL = no prompt: the runtime keeps its built-in one. It joins the
+    # configuration digest and study snapshots only when set, so profiles
+    # without a prompt keep their existing digests.
+    system_prompt = Column(Text, nullable=True)
+    # Built-in runtime command and harness settings (decision D-01; managed
+    # runtime only, BYOA refuses them), validated by ``agents.tools``. NULL =
+    # the previous behaviour: the server fallback command allowlist (a user's
+    # config row may replace it), the runtime's default command timeout and the
+    # runtime's harness defaults. Like ``system_prompt`` each joins the
+    # configuration digest and study snapshots only when set. Read the JSON
+    # columns through ``commands_allowlist`` / ``harness_options``.
+    commands_allowlist_json = Column(Text, nullable=True)  # JSON array of bare command names
+    command_timeout_seconds = Column(Integer, nullable=True)  # 1..600 seconds
+    harness_options_json = Column(Text, nullable=True)  # JSON object of switches
     configuration_digest = Column(String, nullable=False, server_default="")
     # Only active profiles are candidates for new study selections. Inactive
     # profiles stay in the table for historical snapshots.
@@ -897,6 +988,31 @@ class AgentProfile(Base):
 
     owner = relationship("User")
     connection = relationship("ProviderConnection")
+
+    @property
+    def commands_allowlist(self):
+        """The decoded ``commands_allowlist_json`` (``None`` when unset)."""
+        return _decode_optional_json_text(self.commands_allowlist_json)
+
+    @property
+    def harness_options(self):
+        """The decoded ``harness_options_json`` (``None`` when unset)."""
+        return _decode_optional_json_text(self.harness_options_json)
+
+
+def _decode_optional_json_text(raw):
+    """Decode an optional JSON text column.
+
+    Text that is not JSON (only possible when a row is written around the API)
+    is returned verbatim rather than read as "unset", so every validator
+    downstream refuses it instead of silently dropping an arm's setting.
+    """
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
 
 
 class AgentTask(Base):

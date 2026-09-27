@@ -354,6 +354,14 @@ def _release_profile(
     )
     session.execute(
         text(
+            "INSERT INTO public.provider_model_price "
+            "(connection_id, model, input_usd_per_million, output_usd_per_million, updated_at) "
+            "VALUES (:connection_id, 'model', 1.0, 4.0, now())"
+        ),
+        {"connection_id": connection_id},
+    )
+    session.execute(
+        text(
             "INSERT INTO public.agent_profile "
             "(profile_id, owner_user_id, name, model, framework_version, release_id, connection_id, tools_json, approval_policy, max_steps) "
             "VALUES (:profile_id, :owner_id, 'Codex', 'model', :framework, :release_id, :connection_id, '[]', 'auto', 1)"
@@ -445,6 +453,7 @@ def test_http_packaged_bootstrap_session_telemetry_lifecycle(http_runtime):
         "/api/research/studies",
         json={
             "name": "Packaged lifecycle study",
+            "default_budget_usd": "10",
             "session_policy": {
                 "idle_timeout_seconds": 600,
                 "resume_grace_seconds": 120,
@@ -812,6 +821,7 @@ def test_http_codex_byoa_adapter_normalization_and_terminal_closure(http_runtime
         "/api/research/studies",
         json={
             "name": "Codex BYOA lifecycle study",
+            "default_budget_usd": "10",
             "session_policy": {
                 "idle_timeout_seconds": 600,
                 "resume_grace_seconds": 120,
@@ -1050,6 +1060,7 @@ def test_http_bootstrap_refuses_an_unapproved_platform_artifact(http_runtime):
         "/api/research/studies",
         json={
             "name": "Partially qualified packaged study",
+            "default_budget_usd": "10",
             "session_policy": {
                 "idle_timeout_seconds": 600,
                 "resume_grace_seconds": 120,

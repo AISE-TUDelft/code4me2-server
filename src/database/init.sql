@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS public.had_generation
     generation_time integer NOT NULL,
     shown_at timestamp with time zone[] NOT NULL,
     was_accepted boolean NOT NULL,
-    confidence double precision NOT NULL,
+    confidence double precision,
     logprobs double precision[] NOT NULL,
     PRIMARY KEY (meta_query_id, model_id)
 );
@@ -423,6 +423,11 @@ CREATE INDEX IF NOT EXISTS idx_meta_query_session_id ON public.meta_query (sessi
 CREATE INDEX IF NOT EXISTS idx_meta_query_type ON public.meta_query (query_type);
 CREATE INDEX IF NOT EXISTS idx_meta_query_timestamp ON public.meta_query ("timestamp");
 CREATE INDEX IF NOT EXISTS idx_meta_query_timestamp_type ON public.meta_query ("timestamp", query_type);
+-- The context and telemetry foreign keys: deleting a context/telemetry row
+-- (account erasure) checks meta_query for references, which scans without these.
+CREATE INDEX IF NOT EXISTS idx_meta_query_context_id ON public.meta_query (context_id) WHERE context_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_meta_query_contextual_telemetry_id ON public.meta_query (contextual_telemetry_id) WHERE contextual_telemetry_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_meta_query_behavioral_telemetry_id ON public.meta_query (behavioral_telemetry_id) WHERE behavioral_telemetry_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_chat_query_chat_id ON public.chat_query (chat_id);
 
@@ -898,10 +903,12 @@ INSERT INTO public.config (config_data) VALUES ('config {
   }
 }');
 
+-- The plugin's default rows, 1 (completion) and 3 (chat), are served by OpenRouter
+-- (key from $OPENROUTER_API_KEY). The other rows run locally and only when chosen.
 INSERT INTO public.model_name (model_name, is_instruction_tuned, prompt_templates, model_parameters) VALUES
-    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE,'{"fim_template":{"multi_file_template":"{multi_file_context}#{file_name}\n<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>","single_file_template":"<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"},"file_separator":"#{file_name}\n","stop_tokens":["\n\n"]}', '{"max_new_tokens": 64}'),
+    ('deepseek-ai/deepseek-coder-1.3b-base', FALSE,'{"fim_template":{"multi_file_template":"{multi_file_context}#{file_name}\n<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>","single_file_template":"<｜fim▁begin｜>{prefix}<｜fim▁hole｜>{suffix}<｜fim▁end｜>"},"file_separator":"#{file_name}\n","stop_tokens":["\n\n"]}', '{"provider": "openai_compatible", "kind": "completion", "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "OPENROUTER_API_KEY", "provider_model": "mistralai/codestral-2508", "max_new_tokens": 64}'),
     ('bigcode/starcoder2-3b', FALSE,'{"fim_template":{"multi_file_template":"{multi_file_context}<file_sep><fim_prefix>{file_name}\n{prefix}<fim_suffix>{suffix}<fim_middle>","single_file_template":"<fim_prefix>{prefix}<fim_suffix>{suffix}<fim_middle>"},"file_separator":"<file_sep>\n{file_name}\n","stop_tokens":["<file_sep>","\n\n"]}', '{"max_new_tokens": 64}'),
-    ('mistralai/Ministral-8B-Instruct-2410', TRUE, '{}', '{"max_new_tokens": 256}'),
+    ('mistralai/Ministral-8B-Instruct-2410', TRUE, '{}', '{"provider": "openai_compatible", "kind": "chat", "base_url": "https://openrouter.ai/api/v1", "api_key_ref": "OPENROUTER_API_KEY", "provider_model": "mistralai/ministral-8b-2512", "max_new_tokens": 256}'),
     ('JetBrains/Mellum-4b-base', FALSE, '{"fim_template":{"multi_file_template":"{multi_file_context}<filename>{file_name}\n<fim_suffix>{suffix}<fim_prefix>{prefix}<fim_middle>","single_file_template":"<fim_suffix>{suffix}<fim_prefix>{prefix}<fim_middle>"},"file_separator":"<filename>{file_name}\n","stop_tokens":["<filename>", "\n\n"]}', '{"max_new_tokens": 64}');
 
 INSERT INTO public.programming_language (language_name) VALUES

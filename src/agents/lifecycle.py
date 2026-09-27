@@ -17,9 +17,59 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import crud
+
+
+def _canonical_totals(db: Session, task_id: uuid.UUID) -> Optional[tuple[int, int, int]]:
+    """``(steps, prompt_tokens, completion_tokens)`` from ``research_event``, or None.
+
+    Steps are the relay/self-report facts (rows stamped with ``legacy_kind``,
+    the marker the canonical adapters attach); token totals come from the
+    ``model_call`` facts' metrics. Advisory: any failure leaves the legacy totals.
+    """
+    task = crud.get_agent_task(db, task_id)
+    run_id = getattr(task, "external_run_id", None) if task is not None else None
+    if not run_id:
+        return None
+    begin_nested = getattr(db, "begin_nested", None)
+    savepoint = begin_nested() if callable(begin_nested) else None
+    try:
+        row = db.execute(
+            text(
+                """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE e.envelope_json -> 'payload' ->> 'legacy_kind' IS NOT NULL
+                    ) AS steps,
+                    COALESCE(SUM(
+                        (e.envelope_json -> 'metrics' -> 'counts' ->> 'prompt_tokens')::bigint
+                    ) FILTER (
+                        WHERE e.envelope_json -> 'payload' ->> 'legacy_kind' = 'model_call'
+                    ), 0) AS prompt_tokens,
+                    COALESCE(SUM(
+                        (e.envelope_json -> 'metrics' -> 'counts' ->> 'completion_tokens')::bigint
+                    ) FILTER (
+                        WHERE e.envelope_json -> 'payload' ->> 'legacy_kind' = 'model_call'
+                    ), 0) AS completion_tokens
+                FROM research_event e
+                WHERE e.agent_run_id = :run_id
+                """
+            ),
+            {"run_id": str(run_id)},
+        ).one()
+        if savepoint is not None:
+            savepoint.commit()
+    except Exception as error:  # noqa: BLE001 - finalization must never fail on totals
+        if savepoint is not None:
+            savepoint.rollback()
+        logging.warning(f"[Agent/lifecycle] canonical totals unavailable for {task_id}: {error}")
+        return None
+    if not row.steps:
+        return None
+    return int(row.steps), int(row.prompt_tokens or 0), int(row.completion_tokens or 0)
 
 
 def finalize_agent_task(
@@ -49,6 +99,13 @@ def finalize_agent_task(
 
     last_event = max(events, key=lambda e: e.event_index) if events else None
     total_steps = len(events)
+    if not events:
+        # A research-bound task's observations live in the canonical store
+        # (ISSUE-07: never dual-written to agent_event); read the same relay
+        # facts the dashboards read so the task row is not finalized empty.
+        canonical = _canonical_totals(db, task_id)
+        if canonical is not None:
+            total_steps, total_prompt, total_completion = canonical
     crud.update_agent_task_status(
         db,
         task_id=task_id,

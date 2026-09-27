@@ -1,0 +1,172 @@
+{
+  "_comment": "Declared allowed_field_classes -> runtime classes allowed in clear. Read by tests/backend_tests/research/test_privacy_policy_vocabulary.py (server ingestion) and src/website/src/pages/research/__tests__/studyUtils.test.js (the website's resolver), so both resolutions are checked against the same cases (the hashed/content display rules are tested separately).",
+  "cases": [
+    {
+      "declared": [
+        "STRUCTURAL",
+        "METRICS",
+        "DIAGNOSTICS",
+        "CODE_METADATA"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "CODE_METADATA",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "STRUCTURAL",
+        "METRICS",
+        "DIAGNOSTICS",
+        "CODE_METADATA",
+        "CONTENT"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "CODE_METADATA",
+        "CONTENT",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "STRUCTURAL",
+        "METRICS",
+        "DIAGNOSTICS"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "METRICS",
+        "DIAGNOSTICS"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "METRICS"
+      ],
+      "runtime": [
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "SYSTEM",
+        "BEHAVIORAL"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "STRUCTURAL",
+        "SYSTEM",
+        "BEHAVIORAL",
+        "CODE_METADATA"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "CODE_METADATA",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "structural",
+        "content"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "CONTENT",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        " CONTENT"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "CODE_METADATA",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "CONTENT"
+      ],
+      "runtime": [
+        "CONTENT"
+      ]
+    },
+    {
+      "declared": [
+        "NOT_A_CLASS"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "CODE_METADATA",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "SECRET"
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "CODE_METADATA",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        "SECRET",
+        "METRICS"
+      ],
+      "runtime": [
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [],
+      "runtime": [
+        "BEHAVIORAL",
+        "CODE_METADATA",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": null,
+      "runtime": [
+        "BEHAVIORAL",
+        "CODE_METADATA",
+        "SYSTEM"
+      ]
+    },
+    {
+      "declared": [
+        [
+          "METRICS"
+        ],
+        7
+      ],
+      "runtime": [
+        "BEHAVIORAL",
+        "CODE_METADATA",
+        "SYSTEM"
+      ]
+    }
+  ]
+}
