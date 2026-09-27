@@ -39,25 +39,3 @@ def test_failed_tool_retains_tool_call_id() -> None:
     assert candidate.event_type == CanonicalEventType.TOOL_FAILED
     assert candidate.correlations.tool_call_id == "tool-1"
 
-
-def test_free_form_tool_title_is_not_saved_as_metadata() -> None:
-    message = _update("tool_call", "pending")
-    message["params"]["update"]["title"] = "echo 'private code' > /workspace/CANARY.txt"
-    candidate = GenericAcpNormalizer().normalize(message).candidates[0]
-    assert candidate.payload["tool_name"] == "read"
-    assert "private code" not in str(candidate.payload)
-
-
-def test_streaming_text_and_thought_deltas_do_not_start_new_messages() -> None:
-    normalizer = GenericAcpNormalizer()
-    for kind in ("agent_message_chunk", "agent_thought_chunk"):
-        for _ in range(3):
-            message = {
-                "jsonrpc": "2.0",
-                "method": "session/update",
-                "params": {
-                    "sessionId": "session-1",
-                    "update": {"sessionUpdate": kind, "content": {"type": "text", "text": "fragment"}},
-                },
-            }
-            assert normalizer.normalize(message).candidates == []

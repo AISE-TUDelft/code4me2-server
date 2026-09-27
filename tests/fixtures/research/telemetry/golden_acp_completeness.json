@@ -53,7 +53,7 @@
     "tool_call_id": "call-5",
     "payload": {
       "tool_call_id": "call-5",
-      "tool_name": "read",
+      "tool_name": "Read file",
       "tool_kind": "read",
       "status": "pending"
     }

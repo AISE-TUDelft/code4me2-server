@@ -53,6 +53,40 @@ what remains open, so a study arm's label cannot silently disagree with what run
   through `POST /api/research/inference/v1/chat/completions`, and every call is
   metered against the participant's budget. Codex releases are not gateway-bound:
   they sign in with ChatGPT and are neither relayed nor metered.
+- **Tools enforced at the gateway (`gateway` transport).** Goose reads no tool
+  selection from its environment: it offers the model every tool of its enabled
+  extensions on every call (Goose 1.51: `shell`, `edit`, `write`, `tree`,
+  `analyze`, `read_image`, `load`, `load_skill`, `delegate`, `todo__todo_write`,
+  `apps__*`, `extensionmanager__*`). A Goose release may therefore bind `tools`
+  as `{"field": "tools", "transport": "gateway", "key": "tool_allowlist",
+  "format": "json"}`. The plugin sets nothing for it, and the research inference
+  gateway enforces the frozen profile's selection on both sides of the call:
+  - **request:** the model is offered only the selected tools. An empty
+    selection means no tools; a `tool_choice` naming a withheld tool is dropped
+    or narrowed, and `parallel_tool_calls` is dropped with the last tool.
+  - **response:** a call the model still makes to a withheld tool is removed
+    from the body or stream before Goose sees it. The stream is read line by
+    line as Goose reads it and filtered by Goose's own assembly rules
+    (`agents/tool_call_filter.py`), so a withheld call cannot be rebuilt from
+    later pieces; a line the filter cannot judge (unreadable, or shaped so that
+    only Goose could read it) is dropped. When a turn's calls are all withheld,
+    the participant sees a short notice. Removals and dropped lines are logged.
+
+  Tool names match exactly. A selection that matches none of the offered tools
+  (an agent build that renamed them) is logged as a warning. A release that
+  does not declare the binding keeps Goose's own tool definitions untouched.
+
+  Only a release that provably launches a gateway-bound agent can declare it:
+  its identity must name only Goose and its command (else package) must be
+  Goose's own executable. Anything else, a Codex release or a mis-declared one,
+  is refused (`BYOA_CONFIG_UNENFORCEABLE`) and never offers `tools` as
+  configurable. The plugin counts the binding only when the manifest carries an
+  inference gateway.
+
+  The binding is opt-in per release, and it is not in the canonical example:
+  profiles written before it default to `tools_json = "[]"`, which would become
+  no-tools arms. Plugins older than this contract refuse such arms, failing
+  closed, so ship the plugin first.
 
 ## Explicit seams
 

@@ -24,8 +24,7 @@ from backend.routers.analytics.auth_utils import (
     get_current_user,
 )
 from database import crud
-from database.db_schemas import ResearchStudyStatus
-from database.db_schemas import Study as StudyRow
+from database.db_schemas import ResearchStudyStatus, Study as StudyRow
 from research.analysis.operations import store as operations_store
 from research.compatibility.enums import CapabilityId, CapabilityState
 from research.compatibility.evaluate import evaluate_compatibility
@@ -39,26 +38,25 @@ from research.compatibility.models import (
 from research.participants import identity as identity_store
 from research.runtime.assignment import store as assignment_store
 from research.runtime.assignment.enums import AllocationOutcome
-from research.runtime.assignment.models import StudyProfileSelection
 from research.runtime.assignment.service import allocate
-from research.runtime.bootstrap.capability import verify_capability
 from research.runtime.bootstrap.models import (
     BootstrapAgentProfile,
     BootstrapManifestV1,
     ResearchSessionRef,
 )
+from research.runtime.bootstrap.capability import verify_capability
+from research.runtime.bootstrap.signer import verify_manifest
 from research.runtime.bootstrap.service import (
     BootstrapSigningContext,
     compose_bootstrap,
 )
-from research.runtime.bootstrap.signer import verify_manifest
 from research.runtime.sessions import store as session_store
 from research.runtime.sessions.enums import SessionState
 from research.budget.settings import BudgetSettings
 from research.runtime.sessions.models import ResearchSessionV1
-from research.runtime.sessions.service import expire_if_idle, session_policy_from_study
 from research.study.agents import store as registry_store
 from research.study.protocol import store as protocol_store
+from research.runtime.assignment.models import StudyProfileSelection
 
 router = APIRouter()
 
@@ -357,24 +355,6 @@ class _PersistentSessionFactory:
             ),
         )
         if existing is not None:
-            policy = session_policy_from_study(study)
-            if policy is not None:
-                expired = expire_if_idle(
-                    session_store.row_to_session(existing), now, policy=policy
-                )
-                if expired.session.state.is_terminal:
-                    # Bootstrap must not reissue a capability for a session
-                    # whose idle deadline has passed. Retire it in the same
-                    # transaction, then mint a fresh context session below.
-                    if expired.transition is not None:
-                        session_store.insert_transition(
-                            self._db, expired.transition, commit=False
-                        )
-                    session_store.update_session(
-                        self._db, expired.session, commit=False
-                    )
-                    existing = None
-        if existing is not None:
             return ResearchSessionRef(
                 research_session_id=existing.session_id,
                 opened_at=existing.opened_at or now,
@@ -426,7 +406,6 @@ def create_research_session(
             allocation = allocate(enrollment, [], existing=existing, now=_now())
         else:
             from sqlalchemy import select
-
             from database.research_schemas import StudyAgentProfile
 
             profile_rows = db.execute(

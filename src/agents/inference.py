@@ -30,7 +30,7 @@ import re
 import time
 import uuid
 from collections import Counter
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, AbstractSet, Any, Optional
 
 import httpx
 from fastapi import Response
@@ -53,6 +53,7 @@ from agents.normalize import (
     strip_info_msg,
 )
 from agents.telemetry import InferenceRecord
+from agents.tool_call_filter import SseToolCallFilter, filter_chat_completion_body, tool_allowed
 from agents.tools import KNOWN_AGENT_TOOLS
 from database import crud
 
@@ -89,22 +90,76 @@ def _cap_responses_output_tokens(body: dict, configured_limit: str) -> Optional[
     return body["max_output_tokens"]
 
 
+def _tool_name(tool: Any) -> Optional[str]:
+    """The function name of one Chat Completions tool definition, if any."""
+    if not isinstance(tool, dict):
+        return None
+    function = tool.get("function")
+    name = function.get("name") if isinstance(function, dict) else None
+    return name if isinstance(name, str) and name else None
+
+
+def restrict_chat_completion_tools(
+    body: dict, allowlist: AbstractSet[str]
+) -> tuple[list[str], list[dict]]:
+    """Keep only the Chat Completions tools named in ``allowlist``, in place.
+
+    ``mcp__*`` in the allowlist admits every ``mcp__`` tool. With nothing kept,
+    ``tools`` and ``tool_choice`` are removed; a ``tool_choice`` that names a
+    removed function is dropped too, so the provider is never asked to call a
+    tool it was not given. Schemas are not touched. Returns the requested
+    names and the kept tool definitions.
+    """
+    raw = body.get("tools")
+    requested = raw if isinstance(raw, list) else []
+    names = [name for name in (_tool_name(tool) for tool in requested) if name]
+    if raw is None:
+        return names, []
+    kept = [tool for tool in requested if tool_allowed(_tool_name(tool), allowlist)]
+    if kept:
+        body["tools"] = kept
+        _restrict_tool_choice(body, {_tool_name(tool) for tool in kept})
+    else:
+        # Providers reject these without tools.
+        body.pop("tools", None)
+        body.pop("tool_choice", None)
+        body.pop("parallel_tool_calls", None)
+    return names, kept
+
+
+def _restrict_tool_choice(body: dict, kept_names: set) -> None:
+    """Drop a ``tool_choice`` that names a removed tool; narrow an ``allowed_tools`` list."""
+    choice = body.get("tool_choice")
+    if not isinstance(choice, dict):
+        return
+    if choice.get("type") == "allowed_tools":
+        allowed = choice.get("allowed_tools")
+        listed = allowed.get("tools") if isinstance(allowed, dict) else None
+        if isinstance(listed, list):
+            narrowed = [item for item in listed if _tool_name(item) in kept_names]
+            if narrowed:
+                allowed["tools"] = narrowed
+            else:
+                body.pop("tool_choice", None)
+        return
+    function = choice.get("function")
+    chosen = function.get("name") if isinstance(function, dict) else None
+    if chosen is not None and chosen not in kept_names:
+        body.pop("tool_choice", None)
+
+
 def _filter_chat_completion_tools(
     body: dict, profile_tools_json: Optional[str]
 ) -> tuple[list[str], int, int]:
-    """Enforce the frozen tool selection at the managed inference gateway.
+    """Apply a task's frozen tool selection on the agent relay (Chat Completions).
 
     An explicit empty profile is a no-tools arm. A missing/invalid selection
-    retains the legacy catalogue fallback for old profiles.
+    retains the legacy catalogue fallback for old profiles. Kept schemas are
+    sanitised for the upstream provider.
     """
-    requested = body.get("tools", []) or []
-    names = [
-        tool.get("function", {}).get("name")
-        for tool in requested
-        if isinstance(tool, dict) and tool.get("function", {}).get("name")
-    ]
-    if not requested:
-        return names, 0, 0
+    raw = body.get("tools")
+    if not raw:
+        return [], 0, 0
 
     profile_tools: Optional[set[str]] = None
     if profile_tools_json is not None:
@@ -115,29 +170,20 @@ def _filter_chat_completion_tools(
         except (json.JSONDecodeError, TypeError):
             pass
     allowlist = profile_tools if profile_tools is not None else KNOWN_AGENT_TOOLS
-    kept = []
-    for tool in requested:
-        if not isinstance(tool, dict):
-            continue
-        name = tool.get("function", {}).get("name")
-        if name in allowlist or (
-            "mcp__*" in allowlist and isinstance(name, str) and name.startswith("mcp__")
-        ):
-            kept.append(tool)
-            sanitize_schema(tool.get("function", {}).get("parameters", {}))
-    if kept:
-        body["tools"] = kept
-    else:
-        body.pop("tools", None)
-        body.pop("tool_choice", None)
+    requested_count = len(raw) if isinstance(raw, list) else 0
+    names, kept = restrict_chat_completion_tools(body, allowlist)
+    for tool in kept:
+        parameters = tool["function"].get("parameters")
+        if isinstance(parameters, dict):
+            sanitize_schema(parameters)
     logging.info(
         "[Agent/inference] tools — allowlist=%s requested=%s kept=%s stripped=%s",
         "profile" if profile_tools is not None else "catalogue",
         names,
         len(kept),
-        len(requested) - len(kept),
+        requested_count - len(kept),
     )
-    return names, len(kept), len(requested) - len(kept)
+    return names, len(kept), requested_count - len(kept)
 
 
 def _retry_after_seconds(headers: httpx.Headers, body: bytes) -> Optional[int]:
@@ -172,6 +218,7 @@ async def run_inference(
     record_observation_events: bool = True,
     meter: Optional["InferenceMeter"] = None,
     tool_filtering: bool = True,
+    response_tool_allowlist: Optional[AbstractSet[str]] = None,
     app: App,
 ) -> Response:
     """Forward one agent inference call upstream and record it as an agent_event.
@@ -179,8 +226,10 @@ async def run_inference(
     ``meter`` (research budgets) reserves the call's worst-case cost before the
     body is serialised and settles/forfeits/voids the hold afterwards; without
     a meter the relay behaves as before. ``tool_filtering=False`` passes the
-    agent's tool definitions upstream untouched (the research gateway: Goose
-    owns its tools and the arm's tool selection is applied on the Goose side).
+    agent's tool definitions upstream untouched (the research gateway, which
+    applies a release's enforced selection itself before calling this).
+    ``response_tool_allowlist`` also withholds, from the response, any model
+    call to a tool outside that selection (``agents.tool_call_filter``).
 
     The task and session are pre-validated by the route handler, so this
     function trusts its inputs — except ``content_included``, which the route
@@ -401,9 +450,7 @@ async def run_inference(
     # deliberately tool-free arm from one with a non-empty allowlist.
     experiment_tool_access_enabled = bool(original_tools)
     tool_names_requested = [
-        tool.get("function", {}).get("name")
-        for tool in original_tools
-        if isinstance(tool, dict) and tool.get("function", {}).get("name")
+        name for name in (_tool_name(tool) for tool in original_tools) if name
     ]
     tools_kept = 0
     tools_stripped = 0
@@ -572,6 +619,11 @@ async def run_inference(
     if streaming:
         sse_buffer: list[bytes] = []
         stream_aborted: list[bool] = [False]
+        tool_call_filter = (
+            SseToolCallFilter(response_tool_allowlist)
+            if response_tool_allowlist is not None
+            else None
+        )
 
         stream_client = httpx.AsyncClient(timeout=_UPSTREAM_TIMEOUT_SECONDS)
         stream_request = stream_client.build_request(
@@ -641,13 +693,30 @@ async def run_inference(
                         )
                         break
                     sse_buffer.append(chunk)
-                    yield chunk
+                    # The agent gets the filtered stream; usage and settlement
+                    # still read the provider's original bytes.
+                    delivered = tool_call_filter.feed(chunk) if tool_call_filter else chunk
+                    if delivered:
+                        yield delivered
+                if tool_call_filter is not None:
+                    rest = tool_call_filter.flush()
+                    if rest:
+                        yield rest
             except Exception as e:
                 stream_aborted[0] = True
                 logging.warning(f"[Agent/inference] stream aborted mid-flight — {e}")
             finally:
                 await upstream_stream.aclose()
                 await stream_client.aclose()
+                if tool_call_filter is not None and tool_call_filter.withheld:
+                    _log_withheld_tool_calls(request_id, tool_call_filter.withheld)
+                if tool_call_filter is not None and tool_call_filter.dropped:
+                    logging.warning(
+                        "[Agent/inference] dropped %d stream line(s) the tool filter could not judge "
+                        "request_id=%s",
+                        tool_call_filter.dropped,
+                        request_id,
+                    )
                 # Telemetry is written in `finally` so an aborted stream still
                 # produces a row — a dropped connection is itself a finding.
                 latency_ms = int((time.monotonic() - t0) * 1000)
@@ -760,11 +829,42 @@ async def run_inference(
     if meter is not None:
         response_headers.update(meter.response_headers())
 
+    content = upstream_resp.content
+    status_code = upstream_resp.status_code
+    if response_tool_allowlist is not None and status_code < 400:
+        if not isinstance(resp_json, dict):
+            # A body nothing here can read could carry a call nothing here can
+            # judge: an enforced selection fails closed.
+            logging.warning(
+                f"[Agent/inference] unreadable upstream body withheld request_id={request_id}"
+            )
+            content = json.dumps({"error": {
+                "message": "The model provider returned a response the study could not check.",
+                "type": "upstream_unreadable", "code": 502,
+            }}).encode()
+            status_code = 502
+        else:
+            withheld = filter_chat_completion_body(resp_json, response_tool_allowlist)
+            if withheld:
+                _log_withheld_tool_calls(request_id, withheld)
+                content = json.dumps(resp_json).encode()
+
     return Response(
-        content=upstream_resp.content,
-        status_code=upstream_resp.status_code,
+        content=content,
+        status_code=status_code,
         headers=response_headers,
         media_type="application/json",
+    )
+
+
+def _log_withheld_tool_calls(request_id: str, names: list[str]) -> None:
+    """A model called a tool outside the enforced selection; the agent never saw it."""
+    logging.warning(
+        "[Agent/inference] withheld %d tool call(s) outside the enforced selection "
+        "request_id=%s tools=%s",
+        len(names),
+        request_id,
+        sorted(set(names)),
     )
 
 

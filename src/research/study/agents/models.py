@@ -61,7 +61,10 @@ BYOA_PROVIDER_KIND_FIELD = "provider_kind"
 #: own vocabulary through ``value_map`` (Goose: ``openai``).
 BYOA_PROVIDER_KIND_OPENAI_COMPATIBLE = "openai_compatible"
 BYOA_BINDING_FIELDS = BYOA_CONFIG_FIELDS + BYOA_RUNTIME_FIELDS
-BYOA_CONFIG_TRANSPORTS = ("env", "arg")
+#: ``gateway`` is not a launch transport: it declares that the research inference
+#: gateway enforces the field (only ``tools``, only for gateway-bound runtimes).
+BYOA_CONFIG_TRANSPORTS = ("env", "arg", "gateway")
+BYOA_GATEWAY_TOOLS_KEY = "tool_allowlist"
 BYOA_CONFIG_FORMATS = ("string", "json", "csv")
 
 _BASE_CONFIG = ConfigDict(extra="forbid")
@@ -179,8 +182,11 @@ class AgentConfigBinding(BaseModel):
 
     * ``transport="env"`` sets the environment variable ``key``;
     * ``transport="arg"`` appends ``[key, value]`` to the agent argv;
-    * ``transport="gateway"`` applies the tool allowlist at the managed model
-      gateway rather than inventing an environment variable the agent ignores.
+    * ``transport="gateway"`` (``tools`` only, key ``tool_allowlist``, JSON)
+      sets nothing on the agent: the research inference gateway offers the
+      model only the frozen selection. For an agent such as Goose, which reads
+      no tool setting from its environment, this is the only enforcement point,
+      so profile validation accepts it only for gateway-bound runtimes.
 
     ``format`` renders list values (``tools``) as ``csv`` or ``json``;
     ``value_map`` translates the server-side vocabulary to the agent's (for
@@ -224,11 +230,12 @@ class AgentConfigBinding(BaseModel):
     def _transport_key_shape(self) -> AgentConfigBinding:
         if self.transport == "gateway" and (
             self.field != "tools"
-            or self.key != "tool_allowlist"
+            or self.key != BYOA_GATEWAY_TOOLS_KEY
             or self.format != "json"
         ):
             raise ValueError(
-                "a gateway binding requires tools/tool_allowlist with JSON format"
+                "a gateway binding is only valid for tools, with key "
+                f"'{BYOA_GATEWAY_TOOLS_KEY}' and format 'json'"
             )
         if self.transport == "env" and not re.fullmatch(
             r"[A-Za-z_][A-Za-z0-9_]*", self.key

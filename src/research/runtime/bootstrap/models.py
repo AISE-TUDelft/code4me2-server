@@ -139,8 +139,9 @@ class BootstrapAgentConfigBinding(BaseModel):
 
     The release owns how a frozen profile field reaches a participant-installed
     agent: an environment variable (``env``), an argv pair (``arg``), or the
-    managed model gateway's tool allowlist (``gateway``), with an optional
-    server-vocabulary ``value_map`` and list ``format``. Projected so
+    research inference gateway's tool allowlist (``gateway``, which the plugin
+    applies nothing for), with an optional server-vocabulary ``value_map`` and
+    list ``format``. Projected so
     the plugin can apply the exact contract that profile/study validation
     enforced.
     """
