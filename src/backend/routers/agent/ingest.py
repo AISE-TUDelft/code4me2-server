@@ -39,6 +39,7 @@ from backend.routers.research.access import (
     resolve_research_binding,
 )
 from database import crud
+from privacy import collection
 from research.participants import identity as identity_store
 from research.participants.enums import EnrollmentStatus
 from research.runtime.sessions import store as session_store
@@ -269,6 +270,11 @@ def _resolve_or_create_task(
             detail="No active agent profiles are configured on the server",
         )
     profile = assignment.profile
+    # Serialize with a concurrent erase: from here to the task insert nothing
+    # commits (the assignment lookup above may, on first use), so a task either
+    # commits before the erase (and is erased with the rest) or waits for it and
+    # then sees the opt-out.
+    collection.lock_account(db, owner_user_uuid)
     content_included = resolve_store_agent_content_for_acp(
         db, scope.user_id, study_id=assignment.study_id
     )

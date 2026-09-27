@@ -71,6 +71,29 @@ test.each(["STUDY_STOPPED", "ALREADY_ENROLLED", "ACTIVE_ENROLLMENT_EXISTS", "CON
   expect(await screen.findByRole("alert")).toBeInTheDocument();
 });
 
+test("an opted-out account is pointed to Privacy & data and the join intent is dropped", async () => {
+  api.resolveResearchJoinCode.mockResolvedValue({ ok: true, data: { study: { name: "Pilot study" }, consentText: "I agree." } });
+  api.redeemResearchJoinCode.mockResolvedValue({
+    ok: false,
+    status: 409,
+    code: "DATA_COLLECTION_OPTED_OUT",
+    error: "Data collection is turned off for this account.",
+  });
+  renderJoin({ user: { email: "p@example.com" } });
+  fireEvent.change(screen.getByLabelText("Join code"), { target: { value: "JOIN1234" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review study" }));
+  fireEvent.click(await screen.findByRole("checkbox"));
+  // A pending intent (e.g. from a login redirect) is cleared by the refusal itself.
+  sessionStorage.setItem(RESEARCH_JOIN_INTENT_KEY, "JOIN1234");
+  fireEvent.click(screen.getByRole("button", { name: "Accept and join" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "You have opted out of data collection. Turn it back on in Privacy & data to join a study.",
+  );
+  expect(screen.getByRole("link", { name: "Privacy & data" })).toHaveAttribute("href", "/settings/privacy");
+  expect(sessionStorage.getItem(RESEARCH_JOIN_INTENT_KEY)).toBeNull();
+});
+
 test("requires consent before joining", async () => {
   api.resolveResearchJoinCode.mockResolvedValue({
     ok: true,
@@ -213,6 +236,15 @@ test("earlier studies are listed with their final status", async () => {
 
   expect(await screen.findByText("Previous studies")).toBeInTheDocument();
   expect(screen.getByText("Completed")).toBeInTheDocument();
+});
+
+test("a study you withdrew from is labelled as your withdrawal", async () => {
+  api.getMyResearchEnrollments.mockResolvedValue({ ok: true, data: [{ ...ACTIVE_ENROLLMENT, status: "WITHDRAWN" }] });
+
+  renderJoin({ user: { email: "p@example.com" } }, "/research/my-studies");
+
+  expect(await screen.findByText("Previous studies")).toBeInTheDocument();
+  expect(screen.getByText("Withdrawn by you")).toBeInTheDocument();
 });
 
 const SHARED_BUDGET = {

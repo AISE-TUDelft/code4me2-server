@@ -21,6 +21,7 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from database import crud
+from privacy import collection
 from response_models import (
     CompletionErrorItem,
     ResponseCompletionItem,
@@ -112,6 +113,10 @@ def request_completion(
             return JsonResponseWithStatus(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
+
+        # An account that opted out of data collection still gets its answer,
+        # but nothing about the request is stored, whatever its store_* flags say.
+        collect = collection.is_collection_allowed(db_auth, uuid.UUID(str(user_id)))
 
         t1 = time.perf_counter()
         logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
@@ -335,7 +340,8 @@ def request_completion(
         chain_steps.append(add_query_task)
         if add_generation_tasks:
             chain_steps.append(group(*add_generation_tasks))
-        chain(*chain_steps).apply_async(queue="db")
+        if collect:
+            chain(*chain_steps).apply_async(queue="db")
 
         t6 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t6 - t5) * 1000:.2f}ms")

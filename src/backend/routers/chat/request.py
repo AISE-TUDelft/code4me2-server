@@ -20,6 +20,7 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from database import crud
+from privacy import collection
 from response_models import (
     ChatCompletionErrorItem,
     ChatCompletionItem,
@@ -111,6 +112,10 @@ def request_chat_completion(
             return JsonResponseWithStatus(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
+
+        # An account that opted out of data collection still gets its answer,
+        # but nothing about the request is stored, whatever its store_* flags say.
+        collect = collection.is_collection_allowed(db_auth, uuid.UUID(str(user_id)))
 
         t1 = time.perf_counter()
         logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
@@ -234,7 +239,7 @@ def request_chat_completion(
                     messages_copy.append((role, enhanced_content))
                 else:
                     messages_copy.append((role, content))
-            logging.info(f"The messages considered by the chat:\n{messages_copy}")
+            logging.info(f"The chat model receives {len(messages_copy)} messages")
             # Temporarily replace the messages for this model's invocation
             original_messages = chat_completion_request.messages
             chat_completion_request.messages = messages_copy
@@ -405,7 +410,8 @@ def request_chat_completion(
         chain_steps.append(add_chat_query_task)
         if add_generation_tasks:
             chain_steps.append(group(*add_generation_tasks))
-        chain(*chain_steps).apply_async(queue="db")
+        if collect:
+            chain(*chain_steps).apply_async(queue="db")
 
         t5 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t5 - t4) * 1000:.2f}ms")

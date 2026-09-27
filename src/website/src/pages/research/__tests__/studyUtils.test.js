@@ -1,5 +1,5 @@
 import resolution from "../../../../../../tests/fixtures/research/telemetry_policy_resolution.json";
-import { collectedClasses, resolveFieldClasses } from "../studyUtils";
+import { ENROLLMENT_STATUS, collectedClasses, resolveFieldClasses } from "../studyUtils";
 
 // The same table the server test checks against ingestion
 // (tests/backend_tests/research/test_privacy_policy_vocabulary.py).
@@ -26,4 +26,9 @@ test("event records and code metadata are always stored; content only with conte
 
 test("only strings are class names, as on the server", () => {
   expect(resolveFieldClasses([["METRICS"], 7, null])).toEqual(["BEHAVIORAL", "SYSTEM", "CODE_METADATA"]);
+});
+
+test("a participant's own withdrawal is labelled apart from a researcher revoke", () => {
+  expect(ENROLLMENT_STATUS.WITHDRAWN).toEqual({ label: "Withdrawn", tone: "warning" });
+  expect(ENROLLMENT_STATUS.REVOKED.label).toBe("Revoked");
 });

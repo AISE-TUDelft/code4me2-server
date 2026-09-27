@@ -1859,3 +1859,69 @@ export const getEnrollmentBudgetAdjustments = (studyId, enrollmentId, page) =>
     `${enrollmentBudgetPath(studyId, enrollmentId)}/adjustments${pageQuery(page)}`,
     { label: "load participant budget adjustments" },
   );
+
+// ── Account privacy (self-service) ──────────────────────────────────────────
+//
+// Backs the "Privacy & data" page. Every endpoint acts on the signed-in
+// account only (auth cookie). The privacy endpoints answer typed
+// `{detail: {code, message}}` errors; the account-deletion endpoint keeps its
+// older `{message}` body (a 409 says why deletion is refused). Both go through
+// `normalizeRequestError`, so `error` is always a readable string.
+
+const USER_BASE = () =>
+  `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/user`;
+
+const userRequest = async (path, { method = "GET", body, label } = {}) => {
+  try {
+    const response = await fetch(`${USER_BASE()}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    // 204 has no body to parse.
+    const payload =
+      response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, ...normalizeRequestError(payload, response) };
+    }
+    return { ok: true, data: payload, status: response.status };
+  } catch (e) {
+    console.error(`Error ${label || path}:`, e);
+    return {
+      ok: false,
+      code: "",
+      error: `Failed to ${label || "complete request"}`,
+      status: null,
+      errors: [],
+    };
+  }
+};
+
+// `data` is the account's PrivacyStatus: data_collection, active_study,
+// stored_data (row counts) and account_deletion.
+export const getPrivacyStatus = () =>
+  userRequest("/privacy", { label: "load your privacy settings" });
+
+// Opting out also withdraws an active study enrollment; opting back in does
+// not re-enroll. `data` is the fresh PrivacyStatus.
+export const setDataCollection = (enabled) =>
+  userRequest("/privacy/collection", {
+    method: "PUT",
+    body: { enabled: !!enabled },
+    label: "change data collection",
+  });
+
+// Opt-out and erasure in one server transaction; the account stays usable.
+// `data` is `{erased: {<stored_data key>: count}, status: PrivacyStatus}`.
+export const eraseMyData = () =>
+  userRequest("/privacy/erase", { method: "POST", label: "erase your data" });
+
+// The endpoint the IDE plugin also uses. The server now always erases the
+// account's data and ignores `delete_data`; it is still sent so that an older
+// server wipes the data too. A success clears the auth cookies.
+export const deleteMyAccount = () =>
+  userRequest("/delete?delete_data=true", {
+    method: "DELETE",
+    label: "delete your account",
+  });

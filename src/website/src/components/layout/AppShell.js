@@ -50,6 +50,12 @@ export const buildNavigation = (user) => {
       ],
     });
   }
+  // Last for everyone: self-service privacy controls for the signed-in account.
+  groups.push({
+    id: "account",
+    label: "Account",
+    items: [{ id: "privacy", path: "/settings/privacy", label: "Privacy & data", icon: "shield" }],
+  });
   return groups;
 };
 

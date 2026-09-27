@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from "react";
+import React, { startTransition, useState, useEffect } from "react";
 import Auth from "./components/auth/Auth";
 import Dashboard from "./pages/Dashboard";
 import ResearchStudies from "./pages/research/ResearchStudies";
 import ResearchStudyEditor from "./pages/research/ResearchStudyEditor";
 import ResearchJoin from "./pages/research/ResearchJoin";
+import PrivacySettings from "./pages/PrivacySettings";
 import AppShell from "./components/layout/AppShell";
 import "./App.css";
 import { GoogleOAuthProvider } from "@react-oauth/google";
@@ -89,6 +90,14 @@ function App() {
     rememberUser(userData.user);
   };
 
+  // The local half of a logout, also used after account deletion (where the
+  // server has already ended the session).
+  const clearLocalSession = () => {
+    setUser(null);
+    forgetUser();
+    sessionStorage.clear();
+  };
+
   const handleLogout = async () => {
     try {
       const logoutResponse = await logoutUser();
@@ -98,9 +107,7 @@ function App() {
     } catch (error) {
       console.error("Error during logout API call:", error);
     }
-    setUser(null);
-    forgetUser();
-    sessionStorage.clear();
+    clearLocalSession();
   };
 
   const ProtectedRoute = ({ children }) => {
@@ -140,6 +147,22 @@ function App() {
   );
 
   const JoinLayout = () => (user ? <ShellLayout /> : <PublicJoinLayout />);
+
+  // A deleted account has no session to log out of: the delete response
+  // cleared the auth cookies, so only the local cleanup runs.
+  const PrivacyPage = () => {
+    const navigate = useNavigate();
+    const onAccountDeleted = () => {
+      // The router applies navigations as transitions (v7_startTransition).
+      // Clearing the user in the same transition renders both at once;
+      // otherwise the signed-out shell would redirect to /login first.
+      startTransition(() => {
+        clearLocalSession();
+        navigate("/", { replace: true });
+      });
+    };
+    return <PrivacySettings onAccountDeleted={onAccountDeleted} />;
+  };
 
   const AuthPage = ({ mode }) => {
     const navigate = useNavigate();
@@ -191,6 +214,7 @@ function App() {
                 <Route path="/research/studies/:studyId" element={<ResearchStudies />} />
                 <Route path="/research/studies/:studyId/editor" element={<ResearchStudyEditor />} />
                 <Route path="/research/my-studies" element={<ResearchJoin user={user} />} />
+                <Route path="/settings/privacy" element={<PrivacyPage />} />
               </Route>
               <Route path="/research/join" element={<JoinLayout />}>
                 <Route index element={<ResearchJoin user={user} />} />

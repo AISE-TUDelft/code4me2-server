@@ -6,7 +6,11 @@ Endpoints:
 
 Features:
 - Cookie-based authentication using auth_token.
-- Optional deletion of related data (sessions, queries).
+- Always erases everything collected about the account (privacy.erasure), in
+  one transaction, before deleting the account itself.
+- Refuses (409) accounts that own research studies or agent profiles, which
+  other people's study data depends on.
+- Revokes the account's live tokens and clears its cookies.
 - Structured JSON responses with appropriate status codes.
 """
 
@@ -18,6 +22,7 @@ from fastapi import APIRouter, Cookie, Depends, Query
 import database.crud as crud
 from App import App
 from backend.Responses import (
+    DeleteUserBlockedError,
     DeleteUserDeleteResponse,
     DeleteUserError,
     ErrorResponse,
@@ -25,9 +30,12 @@ from backend.Responses import (
     JsonResponseWithStatus,
     UserNotFoundError,
 )
+from privacy import erasure
 
 # Initialize FastAPI router
 router = APIRouter()
+
+_ACCOUNT_COOKIES = ("auth_token", "session_token", "project_token")
 
 
 @router.delete(
@@ -37,21 +45,25 @@ router = APIRouter()
         "200": {"model": DeleteUserDeleteResponse},
         "401": {"model": InvalidOrExpiredAuthToken},
         "404": {"model": UserNotFoundError},
+        "409": {"model": DeleteUserBlockedError},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": DeleteUserError},
     },
 )
 def delete_user(
-    delete_data: bool = Query(False, description="Delete user's associated data"),
+    delete_data: bool = Query(
+        False,
+        description="Deprecated and ignored: deleting an account always erases its data.",
+    ),
     auth_token: str = Cookie(""),
     app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
-    Delete the authenticated user's account and optionally their associated data.
+    Delete the authenticated user's account together with all data collected about it.
 
     Args:
-        delete_data (bool): If True, removes all user-related data (default is False).
+        delete_data (bool): Ignored; kept so existing clients keep working.
         auth_token (str): Auth token provided in cookies to authenticate the user.
         app (App): Dependency-injected app instance with DB and Redis access.
 
@@ -72,30 +84,23 @@ def delete_user(
                 content=InvalidOrExpiredAuthToken(),
             )
 
-        user_id = auth_info["user_id"]
+        user_id = uuid.UUID(auth_info["user_id"])
         # Check if user exists in the database
-        found_user = crud.get_user_by_id(db_session, uuid.UUID(user_id))
-        if not found_user:
+        if not crud.get_user_by_id(db_session, user_id):
             return JsonResponseWithStatus(
                 status_code=404,
                 content=UserNotFoundError(),
             )
 
-        # Delete session/auth token data from Redis
-        redis_manager.delete("user_id", user_id, db_session)
-
-        # Optionally delete all associated data
-        if delete_data:
-            logging.info(f"Performing full wipe-out for user ID: {user_id}")
-            crud.delete_user_full_wipe_out(db=db_session, user_id=uuid.UUID(user_id))
-
-        # Delete the user account itself
-        crud.delete_user_by_id(db=db_session, user_id=user_id)
-
-        return JsonResponseWithStatus(
-            status_code=200,
-            content=DeleteUserDeleteResponse(),
-        )
+        try:
+            erasure.delete_account(db_session, user_id)
+        except erasure.AccountDeletionBlocked as blocked:
+            db_session.rollback()
+            return JsonResponseWithStatus(
+                status_code=409,
+                content=DeleteUserBlockedError(message=str(blocked)),
+            )
+        db_session.commit()
 
     except Exception as e:
         logging.error(f"Error processing user deletion request: {str(e)}")
@@ -106,6 +111,22 @@ def delete_user(
         )
     finally:
         db_session.close()
+
+    # The account is gone: none of its credentials may keep working. Best effort:
+    # a token that outlives a Redis failure names an account that no longer
+    # exists, and nothing is ever collected for an unknown account.
+    try:
+        redis_manager.revoke_user_tokens(str(user_id))
+    except Exception as e:
+        logging.warning(f"Could not revoke the deleted account's tokens: {str(e)}")
+
+    response = JsonResponseWithStatus(
+        status_code=200,
+        content=DeleteUserDeleteResponse(),
+    )
+    for cookie in _ACCOUNT_COOKIES:
+        response.delete_cookie(cookie)
+    return response
 
 
 def __init__():

@@ -61,6 +61,29 @@ test("marks the current page and links to the research routes", () => {
   expect(screen.getByText("PAGE")).toBeInTheDocument();
 });
 
+test("every signed-in user gets Privacy & data as the last group", () => {
+  [{ is_admin: false, can_research: false }, { is_admin: false, can_research: true }, { is_admin: true }].forEach(
+    (user) => {
+      const groups = buildNavigation(user);
+      const account = groups[groups.length - 1];
+      expect(account.label).toBe("Account");
+      expect(account.items).toEqual([
+        expect.objectContaining({ label: "Privacy & data", path: "/settings/privacy", icon: "shield" }),
+      ]);
+    },
+  );
+});
+
+test("a participant sees Privacy & data in the sidebar and it marks its page", async () => {
+  renderShell({ is_admin: false, can_research: false }, "/settings/privacy");
+  const nav = screen.getByRole("navigation", { name: "Main navigation" });
+  // findBy also lets the verification banner's check settle.
+  const link = await within(nav).findByRole("link", { name: "Privacy & data" });
+  expect(link).toHaveAttribute("href", "/settings/privacy");
+  expect(link).toHaveAttribute("aria-current", "page");
+  expect(screen.getByText("Account")).toBeInTheDocument();
+});
+
 test("the join route highlights My studies", () => {
   renderShell({ is_admin: false }, "/research/join");
   const link = screen.getByRole("link", { name: "My studies" });

@@ -146,6 +146,11 @@ class User(Base):
     can_research = Column(
         Boolean, server_default="false", default=False, nullable=False
     )
+    # When the account opted out of data collection (GDPR consent withdrawal);
+    # NULL while collection follows the preferences. Owned by the privacy
+    # endpoints only: the generic preference update cannot touch it, so a stale
+    # client pushing its local preferences never re-enables collection.
+    data_collection_opted_out_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationship to configuration data
     config = relationship("Config")
@@ -495,6 +500,22 @@ class MetaQuery(Base):
         Index("idx_meta_query_type", "query_type"),
         Index("idx_meta_query_timestamp", "timestamp"),
         Index("idx_meta_query_timestamp_type", "timestamp", "query_type"),
+        # Foreign keys to context/telemetry: their deletes (erasure) check here.
+        Index(
+            "idx_meta_query_context_id",
+            "context_id",
+            postgresql_where=text("context_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_meta_query_contextual_telemetry_id",
+            "contextual_telemetry_id",
+            postgresql_where=text("contextual_telemetry_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_meta_query_behavioral_telemetry_id",
+            "behavioral_telemetry_id",
+            postgresql_where=text("behavioral_telemetry_id IS NOT NULL"),
+        ),
         {"schema": "public"},
     )
 

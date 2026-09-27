@@ -8,6 +8,9 @@ the default flipped to ON.
   in the request body. A compromised or stale client cannot turn content capture
   on, and cannot turn it off either (which matters for research integrity as
   much as for privacy).
+* **Account opt-out overrides everything.** An account that opted out of data
+  collection (:mod:`privacy.collection`) gets no content stored, research-bound
+  or not.
 * **Study policy first (ISSUE-01).** For a research-bound context (an explicit
   ``study_id``), permission comes from the active enrollment plus the study's
   frozen telemetry policy, resolved by
@@ -41,7 +44,9 @@ from database.db_schemas import (
     STORE_AGENT_CONTENT_DEFAULT,
     STORE_AGENT_CONTENT_KEY,
 )
+from privacy import collection
 from research.telemetry.content_policy import (
+    DENY_DATA_COLLECTION_OPTED_OUT,
     DENY_NO_PARTICIPANT,
     LEGACY_PREFERENCE,
     ContentPolicyDecision,
@@ -100,11 +105,15 @@ def resolve_content_policy_for_user(
 ) -> ContentPolicyDecision:
     """Resolve the content-storage decision for a known user id.
 
-    With a ``study_id`` the study's frozen policy is authoritative (and a
-    missing/malformed policy denies). Without one, the legacy account
-    preference applies: an unattributable request gets the conservative answer,
-    while a real non-research account keeps its documented default.
+    An account that opted out of data collection is denied first, whatever the
+    study or preference says. Otherwise, with a ``study_id`` the study's frozen
+    policy is authoritative (and a missing/malformed policy denies). Without one,
+    the legacy account preference applies: an unattributable request gets the
+    conservative answer, while a real non-research account keeps its documented
+    default.
     """
+    if user_id is not None and collection.opted_out_at(db, user_id) is not None:
+        return ContentPolicyDecision(allowed=False, reason=DENY_DATA_COLLECTION_OPTED_OUT)
     if study_id is not None:
         return resolve_study_content_policy(
             db,

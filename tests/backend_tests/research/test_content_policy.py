@@ -113,7 +113,8 @@ def test_no_enrollment_denies_content():
     assert decision.reason == DENY_NO_ACTIVE_ENROLLMENT
 
 
-def test_without_a_study_the_legacy_preference_applies():
+@patch("backend.routers.agent.consent.collection.opted_out_at", return_value=None)
+def test_without_a_study_the_legacy_preference_applies(_collecting_account):
     """Non-research usage keeps its documented account preference."""
     from backend.routers.agent.consent import resolve_store_agent_content_for_user
 

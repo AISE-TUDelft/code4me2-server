@@ -11,13 +11,14 @@ unresolvable profile is stored as non-secret placeholders.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import uuid
+from typing import TYPE_CHECKING, Callable
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from database import crud
-from database.research_schemas import ResearchEvent
+from database.research_schemas import ResearchEnrollment, ResearchEvent
 from research.participants import identity as identity_store
 
 if TYPE_CHECKING:
@@ -66,8 +67,16 @@ def ensure_agent_tasks_for_ack(
     db: Session,
     payload: TelemetryBatchRequestV1,
     ack: TelemetryBatchAckV1,
+    *,
+    before_create: Callable[[uuid.UUID], None] = lambda account_id: None,
 ) -> list:
-    """Ensure one linkable ``agent_task`` exists per acknowledged run id."""
+    """Ensure one linkable ``agent_task`` exists per acknowledged run id.
+
+    ``before_create(account_id)`` runs before a task is created for an account;
+    the router uses it to lock the account against a concurrent erasure. The
+    enrollment is then read again, because an erasure that committed meanwhile
+    has removed it and its run must not get a task.
+    """
     grouped = _acknowledged_run_events(payload, ack)
     if not grouped:
         return []
@@ -97,6 +106,13 @@ def ensure_agent_tasks_for_ack(
         existing = crud.get_agent_task_by_external_run_id(db, run_id)
         if existing is not None:
             _finalize_if_completed(db, existing, events)
+            continue
+        before_create(participant.account_id)
+        if db.execute(
+            select(ResearchEnrollment.enrollment_id).where(
+                ResearchEnrollment.enrollment_id == enrollment.enrollment_id
+            )
+        ).first() is None:
             continue
         try:
             task = crud.create_agent_task(

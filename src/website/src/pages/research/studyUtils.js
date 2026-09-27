@@ -15,6 +15,8 @@ export const ENROLLMENT_STATUS = {
   ACTIVE: { label: "Active", tone: "success" },
   COMPLETED: { label: "Completed", tone: "info" },
   REVOKED: { label: "Revoked", tone: "danger" },
+  // Participant-initiated (opted out of data collection), unlike a revoke.
+  WITHDRAWN: { label: "Withdrawn", tone: "warning" },
   STUDY_STOPPED: { label: "Study stopped", tone: "neutral" },
 };
 

@@ -105,7 +105,8 @@ def activate_project(
         project_token = str(activate_project_request.project_id)
         # Attempt to get project info from Redis
         project_info = redis_manager.get("project_token", project_token)
-        logging.log(logging.INFO, f"Retrieved project info: {project_info}")
+        # Never log project_info itself: it carries the project's code.
+        logging.log(logging.INFO, f"Project {project_token} cached: {project_info is not None}")
 
         if not project_info:
             # Project not in Redis, fetch from database

@@ -543,7 +543,7 @@
           "User"
         ],
         "summary": "Delete User",
-        "description": "Delete the authenticated user's account and optionally their associated data.\n\nArgs:\n    delete_data (bool): If True, removes all user-related data (default is False).\n    auth_token (str): Auth token provided in cookies to authenticate the user.\n    app (App): Dependency-injected app instance with DB and Redis access.\n\nReturns:\n    JsonResponseWithStatus: A success or error response depending on the outcome.",
+        "description": "Delete the authenticated user's account together with all data collected about it.\n\nArgs:\n    delete_data (bool): Ignored; kept so existing clients keep working.\n    auth_token (str): Auth token provided in cookies to authenticate the user.\n    app (App): Dependency-injected app instance with DB and Redis access.\n\nReturns:\n    JsonResponseWithStatus: A success or error response depending on the outcome.",
         "operationId": "delete_user_api_user_delete_delete",
         "parameters": [
           {
@@ -552,11 +552,11 @@
             "required": false,
             "schema": {
               "type": "boolean",
-              "description": "Delete user's associated data",
+              "description": "Deprecated and ignored: deleting an account always erases its data.",
               "default": false,
               "title": "Delete Data"
             },
-            "description": "Delete user's associated data"
+            "description": "Deprecated and ignored: deleting an account always erases its data."
           },
           {
             "name": "auth_token",
@@ -599,6 +599,16 @@
               }
             },
             "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteUserBlockedError"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -2605,6 +2615,17 @@
         "type": "object",
         "title": "DeleteChatSuccessResponse",
         "description": "Acknowledgement response for successful chat deletion."
+      },
+      "DeleteUserBlockedError": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": "This account owns research studies or agent profiles, so it cannot delete itself."
+          }
+        },
+        "type": "object",
+        "title": "DeleteUserBlockedError"
       },
       "DeleteUserDeleteResponse": {
         "properties": {
