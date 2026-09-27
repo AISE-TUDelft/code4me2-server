@@ -574,10 +574,13 @@ class ResearchAgentRun(Base):
 class ResearchEvent(Base):
     """One immutable accepted canonical telemetry fact.
 
-    ``event_id`` is globally unique; identity is additionally constrained by
-    ``(research_session_id, emitter_id, emitter_sequence)`` where a session
-    applies, so per-emitter ordering is preserved. Accepted payload bytes and
-    provenance are never updated in place.
+    ``event_id`` is globally unique and, with the content digest, is the only
+    identity. ``(research_session_id, emitter_id, emitter_sequence)`` is indexed
+    for ordering and gap diagnostics but is deliberately NOT unique: an emitter
+    whose counter restarts (an IDE restart inside a live session, a re-launched
+    proxy) must never have its later facts deleted as "conflicts"; overlaps are
+    surfaced as ``EVENT_SEQUENCE_GAP`` coverage diagnostics instead. Accepted
+    payload bytes and provenance are never updated in place.
     """
 
     __tablename__ = "research_event"
@@ -591,11 +594,11 @@ class ResearchEvent(Base):
         Index("idx_research_event_study_id", "study_id"),
         Index("idx_research_event_agent_run_id", "agent_run_id"),
         Index("idx_research_event_retention_state", "retention_state"),
-        UniqueConstraint(
+        Index(
+            "idx_research_event_session_emitter_sequence",
             "research_session_id",
             "emitter_id",
             "emitter_sequence",
-            name="uq_research_event_session_emitter_sequence",
         ),
         {"schema": "public"},
     )

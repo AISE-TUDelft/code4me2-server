@@ -63,19 +63,37 @@ router = APIRouter()
 # The signing secret is mandatory: there is no development fallback. If it is
 # unset the router refuses to issue or verify any capability/manifest rather
 # than signing with a predictable, hardcoded secret.
-BOOTSTRAP_SIGNING_SECRET: Optional[str] = os.environ.get("BOOTSTRAP_SIGNING_SECRET")
-_SIGNER: Optional[BootstrapSigningContext] = (
-    BootstrapSigningContext(
-        secret=BOOTSTRAP_SIGNING_SECRET,
-        inference_capability_ttl_seconds=BudgetSettings.from_env().capability_ttl_seconds,
-    )
-    if BOOTSTRAP_SIGNING_SECRET
-    else None
-)
+#
+# It is resolved at request time (never only at import): `main.py` loads the
+# deployment `.env` before the routers, but a container that receives the
+# variable late, or a test that patches it, must still be honoured. The two
+# module attributes below are import-time snapshots kept as explicit overrides
+# (tests patch them); production reads the live environment through
+# :func:`signing_secret`.
+BOOTSTRAP_SIGNING_SECRET: Optional[str] = os.environ.get("BOOTSTRAP_SIGNING_SECRET") or None
+_SIGNER: Optional[BootstrapSigningContext] = None
+
+
+def signing_secret() -> Optional[str]:
+    """The configured bootstrap signing secret, or ``None`` when unset.
+
+    Resolution order: an explicitly installed signer (tests), the module-level
+    override, then the live environment. Blank values count as unset.
+    """
+    if _SIGNER is not None and _SIGNER.secret and _SIGNER.secret.strip():
+        return _SIGNER.secret
+    if BOOTSTRAP_SIGNING_SECRET and BOOTSTRAP_SIGNING_SECRET.strip():
+        return BOOTSTRAP_SIGNING_SECRET
+    value = os.environ.get("BOOTSTRAP_SIGNING_SECRET", "")
+    return value if value.strip() else None
+
 
 def _require_signer() -> BootstrapSigningContext:
     """Return the configured signer or raise a typed refusal."""
-    if _SIGNER is None:
+    if _SIGNER is not None:
+        return _SIGNER
+    secret = signing_secret()
+    if secret is None:
         raise HTTPException(
             status_code=503,
             detail={
@@ -86,7 +104,10 @@ def _require_signer() -> BootstrapSigningContext:
                 ),
             },
         )
-    return _SIGNER
+    return BootstrapSigningContext(
+        secret=secret,
+        inference_capability_ttl_seconds=BudgetSettings.from_env().capability_ttl_seconds,
+    )
 
 
 class ManifestVerificationRequest(BaseModel):
@@ -173,6 +194,9 @@ class EnvironmentReport(BaseModel):
     ide_build: Optional[str] = None
     plugin_version: Optional[str] = None
     host_kind: Optional[str] = None
+    # The JetBrains AI Assistant build the plugin found (the ACP host it
+    # depends on); reported so a zero-data participant can be diagnosed.
+    ai_assistant_version: Optional[str] = None
 
 
 class ResearchSessionRequest(BaseModel):
@@ -314,8 +338,21 @@ class _PersistentSessionFactory:
         now: datetime,
         context_id: str = "",
     ) -> ResearchSessionRef:
-        existing = session_store.get_active_session_for_context(
-            self._db, enrollment.enrollment_id, context_id
+        # An idle-expired context session is closed here (persisted in the same
+        # unit of work) so the participant gets a fresh session instead of one
+        # the first heartbeat would end (review D-01/C-02).
+        existing = session_store.resolve_open_context_session(
+            self._db,
+            enrollment.enrollment_id,
+            context_id,
+            study=study,
+            now=now,
+            commit=False,
+            kill_switch_check=_kill_switch_for_scope(
+                self._db,
+                study_id=study.study_id,
+                enrollment_id=enrollment.enrollment_id,
+            ),
         )
         if existing is not None:
             return ResearchSessionRef(

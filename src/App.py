@@ -133,6 +133,7 @@ class App:
             email_verification_token_expires_in_seconds=config.email_verification_token_expires_in_seconds,
             reset_password_token_expires_in_seconds=config.reset_password_token_expires_in_seconds,
             token_hook_activation_in_seconds=config.token_hook_activation_in_seconds,
+            password=config.redis_password,
         )
 
         # if os env doesn't have variable CELERY_WORKER=TRUE run the following

@@ -8,7 +8,7 @@ rows are distinct tables/identities; the store never treats one id as the other.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -142,12 +142,17 @@ def get_active_session_for_enrollment(
 
 
 def get_active_session_for_context(
-    session: Session, enrollment_id: uuid.UUID, context_id: str
+    session: Session,
+    enrollment_id: uuid.UUID,
+    context_id: str,
+    *,
+    for_update: bool = False,
 ) -> Optional[ResearchSessionRow]:
     """Return the non-terminal session for ``(enrollment, context)``, or ``None``.
 
     This is the idempotent-creation lookup: one authenticated execution context
-    maps to at most one live session.
+    maps to at most one live session. ``for_update`` locks the row so a caller
+    that may close it (idle expiry) serializes with concurrent heartbeats.
     """
     statement = (
         select(ResearchSessionRow)
@@ -158,13 +163,18 @@ def get_active_session_for_context(
         )
         .order_by(ResearchSessionRow.created_at.desc())
     )
+    if for_update:
+        statement = statement.with_for_update()
     return session.execute(statement).scalars().first()
 
 
 def update_session(
-    session: Session, research_session: ResearchSessionV1
+    session: Session, research_session: ResearchSessionV1, *, commit: bool = True
 ) -> Optional[ResearchSessionRow]:
-    """Persist a state/timestamp/close change onto an existing session row."""
+    """Persist a state/timestamp/close change onto an existing session row.
+
+    ``commit=False`` stages the change for a caller-owned unit of work.
+    """
     row = session.get(ResearchSessionRow, research_session.research_session_id)
     if row is None:
         return None
@@ -181,18 +191,22 @@ def update_session(
     row.resume_generation = research_session.resume_generation
     row.manifest_digest = research_session.manifest_digest
     row.environment_json = {"environment_ref": research_session.environment_ref}
-    session.commit()
-    session.refresh(row)
+    if commit:
+        session.commit()
+        session.refresh(row)
+    else:
+        session.flush()
     return row
 
 
 def insert_transition(
-    session: Session, transition: SessionTransition
+    session: Session, transition: SessionTransition, *, commit: bool = True
 ) -> SessionTransition:
     """Append one recorded state transition to its session's log.
 
     The transition log is ``research_session.transitions_json`` (the session is
     the only owner of its transitions), so no child row is written.
+    ``commit=False`` stages the change for a caller-owned unit of work.
     """
     row = session.get(ResearchSessionRow, transition.research_session_id)
     if row is None:  # pragma: no cover - guarded by the session router
@@ -202,9 +216,51 @@ def insert_transition(
     serialized.append(transition.model_dump(mode="json"))
     row.transitions_json = serialized
     session.add(row)
-    session.commit()
-    session.refresh(row)
+    if commit:
+        session.commit()
+        session.refresh(row)
+    else:
+        session.flush()
     return transition
+
+
+def resolve_open_context_session(
+    session: Session,
+    enrollment_id: uuid.UUID,
+    context_id: str,
+    *,
+    study: Any,
+    now: datetime,
+    commit: bool = True,
+    kill_switch_check: Optional[Callable[[], bool]] = None,
+) -> Optional[ResearchSessionRow]:
+    """The live session for ``(enrollment, context)``, expiring an idle one first.
+
+    Bootstrap and session create used to hand a returning client its previous
+    context session even when that session had already exceeded the study's
+    idle timeout; the first heartbeat then ended it and the client had to
+    activate a third time (review D-01/C-02). Here an idle-expired session is
+    closed (``IDLE_TIMEOUT`` transition, persisted) and ``None`` is returned so
+    the caller opens a fresh one. Without a usable study policy the session is
+    returned as is (the server never invents a timeout). The row is locked
+    while it is inspected, and an engaged kill switch (``kill_switch_check``)
+    leaves it untouched exactly like the heartbeat path does.
+    """
+    from .service import expire_if_idle, session_policy_from_study
+
+    row = get_active_session_for_context(session, enrollment_id, context_id, for_update=True)
+    if row is None:
+        return None
+    policy = session_policy_from_study(study)
+    if policy is None:
+        return row
+    model = row_to_session(row)
+    idle = expire_if_idle(model, now, policy=policy, kill_switch_check=kill_switch_check)
+    if not idle.accepted or idle.transition is None:
+        return row
+    insert_transition(session, idle.transition, commit=commit)
+    update_session(session, idle.session, commit=commit)
+    return None
 
 
 def create_agent_run(session: Session, run: AgentRunV1) -> ResearchAgentRun:

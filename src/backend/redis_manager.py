@@ -39,9 +39,16 @@ class RedisManager:
         reset_password_token_expires_in_seconds: int = 900,
         token_hook_activation_in_seconds: int = 60,
         store_multi_file_context_on_db: bool = True,
+        password: Optional[str] = None,
     ):
-        # Initialize Redis client with given host and port
-        self.__redis_client = Redis(host=host, port=port, decode_responses=True)
+        # Initialize Redis client with given host and port (and AUTH when the
+        # deployment sets `requirepass`, see redis.prod.conf).
+        self.__redis_client = Redis(
+            host=host,
+            port=port,
+            password=password or None,
+            decode_responses=True,
+        )
         self.session_token_expires_in_seconds = session_token_expires_in_seconds
         self.auth_token_expires_in_seconds = auth_token_expires_in_seconds
         self.email_verification_token_expires_in_seconds = (
@@ -61,6 +68,13 @@ class RedisManager:
             raise Exception(
                 "Could not connect to Redis server. Check your configuration."
             )
+
+    def ping(self) -> bool:
+        """Round-trip to Redis; ``False`` when it is unreachable (health checks)."""
+        try:
+            return bool(self.__redis_client.ping())
+        except Exception:  # noqa: BLE001 - a health probe reports, never raises
+            return False
 
     def __get_exp(self, type: str) -> int:
         """

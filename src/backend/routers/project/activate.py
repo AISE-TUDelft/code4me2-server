@@ -181,6 +181,7 @@ def activate_project(
             value=project_token,
             httponly=True,
             samesite="lax",
+            secure=app.get_config().cookie_secure,
         )
         return response_obj
     except Exception as e:

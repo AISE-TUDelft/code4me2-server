@@ -1,4 +1,10 @@
-from fastapi import APIRouter
+import logging
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import text
+
+from App import App
+from backend.Responses import JsonResponseWithStatus
 
 # Import sub-routers for different parts of the application
 from .acp import router as acp_router
@@ -66,3 +72,32 @@ def ping():
         dict: A simple response indicating the service is available.
     """
     return {"Status": "Ok"}
+
+
+@router.api_route("/health", methods=["GET", "HEAD"])
+def health(app: App = Depends(App.get_instance)):
+    """Dependency-aware health: the database and Redis must answer.
+
+    `/api/ping` only proves the process is up; a study server whose database
+    is down would still pass the container health check while every telemetry
+    batch is refused. This route is what the production compose polls.
+    """
+    checks: dict[str, str] = {}
+    db = app.get_db_session()
+    try:
+        db.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as error:  # noqa: BLE001 - reported, never raised
+        logging.warning("health: database check failed: %s", error)
+        checks["database"] = "error"
+    finally:
+        try:
+            db.close()
+        except Exception:  # noqa: BLE001
+            pass
+    checks["redis"] = "ok" if app.get_redis_manager().ping() else "error"
+    healthy = all(value == "ok" for value in checks.values())
+    return JsonResponseWithStatus(
+        status_code=200 if healthy else 503,
+        content={"status": "ok" if healthy else "degraded", "checks": checks},
+    )

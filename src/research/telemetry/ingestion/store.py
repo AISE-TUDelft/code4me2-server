@@ -11,6 +11,7 @@ without PostgreSQL.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING, Optional, Sequence
 
@@ -28,6 +29,8 @@ from database.research_schemas import (
 
 from .errors import IntegrityConflictError, ReceiptConflictError, StoreUnavailable
 from .models import BatchReceipt, IngestionStore, ResearchEventRecord
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "FakeIngestionStore",
@@ -68,32 +71,13 @@ class FakeIngestionStore:
             if event_id in self._events
         }
 
-    def _emitter_key_conflict(
-        self, record: ResearchEventRecord
-    ) -> Optional[ResearchEventRecord]:
-        """Return a committed/staged record colliding on the emitter key.
-
-        Mirrors the database's ``uq_research_event_session_emitter_sequence``
-        unique constraint: one ``(research_session_id, emitter_id,
-        emitter_sequence)`` may identify at most one event id.
-        """
-        for existing in (*self._events.values(), *self._staged_events.values()):
-            if (
-                existing.event_id != record.event_id
-                and existing.emitter_id == record.emitter_id
-                and existing.research_session_id == record.research_session_id
-                and existing.emitter_sequence == record.emitter_sequence
-            ):
-                return existing
-        return None
-
     def insert_events(self, records: Sequence[ResearchEventRecord]) -> list[uuid.UUID]:
-        """Stage records, enforcing unique ids, digests, and emitter keys.
+        """Stage records, enforcing unique ids and digests.
 
         A same-id/same-digest insert is a no-op (idempotent); a same-id/different
-        digest, or a different event id reusing the same
-        ``(session, emitter, sequence)`` key, raises
-        :class:`IntegrityConflictError`. ``fail_inserts`` simulates a transiently
+        digest raises :class:`IntegrityConflictError`. Like the database, a
+        reused ``(session, emitter, sequence)`` key is NOT a conflict (C-01):
+        both facts are stored. ``fail_inserts`` simulates a transiently
         unavailable store.
         """
         if self.fail_inserts:
@@ -108,13 +92,6 @@ class FakeIngestionStore:
                         record.event_id, existing.digest, record.digest
                     )
                 continue
-            emitter_conflict = self._emitter_key_conflict(record)
-            if emitter_conflict is not None:
-                # The stored digest is the one that already owns this emitter
-                # key; the presented record is the poison event.
-                raise IntegrityConflictError(
-                    record.event_id, emitter_conflict.digest, record.digest
-                )
             self._staged_events[record.event_id] = record
             inserted.append(record.event_id)
         return inserted
@@ -211,41 +188,15 @@ class SqlAlchemyIngestionStore:
         )
         return {row[0]: row[1] for row in self.session.execute(statement).all()}
 
-    def _emitter_key_conflict(
-        self, records: Sequence[ResearchEventRecord]
-    ) -> Optional[IntegrityConflictError]:
-        """Attribute a unique-key violation to the exact poison record.
-
-        Called only after a failed insert has been rolled back, so the probe runs
-        in a fresh transaction. Returns ``None`` when no record collides on the
-        ``(research_session_id, emitter_id, emitter_sequence)`` unique key.
-        """
-        for record in records:
-            statement = select(ResearchEvent.event_id, ResearchEvent.digest).where(
-                ResearchEvent.research_session_id == record.research_session_id,
-                ResearchEvent.emitter_id == record.emitter_id,
-                ResearchEvent.emitter_sequence == record.emitter_sequence,
-                ResearchEvent.event_id != record.event_id,
-            )
-            row = self.session.execute(statement).first()
-            if row is not None:
-                return IntegrityConflictError(record.event_id, row[1], record.digest)
-        return None
-
     def insert_events(self, records: Sequence[ResearchEventRecord]) -> list[uuid.UUID]:
         """Stage insert-only event persistence (unique ``event_id``).
 
         ``ON CONFLICT DO NOTHING`` makes a concurrent duplicate a no-op rather
         than aborting the transaction, so the digest-identity check (performed
         inside the same transaction) remains authoritative and an existing fact
-        is never overwritten.
-
-        A violation of the ``(research_session_id, emitter_id,
-        emitter_sequence)`` unique key is not covered by the ``event_id``
-        conflict target; it aborts the statement. Rather than reporting the whole
-        batch retryable (which would wedge every later retry), the conflict is
-        attributed to the exact event so the service can terminally reject only
-        that poison event and persist its siblings.
+        is never overwritten. ``event_id`` is the only unique key on the table
+        (C-01 dropped the emitter-sequence constraint), so any other integrity
+        error is a genuine store failure and is reported retryable.
         """
         if not records:
             return []
@@ -264,9 +215,9 @@ class SqlAlchemyIngestionStore:
             self.session.execute(statement)
         except IntegrityError as error:
             self.session.rollback()
-            conflict = self._emitter_key_conflict(records)
-            if conflict is not None:
-                raise conflict from error
+            # A persistent violation (an FK after manual data surgery, ...) would
+            # otherwise retry forever showing only STORE_UNAVAILABLE in the ack log.
+            logger.warning("research_event insert hit an integrity constraint: %s", error)
             raise StoreUnavailable("event store is unavailable") from error
         except SQLAlchemyError as error:
             raise StoreUnavailable("event store is unavailable") from error

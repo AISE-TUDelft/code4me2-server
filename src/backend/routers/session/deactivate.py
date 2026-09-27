@@ -124,6 +124,7 @@ def deactivate_session(
             value="",
             httponly=True,
             samesite="lax",
+            secure=app.get_config().cookie_secure,
             expires=-1,  # Expire immediately
         )
         
@@ -132,7 +133,8 @@ def deactivate_session(
             key="session_token",
             value="",
             httponly=True,
-            samesite="lax", 
+            samesite="lax",
+            secure=app.get_config().cookie_secure,
             expires=-1,  # Expire immediately
         )
         

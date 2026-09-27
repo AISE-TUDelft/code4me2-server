@@ -735,10 +735,14 @@ new `--release-id` is rejected rather than mutating a published release.
 - **Research Platform**: See [`docs/research-platform/`](docs/research-platform/)
 
 ## 🔒 Production Notes
-- Restrict CORS origins and cookies in production.
-- Configure strong `DB_PASSWORD`, rotate secrets, and set per-environment `.env`.
-- Place `nginx` behind TLS termination and enable HSTS.
-- Consider scaling `celery-worker` replicas per GPU availability; update device IDs accordingly.
+- Deploy with `docker-compose.prod.yml` (CPU images, static website behind nginx,
+  health checks, bounded logs, nightly backups); the walkthrough is
+  [`docs/research-platform/PRODUCTION_DEPLOYMENT.md`](docs/research-platform/PRODUCTION_DEPLOYMENT.md).
+- `BOOTSTRAP_SIGNING_SECRET`, `REDIS_PASSWORD` and `PUBLIC_ORIGIN` are required;
+  `.env.example` lists the whole inventory. Never reuse a development `.env`.
+- Place the `website` container behind TLS termination and enable HSTS at the edge;
+  cookies are `Secure` (`COOKIE_SECURE=true`) and the plugin refuses plain HTTP.
+- `docker-compose.yml` is the GPU stack for the local Hugging Face rows only.
 
 ## 🤝 Contributing
 

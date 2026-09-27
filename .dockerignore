@@ -21,7 +21,8 @@ src/website/node_modules
 .coverage
 secrets
 
-# Project data directories
+# Project data directories (and database dumps written by the backup service)
+backups/
 Data
 .data
 

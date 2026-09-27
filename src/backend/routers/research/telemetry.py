@@ -9,6 +9,7 @@ admin/researcher-only.
 from __future__ import annotations
 
 import logging
+import os
 import uuid  # noqa: TC003 - FastAPI evaluates route annotations at runtime
 from datetime import datetime, timezone
 from typing import Optional
@@ -26,6 +27,7 @@ from backend.routers.analytics.auth_utils import (
     get_current_user,
     require_admin,
 )
+from backend.routers.research import bootstrap as bootstrap_router
 from backend.routers.research.bootstrap import BOOTSTRAP_SIGNING_SECRET
 from research.analysis.operations import store as operations_store
 from research.participants import identity as identity_store
@@ -50,6 +52,21 @@ logger = logging.getLogger(__name__)
 
 AUDIENCE = "research-runtime"
 SCOPE_WRITE = "telemetry:write"
+
+# Events of an already ENDED session are still stored while they occurred no
+# later than this many seconds after the server closed it (C-02): the last poll
+# window, the closing events and an offline tail of an idle-expired session.
+LATE_EVENT_GRACE_SECONDS = int(os.environ.get("TELEMETRY_LATE_EVENT_GRACE_SECONDS", "900"))
+
+
+def _signing_secret() -> str:
+    """The signing secret at request time.
+
+    Delegates to the bootstrap router's resolver so the signer and every
+    verifier agree (an installed test signer wins there too); this module's
+    import-time copy is only a patch target of last resort.
+    """
+    return bootstrap_router.signing_secret() or BOOTSTRAP_SIGNING_SECRET or ""
 
 
 def _now() -> datetime:
@@ -94,7 +111,7 @@ def _verify_session_capability(
     """Verify the batch capability against the subject resolved from its events."""
     return verify_capability(
         capability,
-        BOOTSTRAP_SIGNING_SECRET or "",
+        _signing_secret(),
         expected_audience=AUDIENCE,
         expected_scope=[SCOPE_WRITE],
         now=now,
@@ -123,7 +140,7 @@ def _verify_receipt_capability(
     """
     return verify_capability(
         capability,
-        BOOTSTRAP_SIGNING_SECRET or "",
+        _signing_secret(),
         expected_audience=AUDIENCE,
         expected_scope=[SCOPE_WRITE],
         now=capability.issued_at,
@@ -234,6 +251,7 @@ def submit_telemetry_batch(
             now=_now(),
             kill_switch_check=_ingestion_kill_switch_check(db, payload),
             privacy_policy_resolver=_privacy_policy_resolver(db),
+            late_event_grace_seconds=LATE_EVENT_GRACE_SECONDS,
         )
         _log_ack(ack)
         # ACP-proxied runs carry an agent_run_id but no task: materialize the

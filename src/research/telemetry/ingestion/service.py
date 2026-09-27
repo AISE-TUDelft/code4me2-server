@@ -27,12 +27,13 @@ loses the receipt race but returns the winner's receipt (never a second one).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable, Optional, Protocol, Sequence
 
 from research.canonical import canonical_hash
 from research.participants.enums import EnrollmentStatus
 from research.runtime.bootstrap.models import CapabilityReasonCode
+from research.runtime.sessions.enums import SessionState
 from research.telemetry.privacy import PrivacyPolicy, filter_event
 
 from .enums import EventDisposition, IngestionReasonCode
@@ -58,6 +59,10 @@ __all__ = ["CapabilityVerifier", "compute_event_digest", "ingest_batch"]
 
 DEFAULT_RETRY_HINT_SECONDS = 30
 DEFAULT_MAX_EVENTS = 500
+# How long after a session was closed (ENDED, not REVOKED) its late events are
+# still stored (C-02): the last poll window, the closing events and the tail
+# collected offline before the client learned the session had ended.
+DEFAULT_LATE_EVENT_GRACE_SECONDS = 900
 
 
 class CapabilityVerifier(Protocol):
@@ -216,9 +221,9 @@ def _finalize(
         return existing.ack if existing is not None else _retryable_ack(ack)
     except IntegrityConflictError as conflict:
         store.rollback()
-        # A single poison event (its ``(session, emitter, sequence)`` key or its
-        # event-id/digest identity is already taken) must not wedge the whole
-        # batch: terminally reject only that event and persist the survivors.
+        # A single poison event (its event-id/digest identity is already taken
+        # by a different fact) must not wedge the whole batch: terminally
+        # reject only that event and persist the survivors.
         # Each recursion removes exactly one record, so this is bounded by the
         # batch size and always terminates.
         survivors = [
@@ -356,6 +361,33 @@ def _is_terminal(session: ResearchSessionV1) -> bool:
     return state.is_terminal if hasattr(state, "is_terminal") else False
 
 
+def _late_acceptance_deadline(
+    session: ResearchSessionV1, grace_seconds: int
+) -> Optional[datetime]:
+    """The last ``occurred_at`` still accepted for an ENDED session, or ``None``.
+
+    Only an ordinary end (idle timeout, explicit completion, IDE closed, ...)
+    gets a grace window: a REVOKED session (withdrawal, consent pause, study
+    stop cascade) stays fully terminal, and a session with no ``closed_at``
+    cannot anchor a window.
+    """
+    if getattr(session, "state", None) != SessionState.ENDED:
+        return None
+    closed_at = getattr(session, "closed_at", None)
+    if closed_at is None or grace_seconds < 0:
+        return None
+    if closed_at.tzinfo is None:
+        closed_at = closed_at.replace(tzinfo=timezone.utc)
+    return closed_at + timedelta(seconds=grace_seconds)
+
+
+def _occurred_within(event: CanonicalEventV1, deadline: datetime) -> bool:
+    occurred_at = event.occurred_at
+    if occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+    return occurred_at <= deadline
+
+
 def _receipt_denied_ack(
     request: TelemetryBatchRequestV1, server_time: datetime, retry_hint: int
 ) -> TelemetryBatchAckV1:
@@ -382,21 +414,40 @@ def _authorized_receipt(
     receipt_capability_verifier: CapabilityVerifier,
     server_time: datetime,
     retry_hint: int,
+    session_resolver: Optional[Callable[[uuid.UUID], Optional[ResearchSessionV1]]] = None,
 ) -> TelemetryBatchAckV1:
     """Return a stored receipt only to the capability's own subject (ISSUE-08).
 
     The batch id alone is never sufficient: the signed capability must cover
     the receipt's enrollment/session subject. Receipts persisted before subject
     binding existed (no enrollment/session) are refused rather than echoed.
+
+    A receipt for a terminal session's batch (an ENDED session's tail accepted
+    under C-02, or a REVOKED session's permanent rejections) was issued to the
+    enrollment's *next* session capability, so a lost-ACK retry of that batch
+    arrives with a capability naming another session. The session binding is
+    relaxed to the enrollment for exactly that case (the receipt's session is
+    terminal); otherwise the replay would be refused forever and, because the
+    client retries the oldest batch first, every later upload would stall
+    behind it.
     """
     if receipt.enrollment_id is None and receipt.research_session_id is None:
         return _receipt_denied_ack(request, server_time, retry_hint)
+    expected_session = receipt.research_session_id
+    if (
+        expected_session is not None
+        and request.session_capability.research_session_id != expected_session
+        and session_resolver is not None
+    ):
+        receipt_session = session_resolver(expected_session)
+        if receipt_session is not None and _is_terminal(receipt_session):
+            expected_session = None
     verification = receipt_capability_verifier(
         request.session_capability,
         now=server_time,
         current_revocation_epoch=None,
         expected_enrollment_id=receipt.enrollment_id,
-        expected_research_session_id=receipt.research_session_id,
+        expected_research_session_id=expected_session,
     )
     if not verification.ok:
         return _receipt_denied_ack(request, server_time, retry_hint)
@@ -417,8 +468,17 @@ def ingest_batch(
     kill_switch_check: Optional[Callable[[], bool]] = None,
     privacy_policy_resolver: Optional[Callable[[Enrollment], PrivacyPolicy]] = None,
     receipt_capability_verifier: Optional[CapabilityVerifier] = None,
+    late_event_grace_seconds: int = DEFAULT_LATE_EVENT_GRACE_SECONDS,
 ) -> TelemetryBatchAckV1:
-    """Ingest one batch and return a durable, deterministic acknowledgement."""
+    """Ingest one batch and return a durable, deterministic acknowledgement.
+
+    ``late_event_grace_seconds`` (C-02): events anchored on an ``ENDED`` session
+    are still stored when the capability verifies for that session's
+    enrollment and study (the session binding is relaxed, so the client's
+    *next* session capability may deliver the previous session's tail) and
+    each event occurred no later than ``closed_at + grace``; later events are
+    rejected ``SESSION_TERMINAL``. ``REVOKED`` sessions reject everything.
+    """
     server_time = _now(now)
 
     # Retry of an already-received batch returns the immutable receipt, but only
@@ -433,6 +493,7 @@ def ingest_batch(
             ),
             server_time=server_time,
             retry_hint=retry_hint,
+            session_resolver=session_resolver,
         )
 
     if len(request.events) > max_events:
@@ -502,14 +563,24 @@ def ingest_batch(
             ),
             server_time=server_time,
             retry_hint=retry_hint,
+            session_resolver=session_resolver,
         )
 
+    late_deadline = _late_acceptance_deadline(session, late_event_grace_seconds)
     verification = capability_verifier(
         request.session_capability,
         now=server_time,
         current_revocation_epoch=enrollment.revocation_epoch,
         expected_enrollment_id=context.enrollment_id,
-        expected_research_session_id=context.research_session_id,
+        # A terminal session's events are delivered under the enrollment's
+        # next session capability: bind to enrollment + study, not to the
+        # ended/revoked session. For an ENDED session that admits the tail
+        # within the grace window; for a REVOKED one it makes the refusal the
+        # permanent SESSION_TERMINAL below instead of a retryable capability
+        # mismatch the client would retry forever, starving every later batch.
+        expected_research_session_id=(
+            None if _is_terminal(session) else context.research_session_id
+        ),
         expected_study_id=context.study_id,
     )
     if not verification.ok:
@@ -550,30 +621,50 @@ def ingest_batch(
             retry_hint=retry_hint,
         )
 
+    events: Sequence[CanonicalEventV1] = request.events
+    late_rejected: list[EventAck] = []
     if _is_terminal(session):
-        # ENDED/REVOKED sessions are terminal: no later event is ever stored.
-        return _reject_all(
-            store,
-            request.batch_id,
-            request.events,
-            server_time,
-            IngestionReasonCode.SESSION_TERMINAL,
-            disposition=EventDisposition.REJECTED,
-            enrollment_id=context.enrollment_id,
-            research_session_id=context.research_session_id,
-            retry_hint=retry_hint,
-        )
+        if late_deadline is None:
+            # REVOKED (or an ENDED session with no close time): no later event
+            # is ever stored.
+            return _reject_all(
+                store,
+                request.batch_id,
+                request.events,
+                server_time,
+                IngestionReasonCode.SESSION_TERMINAL,
+                disposition=EventDisposition.REJECTED,
+                enrollment_id=context.enrollment_id,
+                research_session_id=context.research_session_id,
+                retry_hint=retry_hint,
+            )
+        # ENDED: the tail up to the grace deadline is an ordinary fact of that
+        # session; anything later is terminally rejected per event.
+        in_grace: list[CanonicalEventV1] = []
+        for event in request.events:
+            if _occurred_within(event, late_deadline):
+                in_grace.append(event)
+            else:
+                late_rejected.append(
+                    EventAck(
+                        event_id=event.event_id,
+                        disposition=EventDisposition.REJECTED,
+                        reason=IngestionReasonCode.SESSION_TERMINAL,
+                    )
+                )
+        events = in_grace
 
     return _ingest_authorized_events(
         store,
         batch_id=request.batch_id,
-        events=request.events,
+        events=events,
         context=context,
         telemetry_schema_version=request.telemetry_schema_version,
         server_time=server_time,
         continuity_required=continuity_required,
         retry_hint=retry_hint,
         privacy_policy=privacy_policy_resolver(enrollment) if privacy_policy_resolver else PrivacyPolicy.default(),
+        pre_rejected=late_rejected,
     )
 
 
@@ -588,8 +679,13 @@ def _ingest_authorized_events(
     continuity_required: bool,
     retry_hint: int,
     privacy_policy: Optional[PrivacyPolicy] = None,
+    pre_rejected: Sequence[EventAck] = (),
 ) -> TelemetryBatchAckV1:
     """Persist already-authorized events with the HTTP route's exact semantics.
+
+    ``pre_rejected`` carries per-event rejections the caller already decided
+    (an ENDED session's events past the late-acceptance deadline); they join
+    the receipt so the client discards exactly those ids.
 
     Shared by the participant upload route and the server-authorized internal
     entry point: identical per-event validation, digest/uniqueness handling,
@@ -599,7 +695,7 @@ def _ingest_authorized_events(
     """
     accepted: list[EventAck] = []
     duplicate: list[EventAck] = []
-    rejected: list[EventAck] = []
+    rejected: list[EventAck] = list(pre_rejected)
     retryable: list[EventAck] = []
     diagnostics: dict[str, str] = {}
     candidates: list[tuple[CanonicalEventV1, str]] = []

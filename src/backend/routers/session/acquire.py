@@ -118,6 +118,7 @@ def acquire_session(
             value=session_token,
             httponly=True,
             samesite="lax",
+            secure=app.get_config().cookie_secure,
             expires=config.session_token_expires_in_seconds,
         )
         return response_obj

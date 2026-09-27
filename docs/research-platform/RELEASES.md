@@ -165,6 +165,36 @@ runtime defaults). A value joins the configuration digest, the study snapshot,
 profiles, digests, frozen studies and run policies are unchanged. When a profile
 sets `commands_allowlist`, a user's config-row allowlist can only narrow it.
 
+## Emitter-sequence uniqueness dropped (production-readiness C-01)
+
+Alembic revision `b7c1d2e3f4a5` (after `8a0084080b46`) drops the unique
+constraint `uq_research_event_session_emitter_sequence` on `research_event` and
+replaces it with the plain index `idx_research_event_session_emitter_sequence`.
+An emitter whose counter restarts inside a live session (an IDE restart, a
+re-launched proxy) reused `(session, emitter, sequence)` and the constraint made
+ingestion reject, and the client delete, the later facts. Identity is
+`event_id` + digest; overlaps are surfaced as `EVENT_SEQUENCE_GAP` coverage
+diagnostics.
+
+`migration_manager.py migrate` applies it. For a database not tracked by
+Alembic, run the equivalent by hand:
+
+```sql
+ALTER TABLE public.research_event DROP CONSTRAINT IF EXISTS uq_research_event_session_emitter_sequence;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_research_event_session_emitter_sequence
+    ON public.research_event (research_session_id, emitter_id, emitter_sequence);
+```
+
+The `DROP CONSTRAINT` takes a brief exclusive lock; `CONCURRENTLY` keeps event
+inserts flowing while the index builds (the Alembic revision builds it inside
+its transaction, which blocks inserts for the few seconds a study-sized table
+needs). Plan either for a quiet moment. The same
+release also stores the tail of an ended session (events up to
+`TELEMETRY_LATE_EVENT_GRACE_SECONDS`, default 900 s, after `closed_at`, under
+the enrollment's next session capability) and closes an idle-expired context
+session at bootstrap/session create instead of reusing it; neither needs a
+schema change.
+
 ## Participant inference budgets (shared provider key)
 
 Goose and built-in (`code4me2-agent`) study arms now spend from the study's
