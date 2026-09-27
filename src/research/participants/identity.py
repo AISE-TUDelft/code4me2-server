@@ -7,7 +7,9 @@ here are:
 * Telemetry is accepted only for an ``ACTIVE`` enrollment; every other state
   (including unknown/absent) fails closed.
 * Consent is a single acceptance recorded once at join (``consent_accepted_at``):
-  there is no document identity, re-consent or withdrawal.
+  there is no document identity or re-consent. A participant withdraws by
+  opting the account out of data collection, which ends the enrollment as
+  ``WITHDRAWN``.
 * One account has at most one ACTIVE enrollment across the platform.
 * A study that ends marks its enrollments ``COMPLETED`` and bumps the revocation
   epoch so previously issued capabilities stop working.
@@ -759,7 +761,11 @@ def lock_enrollment(
 
 
 def revoke_active_sessions(
-    session: Session, enrollment_id: uuid.UUID, *, now: datetime
+    session: Session,
+    enrollment_id: uuid.UUID,
+    *,
+    now: datetime,
+    evidence_ref: str = "study_end",
 ) -> int:
     """Mark every non-terminal session of an enrollment ``REVOKED``.
 
@@ -781,7 +787,7 @@ def revoke_active_sessions(
             occurred_at=now,
             reason=SessionReasonCode.REVOKED,
             close_reason=CloseReason.REVOKED,
-            evidence_ref="study_end",
+            evidence_ref=evidence_ref,
         )
         existing = row.transitions_json
         serialized = list(existing) if isinstance(existing, list) else []
@@ -818,6 +824,48 @@ def complete_enrollments_for_study(
         session.add(row)
     session.commit()
     return len(rows)
+
+
+def withdraw_active_enrollments(
+    session: Session, account_id: uuid.UUID, *, now: Optional[datetime] = None
+) -> list[uuid.UUID]:
+    """End the account's ACTIVE enrollment as ``WITHDRAWN`` (participant opt-out).
+
+    Mirrors the study-end transition: the revocation epoch is bumped so
+    previously issued capabilities are rejected, the sticky assignment is marked
+    withdrawn and every non-terminal session is revoked. Does not commit, so the
+    withdrawal joins the caller's transaction. Returns the withdrawn enrollment
+    ids (empty when nothing was active).
+    """
+    participant = lock_participant_by_account(session, account_id)
+    if participant is None:
+        return []
+    timestamp = _now(now)
+    statement = select(ResearchEnrollment).where(
+        ResearchEnrollment.participant_id == participant.participant_id,
+        ResearchEnrollment.status == EnrollmentStatus.ACTIVE.value,
+    ).with_for_update()
+    rows = list(session.execute(statement).scalars().all())
+    for row in rows:
+        revoke_active_sessions(
+            session,
+            row.enrollment_id,
+            now=timestamp,
+            evidence_ref="participant_withdrawal",
+        )
+        row.status = EnrollmentStatus.WITHDRAWN.value
+        row.revocation_epoch = int(row.revocation_epoch or 0) + 1
+        row.updated_at = timestamp
+        session.add(row)
+        assignments = session.execute(
+            select(StudyAssignment).where(
+                StudyAssignment.enrollment_id == row.enrollment_id
+            )
+        ).scalars().all()
+        for assignment in assignments:
+            assignment.status = EnrollmentStatus.WITHDRAWN.value
+            session.add(assignment)
+    return [row.enrollment_id for row in rows]
 
 
 def _enqueue_retention_row(
@@ -859,6 +907,32 @@ def _retention_evidence_payload(
     }
 
 
+def deletion_ledger_record(
+    entry: DeletionLedgerEntry,
+    *,
+    study_id: Optional[uuid.UUID] = None,
+    reason: Optional[str] = None,
+) -> ResearchRecord:
+    """Build the ``research_record`` row for one deletion ledger entry.
+
+    The row is content-free: the enrollment id, counts, an evidence digest and
+    an optional machine-readable ``reason``. It never names the account.
+    """
+    payload = _retention_evidence_payload(LEDGER_AUDIT_ACTION, entry)
+    if reason is not None:
+        payload["reason"] = reason
+    return ResearchRecord(
+        record_id=entry.ledger_id,
+        kind=RECORD_KIND_RETENTION_EVIDENCE,
+        scope_type="enrollment",
+        scope_id=entry.enrollment_id,
+        study_id=study_id,
+        actor=None,
+        occurred_at=entry.applied_at,
+        payload_json=payload,
+    )
+
+
 def insert_deletion_ledger(
     session: Session, entry: DeletionLedgerEntry
 ) -> DeletionLedgerEntry:
@@ -868,17 +942,7 @@ def insert_deletion_ledger(
     (``kind = RETENTION_EVIDENCE``) and, when a retention job exists for
     ``(enrollment, action)``, merged into its ``evidence_json``.
     """
-    row = ResearchRecord(
-        record_id=entry.ledger_id,
-        kind=RECORD_KIND_RETENTION_EVIDENCE,
-        scope_type="enrollment",
-        scope_id=entry.enrollment_id,
-        study_id=None,
-        actor=None,
-        occurred_at=entry.applied_at,
-        payload_json=_retention_evidence_payload(LEDGER_AUDIT_ACTION, entry),
-    )
-    session.add(row)
+    session.add(deletion_ledger_record(entry))
     _merge_job_evidence(
         session,
         enrollment_id=entry.enrollment_id,

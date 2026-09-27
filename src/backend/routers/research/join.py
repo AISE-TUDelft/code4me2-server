@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from App import App
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.analytics.auth_utils import AuthenticatedUser, get_current_user
+from privacy import collection
 from research.study.lifecycle import (
     AlreadyEnrolledError,
     ActiveEnrollmentError,
@@ -186,6 +187,16 @@ def redeem_join_code(
         )
     db = app.get_db_session()
     try:
+        # Joining and opting out serialize on the account row: this share lock is
+        # held until the enrollment commits, and an opt-out updates that row.
+        if not collection.lock_collection_allowed(db, current_user.user_id):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DATA_COLLECTION_OPTED_OUT",
+                    "message": "you have opted out of data collection; turn it back on to join a study",
+                },
+            )
         try:
             result = open_study_enrollment(db, current_user.user_id, payload.join_code)
         except StudyStoppedError as error:

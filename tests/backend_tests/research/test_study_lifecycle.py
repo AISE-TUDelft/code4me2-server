@@ -260,6 +260,9 @@ def test_join_consent_route_returns_atomic_enrollment_assignment_result():
     )
     with patch(
         "backend.routers.research.join.open_study_enrollment", return_value=result
+    ), patch(
+        # An account that has not opted out of data collection.
+        "backend.routers.research.join.collection.lock_collection_allowed", return_value=True
     ):
         response = redeem_join_code(
             JoinRequestBody(join_code="JOIN-1234", accept_consent=True),

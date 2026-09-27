@@ -7,12 +7,55 @@ ground truth records. All tasks use database transactions with automatic rollbac
 on errors and follow a consistent pattern for data validation and persistence.
 """
 
+import uuid
+
+from celery.exceptions import Ignore
+
 import Queries
 from App import App
 from backend.email_utils import send_reset_password_email, send_verification_email
 from celery_app.celery_app import celery
 from database import crud
+from privacy import collection
 from utils import create_uuid
+
+
+def _stop_unless_collecting(db, query) -> None:
+    """
+    Stop the chain if the account opted out after its request was accepted.
+
+    The request's context and telemetry rows (stored by the chain's first step)
+    are discarded, and Ignore keeps the rest of the chain, including the
+    generations, from running.
+    """
+    if collection.discard_if_opted_out(
+        db,
+        query.user_id,
+        context_id=query.context_id,
+        contextual_telemetry_id=query.contextual_telemetry_id,
+        behavioral_telemetry_id=query.behavioral_telemetry_id,
+    ):
+        db.commit()
+        raise Ignore()
+
+
+def _query_owner_collecting(db, meta_query_id) -> bool:
+    """
+    Whether a row that hangs off a stored query (generation, feedback) may be written.
+
+    False when the query is gone (erased meanwhile) or its account opted out, so
+    the task skips instead of failing a foreign key or storing after an opt-out.
+    The opt-out is decided under the account-row lock; a query erased between
+    the read and the lock still makes the insert fail its foreign key.
+    """
+    if meta_query_id is None:
+        return False
+    query = crud.get_meta_query_by_id(db, uuid.UUID(str(meta_query_id)))
+    return (
+        query is not None
+        and query.user_id is not None
+        and collection.lock_collection_allowed(db, query.user_id)
+    )
 
 
 @celery.task
@@ -122,6 +165,7 @@ def add_completion_query_task(query_data: dict, query_id: str = None):  # type: 
     with App.get_instance().get_db_session() as db:
         try:
             query_query = Queries.CreateCompletionQuery(**query_data)
+            _stop_unless_collecting(db, query_query)
             crud.create_completion_query(db=db, query=query_query, id=query_id)
         except Exception:
             db.rollback()
@@ -148,6 +192,7 @@ def add_chat_query_task(query_data: dict, query_id: str = None):  # type: ignore
     with App.get_instance().get_db_session() as db:
         try:
             query_query = Queries.CreateChatQuery(**query_data)
+            _stop_unless_collecting(db, query_query)
             crud.create_chat_query(db=db, query=query_query, id=query_id)
         except Exception:
             db.rollback()
@@ -174,7 +219,11 @@ def get_or_create_chat_task(chat_data: dict, chat_id: str = None):  # type: igno
     with App.get_instance().get_db_session() as db:
         try:
             chat_query = Queries.CreateChat(**chat_data)
-            crud.create_chat(db=db, chat=chat_query, chat_id=chat_id)
+            # An opted-out account gets no chat row; the chain goes on to the
+            # chat query, which discards the request's other rows. The lock
+            # keeps an erase from slipping in before the chat row commits.
+            if collection.lock_collection_allowed(db, chat_query.user_id):
+                crud.create_chat(db=db, chat=chat_query, chat_id=chat_id)
         except Exception:
             db.rollback()
             raise
@@ -200,7 +249,8 @@ def add_generation_task(generation_data: dict, generation_id: str = None):  # ty
     with App.get_instance().get_db_session() as db:
         try:
             generation_query = Queries.CreateGeneration(**generation_data)
-            crud.create_generation(db=db, generation=generation_query, id=generation_id)
+            if _query_owner_collecting(db, generation_id):
+                crud.create_generation(db=db, generation=generation_query, id=generation_id)
         except Exception:
             db.rollback()
             raise
@@ -227,9 +277,10 @@ def update_generation_task(query_id: str, model_id: int, generation_data: dict):
     with App.get_instance().get_db_session() as db:
         try:
             generation_query = Queries.UpdateGeneration(**generation_data)
-            crud.update_generation(
-                db=db, query_id=query_id, model_id=model_id, generation=generation_query
-            )
+            if _query_owner_collecting(db, query_id):
+                crud.update_generation(
+                    db=db, query_id=query_id, model_id=model_id, generation=generation_query
+                )
         except Exception:
             db.rollback()
             raise
@@ -254,7 +305,8 @@ def add_ground_truth_task(ground_truth_data: dict):
     with App.get_instance().get_db_session() as db:
         try:
             ground_truth_query = Queries.CreateGroundTruth(**ground_truth_data)
-            crud.create_ground_truth(db=db, ground_truth=ground_truth_query)
+            if _query_owner_collecting(db, ground_truth_query.completion_query_id):
+                crud.create_ground_truth(db=db, ground_truth=ground_truth_query)
         except Exception:
             db.rollback()
             raise

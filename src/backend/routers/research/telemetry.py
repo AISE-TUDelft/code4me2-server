@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from App import App
 from backend.Responses import JsonResponseWithStatus
 from database.db_schemas import ResearchStudyStatus, Study as StudyRow
+from privacy import collection
 from research.participants.enums import EnrollmentStatus
 from backend.routers.analytics.auth_utils import (
     AuthenticatedUser,
@@ -238,7 +239,12 @@ def submit_telemetry_batch(
         # ACP-proxied runs carry an agent_run_id but no task: materialize the
         # linkable agent_task the dashboards join on. This is idempotent and
         # never changes the ack or the accepted facts.
-        ensure_agent_tasks_for_ack(db, payload, ack)
+        ensure_agent_tasks_for_ack(
+            db,
+            payload,
+            ack,
+            before_create=lambda account_id: collection.lock_account(db, account_id),
+        )
         return JsonResponseWithStatus(
             status_code=200, content=ack.model_dump(mode="json")
         )

@@ -423,6 +423,11 @@ CREATE INDEX IF NOT EXISTS idx_meta_query_session_id ON public.meta_query (sessi
 CREATE INDEX IF NOT EXISTS idx_meta_query_type ON public.meta_query (query_type);
 CREATE INDEX IF NOT EXISTS idx_meta_query_timestamp ON public.meta_query ("timestamp");
 CREATE INDEX IF NOT EXISTS idx_meta_query_timestamp_type ON public.meta_query ("timestamp", query_type);
+-- The context and telemetry foreign keys: deleting a context/telemetry row
+-- (account erasure) checks meta_query for references, which scans without these.
+CREATE INDEX IF NOT EXISTS idx_meta_query_context_id ON public.meta_query (context_id) WHERE context_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_meta_query_contextual_telemetry_id ON public.meta_query (contextual_telemetry_id) WHERE contextual_telemetry_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_meta_query_behavioral_telemetry_id ON public.meta_query (behavioral_telemetry_id) WHERE behavioral_telemetry_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_chat_query_chat_id ON public.chat_query (chat_id);
 

@@ -29,6 +29,7 @@ from App import App
 from backend.routers.agent.consent import resolve_store_agent_content
 from backend.routers.research import access
 from database import crud
+from privacy import collection
 from research.budget.meter import InferenceMeter
 from research.study.agents.enums import METERED_FRAMEWORKS
 from research.telemetry.adapters import LegacyFact, record_legacy_facts
@@ -173,6 +174,11 @@ def create_agent_task(
                 detail="No active agent profiles are configured on the server",
             )
         profile = assignment.profile
+        # Serialize with a concurrent erase: from here to the task insert nothing
+        # commits (the assignment lookup above may, on first use), so a task either
+        # commits before the erase (and is erased with the rest) or waits for it and
+        # then sees the opt-out.
+        collection.lock_account(db, session.user_id)
 
         # task_description is the user's own words — content, so honour the
         # consent gate even at creation time. The research enrollment gate is

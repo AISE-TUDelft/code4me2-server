@@ -30,6 +30,16 @@ class TestCompletionFeedback:
             client.cookies.set("project_token", "valid_project_token")
             yield client
 
+    @pytest.fixture(autouse=True)
+    def collecting_account(self):
+        # These cases exercise an account that allows data collection; the
+        # opted-out case patches the gate itself.
+        with patch(
+            "backend.routers.completion.feedback.collection.is_collection_allowed",
+            return_value=True,
+        ) as gate:
+            yield gate
+
     @pytest.fixture(scope="function")
     def completion_feedback(self):
         return Queries.FeedbackCompletion.fake(
@@ -37,7 +47,7 @@ class TestCompletionFeedback:
             ground_truth="def actual_implementation():\n    return 42",
         )
 
-    def setup_redis_and_db(self, client, user_id="test_user"):
+    def setup_redis_and_db(self, client, user_id="00000000-0000-4000-8000-000000000001"):
         mock_redis = MagicMock()
         client.mock_app.get_redis_manager.return_value = mock_redis
         mock_redis.get.side_effect = lambda prefix, token: {
@@ -109,9 +119,9 @@ class TestCompletionFeedback:
 
     @patch("backend.routers.completion.feedback.crud")
     def test_feedback_no_access(self, mock_crud, client, completion_feedback):
-        self.setup_redis_and_db(client, user_id="wrong_user")
+        self.setup_redis_and_db(client, user_id=str(uuid.uuid4()))
 
-        mock_query = MagicMock(user_id="different_user")
+        mock_query = MagicMock(user_id=str(uuid.uuid4()))
         mock_crud.get_meta_query_by_id.return_value = mock_query
 
         response = client.post(
@@ -168,3 +178,26 @@ class TestCompletionFeedback:
         }
         response = client.post("/api/completion/feedback/", json=invalid)
         assert response.status_code == 422
+
+    @patch("backend.routers.completion.feedback.db_tasks")
+    @patch("backend.routers.completion.feedback.crud")
+    def test_feedback_is_not_stored_for_an_opted_out_account(
+        self, mock_crud, mock_db_tasks, client, completion_feedback, collecting_account
+    ):
+        mock_user_id = str(uuid.uuid4())
+        self.setup_redis_and_db(client, user_id=mock_user_id)
+        collecting_account.return_value = False
+
+        response = client.post(
+            "/api/completion/feedback/",
+            json=completion_feedback.dict(),
+        )
+
+        assert response.status_code == 200
+        assert "not stored" in response.json()["message"]
+        assert response.json()["data"]["meta_query_id"] == str(completion_feedback.meta_query_id)
+        collecting_account.assert_called_once()
+        assert collecting_account.call_args.args[1] == uuid.UUID(mock_user_id)
+        mock_crud.get_meta_query_by_id.assert_not_called()
+        mock_db_tasks.update_generation_task.apply_async.assert_not_called()
+        mock_db_tasks.add_ground_truth_task.apply_async.assert_not_called()

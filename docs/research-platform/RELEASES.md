@@ -274,3 +274,46 @@ row on its provider connection refuses every call with `503 price_missing`.
 Until both are configured, Goose and built-in arms receive `402 quota_exhausted`
 or `503 price_missing` and spend nothing. Codex arms are unaffected: they sign in
 with ChatGPT and are not metered.
+
+## Self-service privacy controls (GDPR)
+
+Every account can now opt out of data collection and erase what Code4Me
+collected about it, from the website ("Privacy & data") or the plugin
+(`GET /api/user/privacy`, `PUT /api/user/privacy/collection`,
+`POST /api/user/privacy/erase`). The opt-out is stored in a new account column
+that only these endpoints write:
+
+```sql
+ALTER TABLE public."user" ADD COLUMN IF NOT EXISTS data_collection_opted_out_at TIMESTAMPTZ NULL;
+```
+
+The column is part of the consolidated revision, so a fresh database gets it; a
+database already at that revision needs the statement above before the new
+backend starts, or every account query fails with an undefined-column error. It
+is nullable and the previous code ignores it, so it is safe to add while the old
+backend is still running.
+
+Erasing an account deletes its context and telemetry rows, and each delete
+checks `meta_query` for references. `init.sql` now indexes those foreign keys; an
+existing database should add the indexes (without them an erase scans
+`meta_query` once per deleted row, which takes minutes on a large table):
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_meta_query_context_id ON public.meta_query (context_id) WHERE context_id IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_meta_query_contextual_telemetry_id ON public.meta_query (contextual_telemetry_id) WHERE contextual_telemetry_id IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_meta_query_behavioral_telemetry_id ON public.meta_query (behavioral_telemetry_id) WHERE behavioral_telemetry_id IS NOT NULL;
+```
+
+A concurrent build that fails leaves an invalid index under that name, which a
+re-run then skips. Check with
+`SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;` and drop and
+re-create any of the three it lists.
+
+While an account is opted out the server stores nothing about its completion,
+chat and feedback requests, denies agent content and agent memory, never flushes
+its project context, and refuses study joins; opting out withdraws an active
+enrollment (new status `WITHDRAWN`). Erasing deletes the account's classic, agent and
+research data in one transaction and leaves one content-free deletion-ledger
+record per erased enrollment. `DELETE /api/user/delete` now always erases the
+data (`delete_data` is ignored), revokes the account's tokens, and refuses with
+`409` an account that owns research studies or agent profiles.

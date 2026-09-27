@@ -112,6 +112,12 @@ class DeleteUserError(ErrorResponse):
     message: str = Field(default="Server failed to delete the user!")
 
 
+class DeleteUserBlockedError(ErrorResponse):
+    message: str = Field(
+        default="This account owns research studies or agent profiles, so it cannot delete itself."
+    )
+
+
 class InvalidOrExpiredSessionToken(ErrorResponse):
     message: str = Field(
         default="Session not found! You are not authenticated or your session has expired. "

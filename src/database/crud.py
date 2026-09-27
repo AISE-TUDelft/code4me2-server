@@ -188,88 +188,16 @@ def update_user(
 
 
 def delete_user_by_id(db: Session, user_id: uuid.UUID) -> bool:
+    """Delete only the account row.
+
+    Not for user-initiated deletion: it leaves collected data behind and cascades
+    into studies the account owns. Use ``privacy.erasure.delete_account``.
+    """
     result = (
         db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
     )
     db.commit()
     return result > 0
-
-
-def delete_user_full_wipe_out(db: Session, user_id: uuid.UUID):
-    meta_queries = (
-        db.query(db_schemas.MetaQuery)
-        .filter(db_schemas.MetaQuery.user_id == user_id)
-        .all()
-    )
-    db.query(db_schemas.MetaQuery).filter(
-        db_schemas.MetaQuery.user_id == user_id
-    ).delete()
-    project_users = (
-        db.query(db_schemas.ProjectUser)
-        .filter(db_schemas.ProjectUser.user_id == user_id)
-        .all()
-    )
-    # TODO: Is not fully tested yet because in current settings the frontend doesn't support multi user project edit
-    for project_user in project_users:
-        project_context_should_be_deleted = True
-        project_should_be_deleted = True
-        common_project_users = (
-            db.query(db_schemas.ProjectUser)
-            .filter(db_schemas.ProjectUser.project_id == project_user.project_id)
-            .all()
-        )
-        # Check if there exists another user working on this project don't delete this project as a whole
-        if len(common_project_users) > 1:
-            project_should_be_deleted = False
-        # Check if there exists a user who has agreed to store context on the same project keep the context
-        for common_project_user in common_project_users:
-            common_user = (
-                db.query(db_schemas.User)
-                .filter(db_schemas.User.user_id == common_project_user.user_id)
-                .first()
-            )
-            if common_user and json.loads(common_user.preference).get(
-                "store_context", False
-            ):
-                project_context_should_be_deleted = False
-                break
-        if project_should_be_deleted:
-            db.query(db_schemas.Project).filter(
-                db_schemas.Project.project_id == project_user.project_id
-            ).delete()
-        elif project_context_should_be_deleted:
-            db.query(db_schemas.Project).filter(
-                db_schemas.Project.project_id == project_user.project_id
-            ).update({"multi_file_contexts": "{}", "multi_file_context_changes": "{}"})
-
-    db.query(db_schemas.ProjectUser).filter(
-        db_schemas.ProjectUser.user_id == user_id
-    ).delete()
-    db.query(db_schemas.Context).filter(
-        db_schemas.Context.context_id.in_(
-            list(map(lambda x: x.context_id, meta_queries))
-        )
-    ).delete()
-    db.query(db_schemas.BehavioralTelemetry).filter(
-        db_schemas.BehavioralTelemetry.behavioral_telemetry_id.in_(
-            list(map(lambda x: x.behavioral_telemetry_id, meta_queries))
-        )
-    ).delete()
-    db.query(db_schemas.ContextualTelemetry).filter(
-        db_schemas.ContextualTelemetry.contextual_telemetry_id.in_(
-            list(map(lambda x: x.contextual_telemetry_id, meta_queries))
-        )
-    ).delete()
-
-    db.query(db_schemas.Session).filter(db_schemas.Session.user_id == user_id).delete()
-    db.query(db_schemas.Chat).filter(db_schemas.Chat.user_id == user_id).delete()
-    db.query(db_schemas.HadGeneration).filter(
-        db_schemas.HadGeneration.meta_query_id.in_(
-            list(map(lambda x: x.meta_query_id, meta_queries))
-        )
-    ).delete()
-    db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
-    db.commit()
 
 
 # Context Operations

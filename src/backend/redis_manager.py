@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 import database.crud as crud
 import Queries
 from backend.utils import recursive_json_loads
+from privacy.collection import lock_context_storage_allowed
 
 
 class RedisManager:
@@ -18,6 +19,15 @@ class RedisManager:
     RedisManager handles authentication and session state for users using Redis as a fast-access store.
     It manages auth_token -> { user_id, session_token } pairs and ensures session lifecycle via Redis expiration.
     """
+
+    # Token types whose payload names the owning account in ``user_id``.
+    USER_SCOPED_TOKEN_TYPES = (
+        "auth_token",
+        "acp_grant",
+        "acp_session",
+        "email_verification",
+        "password_reset",
+    )
 
     def __init__(
         self,
@@ -217,7 +227,10 @@ class RedisManager:
             if project_dict:
                 # Only proceed if no active session tokens remain for project token
                 if len(project_dict.get("session_tokens", [])) == 0:
-                    if self.store_multi_file_context_on_db:
+                    # A context erased during this session is never written back.
+                    if self.store_multi_file_context_on_db and not self.__redis_client.exists(
+                        f"context_erased:{token}"
+                    ):
                         multi_file_contexts = project_dict.get(
                             "multi_file_contexts", {}
                         )
@@ -225,16 +238,15 @@ class RedisManager:
                             "multi_file_context_changes", {}
                         )
 
-                        # Verify all users allow storing context before persisting
+                        # Verify all users allow storing context (and have not
+                        # opted out of data collection) before persisting. The
+                        # locked reads keep a concurrent erase from clearing the
+                        # project before this write lands.
                         project_users = crud.get_project_users(db_session, token)
-                        allowed_to_store_context = True
-                        for user_project in project_users:
-                            user = crud.get_user_by_id(db_session, user_project.user_id)
-                            if user and not json.loads(user.preference).get(
-                                "store_context", False
-                            ):
-                                allowed_to_store_context = False
-                                break
+                        allowed_to_store_context = all(
+                            lock_context_storage_allowed(db_session, user_project.user_id)
+                            for user_project in project_users
+                        )
                         if allowed_to_store_context:
                             crud.update_project(
                                 db_session,
@@ -244,11 +256,67 @@ class RedisManager:
                                     multi_file_context_changes=multi_file_context_changes,
                                 ),
                             )
-                    # Delete project token from Redis
-                    self.__redis_client.delete(key)
+                    # Delete project token (and any erase marker) from Redis
+                    self.__redis_client.delete(key, f"context_erased:{token}")
         else:
             # For other token types, just delete the key
             self.__redis_client.delete(key)
+
+    def mark_context_erased(self, user_id: str) -> None:
+        """
+        Keep the account's live project context from being flushed to the database.
+        An erase clears the stored context, but the live session goes on serving
+        from Redis; without this marker that (pre-erase) context would be written
+        back when the session ends, even if the account opts back in meanwhile.
+        """
+        user_info = self.get("user_token", user_id) or {}
+        session_info = self.get("session_token", user_info.get("session_token")) or {}
+        for project_token in session_info.get("project_tokens", []):
+            # A key of its own: the project entry is rewritten on every context
+            # update, which would race a read-modify-write marker.
+            self.__redis_client.set(f"context_erased:{project_token}", "1")
+
+    def revoke_user_tokens(self, user_id: str) -> None:
+        """
+        Invalidate every credential and session of an account, persisting nothing.
+        Used once the account is deleted: unlike delete(), which flushes session and
+        project state to the database, this only removes keys.
+        """
+        for type in self.USER_SCOPED_TOKEN_TYPES:
+            for key in self.__redis_client.scan_iter(match=f"{type}:*"):
+                data = self.__redis_client.get(key)
+                info = recursive_json_loads(data) if data else None
+                if isinstance(info, dict) and str(info.get("user_id")) == user_id:
+                    token = key.split(":", 1)[1]
+                    self.__redis_client.delete(key, f"{type}_hook:{token}")
+
+        user_info = self.get("user_token", user_id)
+        self.__redis_client.delete(f"user_token:{user_id}")
+        session_token = (user_info or {}).get("session_token")
+        if not session_token:
+            return
+        session_info = self.get("session_token", session_token) or {}
+        self.__redis_client.delete(
+            f"session_token:{session_token}", f"session_token_hook:{session_token}"
+        )
+        # Detach the session from its projects; a project left without sessions
+        # is dropped without flushing its context to the database.
+        for project_token in session_info.get("project_tokens", []):
+            project_info = self.get("project_token", project_token)
+            if not project_info:
+                continue
+            remaining = [
+                token
+                for token in project_info.get("session_tokens", [])
+                if token != session_token
+            ]
+            if remaining:
+                project_info["session_tokens"] = remaining
+                self.set("project_token", project_token, project_info)
+            else:
+                self.__redis_client.delete(
+                    f"project_token:{project_token}", f"context_erased:{project_token}"
+                )
 
     def listen_for_expired_keys(self, session_factory):
         """

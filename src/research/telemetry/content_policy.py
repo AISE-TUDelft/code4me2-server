@@ -34,6 +34,7 @@ from research.telemetry.privacy import PrivacyPolicy
 
 __all__ = [
     "ContentPolicyDecision",
+    "DENY_DATA_COLLECTION_OPTED_OUT",
     "DENY_LEGACY_PREFERENCE",
     "DENY_NO_ACTIVE_ENROLLMENT",
     "DENY_NO_PARTICIPANT",
@@ -54,6 +55,8 @@ DENY_STUDY_UNAVAILABLE = "STUDY_UNAVAILABLE"
 DENY_POLICY_MALFORMED = "POLICY_MALFORMED"
 DENY_POLICY_DENIES_CONTENT = "POLICY_DENIES_CONTENT"
 DENY_LEGACY_PREFERENCE = "LEGACY_PREFERENCE_DENIED"
+# The account withdrew consent (``privacy.collection``); overrides study policy.
+DENY_DATA_COLLECTION_OPTED_OUT = "DATA_COLLECTION_OPTED_OUT"
 
 
 @dataclass(frozen=True)

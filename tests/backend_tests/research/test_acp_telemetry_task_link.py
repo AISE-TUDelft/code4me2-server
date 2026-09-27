@@ -20,6 +20,7 @@ from sqlalchemy import text
 from backend.routers.research.bootstrap import BOOTSTRAP_SIGNING_SECRET
 from research.analysis.read_models.dashboard import agent_overview
 from research.runtime.bootstrap.service import BootstrapSigningContext
+from privacy import collection
 
 from .test_study_lifecycle_bootstrap_session_telemetry_http import (  # noqa: F401
     _owner,
@@ -184,22 +185,25 @@ def test_accepted_agent_run_creates_one_task_and_is_visible_to_owner(http_runtim
     run_id = f"acp-run-{uuid.uuid4().hex}"
     event_id = str(uuid.uuid4())
 
-    first = _post_batch(
-        client,
-        ctx,
-        batch_id=str(uuid.uuid4()),
-        events=[
-            _run_event(
-                ctx,
-                event_id=event_id,
-                run_id=run_id,
-                emitter_id="acp-emitter",
-                payload={"session_id": "acp-native-session"},
-            )
-        ],
-    )
+    # The task is created under the owner's account lock (serialized with an erase).
+    with patch.object(collection, "lock_account", wraps=collection.lock_account) as lock_account:
+        first = _post_batch(
+            client,
+            ctx,
+            batch_id=str(uuid.uuid4()),
+            events=[
+                _run_event(
+                    ctx,
+                    event_id=event_id,
+                    run_id=run_id,
+                    emitter_id="acp-emitter",
+                    payload={"session_id": "acp-native-session"},
+                )
+            ],
+        )
     assert first.status_code == 200, first.text
     assert [entry["event_id"] for entry in first.json()["accepted"]] == [event_id]
+    assert [str(call.args[1]) for call in lock_account.call_args_list] == [str(ctx["participant_id"])]
 
     rows = _tasks_for_run(session_factory, run_id)
     assert len(rows) == 1, "an accepted run must yield exactly one linkable task"
