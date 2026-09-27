@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import time
 import uuid
@@ -63,6 +64,78 @@ if TYPE_CHECKING:
 # Upstream request timeout. Agent turns with large contexts are slow, and a
 # premature timeout looks to the developer like the agent hung.
 _UPSTREAM_TIMEOUT_SECONDS = 120
+
+
+def _cap_responses_output_tokens(body: dict, configured_limit: str) -> Optional[int]:
+    """Apply an operator limit to non-OpenAI Responses requests, if configured.
+
+    Codex may advertise a very large default output budget. Some compatible
+    providers reject the request before generating anything when that budget
+    exceeds the account's available tokens. Never raise a caller's lower cap.
+    """
+    try:
+        limit = int(configured_limit)
+    except (TypeError, ValueError):
+        return None
+    if limit <= 0:
+        return None
+    requested = body.get("max_output_tokens")
+    if isinstance(requested, int) and not isinstance(requested, bool) and requested > 0:
+        body["max_output_tokens"] = min(requested, limit)
+    else:
+        body["max_output_tokens"] = limit
+    return body["max_output_tokens"]
+
+
+def _filter_chat_completion_tools(
+    body: dict, profile_tools_json: Optional[str]
+) -> tuple[list[str], int, int]:
+    """Enforce the frozen tool selection at the managed inference gateway.
+
+    An explicit empty profile is a no-tools arm. A missing/invalid selection
+    retains the legacy catalogue fallback for old profiles.
+    """
+    requested = body.get("tools", []) or []
+    names = [
+        tool.get("function", {}).get("name")
+        for tool in requested
+        if isinstance(tool, dict) and tool.get("function", {}).get("name")
+    ]
+    if not requested:
+        return names, 0, 0
+
+    profile_tools: Optional[set[str]] = None
+    if profile_tools_json is not None:
+        try:
+            parsed = json.loads(profile_tools_json)
+            if isinstance(parsed, list):
+                profile_tools = {str(item) for item in parsed}
+        except (json.JSONDecodeError, TypeError):
+            pass
+    allowlist = profile_tools if profile_tools is not None else KNOWN_AGENT_TOOLS
+    kept = []
+    for tool in requested:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("function", {}).get("name")
+        if name in allowlist or (
+            "mcp__*" in allowlist and isinstance(name, str) and name.startswith("mcp__")
+        ):
+            kept.append(tool)
+            sanitize_schema(tool.get("function", {}).get("parameters", {}))
+    if kept:
+        body["tools"] = kept
+    else:
+        body.pop("tools", None)
+        body.pop("tool_choice", None)
+    logging.info(
+        "[Agent/inference] tools — allowlist=%s requested=%s kept=%s stripped=%s",
+        "profile" if profile_tools is not None else "catalogue",
+        names,
+        len(kept),
+        len(requested) - len(kept),
+    )
+    return names, len(kept), len(requested) - len(kept)
 
 
 def _retry_after_seconds(headers: httpx.Headers, body: bytes) -> Optional[int]:
@@ -152,6 +225,11 @@ async def run_inference(
             "[Agent/inference] Responses API → non-OpenAI upstream, normalizing"
         )
         normalize_responses_api_body(openai_body)
+        capped = _cap_responses_output_tokens(
+            openai_body, os.getenv("AGENT_RESPONSES_MAX_OUTPUT_TOKENS", "")
+        )
+        if capped is not None:
+            logging.info("[Agent/inference] non-OpenAI Responses output cap=%s", capped)
 
     # Override the model with the task's assigned one. The agent sends whatever
     # its local config holds; the server decides authoritatively, from the
@@ -177,7 +255,7 @@ async def run_inference(
 
     streaming = bool(openai_body.get("stream", False))
     messages = openai_body.get("messages", []) or []
-    max_tokens = openai_body.get("max_tokens")
+    max_tokens = openai_body.get("max_output_tokens" if is_responses_api else "max_tokens")
     # The active file path is structural metadata, stored unconditionally.
     active_file: Optional[str] = enrichment.get("active_file")
     observed_framework: Optional[str] = enrichment.get("framework_version")
@@ -313,9 +391,9 @@ async def run_inference(
     # deliberately tool-free arm from one with a non-empty allowlist.
     experiment_tool_access_enabled = bool(original_tools)
     tool_names_requested = [
-        t.get("function", {}).get("name")
-        for t in original_tools
-        if isinstance(t, dict) and t.get("function", {}).get("name")
+        tool.get("function", {}).get("name")
+        for tool in original_tools
+        if isinstance(tool, dict) and tool.get("function", {}).get("name")
     ]
     tools_kept = 0
     tools_stripped = 0
@@ -325,44 +403,8 @@ async def run_inference(
         # Codex manages its own tool schemas for the Responses API — those are
         # passed through as-is (already normalized above where needed).
         #
-        # Distinguish "profile explicitly selected no tools" (tools_json="[]" →
-        # empty set, must yield zero tools) from "profile has no tool selection
-        # at all" (null/unset → None, falls back to the global catalogue). This
-        # distinction is what makes a no-tools A/B arm possible.
-        profile_tools: Optional[set[str]] = None
-        if profile_tools_json is not None:
-            try:
-                parsed = json.loads(profile_tools_json)
-                if isinstance(parsed, list):
-                    profile_tools = {str(t) for t in parsed}
-            except (json.JSONDecodeError, TypeError):
-                profile_tools = None
-        effective_allowlist = (
-            profile_tools if profile_tools is not None else KNOWN_AGENT_TOOLS
-        )
-        kept = []
-        for tool in original_tools:
-            tool_name = tool.get("function", {}).get("name")
-            if tool_name in effective_allowlist or (
-                "mcp__*" in effective_allowlist
-                and isinstance(tool_name, str)
-                and tool_name.startswith("mcp__")
-            ):
-                kept.append(tool)
-        tools_stripped = len(original_tools) - len(kept)
-        tools_kept = len(kept)
-        for tool in kept:
-            sanitize_schema(tool.get("function", {}).get("parameters", {}))
-        if kept:
-            openai_body["tools"] = kept
-        else:
-            openai_body.pop("tools", None)
-            openai_body.pop("tool_choice", None)
-        logging.info(
-            f"[Agent/inference] tools — allowlist="
-            f"{'profile' if profile_tools is not None else 'catalogue'} "
-            f"requested={tool_names_requested} kept={tools_kept} "
-            f"stripped={tools_stripped}"
+        tool_names_requested, tools_kept, tools_stripped = _filter_chat_completion_tools(
+            openai_body, profile_tools_json
         )
 
     # stream_options.include_usage is a Chat Completions extension and the only

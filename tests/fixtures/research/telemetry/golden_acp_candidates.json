@@ -31,22 +31,8 @@
       "coverage_state": "AVAILABLE"
     }
   ],
-  [
-    {
-      "event_type": "agent.message.started",
-      "fidelity": "normalized",
-      "mapping_rule_id": "acp.update.agent_message_chunk",
-      "coverage_state": "AVAILABLE"
-    }
-  ],
-  [
-    {
-      "event_type": "agent.message.started",
-      "fidelity": "normalized",
-      "mapping_rule_id": "acp.update.agent_thought_chunk",
-      "coverage_state": "AVAILABLE"
-    }
-  ],
+  [],
+  [],
   [
     {
       "event_type": "unknown_source_event",

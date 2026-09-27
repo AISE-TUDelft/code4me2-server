@@ -53,6 +53,9 @@ GOOSE_TOOLS: frozenset[str] = frozenset(
         "tree",
         "edit",
         "analyze",
+        # Current Goose builds also expose namespaced developer MCP tools.
+        "developer__shell",
+        "developer__text_editor",
         # extension manager
         "extensionmanager__list_resources",
         "extensionmanager__manage_extensions",

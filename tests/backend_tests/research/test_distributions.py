@@ -306,6 +306,41 @@ def test_bootstrap_projects_the_byoa_configuration_contract():
     assert manifest.agent_profile.temperature == 0.2
 
 
+def test_goose_tools_may_be_enforced_by_the_managed_inference_gateway():
+    release = _release(qualified=True, byoa=True)
+    release = release.model_copy(update={
+        "byoa_config": [
+            binding for binding in release.byoa_config if binding.field != "tools"
+        ] + [AgentConfigBinding(
+            field="tools", transport="gateway", key="tool_allowlist", format="json"
+        )]
+    })
+    profile = _profile(
+        release_id="rel-1", framework_version="goose",
+        tools_json='["developer__text_editor"]', approval_policy="per_step",
+    )
+
+    validate_profile_configuration(profile, release)
+    manifest = _bootstrap_manifest(profile, release)
+    binding = next(item for item in manifest.agent_release.config_bindings if item.field == "tools")
+    assert binding.transport == "gateway"
+    assert binding.key == "tool_allowlist"
+
+
+@pytest.mark.parametrize(
+    ("field", "key"),
+    [("model", "tool_allowlist"), ("tools", "GOOSE_TOOLS")],
+)
+def test_gateway_binding_rejects_unsupported_targets(field, key):
+    with pytest.raises(PydanticValidationError):
+        AgentConfigBinding(field=field, transport="gateway", key=key)
+
+    with pytest.raises(PydanticValidationError):
+        AgentConfigBinding(
+            field="tools", transport="gateway", key="tool_allowlist", format="csv"
+        )
+
+
 def test_parse_command_args_accepts_json_text_and_lists():
     assert parse_command_args('["a", "b"]') == ["a", "b"]
     assert parse_command_args(["a"]) == ["a"]

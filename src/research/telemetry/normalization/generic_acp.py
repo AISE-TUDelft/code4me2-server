@@ -47,6 +47,13 @@ _ALLOW_OPTION_KINDS = frozenset({"allow_once", "allow_always"})
 #: Canonical ACP permission option kinds that mean "reject".
 _REJECT_OPTION_KINDS = frozenset({"reject_once", "reject_always"})
 
+# ACP tool titles are arbitrary display text. They can contain a shell command,
+# source snippet, or absolute path, so they must not be copied into the
+# metadata-only ``tool_name`` field. Only protocol-level categories are safe.
+_SAFE_TOOL_KINDS = frozenset(
+    {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "other", "add"}
+)
+
 _METHOD_RULES: dict[str, tuple[str, CanonicalEventType]] = {
     "initialize": ("acp.initialize", CanonicalEventType.INTERACTION_STARTED),
     "session/new": ("acp.session.new", CanonicalEventType.INTERACTION_STARTED),
@@ -163,13 +170,15 @@ def _tool_payload(location: Mapping[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     for source_key, target_key in (
         ("toolCallId", "tool_call_id"),
-        ("title", "tool_name"),
-        ("kind", "tool_kind"),
         ("status", "status"),
     ):
         value = location.get(source_key)
         if value is not None:
             payload[target_key] = value
+    kind = location.get("kind")
+    if isinstance(kind, str) and kind in _SAFE_TOOL_KINDS:
+        payload["tool_kind"] = kind
+        payload["tool_name"] = kind
     raw_input = location.get("rawInput")
     if raw_input is not None:
         payload["arguments"] = raw_input
@@ -182,6 +191,10 @@ def _tool_payload(location: Mapping[str, Any]) -> dict[str, Any]:
 def _tool_call_id(update: Mapping[str, Any]) -> Optional[str]:
     value = update.get("toolCallId")
     return value if isinstance(value, str) and value else None
+
+
+def _tool_correlations(update: Mapping[str, Any]) -> Correlations:
+    return Correlations(tool_call_id=_tool_call_id(update))
 
 
 def _status(update: Mapping[str, Any]) -> str:
@@ -198,6 +211,7 @@ def _terminal_tool_candidate(
             CanonicalEventType.TOOL_COMPLETED,
             "acp.update.tool_call_update.completed",
             payload=_tool_payload(update),
+            correlations=_tool_correlations(update),
             lifecycle_state="completed",
         )
     if status in {"failed", "error"}:
@@ -205,6 +219,7 @@ def _terminal_tool_candidate(
             CanonicalEventType.TOOL_FAILED,
             "acp.update.tool_call_update.failed",
             payload=_tool_payload(update),
+            correlations=_tool_correlations(update),
             lifecycle_state="failed",
         )
     return None
@@ -524,37 +539,12 @@ class GenericAcpNormalizer:
     ) -> list[CanonicalCandidateV1]:
         kind = update.get("sessionUpdate")
 
-        if kind == "agent_message_chunk":
-            payload: dict[str, Any] = {"message_kind": "assistant"}
-            if isinstance(update.get("messageId"), str):
-                payload["message_id"] = update["messageId"]
-            if update.get("content") is not None:
-                payload["content"] = update["content"]
-            return [
-                _candidate(
-                    CanonicalEventType.AGENT_MESSAGE_STARTED,
-                    "acp.update.agent_message_chunk",
-                    payload=payload,
-                    lifecycle_state="started",
-                )
-            ]
-
-        if kind == "agent_thought_chunk":
-            payload = {"message_kind": "thought"}
-            if isinstance(update.get("messageId"), str):
-                payload["message_id"] = update["messageId"]
-            if update.get("content") is not None:
-                # Reasoning is CONTENT and prohibited by default; it is only kept
-                # when content capture is explicitly allowed AND consented.
-                payload["reasoning"] = update["content"]
-            return [
-                _candidate(
-                    CanonicalEventType.AGENT_MESSAGE_STARTED,
-                    "acp.update.agent_thought_chunk",
-                    payload=payload,
-                    lifecycle_state="started",
-                )
-            ]
+        if kind in {"agent_message_chunk", "agent_thought_chunk"}:
+            # These are streaming deltas, not separate messages. session/prompt
+            # already starts the turn and its response completes it. Emitting a
+            # start for every delta inflated one Goose reply into hundreds of
+            # apparent messages (and duplicated content-bearing observations).
+            return []
 
         if kind == "tool_call":
             return self._tool_call_candidates(update)
@@ -568,6 +558,7 @@ class GenericAcpNormalizer:
                     CanonicalEventType.TOOL_STARTED,
                     "acp.update.tool_call_update",
                     payload=_tool_payload(update),
+                    correlations=_tool_correlations(update),
                     lifecycle_state="started",
                 )
             ]
@@ -603,6 +594,7 @@ class GenericAcpNormalizer:
                     CanonicalEventType.TOOL_STARTED,
                     "acp.update.tool_call",
                     payload=_tool_payload(update),
+                    correlations=_tool_correlations(update),
                     lifecycle_state="started",
                 )
             ]
@@ -614,6 +606,7 @@ class GenericAcpNormalizer:
                     CanonicalEventType.TOOL_CREATED,
                     "acp.update.tool_call.created",
                     payload=_tool_payload(update),
+                    correlations=_tool_correlations(update),
                     lifecycle_state="pending",
                 )
             ]

@@ -42,7 +42,7 @@ BYOA_CONFIG_FIELDS = (
     "tools",
     "approval_policy",
 )
-BYOA_CONFIG_TRANSPORTS = ("env", "arg")
+BYOA_CONFIG_TRANSPORTS = ("env", "arg", "gateway")
 BYOA_CONFIG_FORMATS = ("string", "json", "csv")
 
 _BASE_CONFIG = ConfigDict(extra="forbid")
@@ -159,7 +159,9 @@ class AgentConfigBinding(BaseModel):
     declares how each frozen profile field reaches the process at launch:
 
     * ``transport="env"`` sets the environment variable ``key``;
-    * ``transport="arg"`` appends ``[key, value]`` to the agent argv.
+    * ``transport="arg"`` appends ``[key, value]`` to the agent argv;
+    * ``transport="gateway"`` applies the tool allowlist at the managed model
+      gateway rather than inventing an environment variable the agent ignores.
 
     ``format`` renders list values (``tools``) as ``csv`` or ``json``;
     ``value_map`` translates the server-side vocabulary to the agent's (for
@@ -171,7 +173,7 @@ class AgentConfigBinding(BaseModel):
     model_config = _BASE_CONFIG
 
     field: str
-    transport: Literal["env", "arg"]
+    transport: Literal["env", "arg", "gateway"]
     key: str
     format: Literal["string", "json", "csv"] = "string"
     value_map: dict[str, str] = Field(default_factory=dict)
@@ -201,6 +203,14 @@ class AgentConfigBinding(BaseModel):
 
     @model_validator(mode="after")
     def _transport_key_shape(self) -> AgentConfigBinding:
+        if self.transport == "gateway" and (
+            self.field != "tools"
+            or self.key != "tool_allowlist"
+            or self.format != "json"
+        ):
+            raise ValueError(
+                "a gateway binding requires tools/tool_allowlist with JSON format"
+            )
         if self.transport == "env" and not re.fullmatch(
             r"[A-Za-z_][A-Za-z0-9_]*", self.key
         ):

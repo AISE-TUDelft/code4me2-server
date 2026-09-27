@@ -162,7 +162,7 @@ def get_active_session_for_context(
 
 
 def update_session(
-    session: Session, research_session: ResearchSessionV1
+    session: Session, research_session: ResearchSessionV1, *, commit: bool = True
 ) -> Optional[ResearchSessionRow]:
     """Persist a state/timestamp/close change onto an existing session row."""
     row = session.get(ResearchSessionRow, research_session.research_session_id)
@@ -181,13 +181,16 @@ def update_session(
     row.resume_generation = research_session.resume_generation
     row.manifest_digest = research_session.manifest_digest
     row.environment_json = {"environment_ref": research_session.environment_ref}
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     session.refresh(row)
     return row
 
 
 def insert_transition(
-    session: Session, transition: SessionTransition
+    session: Session, transition: SessionTransition, *, commit: bool = True
 ) -> SessionTransition:
     """Append one recorded state transition to its session's log.
 
@@ -202,7 +205,10 @@ def insert_transition(
     serialized.append(transition.model_dump(mode="json"))
     row.transitions_json = serialized
     session.add(row)
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     session.refresh(row)
     return transition
 
