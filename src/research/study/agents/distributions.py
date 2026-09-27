@@ -27,6 +27,7 @@ Verification is **derived**, never stored:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from agents.tools import (
@@ -220,6 +221,50 @@ def requires_inference_gateway(framework: Optional[str]) -> bool:
     return str(framework or "").strip().lower() in INFERENCE_GATEWAY_FRAMEWORKS
 
 
+def _uniquely_gateway_bound(release: Any, document: Optional[Mapping[str, Any]]) -> bool:
+    """Whether the release provably launches a gateway-bound agent.
+
+    Its declared identity must name exactly one framework, a gateway-bound one,
+    and the executable it launches (the command, else the package) must be that
+    framework's own: only a launched Goose calls the research gateway, so a
+    ``codex-acp`` command under a Goose label proves nothing.
+    """
+    tokens = _declared_identity_tokens(release, document)
+    declared = [
+        framework
+        for framework, mode in FRAMEWORK_DISTRIBUTION_MODES.items()
+        if mode == DistributionMode.BYOA_EXTERNAL.value and framework in tokens
+    ]
+    if len(declared) != 1 or not requires_inference_gateway(declared[0]):
+        return False
+    launched = None
+    for attribute in ("agent_command", "agent_package"):
+        value = getattr(release, attribute, None)
+        if value is None and document is not None:
+            value = document.get(attribute)
+        if str(value or "").strip():
+            launched = _declared_identity_tokens(SimpleNamespace(agent_command=value), None) if attribute == "agent_command" else {str(value).strip().lower()}
+            break
+    return launched == {declared[0]}
+
+
+def _is_gateway_tools_binding(binding: Optional[Mapping[str, Any]]) -> bool:
+    return binding is not None and str(binding.get("transport") or "").strip().lower() == "gateway"
+
+
+def release_enforces_tools_at_gateway(
+    release: Any, release_json: Optional[Mapping[str, Any]] = None
+) -> bool:
+    """Whether the release declares its ``tools`` binding with the ``gateway`` transport.
+
+    The research inference gateway then offers the model only the frozen
+    profile's tool selection (an empty selection means no tools); otherwise it
+    passes the agent's tool definitions through untouched.
+    """
+    bindings = _byoa_bindings(release, _release_document(release, release_json))
+    return _is_gateway_tools_binding(bindings.get("tools"))
+
+
 def missing_gateway_bindings(bindings: Mapping[str, Mapping[str, Any]]) -> list[str]:
     """The runtime bindings a gateway-bound release lacks (empty when complete).
 
@@ -410,6 +455,21 @@ def validate_profile_configuration(
                     + ", ".join(gateway_missing),
                     "release_id",
                 )
+        # A ``gateway`` tools binding sets nothing on the agent: only the
+        # research inference gateway can apply it, and only gateway-bound
+        # runtimes call it. The release's own identity must say so too: a
+        # mis-declared release (say a Codex command with Goose runtime bindings)
+        # would never call the gateway, and its selection would govern nothing.
+        if _is_gateway_tools_binding(bindings.get("tools")) and not (
+            requires_inference_gateway(getattr(profile, "framework_version", None))
+            and _uniquely_gateway_bound(release, document)
+        ):
+            raise ProfileConfigurationError(
+                "BYOA_CONFIG_UNENFORCEABLE",
+                "the release enforces tools at the research inference gateway, which "
+                f"{framework!r} does not call; its tool selection would govern nothing",
+                "release_id",
+            )
         for field, binding in bindings.items():
             if field != "tools":
                 continue
@@ -565,7 +625,14 @@ def release_profile_configurability(
         # Profile fields only: the runtime (gateway) bindings are filled by the
         # plugin and are never offered as configurable profile fields.
         "configurable_fields": [
-            field for field in BYOA_CONFIG_FIELDS if field in bindings
+            field
+            for field in BYOA_CONFIG_FIELDS
+            if field in bindings
+            and not (
+                field == "tools"
+                and _is_gateway_tools_binding(bindings[field])
+                and not _uniquely_gateway_bound(release, document)
+            )
         ],
         "required_bindings_missing": required_missing,
         "inference_gateway": gateway,

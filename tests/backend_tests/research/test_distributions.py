@@ -716,3 +716,83 @@ def test_configurability_never_lists_runtime_fields_as_profile_fields():
     unbound = _without_gateway(_release(qualified=True, byoa=True)).model_copy(update={"agent_id": "goose"})
     missing = release_profile_configurability(unbound, release_json=None)["required_bindings_missing"]
     assert "inference_gateway_credential" in missing
+
+
+# ---------------------------------------------------------------------------
+# Tools enforced at the research inference gateway (``gateway`` transport)
+# ---------------------------------------------------------------------------
+
+GATEWAY_TOOLS_BINDING = {"field": "tools", "transport": "gateway", "key": "tool_allowlist", "format": "json"}
+
+
+def _with_gateway_tools(release):
+    release.byoa_config = [
+        binding for binding in release.byoa_config if binding.field != "tools"
+    ] + [AgentConfigBinding(**GATEWAY_TOOLS_BINDING)]
+    return release
+
+
+def test_goose_tool_selection_may_be_enforced_at_the_research_gateway():
+    from research.study.agents.distributions import (
+        release_enforces_tools_at_gateway,
+        release_profile_configurability,
+    )
+
+    release = _with_gateway_tools(_release(qualified=True, byoa=True)).model_copy(update={"agent_id": "goose"})
+    profile = _profile(
+        release_id="rel-1", framework_version="goose",
+        tools_json='["shell", "edit"]', approval_policy="per_step",
+    )
+
+    validate_profile_configuration(profile, release)
+    manifest = _bootstrap_manifest(profile, release)
+    binding = next(item for item in manifest.agent_release.config_bindings if item.field == "tools")
+    assert (binding.transport, binding.key, binding.format) == ("gateway", "tool_allowlist", "json")
+    assert release_enforces_tools_at_gateway(release) is True
+    view = release_profile_configurability(release, release_json=None)
+    assert view["inference_gateway"] is True and "tools" in view["configurable_fields"]
+    # A release that binds tools any other way is not enforced at the gateway.
+    assert release_enforces_tools_at_gateway(_release(qualified=True, byoa=True)) is False
+
+
+def test_a_gateway_tool_binding_is_refused_where_no_gateway_can_enforce_it():
+    from research.study.agents.distributions import release_profile_configurability
+
+    release = _with_gateway_tools(_without_gateway(_release(qualified=True, byoa=True))).model_copy(
+        update={"agent_id": "codex", "agent_command": "codex-acp", "agent_package": "codex"}
+    )
+    # Codex never calls the research gateway: even an empty selection is
+    # refused, because the release would claim an enforcement nothing performs.
+    for tools_json in ('["shell"]', "[]"):
+        with pytest.raises(ProfileConfigurationError) as error:
+            validate_profile_configuration(
+                _profile(release_id="rel-1", framework_version="codex", tools_json=tools_json), release
+            )
+        assert "BYOA_CONFIG_UNENFORCEABLE" in str(error.value)
+    assert "tools" not in release_profile_configurability(release, release_json=None)["configurable_fields"]
+
+
+@pytest.mark.parametrize(
+    ("field", "key", "fmt"),
+    [("model", "tool_allowlist", "json"), ("tools", "GOOSE_TOOLS", "json"), ("tools", "tool_allowlist", "csv")],
+)
+def test_gateway_binding_rejects_unsupported_targets(field, key, fmt):
+    with pytest.raises(PydanticValidationError):
+        AgentConfigBinding(field=field, transport="gateway", key=key, format=fmt)
+
+
+def test_a_mis_declared_release_cannot_claim_gateway_tool_enforcement():
+    # A Goose label (and Goose runtime bindings) over a command that is not
+    # Goose: the launched agent would never call the gateway.
+    release = _with_gateway_tools(_release(qualified=True, byoa=True)).model_copy(
+        update={"agent_id": "goose", "agent_package": "goose", "agent_command": "codex-acp"}
+    )
+    with pytest.raises(ProfileConfigurationError) as error:
+        validate_profile_configuration(
+            _profile(release_id="rel-1", framework_version="goose", tools_json='["shell"]'), release
+        )
+    assert "BYOA_CONFIG_UNENFORCEABLE" in str(error.value)
+    from research.study.agents.distributions import release_profile_configurability
+
+    assert "tools" not in release_profile_configurability(release, release_json=None)["configurable_fields"]
+

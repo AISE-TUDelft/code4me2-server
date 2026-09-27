@@ -23,6 +23,7 @@ from research.budget import encode_capability_bearer, issue_inference_capability
 from research.budget import ledger
 from research.runtime.bootstrap.capability import issue_capability
 
+from ._byoa_contract import BYOA_CONFIG_BINDINGS
 from ._ui_overhaul_seed import (
     seed_account,
     seed_assignment,
@@ -57,7 +58,8 @@ STOP_CHUNK = {"id": "x", "choices": [{"index": 0, "delta": {}, "finish_reason": 
 
 
 class _Fixture:
-    def __init__(self, session_factory, monkeypatch, *, framework: str = "goose", limit_micro_usd: int = 5_000_000, price: bool = True):
+    def __init__(self, session_factory, monkeypatch, *, framework: str = "goose", limit_micro_usd: int = 5_000_000, price: bool = True,
+                 bindings=None, tools_json: str = "[]"):
         self.factory = session_factory
         monkeypatch.setenv("UI_OVERHAUL_KEY", "secret-provider-key")
         with session_factory() as db:
@@ -66,7 +68,10 @@ class _Fixture:
             self.study_id = seed_study(db, owner_id=self.owner_id, name="gateway study")
             # seed_connection prices the model (1/4 USD per million) unless told not to.
             self.connection_id = seed_connection(db, models=(MODEL,), priced=price)
-            release_id = seed_byoa_release(db, agent_id=framework, agent_package=framework, agent_command=framework)
+            release_id = seed_byoa_release(
+                db, agent_id=framework, agent_package=framework, agent_command=framework,
+                **({"bindings": bindings} if bindings is not None else {}),
+            )
             self.profile_id = seed_profile(
                 db, owner_id=self.owner_id, framework_version=framework, release_id=release_id,
                 connection_id=self.connection_id, name="arm", model=MODEL, temperature=0.2,
@@ -77,7 +82,7 @@ class _Fixture:
                 db, enrollment_id=self.enrollment_id, study_id=self.study_id, profile_id=self.profile_id,
                 snapshot={
                     "profile_id": str(self.profile_id), "name": "arm", "model": MODEL,
-                    "framework_version": framework, "tools_json": "[]", "approval_policy": "auto",
+                    "framework_version": framework, "tools_json": tools_json, "approval_policy": "auto",
                     "max_steps": 5, "temperature": 0.2, "connection_id": str(self.connection_id),
                     "release_id": release_id,
                 },
@@ -417,3 +422,121 @@ def test_stream_wall_clock_cap_forfeits_a_hung_provider(http_runtime, monkeypatc
     rows = fx.reservations()
     assert [row["state"] for row in rows] == ["FORFEITED"]
     assert rows[0]["resolution_reason"] == "stream_timeout"
+
+
+#: A Goose release whose tool selection the gateway enforces (Goose reads none).
+GATEWAY_TOOLS_BINDINGS = [
+    binding for binding in BYOA_CONFIG_BINDINGS if binding["field"] != "tools"
+] + [{"field": "tools", "transport": "gateway", "key": "tool_allowlist", "format": "json"}]
+
+
+def _goose_tools(*names: str) -> list:
+    return [{"type": "function", "function": {"name": name, "parameters": {"type": "object"}}} for name in names]
+
+
+def test_gateway_offers_only_the_frozen_tool_selection_when_the_release_declares_it(http_runtime, monkeypatch):
+    client, session_factory, _ = http_runtime
+    fx = _Fixture(session_factory, monkeypatch, bindings=GATEWAY_TOOLS_BINDINGS, tools_json='["shell", "edit"]')
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_sse(CONTENT_CHUNK, STOP_CHUNK, USAGE_CHUNK), headers={"content-type": "text/event-stream"})
+
+    request = _request(
+        tools=_goose_tools("shell", "edit", "write", "todo__todo_write"),
+        tool_choice={"type": "function", "function": {"name": "write"}},
+    )
+    with _upstream(handler):
+        response = client.post(GATEWAY, json=request, headers={"Authorization": fx.bearer()})
+
+    assert response.status_code == 200, response.text
+    forwarded = seen["body"]
+    assert [tool["function"]["name"] for tool in forwarded["tools"]] == ["shell", "edit"]
+    # A choice naming a withheld tool is dropped rather than sent upstream.
+    assert "tool_choice" not in forwarded
+    assert forwarded["model"] == MODEL
+    assert [row["state"] for row in fx.reservations()] == ["SETTLED"]
+
+
+def test_gateway_offers_no_tools_for_an_empty_selection_on_an_enforcing_release(http_runtime, monkeypatch):
+    client, session_factory, _ = http_runtime
+    fx = _Fixture(session_factory, monkeypatch, bindings=GATEWAY_TOOLS_BINDINGS, tools_json="[]")
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=_sse(CONTENT_CHUNK, STOP_CHUNK, USAGE_CHUNK), headers={"content-type": "text/event-stream"})
+
+    with _upstream(handler):
+        response = client.post(
+            GATEWAY, json=_request(tools=_goose_tools("shell", "edit"), tool_choice="auto"),
+            headers={"Authorization": fx.bearer()},
+        )
+
+    assert response.status_code == 200, response.text
+    assert "tools" not in seen["body"] and "tool_choice" not in seen["body"]
+
+
+def test_a_model_call_to_a_withheld_tool_never_reaches_goose(http_runtime, monkeypatch):
+    client, session_factory, _ = http_runtime
+    fx = _Fixture(session_factory, monkeypatch, bindings=GATEWAY_TOOLS_BINDINGS, tools_json='["edit"]')
+    call = {"index": 0, "id": "c1", "type": "function", "function": {"name": "shell", "arguments": '{"command":"ls"}'}}
+    tool_chunk = {"id": "x", "choices": [{"index": 0, "delta": {"tool_calls": [call]}, "finish_reason": None}]}
+    finish_chunk = {"id": "x", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}
+
+    with _upstream(lambda request: httpx.Response(
+        200, content=_sse(tool_chunk, finish_chunk, USAGE_CHUNK), headers={"content-type": "text/event-stream"},
+    )):
+        response = client.post(GATEWAY, json=_request(tools=_goose_tools("edit", "shell")), headers={"Authorization": fx.bearer()})
+
+    assert response.status_code == 200, response.text
+    assert b'"shell"' not in response.content
+    assert b'"finish_reason":"stop"' in response.content
+    # Usage (and so settlement) still comes from the provider's own stream.
+    assert [row["state"] for row in fx.reservations()] == ["SETTLED"]
+
+
+def test_a_non_streamed_call_to_a_withheld_tool_is_removed(http_runtime, monkeypatch):
+    client, session_factory, _ = http_runtime
+    fx = _Fixture(session_factory, monkeypatch, bindings=GATEWAY_TOOLS_BINDINGS, tools_json='["edit"]')
+    upstream_json = {
+        "id": "x", "object": "chat.completion",
+        "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "shell", "arguments": "{}"}}]}}],
+        "usage": {"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50},
+    }
+
+    with _upstream(lambda request: httpx.Response(200, json=upstream_json)):
+        response = client.post(GATEWAY, json=_request(stream=False, tools=_goose_tools("edit")), headers={"Authorization": fx.bearer()})
+
+    assert response.status_code == 200, response.text
+    choice = response.json()["choices"][0]
+    assert "tool_calls" not in choice["message"] and choice["finish_reason"] == "stop"
+
+
+def test_a_tool_definition_without_a_function_does_not_fail_the_call(http_runtime, monkeypatch):
+    client, session_factory, _ = http_runtime
+    fx = _Fixture(session_factory, monkeypatch)
+
+    with _upstream(lambda request: httpx.Response(
+        200, content=_sse(CONTENT_CHUNK, STOP_CHUNK, USAGE_CHUNK), headers={"content-type": "text/event-stream"},
+    )):
+        response = client.post(
+            GATEWAY, json=_request(tools=[{"type": "function", "function": None}, "not-a-tool"]),
+            headers={"Authorization": fx.bearer()},
+        )
+
+    assert response.status_code == 200, response.text
+
+
+def test_an_unreadable_body_fails_closed_when_tools_are_enforced(http_runtime, monkeypatch):
+    client, session_factory, _ = http_runtime
+    fx = _Fixture(session_factory, monkeypatch, bindings=GATEWAY_TOOLS_BINDINGS, tools_json='["edit"]')
+
+    with _upstream(lambda request: httpx.Response(200, content=b"not json at all", headers={"content-type": "application/json"})):
+        response = client.post(GATEWAY, json=_request(stream=False, tools=_goose_tools("edit")), headers={"Authorization": fx.bearer()})
+
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "upstream_unreadable"
+

@@ -138,8 +138,10 @@ class BootstrapAgentConfigBinding(BaseModel):
     """One declared BYOA profile→agent configuration translation (ISSUE-03).
 
     The release owns how a frozen profile field reaches a participant-installed
-    agent: an environment variable (``env``) or an argv pair (``arg``), with an
-    optional server-vocabulary ``value_map`` and list ``format``. Projected so
+    agent: an environment variable (``env``), an argv pair (``arg``), or the
+    research inference gateway's tool allowlist (``gateway``, which the plugin
+    applies nothing for), with an optional server-vocabulary ``value_map`` and
+    list ``format``. Projected so
     the plugin can apply the exact contract that profile/study validation
     enforced.
     """

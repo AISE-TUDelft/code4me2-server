@@ -73,6 +73,13 @@ GOOSE_TOOLS: frozenset[str] = frozenset(
         "tree",
         "edit",
         "analyze",
+        # Goose 1.51's developer extension also offers this (observed in the
+        # study gateway shape, 2026-09-27).
+        "read_image",
+        # Builds that expose the developer extension as a namespaced MCP
+        # server name its tools like this.
+        "developer__shell",
+        "developer__text_editor",
         # extension manager
         "extensionmanager__list_resources",
         "extensionmanager__manage_extensions",

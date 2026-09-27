@@ -214,6 +214,7 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - AGENT_REASONING_EFFORT=${AGENT_REASONING_EFFORT}
+      - AGENT_RESPONSES_MAX_OUTPUT_TOKENS=${AGENT_RESPONSES_MAX_OUTPUT_TOKENS:-}
     # Lets AGENT_UPSTREAM_BASE_URL=http://host.docker.internal:11434/v1 reach an
     # Ollama instance running on the host from inside this container (Docker
     # Desktop maps this automatically; Linux needs this explicit mapping).

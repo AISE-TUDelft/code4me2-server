@@ -14,8 +14,13 @@ inference capability minted at bootstrap as its bearer token. Every call:
 4. runs ``run_inference`` with a budget meter: worst-case hold reserved before
    the request leaves, ``max_tokens`` capped, actual usage settled afterwards.
 
-Goose's tool definitions pass through untouched (``tool_filtering=False``) and
-the model is forced to the frozen profile's. No ``agent_task`` is materialised
+The model is forced to the frozen profile's. Goose's tool definitions pass
+through untouched (``tool_filtering=False``) unless the pinned release declares
+its ``tools`` binding with the ``gateway`` transport: Goose reads no tool
+setting from its environment, so the gateway is then the one enforcement point:
+the model is offered only the frozen selection (an empty one means no tools),
+and a call it still makes to a withheld tool is removed from the response
+before Goose can run it. No ``agent_task`` is materialised
 and no observation telemetry is written here: Goose's telemetry keeps coming
 from the ACP proxy, and the ledger row is the cost record. The research
 session is deliberately not required to be live (budgets are per enrollment;
@@ -25,6 +30,7 @@ attributed to the enrollment's active session when there is one.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -45,6 +51,8 @@ from research.budget import (
 )
 from research.participants import identity as identity_store
 from research.runtime.sessions import store as session_store
+from research.study.agents import store as agents_store
+from research.study.agents.distributions import release_enforces_tools_at_gateway
 from research.study.agents.enums import INFERENCE_GATEWAY_FRAMEWORKS
 
 router = APIRouter()
@@ -63,6 +71,24 @@ class GatewayContext:
     research_session_id: Optional[uuid.UUID]
     profile: object
     connection: provider_module.ResolvedConnection
+    #: The frozen tool selection enforced here, or ``None`` to pass tools through.
+    tool_allowlist: Optional[frozenset[str]] = None
+
+
+def _gateway_tool_allowlist(db, profile) -> Optional[frozenset[str]]:
+    """The profile's frozen tool selection when its release enforces it here."""
+    release_id = getattr(profile, "release_id", None)
+    release = agents_store.get_release(db, release_id) if release_id else None
+    if release is None or not release_enforces_tools_at_gateway(release):
+        return None
+    try:
+        parsed = json.loads(getattr(profile, "tools_json", None) or "[]")
+    except (TypeError, ValueError):
+        parsed = None
+    if not isinstance(parsed, list):
+        # A selection that cannot be read is never widened to every tool.
+        return frozenset()
+    return frozenset(str(item) for item in parsed)
 
 
 def _authorize(app: App, capability) -> GatewayContext:
@@ -157,6 +183,7 @@ def _authorize(app: App, capability) -> GatewayContext:
             research_session_id=research_session_id or capability.research_session_id,
             profile=profile,
             connection=connection,
+            tool_allowlist=_gateway_tool_allowlist(db, profile),
         )
     finally:
         db.close()
@@ -203,6 +230,22 @@ async def research_gateway_chat_completions(
         bool(body.get("stream")),
         len(body.get("messages") or []),
     )
+    if context.tool_allowlist is not None:
+        # Before the meter: the hold is estimated on exactly what goes upstream.
+        requested, kept = inference.restrict_chat_completion_tools(body, context.tool_allowlist)
+        logging.info(
+            "[Research/inference] tools enforced — requested=%d kept=%d",
+            len(requested),
+            len(kept),
+        )
+        if context.tool_allowlist and requested and not kept:
+            # Names match exactly: an agent build that renamed its tools would
+            # silently turn this arm into a no-tools arm.
+            logging.warning(
+                "[Research/inference] none of the agent's tools %s is in the frozen selection %s",
+                sorted(set(requested)),
+                sorted(context.tool_allowlist),
+            )
     return await inference.run_inference(
         task_uuid=uuid.uuid4(),
         session_uuid=context.research_session_id or uuid.uuid4(),
@@ -217,6 +260,7 @@ async def research_gateway_chat_completions(
         content_included=False,
         record_observation_events=False,
         tool_filtering=False,
+        response_tool_allowlist=context.tool_allowlist,
         meter=meter,
         app=app,
     )

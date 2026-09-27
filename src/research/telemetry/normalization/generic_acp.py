@@ -184,6 +184,10 @@ def _tool_call_id(update: Mapping[str, Any]) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
+def _tool_correlations(update: Mapping[str, Any]) -> Correlations:
+    return Correlations(tool_call_id=_tool_call_id(update))
+
+
 def _status(update: Mapping[str, Any]) -> str:
     return str(update.get("status") or "").lower()
 
@@ -198,6 +202,7 @@ def _terminal_tool_candidate(
             CanonicalEventType.TOOL_COMPLETED,
             "acp.update.tool_call_update.completed",
             payload=_tool_payload(update),
+            correlations=_tool_correlations(update),
             lifecycle_state="completed",
         )
     if status in {"failed", "error"}:
@@ -205,6 +210,7 @@ def _terminal_tool_candidate(
             CanonicalEventType.TOOL_FAILED,
             "acp.update.tool_call_update.failed",
             payload=_tool_payload(update),
+            correlations=_tool_correlations(update),
             lifecycle_state="failed",
         )
     return None
@@ -568,6 +574,7 @@ class GenericAcpNormalizer:
                     CanonicalEventType.TOOL_STARTED,
                     "acp.update.tool_call_update",
                     payload=_tool_payload(update),
+                    correlations=_tool_correlations(update),
                     lifecycle_state="started",
                 )
             ]
@@ -603,6 +610,7 @@ class GenericAcpNormalizer:
                     CanonicalEventType.TOOL_STARTED,
                     "acp.update.tool_call",
                     payload=_tool_payload(update),
+                    correlations=_tool_correlations(update),
                     lifecycle_state="started",
                 )
             ]
@@ -614,6 +622,7 @@ class GenericAcpNormalizer:
                     CanonicalEventType.TOOL_CREATED,
                     "acp.update.tool_call.created",
                     payload=_tool_payload(update),
+                    correlations=_tool_correlations(update),
                     lifecycle_state="pending",
                 )
             ]
