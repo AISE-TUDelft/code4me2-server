@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import {
   getMyResearchEnrollments,
   redeemResearchJoinCode,
@@ -13,8 +13,20 @@ import "./research.css";
 
 export const RESEARCH_JOIN_INTENT_KEY = "code4me.research.join.intent";
 const SAFE_JOIN_PATH = "/research/join";
+const PRIVACY_PATH = "/settings/privacy";
+
+// Join refusals that end the attempt, so the saved join intent is dropped.
+const TERMINAL_JOIN_CODES = ["STUDY_STOPPED", "ALREADY_ENROLLED", "ACTIVE_ENROLLMENT_EXISTS", "DATA_COLLECTION_OPTED_OUT"];
 
 const errorMessage = (result) => {
+  if (result.code === "DATA_COLLECTION_OPTED_OUT") {
+    return (
+      <>
+        You have opted out of data collection. Turn it back on in <Link to={PRIVACY_PATH}>Privacy &amp; data</Link> to
+        join a study.
+      </>
+    );
+  }
   if (result.code === "CONSENT_REQUIRED") return "Consent is required before joining this study.";
   if (result.code === "STUDY_STOPPED") return "This study has stopped and cannot accept new participants.";
   if (result.code === "ALREADY_ENROLLED") return "You are already enrolled in this study.";
@@ -30,6 +42,7 @@ const ENROLLMENT_STATUS = {
   ACTIVE: { label: "Active", tone: "success" },
   COMPLETED: { label: "Completed", tone: "info" },
   REVOKED: { label: "Withdrawn by the research team", tone: "danger" },
+  WITHDRAWN: { label: "Withdrawn by you", tone: "neutral" },
   STUDY_STOPPED: { label: "Study stopped", tone: "neutral" },
 };
 
@@ -354,7 +367,7 @@ const ResearchJoin = ({ user }) => {
       loadEnrollments();
     } else {
       if (result.status === 401) return rememberJoinIntent(code);
-      if (["STUDY_STOPPED", "ALREADY_ENROLLED", "ACTIVE_ENROLLMENT_EXISTS"].includes(result.code)) clearJoinIntent();
+      if (TERMINAL_JOIN_CODES.includes(result.code)) clearJoinIntent();
       setError(errorMessage(result));
     }
     setIsBusy(false);

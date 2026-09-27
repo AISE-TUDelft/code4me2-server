@@ -146,6 +146,18 @@ test("sends search and filters to the server and shows enrollment study links", 
   });
 });
 
+test("a participant-initiated withdrawal is labelled Withdrawn", async () => {
+  const withdrawn = {
+    ...ACCOUNT,
+    enrollments: [{ study_id: "s-1", study_name: "Pilot study", study_status: "ACTIVE", status: "WITHDRAWN" }],
+  };
+  global.fetch = jest.fn(() => Promise.resolve(jsonResponse(200, { researchers: [withdrawn], total: 1 })));
+
+  renderPage();
+  expect(await screen.findByRole("link", { name: "Pilot study" })).toBeInTheDocument();
+  expect(screen.getByText("Withdrawn")).toBeInTheDocument();
+});
+
 test("administrators have research access by role and revoking asks for confirmation", async () => {
   const admin = { ...ACCOUNT, user_id: "u-3", email: "admin@local.dev", is_admin: true };
   const researcher = { ...ACCOUNT, user_id: "u-4", email: "r@local.dev", can_research: true };

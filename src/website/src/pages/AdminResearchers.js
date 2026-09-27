@@ -35,6 +35,7 @@ const ENROLLMENT_TONES = {
   ACTIVE: "success",
   COMPLETED: "info",
   REVOKED: "danger",
+  WITHDRAWN: "warning",
   STUDY_STOPPED: "neutral",
 };
 
@@ -42,6 +43,7 @@ const ENROLLMENT_LABELS = {
   ACTIVE: "Active",
   COMPLETED: "Completed",
   REVOKED: "Revoked",
+  WITHDRAWN: "Withdrawn",
   STUDY_STOPPED: "Study stopped",
 };
 
