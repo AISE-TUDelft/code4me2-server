@@ -28,7 +28,6 @@ const renderAt = (path) => {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  process.env.REACT_APP_GOOGLE_CLIENT_ID = "test-client-id";
   api.getCurrentUser.mockResolvedValue({
     ok: true,
     user: { email: "researcher@example.com", is_admin: false },

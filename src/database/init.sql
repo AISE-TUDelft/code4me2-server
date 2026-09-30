@@ -683,12 +683,6 @@ INSERT INTO public.config (config_data) VALUES ('config {
     contextPath = ""
     timeout = 5000
   }
-  // Authentication Settings
-  auth {
-    google {
-      clientId = "288822392430-se6cmstnkje31e5kv32u95lo8544ltu4.apps.googleusercontent.com"
-    }
-  }
   // model configuration
   models {
     available = [

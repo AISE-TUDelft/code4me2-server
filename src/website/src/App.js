@@ -7,7 +7,6 @@ import ResearchJoin from "./pages/research/ResearchJoin";
 import PrivacySettings from "./pages/PrivacySettings";
 import AppShell from "./components/layout/AppShell";
 import "./App.css";
-import { GoogleOAuthProvider } from "@react-oauth/google";
 import { ThemeProvider } from "./context/ThemeContext";
 import { getCurrentUser, logoutUser } from "./utils/api";
 import {
@@ -176,55 +175,51 @@ function App() {
 
   if (isLoading) {
     return (
-      <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}>
-        <ThemeProvider>
-          <div className="App">
-            <div className="app-loading">
-              <div className="spinner"></div>
-              <p>Loading...</p>
-            </div>
+      <ThemeProvider>
+        <div className="App">
+          <div className="app-loading">
+            <div className="spinner"></div>
+            <p>Loading...</p>
           </div>
-        </ThemeProvider>
-      </GoogleOAuthProvider>
+        </div>
+      </ThemeProvider>
     );
   }
 
   return (
-    <GoogleOAuthProvider clientId={process.env.REACT_APP_GOOGLE_CLIENT_ID}>
-      <ThemeProvider>
-        <BrowserRouter future={ROUTER_FUTURE}>
-          <div className="App">
-            <Routes>
-              <Route
-                path="/"
-                element={user ? <Navigate to="/dashboard" replace /> : <Start isAuthenticated={!!user} />}
-              />
-              <Route path="/login" element={<AuthPage mode="login" />} />
-              <Route path="/signup" element={<AuthPage mode="signup" />} />
-              <Route
-                element={
-                  <ProtectedRoute>
-                    <ShellLayout />
-                  </ProtectedRoute>
-                }
-              >
-                <Route path="/dashboard" element={<Dashboard user={user} />} />
-                <Route path="/research" element={<Navigate to="/research/studies" replace />} />
-                <Route path="/research/studies" element={<ResearchStudies />} />
-                <Route path="/research/studies/:studyId" element={<ResearchStudies />} />
-                <Route path="/research/studies/:studyId/editor" element={<ResearchStudyEditor />} />
-                <Route path="/research/my-studies" element={<ResearchJoin user={user} />} />
-                <Route path="/settings/privacy" element={<PrivacyPage />} />
-              </Route>
-              <Route path="/research/join" element={<JoinLayout />}>
-                <Route index element={<ResearchJoin user={user} />} />
-              </Route>
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
-          </div>
-        </BrowserRouter>
-      </ThemeProvider>
-    </GoogleOAuthProvider>
+    <ThemeProvider>
+      <BrowserRouter future={ROUTER_FUTURE}>
+        <div className="App">
+          <Routes>
+            <Route
+              path="/"
+              element={user ? <Navigate to="/dashboard" replace /> : <Start isAuthenticated={!!user} />}
+            />
+            <Route path="/login" element={<AuthPage mode="login" />} />
+            <Route path="/signup" element={<AuthPage mode="signup" />} />
+            <Route
+              element={
+                <ProtectedRoute>
+                  <ShellLayout />
+                </ProtectedRoute>
+              }
+            >
+              <Route path="/dashboard" element={<Dashboard user={user} />} />
+              <Route path="/research" element={<Navigate to="/research/studies" replace />} />
+              <Route path="/research/studies" element={<ResearchStudies />} />
+              <Route path="/research/studies/:studyId" element={<ResearchStudies />} />
+              <Route path="/research/studies/:studyId/editor" element={<ResearchStudyEditor />} />
+              <Route path="/research/my-studies" element={<ResearchJoin user={user} />} />
+              <Route path="/settings/privacy" element={<PrivacyPage />} />
+            </Route>
+            <Route path="/research/join" element={<JoinLayout />}>
+              <Route index element={<ResearchJoin user={user} />} />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </div>
+      </BrowserRouter>
+    </ThemeProvider>
   );
 }
 

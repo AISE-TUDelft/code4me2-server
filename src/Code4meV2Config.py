@@ -236,13 +236,6 @@ class Code4meV2Config(BaseSettings):
         description="Frontend website port number",
     )
 
-    react_app_google_client_id: str = Field(
-        alias="REACT_APP_GOOGLE_CLIENT_ID",
-        frozen=True,
-        min_length=1,
-        description="Google OAuth client ID for React application",
-    )
-
     # -----------------------
     # Redis & Celery Configuration
     # -----------------------

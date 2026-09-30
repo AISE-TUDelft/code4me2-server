@@ -11,11 +11,6 @@ from backend.utils import Fakable, SerializableBaseModel
 from database.db_schemas import DEFAULT_USER_PREFERENCE
 
 
-class Provider(Enum):
-    no_provider = "no_provider"
-    google = "google"
-
-
 class ContextChangeType(Enum):
     update = "update"
     insert = "insert"
@@ -65,13 +60,6 @@ class CreateUser(QueryBase):
                 "one lowercase letter, and one digit."
             )
         return v
-
-
-class CreateUserOauth(CreateUser):
-    token: str = Field(..., description="JWT token for authentication")
-    provider: Provider = Field(
-        ..., description="OAuth provider (Google, Microsoft, etc.)"
-    )
 
 
 class UpdateUser(QueryBase):
@@ -139,11 +127,6 @@ class AuthenticateUserEmailPassword(QueryBase):
         Normalize email to lowercase.
         """
         return v.strip().lower()
-
-
-class AuthenticateUserOAuth(QueryBase):
-    provider: Provider = Field(..., description="OAuth provider")
-    token: str = Field(..., description="OAuth token in JWT format")
 
 
 class CreateConfig(QueryBase):

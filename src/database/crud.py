@@ -119,9 +119,7 @@ def _optional_json_text(value) -> Optional[str]:
 
 
 # User
-def create_user(
-    db: Session, user: Union[Queries.CreateUser, Queries.CreateUserOauth]
-) -> db_schemas.User:
+def create_user(db: Session, user: Queries.CreateUser) -> db_schemas.User:
     # Create user object
     db_user = db_schemas.User(
         user_id=uuid.uuid4(),
@@ -132,7 +130,6 @@ def create_user(
         # configure default preference and config upon creation
         config_id=user.config_id,
         preference=json.dumps(DEFAULT_USER_PREFERENCE),
-        is_oauth_signup=isinstance(user, Queries.CreateUserOauth),
         verified=False,
     )
 

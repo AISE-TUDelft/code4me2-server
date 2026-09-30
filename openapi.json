@@ -329,21 +329,13 @@
           "User"
         ],
         "summary": "Create User",
-        "description": "Create a new user in the system using standard or OAuth-based data.\n\nArgs:\n    user_to_create (Union[CreateUser, CreateUserOauth]):\n        User data from the request body (standard or OAuth-based).\n    app (App):\n        Application context with access to database and services.\n\nReturns:\n    JsonResponseWithStatus: JSON response indicating success or failure.\n\nFlow:\n    1. Check if a user already exists with the given email.\n    2. If using OAuth, validate the JWT token.\n    3. Insert the new user into the database.\n    4. Send a verification email via Celery.\n    5. Return HTTP 201 with the new user ID.",
+        "description": "Create a new user with email and password.\n\nArgs:\n    user_to_create (CreateUser):\n        User data from the request body.\n    app (App):\n        Application context with access to database and services.\n\nReturns:\n    JsonResponseWithStatus: JSON response indicating success or failure.\n\nFlow:\n    1. Check if a user already exists with the given email.\n    2. Insert the new user into the database.\n    3. Send a verification email via Celery.\n    4. Return HTTP 201 with the new user ID.",
         "operationId": "create_user_api_user_create_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/CreateUser"
-                  },
-                  {
-                    "$ref": "#/components/schemas/CreateUserOauth"
-                  }
-                ],
-                "title": "User To Create"
+                "$ref": "#/components/schemas/CreateUser"
               }
             }
           },
@@ -366,16 +358,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CreateUserPostResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InvalidOrExpiredJWTToken"
                 }
               }
             }
@@ -650,21 +632,13 @@
           "Authentication"
         ],
         "summary": "Authenticate User",
-        "description": "Authenticate a user using either OAuth (via JWT) or email/password.\n\nThis endpoint supports:\n- OAuth: Validates a JWT token and fetches the user by email.\n- Email/Password: Verifies credentials against the database.\n\nArgs:\n    user_to_authenticate (Union[AuthenticateUserEmailPassword, AuthenticateUserOAuth]):\n        Either an email/password object or a JWT-based OAuth object.\n    app (App): FastAPI dependency that provides access to DB and config.\n\nReturns:\n    JsonResponseWithStatus: Authenticated user info + auth token cookie,\n    or an error response.",
+        "description": "Authenticate a user using email/password.\n\nThis endpoint supports:\n- Email/Password: Verifies credentials against the database.\n\nArgs:\n    user_to_authenticate (AuthenticateUserEmailPassword):\n        An email/password object.\n    app (App): FastAPI dependency that provides access to DB and config.\n\nReturns:\n    JsonResponseWithStatus: Authenticated user info + auth token cookie,\n    or an error response.",
         "operationId": "authenticate_user_api_user_authenticate_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/AuthenticateUserEmailPassword"
-                  },
-                  {
-                    "$ref": "#/components/schemas/AuthenticateUserOAuth"
-                  }
-                ],
-                "title": "User To Authenticate"
+                "$ref": "#/components/schemas/AuthenticateUserEmailPassword"
               }
             }
           },
@@ -686,15 +660,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/InvalidOrExpiredJWTToken"
-                    },
-                    {
-                      "$ref": "#/components/schemas/InvalidEmailOrPassword"
-                    }
-                  ],
-                  "title": "Response 401 Authenticate User Api User Authenticate Post"
+                  "$ref": "#/components/schemas/InvalidEmailOrPassword"
                 }
               }
             }
@@ -1904,25 +1870,6 @@
         "type": "object",
         "title": "AuthenticateUserError"
       },
-      "AuthenticateUserOAuth": {
-        "properties": {
-          "provider": {
-            "$ref": "#/components/schemas/Provider",
-            "description": "OAuth provider"
-          },
-          "token": {
-            "type": "string",
-            "title": "Token",
-            "description": "OAuth token in JWT format"
-          }
-        },
-        "type": "object",
-        "required": [
-          "provider",
-          "token"
-        ],
-        "title": "AuthenticateUserOAuth"
-      },
       "AuthenticateUserPostResponse": {
         "properties": {
           "message": {
@@ -2519,59 +2466,6 @@
         "type": "object",
         "title": "CreateUserError"
       },
-      "CreateUserOauth": {
-        "properties": {
-          "email": {
-            "type": "string",
-            "maxLength": 50,
-            "minLength": 3,
-            "format": "email",
-            "title": "Email",
-            "description": "User's email address"
-          },
-          "name": {
-            "type": "string",
-            "maxLength": 50,
-            "minLength": 3,
-            "title": "Name",
-            "description": "User's full name"
-          },
-          "password": {
-            "type": "string",
-            "maxLength": 50,
-            "minLength": 8,
-            "format": "password",
-            "title": "Password",
-            "description": "User's password (will be hashed)",
-            "writeOnly": true
-          },
-          "config_id": {
-            "type": "integer",
-            "minimum": 0.0,
-            "title": "Config Id",
-            "description": "Configuration ID to use"
-          },
-          "token": {
-            "type": "string",
-            "title": "Token",
-            "description": "JWT token for authentication"
-          },
-          "provider": {
-            "$ref": "#/components/schemas/Provider",
-            "description": "OAuth provider (Google, Microsoft, etc.)"
-          }
-        },
-        "type": "object",
-        "required": [
-          "email",
-          "name",
-          "password",
-          "config_id",
-          "token",
-          "provider"
-        ],
-        "title": "CreateUserOauth"
-      },
       "CreateUserPostResponse": {
         "properties": {
           "message": {
@@ -2835,17 +2729,6 @@
         "type": "object",
         "title": "InvalidOrExpiredAuthToken"
       },
-      "InvalidOrExpiredJWTToken": {
-        "properties": {
-          "message": {
-            "type": "string",
-            "title": "Message",
-            "default": "Invalid or expired token!"
-          }
-        },
-        "type": "object",
-        "title": "InvalidOrExpiredJWTToken"
-      },
       "InvalidOrExpiredProjectToken": {
         "properties": {
           "message": {
@@ -2942,14 +2825,6 @@
         },
         "type": "object",
         "title": "ProjectNotFoundError"
-      },
-      "Provider": {
-        "type": "string",
-        "enum": [
-          "no_provider",
-          "google"
-        ],
-        "title": "Provider"
       },
       "QueryChatMessageRole": {
         "type": "string",

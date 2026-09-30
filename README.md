@@ -198,7 +198,7 @@ Set the referenced variable in `.env` (e.g. `OPENROUTER_API_KEY=...`) and restar
 ### Authentication & User Management
 ```http
 POST   /api/user/create/             # Create new user account
-POST   /api/user/authenticate/       # User login (email/password or OAuth)
+POST   /api/user/authenticate/       # User login (email/password)
 GET    /api/user/get                 # Get current user profile
 PUT    /api/user/update/             # Update user profile
 DELETE /api/user/delete/             # Delete user account
@@ -298,7 +298,7 @@ curl -s \
 ## 🗄️ Database Architecture
 
 ### Core Tables
-- **Users**: Authentication, profiles, and OAuth integration
+- **Users**: Email/password authentication and profiles
 - **Projects**: Collaborative workspaces with multi-file context
 - **Sessions**: Development session tracking and analytics
 - **Completions**: AI-generated suggestions with performance metrics

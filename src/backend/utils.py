@@ -5,8 +5,6 @@ from enum import Enum
 from typing import Any, Dict, Union, get_args, get_origin
 from uuid import UUID
 
-from google.auth.transport import requests
-from google.oauth2 import id_token
 from polyfactory.factories.pydantic_factory import ModelFactory
 from polyfactory.field_meta import FieldMeta
 from pydantic import BaseModel, EmailStr, SecretStr
@@ -197,20 +195,6 @@ class Fakable:
             return _Factory.build(**overrides)
         else:
             return _Factory.batch(size=n, **overrides)
-
-
-def verify_jwt_token(token: str, provider: str = "google"):
-    """
-    Verifies a JWT token using the provider's public key infrastructure.
-    Currently supports Google only.
-    """
-    try:
-        if provider == "google":
-            id_info = id_token.verify_oauth2_token(token, requests.Request())
-            email = id_info.get("email")
-            return {"email": email, "id_info": id_info}
-    except ValueError:
-        return None
 
 
 def recursive_json_loads(obj):

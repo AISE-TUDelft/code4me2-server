@@ -228,7 +228,6 @@ services:
       args:
         REACT_APP_BACKEND_HOST: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
         REACT_APP_BACKEND_PORT: ""
-        REACT_APP_GOOGLE_CLIENT_ID: ${REACT_APP_GOOGLE_CLIENT_ID:-}
     restart: unless-stopped
     logging: *default-logging
     ports:

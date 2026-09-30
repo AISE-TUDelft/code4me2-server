@@ -67,10 +67,6 @@ class UserAlreadyExistsWithThisEmail(ErrorResponse):
     message: str = Field(default="User already exists with this email!")
 
 
-class InvalidOrExpiredJWTToken(ErrorResponse):
-    message: str = Field(default="Invalid or expired token!")
-
-
 class CreateUserError(ErrorResponse):
     message: str = Field(default="Server failed to create a new user!")
 
@@ -85,10 +81,6 @@ class AuthenticateUserNormalPostResponse(AuthenticateUserPostResponse):
     message: str = Field(
         default="User authenticated successfully via email and password."
     )
-
-
-class AuthenticateUserOAuthPostResponse(AuthenticateUserPostResponse):
-    message: str = Field(default="User authenticated successfully via OAuth.")
 
 
 class InvalidEmailOrPassword(ErrorResponse):

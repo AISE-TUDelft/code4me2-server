@@ -34,7 +34,6 @@ def dummy_config():
         PGADMIN_DEFAULT_PASSWORD="adminpass",
         WEBSITE_HOST="localhost",
         WEBSITE_PORT=3000,
-        REACT_APP_GOOGLE_CLIENT_ID="fake-google-client-id",
         REDIS_HOST="localhost",
         REDIS_PORT=6379,
         CELERY_BROKER_HOST="localhost",

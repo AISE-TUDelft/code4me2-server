@@ -26,7 +26,6 @@ const emptyModulesTemplate = () => ({
 });
 
 const defaultServer = { host: 'http://127.0.0.1', port: 8008, contextPath: '', timeout: 5000 };
-const defaultAuth = { google: { clientId: '' } };
 const defaultModels = { available: [], systemPrompt: '' };
 
 // Simple HOCON serializer (object -> HOCON string)
@@ -87,7 +86,6 @@ const STARTER_HOCON = `config {
     }
   }
   server { host = "http://127.0.0.1" port = 8008 contextPath = "" timeout = 5000 }
-  auth { google { clientId = "" } }
   models { available = [] systemPrompt = "" }
   // languages: static, provided by the system (you can omit this block)
 }`;
@@ -154,8 +152,6 @@ const SCHEMA_GUIDE = `config {
   // Server Settings
   server { host = "http://127.0.0.1" port = 8008 contextPath = "" timeout = 5000 }
 
-  // Authentication Settings
-  auth { google { clientId = "" } }
 
   // Model configuration
   models {
@@ -263,7 +259,6 @@ export default function ConfigManagement({ user }) {
         const obj = {
           modules: data?.modules || emptyModulesTemplate().modules,
           server: data?.server || defaultServer,
-          auth: data?.auth || defaultAuth,
           models: data?.models || defaultModels,
           languages: languages.mapping || {},
         };
@@ -276,7 +271,7 @@ export default function ConfigManagement({ user }) {
     setSelectedId(null);
     setEditMode('hocon');
     setHoconText(STARTER_HOCON);
-    // setConfigObj({ ...emptyModulesTemplate(), server: defaultServer, auth: defaultAuth, models: defaultModels, languages: languages.mapping || {} }); // Form builder disabled
+    // setConfigObj({ ...emptyModulesTemplate(), server: defaultServer, models: defaultModels, languages: languages.mapping || {} }); // Form builder disabled
   };
 
 

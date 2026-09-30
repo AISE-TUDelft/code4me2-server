@@ -75,11 +75,11 @@ export const hashPassword = (password) => {
 /**
  * Make an API request to create a new user
  *
- * @param {Object} userData - User data including name, email, password, and optional googleCredential
+ * @param {Object} userData - User data including name, email, and password
  * @returns {Promise} - Promise that resolves with the API response
  */
 export const createUser = async (userData) => {
-  const { name, email, password, googleCredential } = userData;
+  const { name, email, password } = userData;
   try {
     // Prepare the request body
     const requestBody = {
@@ -88,12 +88,6 @@ export const createUser = async (userData) => {
       password,
       config_id: 1, // Default config ID - you may want to make this configurable
     };
-
-    // If we have a Google credential, include it in the request
-    if (googleCredential) {
-      requestBody.token = googleCredential;
-      requestBody.provider = "google";
-    }
 
     const response = await fetch(
       `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/user/create/`,
@@ -172,56 +166,6 @@ export const authenticateUser = async (credentials) => {
     }
   } catch (error) {
     console.error("Authentication error:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Authenticate a user with OAuth
- *
- * @param {Object} oauthData - OAuth data (provider, token)
- * @returns {Promise} - Promise that resolves with the API response
- */
-export const authenticateWithOAuth = async (oauthData) => {
-  const { provider, token } = oauthData;
-
-  try {
-    console.log(`Authenticating user with ${provider} OAuth`);
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/user/authenticate/`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include", // Include cookies for auth token
-        body: JSON.stringify({ token: token, provider: provider }),
-      },
-    );
-    const responseBody = await parseResponseSafe(response);
-
-    if (!response.ok) {
-      const errMsg = (responseBody && (responseBody["message"] || responseBody["detail"])) || `${response.status}: ${response.statusText}`;
-      return {
-        ok: false,
-        error: errMsg,
-      };
-    } else {
-      if (!responseBody || typeof responseBody !== "object") {
-        return { ok: false, error: "Empty or invalid server response." };
-      }
-      return {
-        ok: true,
-        message: responseBody["message"],
-        user: responseBody["user"],
-        config: responseBody["config"],
-      };
-    }
-  } catch (error) {
-    console.error(`${provider} OAuth authentication error:`, error);
     return {
       ok: false,
       error: "An unexpected error occurred. Please try again.",

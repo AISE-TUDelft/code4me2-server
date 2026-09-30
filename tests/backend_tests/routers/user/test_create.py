@@ -8,7 +8,6 @@ from App import App
 from backend.Responses import (
     CreateUserError,
     CreateUserPostResponse,
-    InvalidOrExpiredJWTToken,
     UserAlreadyExistsWithThisEmail,
 )
 from main import app  # Adjust this import based on your project structure
@@ -26,17 +25,16 @@ class TestCreate:
 
     @pytest.fixture(scope="function")
     def client(self, setup_app):
-        with TestClient(app) as client:
-            client.mock_app = setup_app
-            yield client
+        # Route tests use the mocked App, without starting real database services.
+        client = TestClient(app)
+        client.mock_app = setup_app
+        yield client
+        client.close()
 
     @pytest.fixture(scope="function")
     def create_user_query(self):
         return Queries.CreateUser.fake()
 
-    @pytest.fixture(scope="function")
-    def create_user_oauth_query(self):
-        return Queries.CreateUserOauth.fake()
 
     def test_create_user_success(
         self, client: TestClient, create_user_query: Queries.CreateUser
@@ -74,29 +72,6 @@ class TestCreate:
                 response.json() == UserAlreadyExistsWithThisEmail()
             )  # Check the correct error response
 
-    def test_create_user_invalid_token(
-        self, client: TestClient, create_user_oauth_query: Queries.CreateUserOauth
-    ):
-        mock_crud = MagicMock()
-        mock_crud.get_user_by_email.return_value = None  # Simulating no user found
-        mock_verify_jwt_token = MagicMock(
-            return_value=None
-        )  # Simulating an invalid/expired token
-
-        with (
-            patch("backend.routers.user.create.crud", mock_crud),
-            patch(
-                "backend.routers.user.create.verify_jwt_token", mock_verify_jwt_token
-            ),
-        ):
-            response = client.post(
-                "/api/user/create", json=create_user_oauth_query.dict()
-            )
-
-            assert response.status_code == 401
-            assert (
-                response.json() == InvalidOrExpiredJWTToken()
-            )  # Check the invalid token error response
 
     def test_create_user_invalid_payload(self, client: TestClient):
         # Testing invalid payload, e.g., missing fields
@@ -110,29 +85,6 @@ class TestCreate:
             "detail" in response.json()
         )  # FastAPI should return validation error details
 
-    def test_create_user_oauth_email_mismatch(
-        self, client: TestClient, create_user_oauth_query: Queries.CreateUserOauth
-    ):
-        mock_crud = MagicMock()
-        mock_crud.get_user_by_email.return_value = None  # Simulating no user found
-
-        # Simulate JWT token verification returning a different email than the one in the request
-        mock_verify_jwt_token = MagicMock(
-            return_value={"email": "different_email@example.com"}
-        )
-
-        with (
-            patch("backend.routers.user.create.crud", mock_crud),
-            patch(
-                "backend.routers.user.create.verify_jwt_token", mock_verify_jwt_token
-            ),
-        ):
-            response = client.post(
-                "/api/user/create", json=create_user_oauth_query.dict()
-            )
-
-            assert response.status_code == 401
-            assert response.json() == InvalidOrExpiredJWTToken()
 
     def test_create_user_server_error(
         self, client: TestClient, create_user_query: Queries.CreateUser
