@@ -274,6 +274,11 @@ participant through the plugin's status banner.
   start with `code4me-e2e-`, so destructive cleanup cannot select the developer's
   Compose project. Every fresh run, and every layer state directory, creates
   unique account emails.
+
+  The stub listens on loopback too (`stack.stub_host`). The backend container
+  calls it through `host.docker.internal`, which Docker Desktop and Colima
+  forward to the host's loopback. A Linux Docker engine maps that name to the
+  bridge gateway instead, so run with `--set stack.stub_host=0.0.0.0` there.
 - **IDE runs.** Each IDE run has a private home under `runs/<id>/ide-home/`,
   including its ACP registry, credentials, project and caches. Credentials are
   kept in memory (PasswordSafe `MEMORY_ONLY`), so the sandbox never reads or
@@ -398,8 +403,14 @@ against paid OpenRouter (`E2E_CLASSIC_PROVIDER=1`) and are skipped otherwise.
 
 ## Continuous integration
 
-`.github/workflows/e2e.yml` runs the harness unit tests and the `backend` or
-`browser` layer, on demand and on pushes that touch `e2e/`.
+`.github/workflows/e2e.yml` runs the harness unit tests on every push or pull
+request that touches the harness or the backend it drives (`src/` without the
+website, `packaging/`, `Dockerfile.cpu`, `requirements.txt`, `pyproject.toml`,
+`alembic.ini`). The `backend` layer runs for pushes to `test_draft` and `main`,
+for pull requests and on demand; the other layers run on demand only.
+- The runner's Docker engine is Linux, so the workflow passes
+  `--set stack.stub_host=0.0.0.0` (see *Compose project and ports* under
+  Isolation and repeatability).
 - Both repositories must be checked out side by side; the workflow sets
   `CODE4ME_E2E_WORKSPACE` to the directory holding them.
 - Missing prerequisites are provisioned the same way as locally, including

@@ -33,10 +33,31 @@ on:
       pluginRef:
         description: Exact plugin commit SHA to test (required for plugin/all)
         required: false
+  # The harness unit tests run whenever the harness or the backend it drives
+  # changes; the `layer` job limits the Docker stack to the integration
+  # branches, pull requests and manual runs.
   push:
     paths:
       - e2e/**
       - .github/workflows/e2e.yml
+      - src/**
+      - "!src/website/**"
+      - Dockerfile.cpu
+      - requirements.txt
+      - packaging/**
+      - pyproject.toml
+      - alembic.ini
+  pull_request:
+    paths:
+      - e2e/**
+      - .github/workflows/e2e.yml
+      - src/**
+      - "!src/website/**"
+      - Dockerfile.cpu
+      - requirements.txt
+      - packaging/**
+      - pyproject.toml
+      - alembic.ini
 
 concurrency:
   group: e2e-${{ github.ref }}
@@ -59,6 +80,9 @@ jobs:
 
   layer:
     name: ${{ inputs.layer || 'backend' }} layer
+    # Feature-branch pushes stop at the unit tests; dispatch the workflow (or
+    # open a pull request) to run the stack there.
+    if: github.event_name != 'push' || github.ref_name == 'test_draft' || github.ref_name == 'main'
     runs-on: ubuntu-latest
     needs: harness-tests
     steps:
@@ -113,12 +137,16 @@ jobs:
           CODE4ME_E2E_WORKSPACE: ${{ github.workspace }}
           CODE4ME_E2E_BROWSER_PYTHON: ${{ inputs.layer == 'browser' && format('{0}/browser-venv/bin/python', runner.temp) || '' }}
           E2E_LAYER: ${{ inputs.layer || 'backend' }}
+        # The runner's Linux Docker engine maps host.docker.internal to the
+        # bridge gateway, so the backend reaches the stub provider only when it
+        # listens on all interfaces.
         run: |
           if [ "$E2E_LAYER" = all ] || [ "$E2E_LAYER" = plugin ]; then
-            export CODE4ME_E2E_PYTHON="$(command -v python)"
-            xvfb-run -a python -m code4me_e2e test --layer "$E2E_LAYER" --json
+            CODE4ME_E2E_PYTHON="$(command -v python)"
+            export CODE4ME_E2E_PYTHON
+            xvfb-run -a python -m code4me_e2e test --layer "$E2E_LAYER" --set stack.stub_host=0.0.0.0 --json
           else
-            python -m code4me_e2e test --layer "$E2E_LAYER" --json
+            python -m code4me_e2e test --layer "$E2E_LAYER" --set stack.stub_host=0.0.0.0 --json
           fi
       - name: Record successful full E2E revision pair
         if: ${{ inputs.layer == 'all' }}
