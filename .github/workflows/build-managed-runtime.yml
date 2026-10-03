@@ -12,6 +12,10 @@ on:
         type: boolean
         required: true
         default: false
+      minPluginVersion:
+        description: Minimum compatible Code4Me plugin version (leave blank if unchanged)
+        required: false
+        default: ""
   push:
     paths:
       - .github/workflows/build-managed-runtime.yml
@@ -159,12 +163,19 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/src
           RELEASE_VERSION: ${{ inputs.version }}
+          MIN_PLUGIN_VERSION: ${{ inputs.minPluginVersion }}
+          PUBLISH_RELEASE: ${{ inputs.publishRelease }}
         run: |
           version="$RELEASE_VERSION"
           if [ -z "$version" ]; then version="0.0.1-dev.${GITHUB_SHA:0:12}"; fi
+          metadata=()
+          if [ "$PUBLISH_RELEASE" = "true" ]; then
+            metadata+=(--release-base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/runtime-v$version")
+          fi
+          if [ -n "$MIN_PLUGIN_VERSION" ]; then metadata+=(--min-plugin-version "$MIN_PLUGIN_VERSION"); fi
           python -m research.study.agents.participant_release native \
             --skip-build --version "$version" --platform "${{ matrix.platform }}" \
-            --server-commit "$GITHUB_SHA" --output native-release
+            --server-commit "$GITHUB_SHA" --output native-release "${metadata[@]}"
       - name: Notarize macOS runtime archive
         if: github.event_name == 'workflow_dispatch' && inputs.publishRelease && startsWith(matrix.platform, 'macos')
         shell: bash

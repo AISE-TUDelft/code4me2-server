@@ -60,6 +60,22 @@ def _admin() -> AuthenticatedUser:
     )
 
 
+@pytest.mark.parametrize("url", [
+    "http://github.com/owner/repo/releases/download/v1/" + ARCHIVE,
+    "https://example.com/" + ARCHIVE,
+    "https://user@github.com/owner/repo/releases/download/v1/" + ARCHIVE,
+    "https://github.com/owner/repo/releases/latest/download/" + ARCHIVE,
+    "https://github.com/owner/repo/releases/download/v1/wrong.zip",
+    "https://github.com/owner/repo/releases/download/v1/" + ARCHIVE + "?token=secret",
+    "https://[malformed/" + ARCHIVE,
+])
+def test_import_refuses_non_exact_public_release_downloads(tmp_path, url):
+    document = json.loads(json.dumps(MANIFEST))
+    document["artifacts"][0]["download_url"] = url
+    with pytest.raises(ManifestImportError, match="exact public GitHub"):
+        build_manifest_release(document, archives={ARCHIVE: _archive(tmp_path)})
+
+
 def _row(release):
     return SimpleNamespace(agent_id=release.agent_id, source_manifest_digest=release.source_manifest_digest, release_json=release.model_dump(mode="json"))
 
@@ -122,6 +138,19 @@ def test_build_manifest_release_uses_an_explicit_adapter_verbatim(tmp_path):
     }
     plan = build_manifest_release(manifest, archives={ARCHIVE: _archive(tmp_path)})
     assert plan.release.adapter.digest == "sha256:" + "a" * 64
+
+
+def test_import_preserves_the_exact_public_asset_and_runtime_contract(tmp_path):
+    manifest = _clone(MANIFEST)
+    url = f"https://github.com/AISE-TUDelft/code4me2-server/releases/download/runtime-v1.2.3/{ARCHIVE}"
+    manifest["artifacts"][0]["download_url"] = url
+    manifest["min_plugin_version"] = "0.0.1"
+
+    release = build_manifest_release(manifest, archives={ARCHIVE: _archive(tmp_path)}).release
+
+    assert release.artifacts[0].download_url == url
+    assert release.artifacts[0].managed_protocol == "1"
+    assert release.min_plugin_version == "0.0.1"
 
 
 def test_build_manifest_release_rejects_a_directory_prefixed_archive(tmp_path):

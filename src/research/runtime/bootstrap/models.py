@@ -19,6 +19,7 @@ from uuid import UUID  # noqa: TC003 - pydantic resolves model annotations at ru
 from pydantic import BaseModel, ConfigDict, Field
 
 from research.telemetry.enums import CoverageState
+from research.study.agents.models import DistributionArtifact
 
 _FROZEN = ConfigDict(extra="forbid", frozen=True)
 _BASE = ConfigDict(extra="forbid")
@@ -173,6 +174,11 @@ class BootstrapAgentRelease(BaseModel):
 
     agent_id: str
     release_id: str
+    version: str = ""
+    artifact: Optional[DistributionArtifact] = None
+    min_plugin_version: Optional[str] = None
+    min_protocol_version: Optional[str] = None
+    max_protocol_version: Optional[str] = None
     # The bootstrap pin is the ZIP fingerprint: ``artifact_digest``/``archive_sha256``
     # are the same value for a PACKAGED release and empty for BYOA.
     artifact_digest: str = ""
@@ -356,6 +362,17 @@ class BootstrapIssue(BaseModel):
     field: str = ""
 
 
+class BootstrapPreparationV1(BaseModel):
+    """Authorized assignment metadata; creates no session or capability."""
+
+    model_config = _FROZEN
+
+    enrollment_id: UUID
+    study_id: UUID
+    assignment: BootstrapAssignment
+    agent_release: BootstrapAgentRelease
+
+
 class BootstrapResult(BaseModel):
     """Typed outcome of composing a bootstrap manifest."""
 
@@ -364,4 +381,5 @@ class BootstrapResult(BaseModel):
     outcome: BootstrapOutcome
     reason: BootstrapReasonCode = BootstrapReasonCode.OK
     manifest: Optional[BootstrapManifestV1] = None
+    preparation: Optional[BootstrapPreparationV1] = None
     issue: Optional[BootstrapIssue] = None

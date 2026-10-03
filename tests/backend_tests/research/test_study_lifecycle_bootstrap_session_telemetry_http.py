@@ -14,6 +14,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -23,6 +24,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from App import App
+from backend.routers.acp import get_acp_agent_config
 from backend.routers.analytics.auth_utils import AuthenticatedUser, get_current_user
 from backend.routers.research.bootstrap import BOOTSTRAP_SIGNING_SECRET
 from database.migration.migration_manager import MigrationManager
@@ -114,14 +116,13 @@ def _seed_user(session, email: str, *, can_research: bool = False) -> uuid.UUID:
     return user_id
 
 
-def _qualified_packaged_release(session) -> str:
+def _qualified_packaged_release(session, *, artifact_digest="sha256:" + "c" * 64) -> str:
     """Insert a QUALIFIED packaged codex release for macos/arm64.
 
     Modeled on the BYOA helper: the row carries one macos/arm64 artifact with
     a sha256 digest plus one administrator approval for macos/arm64, which is
     what derives the QUALIFIED status the bootstrap composition requires.
     """
-    artifact_digest = "sha256:" + "c" * 64
     adapter_digest = "sha256:" + "d" * 64
     release = AgentReleaseV1(
         agent_id="codex-acp",
@@ -341,6 +342,7 @@ def _release_profile(
     release_id: str,
     *,
     framework_version: str = "code4me2-agent",
+    name: str = "Codex",
 ) -> tuple[uuid.UUID, uuid.UUID]:
     connection_id = uuid.uuid4()
     profile_id = uuid.uuid4()
@@ -364,7 +366,7 @@ def _release_profile(
         text(
             "INSERT INTO public.agent_profile "
             "(profile_id, owner_user_id, name, model, framework_version, release_id, connection_id, tools_json, approval_policy, max_steps) "
-            "VALUES (:profile_id, :owner_id, 'Codex', 'model', :framework, :release_id, :connection_id, '[]', 'auto', 1)"
+            "VALUES (:profile_id, :owner_id, :name, 'model', :framework, :release_id, :connection_id, '[]', 'auto', 1)"
         ),
         {
             "profile_id": profile_id,
@@ -372,6 +374,7 @@ def _release_profile(
             "release_id": release_id,
             "connection_id": connection_id,
             "framework": framework_version,
+            "name": name,
         },
     )
     session.commit()
@@ -435,6 +438,81 @@ def _telemetry_event(
     if payload is not None:
         event["payload"] = payload
     return event
+
+
+def test_two_users_prepare_their_own_study_config_without_opening_sessions(http_runtime):
+    client, session_factory, current_user = http_runtime
+    with session_factory() as session:
+        owner_id = _seed_user(session, "preparation-owner@example.com", can_research=True)
+        users = [_seed_user(session, f"preparation-user-{index}@example.com") for index in range(2)]
+        profiles = []
+        releases = []
+        for index in range(2):
+            release_id = _qualified_packaged_release(session, artifact_digest="sha256:" + str(index + 1) * 64)
+            profile_id, _ = _release_profile(session, owner_id, release_id, name=f"Preparation {index}")
+            session.execute(text("UPDATE agent_profile SET max_steps = :steps WHERE profile_id = :id"), {"steps": index + 2, "id": profile_id})
+            session.commit()
+            profiles.append(profile_id)
+            releases.append(release_id)
+
+    enrollments = []
+    for index in range(2):
+        current_user["value"] = _owner(owner_id)
+        created = client.post("/api/research/studies", json={
+            "name": f"Agent preparation study {index}", "default_budget_usd": "10",
+            "profile_ids": [str(profiles[index])],
+            "session_policy": {"idle_timeout_seconds": 600, "resume_grace_seconds": 120, "heartbeat_seconds": 30},
+        })
+        assert created.status_code == 201, created.text
+        current_user["value"] = _participant(users[index])
+        joined = client.post("/api/research/join", json={"join_code": created.json()["study"]["join_code"], "accept_consent": True})
+        assert joined.status_code == 201, joined.text
+        enrollments.append(joined.json()["enrollment_id"])
+
+    # Editing the source profiles must not migrate the already-created studies.
+    with session_factory() as session:
+        session.execute(text("UPDATE agent_profile SET max_steps = 99"))
+        session.commit()
+
+    for index in range(2):
+        current_user["value"] = _participant(users[index])
+        payload = {"enrollment_id": enrollments[index], "context_id": f"preparation-project-{index}",
+                   "environment": {"os": "macos", "arch": "arm64"}, "prepare_only": True}
+        prepared = client.post("/api/research/bootstrap/research-sessions", json=payload)
+        assert prepared.status_code == 200, prepared.text
+        metadata = prepared.json()["preparation"]
+        assert metadata["agent_release"]["release_id"] == releases[index]
+        assert metadata["assignment"]["agent_profile_id"] == str(profiles[index])
+        assert "session_capability" not in metadata
+        denied = client.post("/api/research/bootstrap/research-sessions", json={**payload, "enrollment_id": enrollments[1 - index]})
+        assert denied.status_code == 404, denied.text
+
+    with session_factory() as session:
+        assert session.execute(text("SELECT count(*) FROM research_session")).scalar_one() == 0
+
+    for index in range(2):
+        current_user["value"] = _participant(users[index])
+        activated = client.post("/api/research/bootstrap/research-sessions", json={
+            "enrollment_id": enrollments[index], "context_id": f"preparation-project-{index}",
+            "environment": {"os": "macos", "arch": "arm64"},
+        })
+        assert activated.status_code == 201, activated.text
+        manifest = activated.json()["manifest"]
+        assert manifest["agent_release"]["release_id"] == releases[index]
+        assert manifest["agent_profile"]["max_steps"] == index + 2
+
+        with patch("backend.routers.acp.AcpAuthorizationService") as authorization:
+            authorization.return_value.validate_or_refresh.return_value = SimpleNamespace(user_id=users[index])
+            config_response = get_acp_agent_config(
+                app=SimpleNamespace(get_db_session=session_factory, get_redis_manager=lambda: None),
+                authorization="Bearer fixture-token", managed_protocol_version="1",
+            )
+        assert config_response.status_code == 200, config_response.body
+        config = json.loads(config_response.body)
+        assert config["max_iterations"] == index + 2
+        assert config["agent_profile"] == f"Preparation {index}"
+        assert config["transport"] == "managed_backend"
+        assert config["api_key_ref"] is None and config["base_url"] is None
 
 
 def test_http_packaged_bootstrap_session_telemetry_lifecycle(http_runtime):

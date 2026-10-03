@@ -152,6 +152,8 @@ class DistributionArtifact(BaseModel):
     sha256: str
     size: int
     executable: Optional[str] = None
+    download_url: Optional[str] = None
+    managed_protocol: Optional[str] = None
     license: Optional[str] = None
     license_review: Optional[str] = None
     signature: Optional[str] = None
@@ -290,6 +292,7 @@ class AgentReleaseV1(BaseModel):
     # Negotiated ACP protocol range the release is compatible with.
     min_protocol_version: Optional[str] = None
     max_protocol_version: Optional[str] = None
+    min_plugin_version: Optional[str] = None
     tests: list[ReleaseTests] = Field(default_factory=list)
     qualification_status: QualificationStatus = QualificationStatus.UNQUALIFIED
     created_at: Optional[datetime] = None
