@@ -1,8 +1,8 @@
 """The tracked curated OpenAPI contract must stay reproducible.
 
 `openapi.json` is the curated 18-path plugin-client contract. The exporter is the
-committed generation invocation, so CI can prove the tracked snapshot matches the
-live routers instead of trusting a hand-edited file.
+committed generation invocation, so this test can prove the tracked snapshot
+matches the live routers instead of trusting a hand-edited file.
 """
 
 from __future__ import annotations
