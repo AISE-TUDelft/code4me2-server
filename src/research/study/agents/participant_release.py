@@ -246,6 +246,10 @@ def prepare(
             "managed_protocol": "1",
             "tests": projected.get("tests"),
         }
+        if projected.get("download_url") is not None:
+            # A published runtime's immutable asset URL must survive the
+            # preparation recipe; the plugin needs it for assigned studies.
+            artifact_document["download_url"] = projected["download_url"]
         if managed.adapter is not None:
             # The plugin verifies the bootstrap's adapter pin per artifact.
             artifact_document["adapter"] = managed.adapter.model_dump(mode="json")
