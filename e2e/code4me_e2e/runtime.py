@@ -4,7 +4,8 @@ The native agent archive and the release manifest that describes it are produced
 by the same module the real release pipeline uses
 (``research.study.agents.participant_release native``). The harness therefore
 imports a *tested* release -- manifest plus verified archive bytes -- instead of
-inventing a digest, and the plugin staging overlay reuses those exact bytes.
+inventing a digest, and the UI layer seeds those exact bytes into the IDE's
+agent cache (the plugin bundles no agent).
 """
 from __future__ import annotations
 
@@ -115,12 +116,28 @@ def agent_release(run_path: Path) -> Tuple[Path, Path]:
     return _produce_release(server, python, binary, fingerprint, run_path)
 
 
+def seed_agent_cache(system_dir: Path, archive: Path) -> str:
+    """Place the study's agent archive in the IDE's verified installer cache.
+
+    The plugin bundles no agent, and the e2e release has no public download URL,
+    so the archive the backend imports must already sit where the installer looks
+    (``<system>/code4me/runtimes/code4me-agent/archives/<sha256>.zip``). The plugin
+    re-verifies its size and digest before use. Returns that digest.
+    """
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    target = system_dir / "code4me/runtimes/code4me-agent/archives" / f"{digest}.zip"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+        shutil.copyfile(archive, target)
+    return digest
+
+
 def prepare(run_path: Path) -> list[str]:
     """Cache native builds by source content, then supply Gradle staging inputs."""
     root = require_workspace()
     server, plugin = root / "code4me2-server", root / "code4me2"
     python = _harness_python(server)
-    binary, fingerprint = _ensure_binary(server, python, run_path)
+    _ensure_binary(server, python, run_path)
     # The Gradle proxy builder has no up-to-date inputs. Cache it here using
     # both the proxy and its shared server contracts.
     cache = E2E_DIR / ".cache/agent"
@@ -136,29 +153,6 @@ def prepare(run_path: Path) -> list[str]:
         if rc:
             raise RuntimeError("Proxy build failed; see proxy-build.log")
         proxy_stamp.write_text(proxy_fingerprint)
-    # One producer run supplies both the release manifest (imported by the
-    # backend steps) and the archive staged into the plugin overlay, so the two
-    # consumers can never disagree about the bytes.
-    release_manifest, release_archive = _produce_release(server, python, binary, fingerprint, run_path)
-    release = json.loads(release_manifest.read_text())
-    artifact = release["artifacts"][0]
-    overlay = cache / "resources"
-    resource_root = overlay / "code4me-runtime"
-    resource_root.mkdir(parents=True, exist_ok=True)
-    archive = resource_root / "agent.zip"
-    source_digest = hashlib.sha256(release_archive.read_bytes()).hexdigest()
-    if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != source_digest:
-        shutil.copyfile(release_archive, archive)
-    # The plugin overlay keeps its historical relative-archive contract; the
-    # release manifest (basename, with test results) is what the server imports.
-    manifest = {"manifest_version": 1, "runtime_version": release["runtime_version"],
-                "managed_protocol_version": release.get("managed_protocol_version", "1"),
-                "artifacts": [{"runtime_id": artifact["runtime_id"], "version": artifact["version"],
-                               "platform": artifact["platform"], "architecture": artifact["architecture"],
-                               "archive": "code4me-runtime/agent.zip", "sha256": source_digest,
-                               "executable": artifact["executable"], "managed_protocol": "1"}]}
-    manifest_path = resource_root / "manifest.json"
-    serialized = json.dumps(manifest, indent=2) + "\n"
-    if not manifest_path.is_file() or manifest_path.read_text() != serialized:
-        manifest_path.write_text(serialized)
-    return [f"-Pcode4me.localRuntimeDir={overlay}", "--no-configuration-cache"]
+    # The plugin bundles no agent, like the participant build: the UI layer seeds
+    # the study's archive into the IDE cache instead (seed_agent_cache).
+    return ["--no-configuration-cache"]

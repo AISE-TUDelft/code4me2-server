@@ -357,8 +357,8 @@ def resolve_declared_archives(
     """Map every archive the manifest declares to its on-disk bytes.
 
     ``archive`` fields are basenames; the seeder resolves each against the
-    supplied directory (and the ``code4me-runtime/`` resource subdirectory, so
-    the checked-in plugin manifest works too). A declared archive that cannot be
+    supplied directory (and a ``code4me-runtime/`` subdirectory, the layout of a
+    locally built plugin recipe). A declared archive that cannot be
     found is left out: the planner then rejects the import, exactly like the
     HTTP route does.
     """

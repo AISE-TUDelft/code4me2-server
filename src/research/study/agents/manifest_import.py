@@ -58,6 +58,11 @@ __all__ = [
 #: Sentinel digest a build manifest must never carry for a shipped archive.
 PLACEHOLDER_DIGEST = "0" * 64
 
+#: The only GitHub repository (owner, name; GitHub compares them case-insensitively)
+#: whose release assets participants' plugins may download. The plugin enforces
+#: the same pin in ManagedRuntimeInstaller.
+RUNTIME_RELEASE_REPOSITORY = ("aise-tudelft", "code4me2-server")
+
 
 class ManifestImportError(ValueError):
     """A typed, operator-facing reason a build manifest cannot be imported.
@@ -328,14 +333,15 @@ def build_manifest_release(
             try:
                 url = urlsplit(str(download_url))
             except ValueError:
-                raise ManifestImportError("DOWNLOAD_URL_INVALID", "Agent downloads require an exact public GitHub release asset URL.", "download_url") from None
+                raise ManifestImportError("DOWNLOAD_URL_INVALID", "Agent downloads require an exact public GitHub release asset URL of AISE-TUDelft/code4me2-server.", "download_url") from None
             segments = [unquote(part) for part in url.path.split("/")[1:]]
             if not (
                 url.scheme == "https" and url.netloc == "github.com" and not url.query and not url.fragment
                 and len(segments) == 6 and all(part and part not in {".", ".."} and "/" not in part for part in segments)
+                and tuple(part.lower() for part in segments[:2]) == RUNTIME_RELEASE_REPOSITORY
                 and segments[2:4] == ["releases", "download"] and segments[4] != "latest" and segments[-1] == archive
             ):
-                raise ManifestImportError("DOWNLOAD_URL_INVALID", "Agent downloads require an exact public GitHub release asset URL.", "download_url")
+                raise ManifestImportError("DOWNLOAD_URL_INVALID", "Agent downloads require an exact public GitHub release asset URL of AISE-TUDelft/code4me2-server.", "download_url")
         artifacts.append(
             DistributionArtifact(
                 os=os_name,

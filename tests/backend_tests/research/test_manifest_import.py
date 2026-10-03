@@ -61,12 +61,13 @@ def _admin() -> AuthenticatedUser:
 
 
 @pytest.mark.parametrize("url", [
-    "http://github.com/owner/repo/releases/download/v1/" + ARCHIVE,
+    "http://github.com/AISE-TUDelft/code4me2-server/releases/download/v1/" + ARCHIVE,
     "https://example.com/" + ARCHIVE,
-    "https://user@github.com/owner/repo/releases/download/v1/" + ARCHIVE,
-    "https://github.com/owner/repo/releases/latest/download/" + ARCHIVE,
-    "https://github.com/owner/repo/releases/download/v1/wrong.zip",
-    "https://github.com/owner/repo/releases/download/v1/" + ARCHIVE + "?token=secret",
+    "https://user@github.com/AISE-TUDelft/code4me2-server/releases/download/v1/" + ARCHIVE,
+    "https://github.com/AISE-TUDelft/code4me2-server/releases/latest/download/" + ARCHIVE,
+    "https://github.com/AISE-TUDelft/code4me2-server/releases/download/v1/wrong.zip",
+    "https://github.com/AISE-TUDelft/code4me2-server/releases/download/v1/" + ARCHIVE + "?token=secret",
+    "https://github.com/someone/code4me2-server/releases/download/v1/" + ARCHIVE,
     "https://[malformed/" + ARCHIVE,
 ])
 def test_import_refuses_non_exact_public_release_downloads(tmp_path, url):
@@ -140,9 +141,10 @@ def test_build_manifest_release_uses_an_explicit_adapter_verbatim(tmp_path):
     assert plan.release.adapter.digest == "sha256:" + "a" * 64
 
 
-def test_import_preserves_the_exact_public_asset_and_runtime_contract(tmp_path):
+@pytest.mark.parametrize("repository", ["AISE-TUDelft/code4me2-server", "aise-tudelft/Code4Me2-Server"])
+def test_import_preserves_the_exact_public_asset_and_runtime_contract(tmp_path, repository):
     manifest = _clone(MANIFEST)
-    url = f"https://github.com/AISE-TUDelft/code4me2-server/releases/download/runtime-v1.2.3/{ARCHIVE}"
+    url = f"https://github.com/{repository}/releases/download/runtime-v1.2.3/{ARCHIVE}"
     manifest["artifacts"][0]["download_url"] = url
     manifest["min_plugin_version"] = "0.0.1"
 

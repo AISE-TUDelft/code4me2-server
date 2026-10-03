@@ -12,6 +12,11 @@ on:
         type: boolean
         required: true
         default: false
+      sign:
+        description: Code-sign the archives (macOS also notarized); needs the signing secrets
+        type: boolean
+        required: true
+        default: false
       minPluginVersion:
         description: Minimum compatible Code4Me plugin version (leave blank if unchanged)
         required: false
@@ -112,22 +117,44 @@ jobs:
           python -m pytest -q tests/code4me2_agent tests/test_participant_release.py
       - name: Build one-folder bundle
         run: python -m PyInstaller --clean --noconfirm packaging/code4me2-agent.spec
+      # Signing is opt-in. The plugin downloads, verifies (SHA-256 pinned by the
+      # study server) and launches these archives itself, so neither Gatekeeper
+      # nor SmartScreen assesses them; signing mainly helps on Windows hosts with
+      # Smart App Control or strict antivirus. Signing changes the archive bytes,
+      # so a signed build is a separate runtime version with its own SHA-256.
       - name: Sign macOS runtime
-        if: github.event_name == 'workflow_dispatch' && inputs.publishRelease && startsWith(matrix.platform, 'macos')
+        if: github.event_name == 'workflow_dispatch' && inputs.sign && startsWith(matrix.platform, 'macos')
         shell: bash
         env:
           CERTIFICATE_P12: ${{ secrets.CODE4ME_MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.CODE4ME_MACOS_CERTIFICATE_PASSWORD }}
           SIGNING_IDENTITY: ${{ secrets.CODE4ME_MACOS_SIGNING_IDENTITY }}
         run: |
-          test -n "$CERTIFICATE_P12" && test -n "$CERTIFICATE_PASSWORD" && test -n "$SIGNING_IDENTITY"
+          if [ -z "$CERTIFICATE_P12" ]; then
+            echo "::error::Missing CODE4ME_MACOS_CERTIFICATE_P12_BASE64 secret" >&2
+            exit 1
+          fi
+          if [ -z "$CERTIFICATE_PASSWORD" ]; then
+            echo "::error::Missing CODE4ME_MACOS_CERTIFICATE_PASSWORD secret" >&2
+            exit 1
+          fi
+          if [ -z "$SIGNING_IDENTITY" ]; then
+            echo "::error::Missing CODE4ME_MACOS_SIGNING_IDENTITY secret" >&2
+            exit 1
+          fi
           keychain="$RUNNER_TEMP/code4me-signing.keychain-db"
           certificate="$RUNNER_TEMP/code4me-signing.p12"
-          printf '%s' "$CERTIFICATE_P12" | base64 -D > "$certificate"
+          if ! printf '%s' "$CERTIFICATE_P12" | base64 -D > "$certificate" || [ ! -s "$certificate" ]; then
+            echo "::error::CODE4ME_MACOS_CERTIFICATE_P12_BASE64 must decode to a non-empty .p12 file" >&2
+            exit 1
+          fi
           security create-keychain -p temporary "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p temporary "$keychain"
-          security import "$certificate" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          if ! security import "$certificate" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"; then
+            echo "::error::macOS certificate import failed; check the .p12 content and CODE4ME_MACOS_CERTIFICATE_PASSWORD" >&2
+            exit 1
+          fi
           security set-key-partition-list -S apple-tool:,apple: -s -k temporary "$keychain"
           security list-keychains -d user -s "$keychain" login.keychain-db
           signed=0
@@ -139,8 +166,11 @@ jobs:
             fi
           done < <(find dist/code4me2-agent -depth -type f)
           test "$signed" -gt 0
+      # Publicly trusted code-signing keys must live in hardware (HSM, token or a
+      # cloud signing service) since June 2023, so a PFX secret only works with a
+      # legacy exportable certificate.
       - name: Sign Windows runtime
-        if: github.event_name == 'workflow_dispatch' && inputs.publishRelease && startsWith(matrix.platform, 'windows')
+        if: github.event_name == 'workflow_dispatch' && inputs.sign && startsWith(matrix.platform, 'windows')
         shell: pwsh
         env:
           CERTIFICATE_PFX: ${{ secrets.CODE4ME_WINDOWS_CERTIFICATE_PFX_BASE64 }}
@@ -177,14 +207,16 @@ jobs:
             --skip-build --version "$version" --platform "${{ matrix.platform }}" \
             --server-commit "$GITHUB_SHA" --output native-release "${metadata[@]}"
       - name: Notarize macOS runtime archive
-        if: github.event_name == 'workflow_dispatch' && inputs.publishRelease && startsWith(matrix.platform, 'macos')
+        if: github.event_name == 'workflow_dispatch' && inputs.sign && startsWith(matrix.platform, 'macos')
         shell: bash
         env:
           APPLE_ID: ${{ secrets.CODE4ME_APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.CODE4ME_APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.CODE4ME_APPLE_APP_PASSWORD }}
         run: |
-          test -n "$APPLE_ID" && test -n "$APPLE_TEAM_ID" && test -n "$APPLE_APP_PASSWORD"
+          if [ -z "$APPLE_ID" ]; then echo "::error::Missing CODE4ME_APPLE_ID secret" >&2; exit 1; fi
+          if [ -z "$APPLE_TEAM_ID" ]; then echo "::error::Missing CODE4ME_APPLE_TEAM_ID secret" >&2; exit 1; fi
+          if [ -z "$APPLE_APP_PASSWORD" ]; then echo "::error::Missing CODE4ME_APPLE_APP_PASSWORD secret" >&2; exit 1; fi
           xcrun notarytool submit "native-release/code4me-agent-${{ matrix.platform }}.zip" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \

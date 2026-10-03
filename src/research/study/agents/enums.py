@@ -50,9 +50,10 @@ METERED_FRAMEWORKS: frozenset[str] = frozenset({"goose", MANAGED_RUNTIME_FRAMEWO
 class DistributionMode(str, Enum):
     """How a release's agent reaches the participant host.
 
-    ``PACKAGED`` (the default) is the historical, digest-pinned contract: the
-    agent is a packaged artifact shipped inside the plugin runtime and the
-    release carries a verified ``sha256`` per platform. ``BYOA_EXTERNAL`` means
+    ``PACKAGED`` (the default) is the digest-pinned contract: the agent is a
+    packaged archive the plugin installs from its verified cache or the release's
+    exact ``download_url``, and the release carries a verified ``sha256`` per
+    platform. ``BYOA_EXTERNAL`` means
     "bring your own agent": the participant installs the agent (Goose, Codex, ...)
     and the release pins a command/package identity instead of an artifact digest.
     The two modes are persisted on the release and embedded in every bootstrap

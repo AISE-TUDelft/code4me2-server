@@ -19,10 +19,10 @@ what remains open, so a study arm's label cannot silently disagree with what run
   the release's passing conformance cases (`APPROVAL_OPTION_UNVERIFIED`).
 - **Tools.** The selected tools must belong to the framework's catalogue
   (`TOOLS_NOT_SUPPORTED`).
-- **Packaged binaries resolve per release + platform.** The staged runtime
-  manifest may declare per-release `agents[]`; the resolver selects the entry
-  matching the assigned release id/artifact digest and platform, and the digest
-  pin check remains fail-closed (no PATH fallback).
+- **Packaged binaries resolve per release + platform.** The bootstrap pins the
+  assigned release's archive for the participant's platform; the plugin installs
+  exactly that archive (verified cache or its exact GitHub Release), and the
+  digest pin check remains fail-closed (no PATH fallback).
 - **BYOA executable configuration (ISSUE-03 Path A).** A qualified BYOA release
   declares `byoa_config`: one binding per governed profile field
   (`model`, `temperature`, `max_steps`, `tools`, `approval_policy`), each with a
@@ -90,9 +90,11 @@ what remains open, so a study arm's label cannot silently disagree with what run
 
 ## Explicit seams
 
-- `AgentBundleProvider.NONE` is the explicit production seam: a participant
-  build either supplies bundles matching each assigned release/platform or the
-  activation blocks with `RUNTIME_UNAVAILABLE`. PATH is never consulted.
+- The participant plugin bundles no agent: `PackagedAgentInstaller` installs
+  the assigned release's archive for the platform from the verified cache or its
+  exact GitHub Release (SHA-256 pinned by the bootstrap), or the activation
+  blocks (`RUNTIME_UNAVAILABLE` when retryable, otherwise `PREPARATION_FAILED`).
+  PATH is never consulted.
 - Real Goose/Codex key names are release-owned data (the `byoa_config`
   bindings), not plugin constants. Conformance evidence for a release that
   declares a mapping remains part of release qualification (ISSUE-10/04); the

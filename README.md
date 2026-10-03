@@ -661,14 +661,14 @@ a working `session_policy`.
 
 ```bash
 cd code4me2-server
-scripts/dev/seed_local_dev.sh
+MANIFEST=dist/release-1.2.3/native-macos-arm64.json scripts/dev/seed_local_dev.sh
 ```
 
 `seed_local_dev.sh` is a thin driver: it stages the built archives into the
 running backend container and imports the producer manifest unchanged. Generate
 it first with the [native release command](docs/research-platform/RELEASES.md). Every declared archive's real `sha256`/size are recomputed and checked,
-so no digest or size is ever typed by hand. Override the source manifest with
-`MANIFEST=/path/to/manifest.json`.
+so no digest or size is ever typed by hand. `MANIFEST` is required and names the
+producer manifest with its ZIP next to it; the plugin repository ships no agent.
 
 The same verified import is the only way a release enters the catalogue, and is
 exposed to CI as an admin **multipart** endpoint:
@@ -698,7 +698,7 @@ development-only tool and refuses to run unless `CODE4ME_DEV_SEED=1` (or
 
 ```bash
 cd code4me2-server
-scripts/dev/seed_local_dev.sh --builtin-study-name "My Study"
+MANIFEST=dist/release-1.2.3/native-macos-arm64.json scripts/dev/seed_local_dev.sh --builtin-study-name "My Study"
 ```
 
 Common options: `--builtin-study-name`, `--connection-label`,

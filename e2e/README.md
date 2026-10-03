@@ -284,7 +284,8 @@ participant through the plugin's status banner.
   `code4me2-server/e2e/.cache/`, keyed by source content, dependency lock and
   packaging inputs. The release producer
   (`research.study.agents.participant_release native`) writes the manifest the
-  backend imports and the archive staged into the plugin overlay. Release
+  backend imports and the archive the UI layer seeds into the IDE's agent cache
+  (the plugin bundles no agent). Release
   versions and checked-in runtime resources are not stamped. After changing the
   host Python environment, remove the harness-owned `.cache/agent/` to force a
   native rebuild.

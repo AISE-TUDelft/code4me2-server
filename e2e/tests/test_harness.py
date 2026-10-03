@@ -224,5 +224,23 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual("rs-1", body["research_session_id"])
 
 
+class AgentCacheSeedTest(unittest.TestCase):
+    def test_seed_places_the_archive_where_the_plugin_cache_looks(self):
+        import hashlib
+        from code4me_e2e import runtime
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "code4me-agent-macos-arm64.zip"
+            archive.write_bytes(b"PK\x03\x04agent")
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            target = root / "system/code4me/runtimes/code4me-agent/archives" / f"{digest}.zip"
+
+            self.assertEqual(digest, runtime.seed_agent_cache(root / "system", archive))
+            self.assertEqual(archive.read_bytes(), target.read_bytes())
+            target.write_bytes(b"corrupted")
+            self.assertEqual(digest, runtime.seed_agent_cache(root / "system", archive))
+            self.assertEqual(archive.read_bytes(), target.read_bytes())
+
+
 if __name__ == "__main__":
     unittest.main()

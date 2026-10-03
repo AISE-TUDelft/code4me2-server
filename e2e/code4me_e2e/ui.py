@@ -212,10 +212,11 @@ def run_ui_test(scenario: Scenario, *, run_dir: Optional[str] = None,
                       if p["os"] == scenario.platform.os and p["arch"] == scenario.platform.arch)
         if not bundle["self_contained"]:
             raise RuntimeError("The staged proxy must be self-contained")
-        # Since plugin a003dd5 the packaged agent is the managed runtime from the
-        # code4me-runtime overlay (-Pcode4me.localRuntimeDir), pinned by archive sha256.
-        overlay_manifest = json.loads((E2E_DIR / ".cache/agent/resources/code4me-runtime/manifest.json").read_text())
-        digest = overlay_manifest["artifacts"][0]["sha256"]
+        # The plugin bundles no agent: like a participant whose verified cache
+        # already holds the study's archive, the IDE home gets the exact archive
+        # the backend imports (which has no public download URL), pinned by sha256.
+        _, release_archive = runtime.agent_release(run_path)
+        digest = runtime.seed_agent_cache(home / "system", release_archive)
         scenario.agent.artifact_digest = digest
         scenario.agent.release_id = "e2e-ui-" + digest[:20]
         scenario.agent.profile_name = "e2e-ui-" + digest[:20]

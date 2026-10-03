@@ -13,20 +13,19 @@
 # sha256/size are computed inside the container and checked against the manifest.
 #
 # Usage (from code4me2-server/):
-#   scripts/dev/seed_local_dev.sh
-#   MANIFEST=/path/to/manifest.json scripts/dev/seed_local_dev.sh
-#   scripts/dev/seed_local_dev.sh --builtin-study-name "My Study"
+#   MANIFEST=dist/release-1.2.3/native-macos-arm64.json scripts/dev/seed_local_dev.sh
+#   MANIFEST=dist/release-1.2.3/native-macos-arm64.json scripts/dev/seed_local_dev.sh --builtin-study-name "My Study"
 #
 # Environment overrides:
 #   CONTAINER   backend container name            (default: backend)
-#   MANIFEST    path to the build manifest JSON   (default: ../code4me2/src/main/resources/code4me-runtime/manifest.json)
+#   MANIFEST    producer manifest JSON with its ZIP next to it (required; the plugin ships none)
 #   STAGING     in-container staging directory    (default: /tmp/code4me-runtime-staging)
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONTAINER="${CONTAINER:-backend}"
-MANIFEST="${MANIFEST:-$(cd "$REPO_ROOT/.." && pwd)/code4me2/src/main/resources/code4me-runtime/manifest.json}"
+MANIFEST="${MANIFEST:-}"
 STAGING="${STAGING:-/tmp/code4me-runtime-staging}"
 
 if [[ ! -f "$MANIFEST" ]]; then
