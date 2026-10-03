@@ -124,6 +124,23 @@ class HarnessTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 StubProvider().start(occupied.getsockname()[1])
 
+    def test_stub_listens_on_the_scenario_host(self):
+        self.assertEqual("127.0.0.1", load_scenario().stack.stub_host)
+        for override in ("stack.stub_host=localhost", "stack.stub_host=1"):
+            with self.subTest(override=override), self.assertRaises(ScenarioError):
+                load_scenario(overrides=[override])
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        ctx = Ctx(load_scenario(overrides=[f"stack.stub_port={port}", "stack.stub_host=0.0.0.0"]), {}, Path("."))
+        try:
+            self.assertEqual(port, ctx.ensure_stub())
+            self.assertEqual("0.0.0.0", ctx.stub._server.server_address[0])
+            # The harness itself still reaches it on loopback.
+            socket.create_connection(("127.0.0.1", port), timeout=5).close()
+        finally:
+            ctx.stub.stop()
+
     def test_timeout_reaps_the_owned_process(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
@@ -222,6 +239,24 @@ class HarnessTest(unittest.TestCase):
         path, body = client.return_value.post.call_args.args[:2]
         self.assertEqual("/api/acp/runs", path)
         self.assertEqual("rs-1", body["research_session_id"])
+
+
+class AgentCacheSeedTest(unittest.TestCase):
+    def test_seed_places_the_archive_where_the_plugin_cache_looks(self):
+        import hashlib
+        from code4me_e2e import runtime
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "code4me-agent-macos-arm64.zip"
+            archive.write_bytes(b"PK\x03\x04agent")
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            target = root / "system/code4me/runtimes/code4me-agent/archives" / f"{digest}.zip"
+
+            self.assertEqual(digest, runtime.seed_agent_cache(root / "system", archive))
+            self.assertEqual(archive.read_bytes(), target.read_bytes())
+            target.write_bytes(b"corrupted")
+            self.assertEqual(digest, runtime.seed_agent_cache(root / "system", archive))
+            self.assertEqual(archive.read_bytes(), target.read_bytes())
 
 
 if __name__ == "__main__":

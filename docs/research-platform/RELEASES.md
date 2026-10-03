@@ -41,11 +41,13 @@ permission enforcement, inference, or tool-call end-to-end acceptance.
 ## GitHub release
 
 Run `.github/workflows/build-managed-runtime.yml` manually with a version and
-`publishRelease=true`. Four native jobs build and test signed binaries. macOS
-archives also require successful notarization. The publishing job calls the same
-module's `merge` command, validates every ZIP, requires all four platforms, and
-publishes only the combined JSON plus ZIPs under `runtime-v<version>`. Existing
-tags/releases cannot be overwritten. Signing secrets remain necessary.
+`publishRelease=true`. Four native jobs build and test the binaries; with the
+opt-in `sign=true` they are code-signed first and the macOS archive notarized
+(see `packaging/README.md` for why participants do not need it). The publishing
+job calls the same module's `merge` command, validates every ZIP, requires all
+four platforms, and publishes only the combined JSON plus ZIPs, each artifact with
+its exact `download_url`, under `runtime-v<version>`. Existing tags/releases
+cannot be overwritten.
 
 ## Admin import
 
@@ -106,16 +108,18 @@ their own results; managed-runtime results never qualify Goose or Codex. Server
 import never runs an uploaded command. The manifest digest binds these identities.
 
 The plugin is the IDE integration; the proxy observes/transports ACP; the agent
-executes tasks. Managed agents ship inside the plugin; BYOA agents are installed
-separately. The existing signed bootstrap still pins release/version/adapter and
+executes tasks. The plugin ships no managed agent: it installs the study's pinned
+archive from its verified cache or the release's `download_url` (import accepts,
+and the plugin downloads, only `download_url`s of `AISE-TUDelft/code4me2-server`
+release assets); BYOA agents are installed separately. The existing signed bootstrap still pins release/version/adapter and
 command/package identity. Local executable identity enforcement belongs to the
 plugin and is not demonstrated by server tests.
 
-Only the server repository changed. The plugin's participant-release CLI must
-adopt per-artifact `tests` and per-agent `tests`, read/stage the producer manifest,
-retain its archive consistency build gate, and present platform installation
-instructions. Its prior global `tests.status` and approval endpoints are no longer
-supported. Plugin ZIP publication, native host permission/tool behavior and all
+The plugin's recipe CLI (`scripts/participant-release.py`) is local tooling for
+ZIPs with a bundled agent recipe; participant ZIPs bundle no agent and come from
+the plugin workflow (see `code4me2/docs/PARTICIPANT_RELEASE.md`). Its `apply`
+command targets release and approval endpoints the server no longer has; register
+releases through the website import. Plugin ZIP publication, native host permission/tool behavior and all
 four CI jobs require their own verification. Server protocol restrictions on
 participant-ready runtimes are unchanged.
 

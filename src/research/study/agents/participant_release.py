@@ -246,6 +246,10 @@ def prepare(
             "managed_protocol": "1",
             "tests": projected.get("tests"),
         }
+        if projected.get("download_url") is not None:
+            # A published runtime's immutable asset URL must survive the
+            # preparation recipe; the plugin needs it for assigned studies.
+            artifact_document["download_url"] = projected["download_url"]
         if managed.adapter is not None:
             # The plugin verifies the bootstrap's adapter pin per artifact.
             artifact_document["adapter"] = managed.adapter.model_dump(mode="json")
@@ -354,6 +358,8 @@ def main() -> None:
     native.add_argument("--bundle", type=Path, default=Path("dist/code4me2-agent"))
     native.add_argument("--output", type=Path, required=True)
     native.add_argument("--skip-build", action="store_true", help="use an already built/signed bundle")
+    native.add_argument("--release-base-url", help="exact public GitHub release URL containing these assets")
+    native.add_argument("--min-plugin-version")
     merge = commands.add_parser("merge", help="verify and combine native CI artifacts")
     merge.add_argument("--directory", type=Path, required=True)
     merge.add_argument("--output", type=Path, required=True)
@@ -423,6 +429,8 @@ def main() -> None:
                 "runtime_version": args.version,
                 "managed_protocol_version": "1",
                 "server_commit": args.server_commit,
+                "min_protocol_version": "1",
+                "max_protocol_version": "1",
                 "artifacts": [{
                     "runtime_id": "code4me-agent", "version": args.version,
                     "platform": os_name, "architecture": arch,
@@ -431,6 +439,10 @@ def main() -> None:
                     "tests": {"self_check": "PASS", "acp_initialize": "PASS", "ran_at": datetime.now(timezone.utc).isoformat()},
                 }],
             }
+            if args.release_base_url:
+                document["artifacts"][0]["download_url"] = args.release_base_url.rstrip("/") + "/" + archive.name
+            if args.min_plugin_version:
+                document["min_plugin_version"] = args.min_plugin_version
             build_manifest_release(document, archives={archive.name: archive})
             write_json(stage / f"native-{target}.json", document)
             shutil.rmtree(extracted)

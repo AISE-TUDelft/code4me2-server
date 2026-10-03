@@ -40,13 +40,15 @@ class StubProvider:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def start(self, port: int = 0) -> int:
+    def start(self, port: int = 0, host: str = "127.0.0.1") -> int:
         if self._server is not None:
             return self.port or 0
         handler = _make_handler(self)
         # A resumed provider connection still names this port. Moving silently
         # would direct the backend to another process and invalidate the test.
-        server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+        # ``host`` only widens where it listens; the harness itself keeps
+        # calling it on loopback (``base_url``).
+        server = ThreadingHTTPServer((host, port), handler)
         server.daemon_threads = True
         self._server = server
         self.port = server.server_address[1]

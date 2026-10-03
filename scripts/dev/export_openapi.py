@@ -17,7 +17,7 @@ exporter is that invocation, and it is deterministic:
 Usage::
 
     python scripts/dev/export_openapi.py                 # refresh openapi.json
-    python scripts/dev/export_openapi.py --check         # CI: fail if stale
+    python scripts/dev/export_openapi.py --check         # fail if stale (the backend suite runs this)
 
 This exporter owns the **server** snapshot only. The IntelliJ plugin's bundled
 client contract (`code4me2/src/main/resources/backend/api/openapi.json`) is a

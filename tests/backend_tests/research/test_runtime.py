@@ -775,6 +775,54 @@ def test_bootstrap_issues_for_an_approved_platform():
     assert result.manifest.agent_release.artifact_digest == macos_artifact.sha256
 
 
+@pytest.mark.parametrize("plugin_version", ["1.2.0", "1.3.0-test3009-6"])
+def test_agent_preparation_returns_the_assignment_without_creating_a_session(plugin_version):
+    release = agent_registry___approved_release()
+    release.min_plugin_version = "1.2.0"
+    enrollment, study, assignment = _bootstrap_inputs(release)
+    enrollment.consent_accepted_at = datetime.now(timezone.utc)
+    sessions = MagicMock()
+    artifact = release.artifacts[0]
+
+    result = compose_bootstrap(
+        enrollment, study, assignment, release, None, sessions,
+        BootstrapSigningContext(secret="bootstrap-test-secret"),
+        platform=(artifact.os, artifact.arch), prepare_only=True, plugin_version=plugin_version,
+    )
+
+    assert result.outcome == BootstrapOutcome.ISSUED, result.issue
+    assert result.manifest is None
+    assert result.preparation.assignment.assignment_id == assignment.assignment_id
+    assert result.preparation.agent_release.artifact.sha256 == artifact.sha256
+    sessions.create_for_enrollment.assert_not_called()
+
+
+@pytest.mark.parametrize("gate, expected", [
+    ("consent", BootstrapReasonCode.CONSENT_REQUIRED),
+    ("plugin", BootstrapReasonCode.INCOMPATIBLE_ENVIRONMENT),
+    ("platform", BootstrapReasonCode.RELEASE_NOT_QUALIFIED),
+    ("kill_switch", BootstrapReasonCode.KILL_SWITCH_ENGAGED),
+])
+def test_preparation_gates_never_create_a_session(gate, expected):
+    release = agent_registry___approved_release()
+    enrollment, study, assignment = _bootstrap_inputs(release)
+    enrollment.consent_accepted_at = None if gate == "consent" else datetime.now(timezone.utc)
+    release.min_plugin_version = "99.0.0" if gate == "plugin" else None
+    sessions = MagicMock()
+    artifact = release.artifacts[1 if gate == "platform" else 0]
+
+    result = compose_bootstrap(
+        enrollment, study, assignment, release, None, sessions,
+        BootstrapSigningContext(secret="bootstrap-test-secret"),
+        platform=(artifact.os, artifact.arch), prepare_only=True, plugin_version="1.2.0",
+        kill_switch_check=lambda: gate == "kill_switch",
+    )
+
+    assert result.reason == expected
+    assert result.manifest is None and result.preparation is None
+    sessions.create_for_enrollment.assert_not_called()
+
+
 def test_bootstrap_refuses_a_platform_without_an_approval():
     release = agent_registry___approved_release()
     linux_artifact = release.artifacts[1]

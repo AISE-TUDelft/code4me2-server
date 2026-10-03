@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Optional, Protocol
 
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field
 
 from research.canonical import canonical_hash
@@ -33,6 +34,7 @@ from .models import (
     BootstrapManifestV1,
     BootstrapOutcome,
     BootstrapPolicies,
+    BootstrapPreparationV1,
     BootstrapPrivacyPolicy,
     BootstrapReasonCode,
     BootstrapResult,
@@ -226,6 +228,8 @@ def compose_bootstrap(
     agent_profile: Optional[BootstrapAgentProfile] = None,
     kill_switch_check: Optional[Callable[[], bool]] = None,
     context_id: str = "",
+    prepare_only: bool = False,
+    plugin_version: Optional[str] = None,
 ) -> BootstrapResult:
     """Compose a signed, short-lived, secret-free bootstrap manifest.
 
@@ -345,6 +349,81 @@ def compose_bootstrap(
     else:
         artifact_digest = ""
 
+    if requires_inference_gateway(profile.framework_version):
+        gateway_missing = missing_gateway_bindings(release_bindings(release))
+        if gateway_missing:
+            return _blocked(
+                BootstrapReasonCode.INFERENCE_GATEWAY_UNBOUND,
+                "the release does not bind the research inference gateway: "
+                + ", ".join(gateway_missing),
+                "release_id",
+            )
+
+    adapter = getattr(release, "adapter", None)
+    adapter_id = getattr(adapter, "adapter_id", None)
+    adapter_version = getattr(adapter, "version", None)
+    agent_release = BootstrapAgentRelease(
+        agent_id=release.agent_id,
+        release_id=release.release_id,
+        version=release.version,
+        artifact=artifact if not release.is_byoa else None,
+        min_plugin_version=release.min_plugin_version,
+        min_protocol_version=release.min_protocol_version,
+        max_protocol_version=release.max_protocol_version,
+        artifact_digest=artifact_digest,
+        archive_sha256=(artifact.sha256 if not release.is_byoa else None),
+        executable=(artifact.executable if not release.is_byoa else None),
+        adapter_digest=getattr(adapter, "digest", None),
+        adapter_id=adapter_id,
+        adapter_version=adapter_version,
+        distribution_mode=getattr(getattr(release, "distribution_mode", None), "value", "PACKAGED"),
+        agent_command=release.agent_command,
+        agent_command_args=list(release.agent_command_args),
+        agent_package=release.agent_package,
+        config_bindings=[
+            BootstrapAgentConfigBinding(
+                field=binding.field,
+                transport=binding.transport,
+                key=binding.key,
+                format=binding.format,
+                value_map=dict(binding.value_map),
+            )
+            for binding in (getattr(release, "byoa_config", None) or [])
+        ],
+    )
+    if release.min_plugin_version:
+        try:
+            reported = plugin_version or ""
+            current = Version(reported.split("-", 1)[0].split("+", 1)[0])
+            minimum = Version(release.min_plugin_version)
+            compatible_plugin = current > minimum or (current == minimum and "-" not in reported)
+        except InvalidVersion:
+            compatible_plugin = False
+        if not compatible_plugin:
+            return _blocked(
+                BootstrapReasonCode.INCOMPATIBLE_ENVIRONMENT,
+                f"Update Code4Me to {release.min_plugin_version} or later to use this study's agent.",
+                "plugin_version",
+            )
+    if prepare_only:
+        if not _policies(study, enrollment).telemetry_policy.consent_active:
+            return _blocked(BootstrapReasonCode.CONSENT_REQUIRED, "study consent is required before preparing the agent", "consent")
+        return BootstrapResult(
+            outcome=BootstrapOutcome.ISSUED,
+            preparation=BootstrapPreparationV1(
+                enrollment_id=enrollment.enrollment_id,
+                study_id=study.study_id,
+                assignment=BootstrapAssignment(
+                    assignment_id=assignment.assignment_id,
+                    agent_profile_id=assignment.agent_profile_id,
+                    strategy=assignment.strategy,
+                    randomization_epoch=assignment.randomization_epoch,
+                    profile_digest=assignment.profile_digest,
+                ),
+                agent_release=agent_release,
+            ),
+        )
+
     research_session = session_factory.create_for_enrollment(
         enrollment, study, timestamp, context_id
     )
@@ -364,14 +443,6 @@ def compose_bootstrap(
     # gateway blocks here rather than running on the participant's own key.
     inference_gateway = None
     if profile is not None and requires_inference_gateway(profile.framework_version):
-        gateway_missing = missing_gateway_bindings(release_bindings(release))
-        if gateway_missing:
-            return _blocked(
-                BootstrapReasonCode.INFERENCE_GATEWAY_UNBOUND,
-                "the release does not bind the research inference gateway: "
-                + ", ".join(gateway_missing),
-                "release_id",
-            )
         inference_gateway = BootstrapInferenceGateway(
             capability=issue_inference_capability(
                 secret=signer.secret,
@@ -383,9 +454,6 @@ def compose_bootstrap(
                 now=timestamp,
             )
         )
-    adapter = getattr(release, "adapter", None)
-    adapter_id = getattr(adapter, "adapter_id", None)
-    adapter_version = getattr(adapter, "version", None)
     draft = BootstrapManifestV1(
         generated_at=timestamp,
         study_id=enrollment.study_id,
@@ -399,30 +467,7 @@ def compose_bootstrap(
             randomization_epoch=assignment.randomization_epoch,
             profile_digest=assignment.profile_digest,
         ),
-        agent_release=BootstrapAgentRelease(
-            agent_id=release.agent_id,
-            release_id=release.release_id,
-            artifact_digest=artifact_digest,
-            archive_sha256=(artifact.sha256 if not release.is_byoa else None),
-            executable=(artifact.executable if not release.is_byoa else None),
-            adapter_digest=getattr(adapter, "digest", None),
-            adapter_id=adapter_id,
-            adapter_version=adapter_version,
-            distribution_mode=getattr(getattr(release, "distribution_mode", None), "value", "PACKAGED"),
-            agent_command=release.agent_command,
-            agent_command_args=list(release.agent_command_args),
-            agent_package=release.agent_package,
-            config_bindings=[
-                BootstrapAgentConfigBinding(
-                    field=binding.field,
-                    transport=binding.transport,
-                    key=binding.key,
-                    format=binding.format,
-                    value_map=dict(binding.value_map),
-                )
-                for binding in (getattr(release, "byoa_config", None) or [])
-            ],
-        ),
+        agent_release=agent_release,
         agent_profile=profile,
         policies=_policies(study, enrollment),
         compatibility_receipt_ref=compatibility_ref,

@@ -16,7 +16,7 @@
 //   CODE4ME_FLOW_API_URL      (default http://localhost:8008)
 //   CODE4ME_FLOW_ADMIN_EMAIL  (default admin@example.com)
 //   CODE4ME_FLOW_ADMIN_PASSWORD (default Code4me-dev1)
-//   CODE4ME_FLOW_MANIFEST     (default ../code4me2/src/main/resources/code4me-runtime/manifest.json)
+//   CODE4ME_FLOW_MANIFEST     (required: producer manifest native-<platform>.json with its ZIP beside it)
 //   CODE4ME_FLOW_SECRET_REF   (default OPENAI_API_KEY; the *name* only)
 //   CODE4ME_FLOW_CHANNEL      (default chrome; set to "" for bundled chromium)
 //   CODE4ME_FLOW_REPORT       (optional JSON report path)
@@ -36,10 +36,10 @@ const ADMIN = {
 };
 const SECRET_REF = process.env.CODE4ME_FLOW_SECRET_REF || "OPENAI_API_KEY";
 const CHANNEL = process.env.CODE4ME_FLOW_CHANNEL ?? "chrome";
-const MANIFEST_PATH = path.resolve(
-  process.env.CODE4ME_FLOW_MANIFEST ||
-    path.join(__dirname, "../../../code4me2/src/main/resources/code4me-runtime/manifest.json"),
-);
+// The plugin repository ships no agent recipe, so the manifest must be named.
+const MANIFEST_PATH = process.env.CODE4ME_FLOW_MANIFEST
+  ? path.resolve(process.env.CODE4ME_FLOW_MANIFEST)
+  : "";
 
 const results = [];
 const httpLog = [];
@@ -141,6 +141,12 @@ function trackApi(context) {
 
 async function main() {
   const { chromium } = loadPlaywright();
+  if (!MANIFEST_PATH || !fs.existsSync(MANIFEST_PATH)) {
+    throw new Error(
+      "set CODE4ME_FLOW_MANIFEST to a producer manifest (native-<platform>.json from " +
+        "research.study.agents.participant_release native, with its ZIP beside it)",
+    );
+  }
   const sourceManifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
   const manifestDir = path.dirname(MANIFEST_PATH);
   const manifest = sourceManifest;

@@ -146,7 +146,7 @@ class Ctx:
         if self.stub is None:
             planned = int(self.state.get("stub_port") or self.scenario.stack.stub_port)
             self.stub = StubProvider(token=self.state.get("stub_token"))
-            port = self.stub.start(planned)
+            port = self.stub.start(planned, host=self.scenario.stack.stub_host)
             self.state["stub_port"] = port
             self.state["stub_token"] = self.stub.token
         return int(self.stub.port or 0)
@@ -991,7 +991,8 @@ def step_send_message(ctx: Ctx) -> Dict[str, Any]:
         "the managed inference relay failed",
         fix_hint=(
             "the provider connection must be active and its secret_ref env var present; "
-            "the stub must be reachable at host.docker.internal:<stub_port>"
+            "the stub must be reachable at host.docker.internal:<stub_port> "
+            "(on a Linux Docker engine run with --set stack.stub_host=0.0.0.0)"
         ),
     )
     if expected not in (inference.text or ""):

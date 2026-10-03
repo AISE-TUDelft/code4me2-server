@@ -11,6 +11,7 @@ against the harness's own disposable stack.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import platform as host_platform
 import re
@@ -61,6 +62,11 @@ class StackConfig:
     #: Fixed host port for the in-process stub provider. A fixed port keeps
     #: ``--from``/``step`` resumption working across processes.
     stub_port: int = 28999
+    #: Interface the stub provider listens on. The backend container calls it
+    #: through ``host.docker.internal``: Docker Desktop and Colima forward that
+    #: to the host's loopback, but a Linux Docker engine maps it to the bridge
+    #: gateway, which reaches the stub only when it listens on ``0.0.0.0``.
+    stub_host: str = "127.0.0.1"
 
 
 @dataclass
@@ -279,6 +285,10 @@ def _validate(scenario: Scenario) -> None:
     ports = [getattr(scenario.stack, name) for name in ("backend_port", "db_port", "redis_port", "stub_port")]
     if any(type(port) is not int or not 1 <= port <= 65535 for port in ports) or len(set(ports)) != len(ports):
         raise ScenarioError("stack ports must be distinct integers from 1 to 65535")
+    try:
+        ipaddress.IPv4Address(scenario.stack.stub_host if type(scenario.stack.stub_host) is str else "")
+    except ValueError:
+        raise ScenarioError("stack.stub_host must be an IPv4 address such as 127.0.0.1 or 0.0.0.0") from None
     for role in ("admin", "researcher", "participant"):
         account: AccountConfig = getattr(scenario, role)
         if not account.email or "@" not in account.email:

@@ -210,6 +210,7 @@ class ResearchSessionRequest(BaseModel):
     environment: EnvironmentReport
     capability_receipt: Optional[AcpCapabilityReceiptV1] = None
     compatibility_receipt_id: Optional[uuid.UUID] = None
+    prepare_only: bool = False
 
 
 def _now() -> datetime:
@@ -443,8 +444,8 @@ def create_research_session(
         compatibility_result, receipt_ref = _evaluate_compatibility(payload, release, db)
 
         # Single unit of work (lock order: participant/enrollment already
-        # resolved by the caller → sticky assignment → this context's execution
-        # session). The session factory is commit=False, so every row created
+        # resolved by the caller → sticky assignment → execution session when
+        # requested). The session factory is commit=False, so every row created
         # here lands only in the one commit below; any failure rolls back.
         result = compose_bootstrap(
             enrollment,
@@ -463,8 +464,10 @@ def create_research_session(
                 enrollment_id=enrollment.enrollment_id,
             ),
             context_id=payload.context_id,
+            prepare_only=payload.prepare_only,
+            plugin_version=payload.environment.plugin_version,
         )
-        if result.manifest is None:
+        if result.manifest is None and result.preparation is None:
             # Nothing is committed yet: a failure here (kill switch, incompatible
             # environment, unresolved release) leaves no orphan session or
             # half-assignment.
@@ -474,8 +477,8 @@ def create_research_session(
             )
 
         manifest = result.manifest
-        # Persist the sticky assignment only after the manifest is actually
-        # issued, still inside the same transaction. A concurrent first use that
+        # Persist the sticky assignment after preparation or bootstrap succeeds,
+        # still inside the same transaction. A concurrent first use that
         # won the unique constraint is a retryable conflict (nothing committed).
         if allocation.created:
             winner_row = assignment_store.create_assignment(
@@ -498,6 +501,12 @@ def create_research_session(
                 )
         # Single commit for assignment + session.
         db.commit()
+
+        if result.preparation is not None:
+            return JsonResponseWithStatus(
+                status_code=200,
+                content={"preparation": result.preparation.model_dump(mode="json")},
+            )
 
         # The session capability is verified statelessly from its HMAC signature
         # and the enrollment's revocation epoch, so it is never persisted.

@@ -9,7 +9,7 @@ workspace root.
 
 ```
 <workspace>/
-  code4me2/          # IntelliJ plugin (carries the agent inside)
+  code4me2/          # IntelliJ plugin (ships no agent; installs the study's pinned one)
   code4me2-server/   # backend + website + producer + e2e harness
 ```
 
@@ -199,9 +199,9 @@ dist/release-1.2.3/code4me-agent-macos-arm64.zip
 dist/release-1.2.3/native-macos-arm64.json      ← tests: self_check/acp_initialize PASS
 ```
 
-> **Keep this ZIP.** Those bytes are what a study pins, and the plugin will carry
-> them. Rebuilding the same version can produce a different sha → the pin no
-> longer matches.
+> **Keep this ZIP.** Those bytes are what a study pins and what the IDE's agent
+> cache must hold (step 9). Rebuilding the same version can produce a different
+> sha → the pin no longer matches.
 
 ---
 
@@ -234,43 +234,29 @@ re-importing the same manifest does not re-enable it.
 
 ---
 
-## 9. Build and install the plugin with the agent
+## 9. Build and install the plugin, then give the IDE the agent
 
-The plugin's agent identity is **a single recipe**:
-`src/main/resources/code4me-runtime/manifest.json` plus the ZIP it declares. There
-is no separate agent staging parameter (the old `-PresearchAgent*` options were
-removed); the runtime installs that recipe and compares it with the archive
-digest pinned by the bootstrap manifest.
+The plugin bundles **no agent**. A study pins its agent archive by SHA-256; the
+plugin uses a verified entry of its agent cache or, on a cache miss, downloads the
+archive from the exact GitHub Release URL the imported manifest carries. A locally
+produced release has no public URL, so place the imported ZIP in the IDE's agent
+cache yourself.
 
-**Critical rule:** the ZIP you stage must be **the ZIP that was imported into the
-catalogue** — not a fresh build. Every build produces a different sha; with other
-bytes the gate still passes but the session fails with
-`the bundled agent archive does not match the bootstrap pin`.
+**Critical rule:** the cached ZIP must be **the ZIP that was imported into the
+catalogue** — not a fresh build. Its SHA-256 names the cache file and is verified
+again before use; other bytes block the study.
 
 ```bash
 cd code4me2
-python3 scripts/build-plugin-with-agent.py ../code4me2-server/dist/release-1.2.3
+./gradlew buildPlugin        # output: build/distributions/client-<version>.zip
+
+# The IDE's system directory; on macOS usually:
+SYSTEM="$HOME/Library/Caches/JetBrains/IntelliJIdea2026.2"
+ZIP=../code4me2-server/dist/release-1.2.3/code4me-agent-macos-arm64.zip
+SHA=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)
+mkdir -p "$SYSTEM/code4me/runtimes/code4me-agent/archives"
+cp "$ZIP" "$SYSTEM/code4me/runtimes/code4me-agent/archives/$SHA.zip"
 ```
-
-That single command copies the ZIP into `src/main/resources/code4me-runtime/`,
-writes the recipe (`code4me-runtime/manifest.json`) **computed** from the release
-manifest (no hand-typed digests, no editor), and runs
-`verifyResearchRuntimeConsistency` + `buildPlugin`. It prints the plugin ZIP path.
-
-Options:
-- `--no-build` → only copy and write the recipe.
-- `--platform macos-x64` → stage a platform other than the host.
-
-**Why `native-<platform>.json` is not used verbatim:** the producer manifest and
-the plugin recipe differ in exactly two places — the recipe stores the archive
-path relative to the resources root (`code4me-runtime/<name>.zip`) and carries a
-per-artifact `managed_protocol`. The script bridges those two; it uses
-`runtime_version`, `sha256`, `size`, `executable`, `server_commit` and `tests`
-verbatim. Hand-editing typically produces the opposite mistake: the recipe
-describes one build while the directory holds another → the gate stops with
-`Runtime checksum mismatch`.
-
-Output: `code4me2/build/distributions/client-<version>.zip`
 
 **Install:** IntelliJ → **Settings → Plugins → ⚙ → Install Plugin from Disk…** →
 ZIP → **Restart IDE**.
@@ -278,10 +264,12 @@ ZIP → **Restart IDE**.
 The dev backend URL is already `http://localhost:8008` in
 `src/main/resources/plugin.conf`.
 
+`scripts/build-plugin-with-agent.py` still bundles a release into the plugin, but
+only the ordinary (non-study) managed setup reads that bundle; studies never do.
+
 > The plugin version (`pluginVersion` in `gradle.properties`) and the agent
-> version (`--version` at production) are independent axes: the plugin ZIP is
-> named after the former, the release/catalogue entries after the latter. The
-> runtime compares the agent's **sha256**, never its version string.
+> version (`--version` at production) are independent axes. The runtime compares
+> the agent's **sha256**, never its version string.
 
 ---
 
@@ -319,8 +307,8 @@ with a balance at the study default; a participant whose budget is used up gets
    (or plugin: **Join a Study** → code).
 3. Open the project in IntelliJ → start the session from the Code4Me research
    settings → pick **Code4Me Research Proxy** in AI Chat.
-4. The agent is installed from inside the plugin (run with `--managed`) and
-   session telemetry flows.
+4. The plugin installs the pinned agent from its cache (run with `--managed`)
+   and session telemetry flows.
 
 ---
 
@@ -342,8 +330,8 @@ docker exec -e TEST_DATABASE_URL=postgresql://postgres:postgres@db:5433/code4me_
 # Website
 cd src/website && CI=true npm test -- --watchAll=false --runInBand && CI=true npm run build
 
-# Plugin side: recipe↔ZIP gate + test suite
-cd ../code4me2 && ./gradlew verifyResearchRuntimeConsistency && ./gradlew test
+# Plugin test suite
+cd ../../../code4me2 && ./gradlew test
 ```
 
 **Dev seed (shortcut):** catalogue + pin + study in one command from a produced manifest:
@@ -366,10 +354,10 @@ MANIFEST=dist/release-1.2.3/native-macos-arm64.json scripts/dev/seed_local_dev.s
 | `ARTIFACT_MISSING` / `UNEXPECTED_ARCHIVE` / `DUPLICATE_ARCHIVE` | Archive set is not exactly what the manifest declares | Upload the full set, one copy each |
 | `RELEASE_NOT_QUALIFIED` (profile) | Release has no test results, or was disabled | Import a tested manifest; `DISABLED` cannot be re-enabled |
 | `FRAMEWORK_DISTRIBUTION_MISMATCH` | Profile framework does not match the release mode | `code4me2-agent` ↔ PACKAGED; Goose/Codex ↔ BYOA |
-| `the bundled agent runtime … does not match the pinned release archive …` | The plugin carries a different ZIP than the study pins | Redo step 9 with the right ZIP |
-| `the bundled runtime has no agent for <os>-<arch>` | The recipe does not declare that platform | Step 9: make sure the release manifest contains the platform |
+| `The study's agent has no public GitHub Release URL…` | The release has no download URL (a local release) and its ZIP is not in the IDE's agent cache | Step 9: copy the imported ZIP into the cache under its SHA-256 |
+| `This study has no agent for <os>/<arch>` | The imported release does not declare that platform | Step 8: produce and import the release for the platform |
 | `unrecognized arguments: --status-file / --agent-run-id / --telemetry-policy-digest` | The packaged proxy bundle is stale (no such CLI flags) | `./gradlew buildResearchProxyBundle`, then rebuild/reinstall the plugin |
-| `ARTIFACT_UNAVAILABLE` (bootstrap) | No packaged archive for the participant's platform | Build a plugin that includes that platform |
+| `ARTIFACT_UNAVAILABLE` (bootstrap) | The imported release has no archive for the participant's platform | Produce and import the release for that platform (steps 7–8) |
 | `401` from the provider | `secret_ref` env var is empty/wrong | Put the key in `.env`, `docker restart backend` |
 | `402 quota_exhausted` in the agent chat | The participant's budget is used up (or the study default is still 0) | Study → Settings → Participant budgets (set/apply the default) or the participant drawer → Adjust budget |
 | `503 price_missing` in the agent chat | The arm's model has no price on its provider connection | Provider Connections → enter the model's prices |
@@ -402,5 +390,5 @@ Study:     Dashboard → Research Control Plane
 Join:      /join (web) or the plugin's "Join a Study"
 Plugin:    code4me2/build/distributions/client-<version>.zip
 Dev seed:  scripts/dev/seed_local_dev.sh (with MANIFEST=...)
-E2E:       ./e2e/test --layer backend · node e2e/browser/admin_flow.js
+E2E:       ./e2e/test --layer backend · CODE4ME_FLOW_MANIFEST=<native-*.json> node e2e/browser/admin_flow.js
 ```

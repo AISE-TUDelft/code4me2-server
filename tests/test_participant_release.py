@@ -212,12 +212,38 @@ def test_prepare_emits_one_recipe_with_verified_archives(tmp_path):
         f"code4me-runtime/{a['archive']}" for a in document["artifacts"]
     ]
     assert all(a["adapter"] == document["adapter"] for a in runtime_manifest["artifacts"])
+    assert all("download_url" not in a for a in document["artifacts"])
     assert written["recipe_digest"].startswith("sha256:")
     # The prepared inputs are re-checkable and the recipe is the single document.
     assert load_prepared(tmp_path / "prepared") == document
     for artifact in document["artifacts"]:
         staged = tmp_path / "prepared" / "resources" / "code4me-runtime" / artifact["archive"]
         assert file_sha256(staged) == artifact["sha256"]
+
+
+def test_prepare_preserves_public_agent_urls_for_study_downloads(tmp_path):
+    inputs = tmp_path / "inputs"
+    recipe = make_inputs(inputs)
+    manifest_path = inputs / "runtime.json"
+    runtime = json.loads(manifest_path.read_text())
+    for artifact in runtime["artifacts"]:
+        artifact["download_url"] = (
+            "https://github.com/AISE-TUDelft/code4me2-server/releases/download/"
+            f"runtime-v1.2.3/{artifact['archive']}"
+        )
+    write_json(manifest_path, runtime)
+    recipe.runtime.sha256 = file_sha256(manifest_path)
+
+    document = prepare(recipe, inputs, tmp_path / "prepared")
+    plugin_manifest = json.loads(
+        (tmp_path / "prepared/resources/code4me-runtime/manifest.json").read_text()
+    )
+    expected_urls = {artifact["archive"]: artifact["download_url"] for artifact in runtime["artifacts"]}
+    assert {artifact["archive"]: artifact["download_url"] for artifact in document["artifacts"]} == expected_urls
+    assert {
+        artifact["archive"].removeprefix("code4me-runtime/"): artifact["download_url"]
+        for artifact in plugin_manifest["artifacts"]
+    } == expected_urls
 
 
 def test_prepare_accepts_one_managed_release_without_external_agents(tmp_path):
