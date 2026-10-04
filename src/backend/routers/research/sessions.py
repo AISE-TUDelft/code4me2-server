@@ -531,7 +531,10 @@ def report_activity(
             )
 
         activity = on_qualifying_activity(
-            idle_result.session, now, kill_switch_check=kill_switch_check
+            idle_result.session,
+            now,
+            kill_switch_check=kill_switch_check,
+            idle_timeout_seconds=policy.idle_timeout_seconds,
         )
         if not activity.accepted:
             raise HTTPException(

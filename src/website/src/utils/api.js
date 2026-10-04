@@ -1221,6 +1221,8 @@ export const createResearchStudy = async ({
   profileIds,
   defaultBudgetUsd,
   budgetWarningFraction,
+  allowManualAssignment,
+  consent,
 } = {}) =>
   researchRequest("/studies", {
     method: "POST",
@@ -1238,6 +1240,12 @@ export const createResearchStudy = async ({
       ...(typeof budgetWarningFraction === "number"
         ? { budget_warning_fraction: budgetWarningFraction }
         : {}),
+      // Arms are drawn by salted hash; this lets the owner change one by hand
+      // before first use (disclosed in the consent notice).
+      allow_manual_assignment: !!allowManualAssignment,
+      // A custom consent form ({document, statements}); omitted, the stock
+      // notice applies.
+      ...(consent ? { consent } : {}),
     },
     label: "create research study",
   });
@@ -1305,6 +1313,19 @@ export const cloneResearchStudy = async (studyId, { profileIds, defaultBudgetUsd
     label: "clone research study",
   });
 };
+
+// Set a participant's arm by hand (studies created with manual assignment
+// allowed, before the participant's first use). Typed 409/422 codes come back
+// as `code`: MANUAL_ASSIGNMENT_DISABLED, ASSIGNMENT_IN_USE, PROFILE_NOT_IN_STUDY…
+export const changeEnrollmentAssignment = async (studyId, enrollmentId, profileId) =>
+  researchRequest(
+    `/studies/${encodeURIComponent(studyId)}/enrollments/${encodeURIComponent(enrollmentId)}/assignment`,
+    {
+      method: "PUT",
+      body: { profile_id: profileId },
+      label: "change participant arm",
+    },
+  );
 
 export const revokeResearchEnrollment = async (studyId, enrollmentId, actor) =>
   researchRequest(
@@ -1380,6 +1401,15 @@ export const resolveResearchJoinCode = async (joinCode) => {
         },
         policyText: consent.text || consent.consent_text || data.consent_text || "",
         consentText: consent.text || consent.consent_text || data.consent_text || "",
+        // The full consent view (document, platform notice, statements) and
+        // its version digest, sent back on join.
+        consent: {
+          custom: consent.custom === true,
+          document: consent.document || null,
+          notice: consent.notice || consent.text || "",
+          statements: Array.isArray(consent.statements) ? consent.statements : [],
+          digest: consent.digest || "",
+        },
       },
     };
   }
@@ -1395,11 +1425,17 @@ export const resolveResearchJoinCode = async (joinCode) => {
 };
 
 // Redeem a participant join code for the signed-in account. Idempotent
-// server-side: re-running reuses the existing enrollment.
-export const redeemResearchJoinCode = async (joinCode, acceptConsent) => {
+// server-side: re-running reuses the existing enrollment. `consent` carries
+// the reviewed version digest and the ticked statements ({digest, statements}).
+export const redeemResearchJoinCode = async (joinCode, acceptConsent, consent) => {
   const result = await researchRequest("/join", {
     method: "POST",
-    body: { join_code: joinCode, accept_consent: !!acceptConsent },
+    body: {
+      join_code: joinCode,
+      accept_consent: !!acceptConsent,
+      ...(consent && consent.digest ? { consent_digest: consent.digest } : {}),
+      ...(consent && consent.statements ? { consent_statements: consent.statements } : {}),
+    },
     label: "redeem study join code",
   });
   if (result.ok) {
@@ -1528,10 +1564,60 @@ export const getStudyParticipantDashboard = (studyId, enrollmentId) =>
     "load participant dashboard",
   );
 
-export const getStudyAnalyticsSummary = (studyId, { start, end } = {}) => {
+// `arms` (profile ids) and `participants` (enrollment ids) narrow the summary;
+// both repeat as query parameters and combine with AND.
+// One participant chat as turns of prompts, reasoning, messages and tool
+// calls (study owner/admin; stored content only where the study captured it).
+// Pages by turns: pass the previous page's `next_cursor` to continue.
+export const getStudyChatTrace = (studyId, enrollmentId, chatId, { cursor, limit } = {}) => {
+  const params = new URLSearchParams({ chat_id: chatId });
+  if (cursor) params.set("cursor", cursor);
+  if (limit) params.set("limit", String(limit));
+  return researchRequest(
+    `/studies/${encodeURIComponent(studyId)}/enrollments/${encodeURIComponent(enrollmentId)}/trace?${params.toString()}`,
+    { label: "load chat trace" },
+  );
+};
+
+// Raw data export (study owner/admin): a ZIP of CSV/JSONL files with a
+// manifest. Resolves {ok, blob, filename} or the typed error of the request
+// (UNKNOWN_DATASET, CONTENT_NOT_CAPTURED, CONTENT_REQUIRES_JSONL, ...).
+export const downloadStudyExport = async (
+  studyId,
+  { datasets = [], format = "csv", arms = [], participants = [], start, end, eventCategories = [], includeContent = false } = {},
+) => {
+  const params = new URLSearchParams({ format });
+  datasets.forEach((dataset) => params.append("datasets", dataset));
+  arms.forEach((arm) => params.append("arm", arm));
+  participants.forEach((participant) => params.append("participant", participant));
+  eventCategories.forEach((category) => params.append("event_categories", category));
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  if (includeContent) params.set("include_content", "true");
+  try {
+    const response = await fetch(
+      `${RESEARCH_BASE()}/studies/${encodeURIComponent(studyId)}/export?${params.toString()}`,
+      { credentials: "include" },
+    );
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      return { ok: false, ...normalizeRequestError(payload, response) };
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="([^"]+)"/);
+    return { ok: true, blob: await response.blob(), filename: match ? match[1] : "study-export.zip" };
+  } catch (e) {
+    console.error("Error exporting study data:", e);
+    return { ok: false, error: "Failed to export the study data", status: null, errors: [] };
+  }
+};
+
+export const getStudyAnalyticsSummary = (studyId, { start, end, arms = [], participants = [] } = {}) => {
   const params = new URLSearchParams();
   if (start) params.set("start", start);
   if (end) params.set("end", end);
+  arms.forEach((arm) => params.append("arm", arm));
+  participants.forEach((participant) => params.append("participant", participant));
   const query = params.toString() ? `?${params.toString()}` : "";
   return studyAnalyticsRequest(studyId, `/summary${query}`, "load study analytics");
 };

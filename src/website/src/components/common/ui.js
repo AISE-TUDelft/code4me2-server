@@ -442,6 +442,57 @@ export const Drawer = ({ open, title, subtitle, onClose, actions, children, labe
   );
 };
 
+const readSectionState = (storageKey) => {
+  try {
+    const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
+    return stored && typeof stored === "object" ? stored : {};
+  } catch (_) {
+    return {};
+  }
+};
+
+/**
+ * A titled section that can be collapsed (native details/summary). Its
+ * children mount only while it is open, and the open state is remembered per
+ * browser under `storageKey`/`id` (best effort: storage may be unavailable).
+ */
+export const CollapsibleSection = ({
+  id,
+  title,
+  subtitle,
+  defaultOpen = false,
+  storageKey = "code4me.sections",
+  className = "",
+  children,
+}) => {
+  const [open, setOpen] = useState(() => {
+    const stored = readSectionState(storageKey)[id];
+    return typeof stored === "boolean" ? stored : defaultOpen;
+  });
+  const onToggle = (event) => {
+    const next = event.currentTarget.open;
+    if (next === open) return;
+    setOpen(next);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ ...readSectionState(storageKey), [id]: next }));
+    } catch (_) {
+      // Remembering the state is a convenience only.
+    }
+  };
+  return (
+    <details className={`ui-collapsible${className ? ` ${className}` : ""}`} open={open} onToggle={onToggle}>
+      <summary className="ui-collapsible-summary">
+        <Icon name="chevronRight" size={15} className="ui-collapsible-chevron" />
+        <span className="ui-collapsible-heading">
+          <span className="ui-collapsible-title">{title}</span>
+          {subtitle ? <span className="ui-collapsible-subtitle">{subtitle}</span> : null}
+        </span>
+      </summary>
+      {open ? <div className="ui-collapsible-body">{children}</div> : null}
+    </details>
+  );
+};
+
 export const KpiTile = ({ label, value, detail, title }) => (
   <div className="ui-kpi" title={title}>
     <span className="ui-kpi-label">{label}</span>

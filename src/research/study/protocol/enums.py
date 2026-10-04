@@ -37,11 +37,16 @@ class AssignmentStrategy(str, Enum):
     """How an assignment service picks a condition for one unit."""
 
     WEIGHTED_RANDOM = "WEIGHTED_RANDOM"
+    # Salted-hash pick (``research.runtime.assignment.hashing``); every study
+    # created since the assignment-policy decision allocates with it.
     DETERMINISTIC_HASH = "DETERMINISTIC_HASH"
     STRATIFIED = "STRATIFIED"
-    # Equal-probability profile pick for one enrollment (the runtime/table
-    # contract; the only strategy the assignment service allocates).
+    # Equal-probability profile pick for one enrollment (studies created before
+    # the assignment-policy decision).
     RANDOM_EQUAL = "RANDOM_EQUAL"
+    # Provenance label of an arm the study owner set by hand before first use;
+    # never allocated.
+    MANUAL = "MANUAL"
 
 
 class RetentionAction(str, Enum):

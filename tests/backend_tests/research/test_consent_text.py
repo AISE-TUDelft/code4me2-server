@@ -13,8 +13,10 @@ from backend.routers.research.join import (
     CONTENT_CAPTURE_CONSENT_TEXT,
     GLOBAL_CONSENT_TEXT,
     HASHED_CODE_METADATA_CONSENT_TEXT,
+    MANUAL_ASSIGNMENT_SENTENCE,
     METADATA_ONLY_CONSENT_TEXT,
     METADATA_ONLY_TITLES_CAVEAT,
+    RANDOM_ASSIGNMENT_SENTENCE,
     TOOL_TITLES_CONSENT_TEXT,
     consent_text,
 )
@@ -54,3 +56,12 @@ def test_content_capture_follows_the_flag_not_the_declared_classes():
     assert consent_text({"allowed_field_classes": ["CONTENT"]}).endswith(METADATA_ONLY_CONSENT_TEXT + ".")
     # A malformed stored policy falls back to the default notice.
     assert consent_text(None) == consent_text({})
+
+
+def test_manual_assignment_studies_say_the_research_team_may_assign():
+    assert RANDOM_ASSIGNMENT_SENTENCE in GLOBAL_CONSENT_TEXT
+    manual = consent_text({}, manual_assignment=True)
+    assert MANUAL_ASSIGNMENT_SENTENCE in manual
+    assert RANDOM_ASSIGNMENT_SENTENCE not in manual
+    # Only the assignment sentence changes.
+    assert manual.replace(MANUAL_ASSIGNMENT_SENTENCE, RANDOM_ASSIGNMENT_SENTENCE) == consent_text({})

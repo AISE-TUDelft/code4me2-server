@@ -96,6 +96,7 @@ test("createResearchStudy sends the complete lifecycle payload and null dates", 
         session_policy: { max_minutes: 30 },
         profile_ids: ["p-1"],
         default_budget_usd: null,
+        allow_manual_assignment: false,
       }),
     }),
   );

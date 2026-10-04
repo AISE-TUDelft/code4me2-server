@@ -22,7 +22,7 @@ ENV REACT_APP_BACKEND_HOST=$REACT_APP_BACKEND_HOST \
 RUN test -n "$REACT_APP_BACKEND_HOST" || (echo "REACT_APP_BACKEND_HOST build argument is required" && exit 1)
 RUN npm run build
 
-FROM nginx:1.27-alpine
+FROM nginx:1.27.5-alpine
 COPY nginx.prod.conf /etc/nginx/nginx.conf
 COPY --from=build /website/build /usr/share/nginx/html
 EXPOSE 80

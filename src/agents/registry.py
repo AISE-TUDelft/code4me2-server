@@ -27,6 +27,7 @@ from research.participants import identity as identity_store
 from research.participants.enums import EnrollmentStatus
 from research.runtime.assignment import store as assignment_store
 from research.runtime.assignment.enums import AllocationOutcome
+from research.runtime.assignment.hashing import assignment_strategy
 from research.runtime.assignment.models import StudyProfileSelection
 from research.runtime.assignment.service import allocate
 from research.study.protocol import store as protocol_store
@@ -191,7 +192,13 @@ def resolve_assignment_context(
             )
             for row in profile_rows
         ]
-        allocation = allocate(enrollment, profiles, existing=None, now=now)
+        allocation = allocate(
+            enrollment,
+            profiles,
+            existing=None,
+            now=now,
+            strategy=assignment_strategy(getattr(study, "research_config_json", None)),
+        )
         if (
             allocation.outcome
             not in (AllocationOutcome.CREATED, AllocationOutcome.EXISTING)

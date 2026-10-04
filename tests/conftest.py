@@ -4,9 +4,9 @@ Fixtures that enter ``TestClient(app)`` run the app lifespan, which builds
 ``App()`` from ``.env``. When ``TEST_DATABASE_URL`` names a disposable database,
 the app's ``DB_*`` settings are pointed at that database as well (unless they
 were set explicitly), so a test run never writes to the development database by
-accident. The Redis flush on shutdown is skipped under ``TEST_MODE`` (see
-``App.cleanup``); a disposable Redis is still selected with ``REDIS_HOST`` /
-``REDIS_PORT`` (and the Celery broker variables) when one is available.
+accident. ``App.cleanup`` only closes its Redis connection, never flushes it;
+a disposable Redis is still selected with ``REDIS_HOST`` / ``REDIS_PORT`` (and
+the Celery broker variables) when one is available.
 """
 
 from __future__ import annotations

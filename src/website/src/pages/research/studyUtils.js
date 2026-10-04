@@ -187,12 +187,8 @@ const csvCell = (value) => {
   return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 };
 
-export const downloadCsv = (filename, columns, rows) => {
-  const lines = [columns.map((column) => csvCell(column.label)).join(",")];
-  rows.forEach((row) => {
-    lines.push(columns.map((column) => csvCell(column.value(row))).join(","));
-  });
-  const blob = new Blob([`${lines.join("\n")}\n`], { type: "text/csv;charset=utf-8" });
+/** Hands a blob to the browser as a download named `filename`. */
+export const saveBlob = (filename, blob) => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -201,6 +197,14 @@ export const downloadCsv = (filename, columns, rows) => {
   link.click();
   document.body.removeChild(link);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+export const downloadCsv = (filename, columns, rows) => {
+  const lines = [columns.map((column) => csvCell(column.label)).join(",")];
+  rows.forEach((row) => {
+    lines.push(columns.map((column) => csvCell(column.value(row))).join(","));
+  });
+  saveBlob(filename, new Blob([`${lines.join("\n")}\n`], { type: "text/csv;charset=utf-8" }));
 };
 
 export const slugify = (value) =>

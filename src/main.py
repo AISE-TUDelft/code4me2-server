@@ -403,6 +403,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
         allow_credentials=True,
+        # Lets the research UI name downloads (study export) when it is served
+        # from another origin than the API, as in local development.
+        expose_headers=["Content-Disposition"],
     )
 
     # Add rate limiting middleware

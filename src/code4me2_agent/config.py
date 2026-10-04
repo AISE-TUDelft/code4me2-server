@@ -58,6 +58,7 @@ _HARNESS_BOOL_OPTIONS = (
     "loop_guard",
     "instruction_reminders",
     "test_output_summary",
+    "approval_revise",
 )
 
 
@@ -85,6 +86,9 @@ class HarnessOptions:
     loop_guard: bool = True
     instruction_reminders: bool = True
     test_output_summary: bool = True
+    # Under per_step approval, offer "Revise…" next to allow/reject when the
+    # client renders ACP forms (elicitation.form).
+    approval_revise: bool = True
 
     def with_overrides(self, overrides: dict[str, object] | None) -> "HarnessOptions":
         if not overrides:

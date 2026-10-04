@@ -11,6 +11,7 @@ joins login identity (``research_participant``/``user``) and nothing writes.
 from __future__ import annotations
 
 import math
+import sys
 from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import String, and_, cast, func, literal_column, not_, or_, select, text
@@ -22,6 +23,7 @@ from database.research_schemas import (
     StudyAssignment,
 )
 from database.research_schemas import ResearchSessionV1 as ResearchSessionRow
+from research.telemetry.chat_lifecycle import REVISE_OPTION_ID
 
 from .metrics import (
     ANALYTIC_EVENT_TYPES,
@@ -48,6 +50,7 @@ from .models import (
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import Collection
 
     from sqlalchemy.orm import Session
 
@@ -111,6 +114,14 @@ _EVENT_COLUMNS = (
     # A small list of {"status", "count"} records (plan entry text is never
     # captured); null on every other event type.
     _ENVELOPE["payload"]["plan_status_counts"],
+    # The ACP chat and its lifecycle (research.telemetry.chat_lifecycle).
+    _payload("session_id"),
+    _payload("acp_method"),
+    _payload("end_reason"),
+    _payload("selected_option_id"),
+    func.coalesce(
+        _ENVELOPE["payload"]["options"].contains([{"option_id": REVISE_OPTION_ID}]), False
+    ),
 )
 
 
@@ -198,6 +209,11 @@ def _event_row(row: Any) -> EventRow:
         latency_ms,
         plan_size,
         plan_status_counts,
+        chat_id,
+        acp_method,
+        end_reason,
+        selected_option_id,
+        offers_revise,
     ) = tuple(row)
     return EventRow(
         event_type=event_type,
@@ -224,6 +240,12 @@ def _event_row(row: Any) -> EventRow:
         latency_ms=_int(latency_ms),
         plan_size=_int(plan_size),
         plan_completed=_plan_completed(plan_status_counts),
+        # Chat ids repeat on every event of a chat: share one string per id.
+        chat_id=sys.intern(chat_id) if isinstance(chat_id, str) else None,
+        acp_method=acp_method,
+        end_reason=end_reason,
+        selected_option_id=selected_option_id,
+        offers_revise=bool(offers_revise),
     )
 
 
@@ -232,6 +254,7 @@ def _scoped(
     study_id: uuid.UUID,
     *,
     enrollment_id: Optional[uuid.UUID] = None,
+    enrollment_ids: Optional[Collection[uuid.UUID]] = None,
     window: Optional[DateWindow] = None,
 ):
     statement = statement.where(
@@ -241,6 +264,8 @@ def _scoped(
     )
     if enrollment_id is not None:
         statement = statement.where(ResearchEvent.enrollment_id == enrollment_id)
+    if enrollment_ids is not None:
+        statement = statement.where(ResearchEvent.enrollment_id.in_(list(enrollment_ids)))
     if window is not None:
         lower, upper = window.bounds()
         if lower is not None:
@@ -303,6 +328,8 @@ def load_study_frame(
         ResearchEnrollment.status,
         ResearchEnrollment.enrolled_at,
         ResearchEnrollment.consent_accepted_at,
+        ResearchEnrollment.consent_digest,
+        ResearchEnrollment.consent_snapshot_json["answers"],
     ).where(ResearchEnrollment.study_id == study_id)
     if enrollment_id is not None:
         enrollment_statement = enrollment_statement.where(
@@ -315,10 +342,18 @@ def load_study_frame(
             status=str(status),
             enrolled_at=enrolled_at,
             consent_accepted_at=consent_accepted_at,
+            consent_digest=consent_digest,
+            consent_answers=consent_answers if isinstance(consent_answers, dict) else None,
         )
-        for row_id, participant_code, status, enrolled_at, consent_accepted_at in session.execute(
-            enrollment_statement
-        ).all()
+        for (
+            row_id,
+            participant_code,
+            status,
+            enrolled_at,
+            consent_accepted_at,
+            consent_digest,
+            consent_answers,
+        ) in session.execute(enrollment_statement).all()
     ]
 
     assignment_snapshot = StudyAssignment.profile_snapshot_json
@@ -332,6 +367,7 @@ def load_study_frame(
             assignment_snapshot["model"].astext,
             assignment_snapshot["framework_version"].astext,
             assignment_snapshot["max_context_tokens"].astext,
+            StudyAssignment.strategy,
         )
         .join(
             ResearchEnrollment,
@@ -353,6 +389,7 @@ def load_study_frame(
             model=model,
             framework_version=framework_version,
             max_context_tokens=_int(max_context_tokens),
+            strategy=strategy,
         )
         for (
             row_enrollment_id,
@@ -363,6 +400,7 @@ def load_study_frame(
             model,
             framework_version,
             max_context_tokens,
+            strategy,
         ) in session.execute(assignment_statement).all()
     ]
 
@@ -422,11 +460,16 @@ def load_events(
     study_id: uuid.UUID,
     *,
     enrollment_id: Optional[uuid.UUID] = None,
+    enrollment_ids: Optional[Collection[uuid.UUID]] = None,
     window: Optional[DateWindow] = None,
 ) -> list[EventRow]:
     """The metadata-only events the metric set reads (chunks excluded)."""
     statement = _scoped(
-        select(*_EVENT_COLUMNS), study_id, enrollment_id=enrollment_id, window=window
+        select(*_EVENT_COLUMNS),
+        study_id,
+        enrollment_id=enrollment_id,
+        enrollment_ids=enrollment_ids,
+        window=window,
     ).where(
         ResearchEvent.event_type.in_(sorted(ANALYTIC_EVENT_TYPES)),
         not_(_chunk_clause()),
@@ -482,6 +525,7 @@ def load_daily_event_counts(
     study_id: uuid.UUID,
     *,
     enrollment_id: Optional[uuid.UUID] = None,
+    enrollment_ids: Optional[Collection[uuid.UUID]] = None,
     window: Optional[DateWindow] = None,
 ) -> list[DailyEventCount]:
     """Per-enrollment, per-UTC-date counts over every retained event."""
@@ -502,6 +546,7 @@ def load_daily_event_counts(
         ),
         study_id,
         enrollment_id=enrollment_id,
+        enrollment_ids=enrollment_ids,
         window=window,
     ).group_by(ResearchEvent.enrollment_id, day)
     return [

@@ -98,7 +98,9 @@ def model_call(seconds, usage=None, prompt_tokens=None, **kwargs) -> EventRow:
     )
 
 
-def session_row(session_id="s1", *, opened=0, closed=None, activity=None, heartbeat=None, state="ended", enrollment="e1"):
+def session_row(
+    session_id="s1", *, opened=0, closed=None, activity=None, heartbeat=None, state="ended", enrollment="e1", reason=None
+):
     return SessionRow(
         session_id=session_id,
         enrollment_id=enrollment,
@@ -107,6 +109,7 @@ def session_row(session_id="s1", *, opened=0, closed=None, activity=None, heartb
         closed_at=at(closed) if closed is not None else None,
         last_activity_at=at(activity) if activity is not None else None,
         last_heartbeat_at=at(heartbeat) if heartbeat is not None else None,
+        close_reason=reason,
     )
 
 
@@ -475,6 +478,39 @@ def test_session_seconds_coalesce_clamp_window_and_daily_split():
     }
 
 
+def test_two_windows_open_at_once_count_their_time_once():
+    # Two project windows open 10:00-18:00 and a third 17:00-19:00: nine hours
+    # of the participant's day, not eighteen.
+    hour = 3600
+    rows = [
+        session_row("w1", opened=0, closed=8 * hour),
+        session_row("w2", opened=0, closed=8 * hour),
+        session_row("w3", opened=7 * hour, closed=9 * hour),
+    ]
+    analysis = m.analyze_participant([], rows)
+    assert analysis.session_seconds == 9 * hour
+    assert analysis.session_seconds_by_day == {date(2026, 9, 20): 9 * hour}
+    # Each session still reports its own length.
+    assert analysis.session_seconds_by_session == {"w1": 8 * hour, "w2": 8 * hour, "w3": 2 * hour}
+
+
+def test_a_session_the_server_closed_late_ends_at_its_last_heartbeat():
+    # The IDE last reported at 10 minutes; the server noticed the idle timeout
+    # two days later, when the participant came back, and stamped that time.
+    two_days = 2 * 86400
+    for reason in ("idle_timeout", "resume_grace_expired", "revoked", "STUDY_STOPPED"):
+        stale = session_row(closed=two_days, activity=two_days, heartbeat=600, reason=reason)
+        assert m.session_seconds(stale) == 600.0, reason
+    # The absent days are neither session time nor active days.
+    analysis = m.analyze_participant([], [session_row(closed=two_days, activity=two_days, heartbeat=600, reason="idle_timeout")])
+    assert analysis.session_seconds_by_day == {date(2026, 9, 20): 600.0}
+
+    # A close the client sent keeps its own time, and without a heartbeat
+    # nothing bounds a server close better than its own time.
+    assert m.session_seconds(session_row(closed=900, heartbeat=600, reason="explicit_completion")) == 900.0
+    assert m.session_seconds(session_row(closed=900, reason="idle_timeout")) == 900.0
+
+
 # -- usage, onset, nulls ------------------------------------------------------------------------------
 
 
@@ -575,6 +611,10 @@ def test_null_handling_for_missing_prompts_usage_and_session_time():
         "seconds_to_first_agent_edit": None,
         "ide_edits_per_session_hour": None,
         "plan_completion_rate": None,
+        "revision_rate": None,
+        "reprompt_after_rejection_rate": None,
+        "chats_opened": 0,
+        "prompts_per_chat": None,
     }
 
     # IDE-only activity: one edit per document change (payload count ignored).
@@ -876,3 +916,209 @@ def test_the_relay_names_an_acp_call_it_also_reported():
     assert len(analysis.tool_calls) == 2
     named = m.tool_rows(((call, None) for call in analysis.tool_calls), limit=10)
     assert [(row["tool_name"], row["tool_kind"]) for row in named] == [("read_file", "read"), (None, "execute")]
+
+
+# -- chats, chat ends and Revise -------------------------------------------------
+
+
+def chat_start(seconds, chat, method="session/new", **kwargs) -> EventRow:
+    return ev("interaction.started", seconds, chat_id=chat, acp_method=method, **kwargs)
+
+
+def chat_end(seconds, chat, *, method=None, reason=None, **kwargs) -> EventRow:
+    return ev(
+        "interaction.completed",
+        seconds,
+        chat_id=chat,
+        acp_method=method,
+        end_reason=reason,
+        lifecycle_state="completed",
+        **kwargs,
+    )
+
+
+def decided(seconds, chat, decision, option=None, permission="p", **kwargs) -> EventRow:
+    return ev(
+        "permission.decided",
+        seconds,
+        chat_id=chat,
+        decision=decision,
+        selected_option_id=option,
+        permission_id=permission,
+        **kwargs,
+    )
+
+
+def _three_chats() -> list[EventRow]:
+    return [
+        # Chat A: a rejection the participant answers with a new prompt; the
+        # host then closes the process (IntelliJ does when a chat is deleted).
+        chat_start(0, "A"),
+        prompt(1, "1", chat_id="A"),
+        completion(2, "1", chat_id="A"),
+        decided(3, "A", "reject", permission="pa"),
+        prompt(4, "2", chat_id="A"),
+        completion(5, "2", chat_id="A"),
+        chat_end(10, "A", reason="host_closed"),
+        # Chat B: a Revise answer; the client closes the chat, then the process ends.
+        chat_start(20, "B"),
+        prompt(21, "3", chat_id="B"),
+        decided(22, "B", "reject", option="revise", permission="pb"),
+        completion(23, "3", chat_id="B"),
+        chat_end(30, "B", method="session/close"),
+        chat_end(31, "B", reason="host_closed"),
+        # Chat C: an old chat reopened.
+        chat_start(40, "C", method="session/load"),
+        prompt(41, "4", chat_id="C"),
+        completion(42, "4", chat_id="C"),
+    ]
+
+
+def test_chat_ends_and_reopens_are_never_user_cancels():
+    rows = [
+        prompt(0, "1", chat_id="A"),
+        ev("interaction.completed", 1, chat_id="A", acp_method="session/cancel"),
+        completion(2, "1", stop_reason="cancelled", chat_id="A"),
+        chat_end(3, "A", method="session/close"),
+        chat_end(4, "A", reason="host_closed"),
+        chat_end(5, "A", reason="signal_terminated"),
+        # Legacy cancel: no lifecycle, no method.
+        prompt(6, "2", chat_id="A"),
+        ev("interaction.completed", 7, chat_id="A"),
+        completion(8, "2", chat_id="A"),
+    ]
+    analysis = m.analyze_participant(rows, [])
+    assert len(analysis.cancels) == 2
+    assert analysis.metrics()["cancel_rate"] == 1.0
+
+
+def test_chats_are_numbered_and_linked_to_how_the_previous_one_ended():
+    analysis = m.analyze_participant(_three_chats(), [])
+    chats = analysis.chats
+    assert [chat.chat_id for chat in chats] == ["A", "B", "C"]
+    assert [chat.ordinal for chat in chats] == [1, 2, 3]
+    assert [chat.start_kind for chat in chats] == ["new", "new", "load"]
+    # The client's close outranks the process ending right after it.
+    assert [chat.end_label for chat in chats] == ["host_closed", "close", "open"]
+    assert [chat.prompts for chat in chats] == [2, 1, 1]
+    assert [(chat.rejections, chat.revisions) for chat in chats] == [(1, 0), (0, 1), (0, 0)]
+    assert chats[2].reopen_count == 1
+    assert [chat.previous_end_reason for chat in chats] == [None, "host_closed", "close"]
+    assert chats[1].gap_since_previous_seconds == 10.0
+
+    assert analysis.decision_counts == {"reject": 1, "revise": 1}
+    metrics = analysis.metrics()
+    assert metrics["chats_opened"] == 2  # the reopened chat is not a new one
+    assert metrics["prompts_per_chat"] == 1.333
+    assert metrics["revision_rate"] == 0.5
+    assert metrics["reprompt_after_rejection_rate"] == 1.0
+    # Revise is not a plain rejection.
+    assert metrics["permission_denial_rate"] == 1.0
+
+    rows = m.chat_rows(chats)
+    assert rows[1]["end_reason"] == "close" and rows[1]["previous_end_reason"] == "host_closed"
+    assert m.chat_summary(analysis) == {
+        "chats": 3,
+        "unused_chats": 0,
+        "started": {"new": 2, "load": 1},
+        "ended": {"host_closed": 1, "close": 1, "open": 1},
+        "unattributed_prompts": 0,
+        "lifecycle_coverage": "AVAILABLE",
+    }
+
+
+def test_chats_the_ide_opened_without_a_prompt_are_listed_but_not_numbered():
+    # As seen in IntelliJ 2026.2: chat A is used; a new chat B is created and its
+    # agent stopped unused; after a delete the IDE shows an old chat C
+    # (session/load) that nobody prompts; then chat D is used.
+    rows = [
+        chat_start(0, "A"),
+        prompt(1, "1", chat_id="A"),
+        completion(2, "1", chat_id="A"),
+        chat_start(10, "B"),
+        chat_end(17, "B", reason="signal_terminated"),
+        chat_start(18, "C", method="session/load"),
+        chat_start(20, "D"),
+        prompt(21, "2", chat_id="D"),
+        completion(22, "2", chat_id="D"),
+    ]
+    analysis = m.analyze_participant(rows, [])
+    chats = analysis.chats
+    assert [(chat.chat_id, chat.used, chat.ordinal) for chat in chats] == [
+        ("A", True, 1),
+        ("B", False, 0),
+        ("C", False, 0),
+        ("D", True, 2),
+    ]
+    # D is linked to A, the participant's previous used chat.
+    assert chats[3].previous_end_reason == "open"
+    metrics = analysis.metrics()
+    assert metrics["chats_opened"] == 2
+    assert metrics["prompts_per_chat"] == 1.0
+    summary = m.chat_summary(analysis)
+    assert (summary["chats"], summary["unused_chats"], summary["started"]) == (2, 2, {"new": 2})
+    assert [(row["ordinal"], row["used"]) for row in m.chat_rows(chats)] == [
+        (1, True),
+        (None, False),
+        (None, False),
+        (2, True),
+    ]
+    history = m.chat_history({"e": analysis}, {"e": "arm"}, ["arm"])
+    assert [(row["bucket"], row["chats"]) for row in history["by_ordinal"]] == [("1", 1), ("2", 1)]
+    assert [(row["previous_end_reason"], row["chats"]) for row in history["by_previous_end"]] == [("open", 1)]
+
+
+def test_a_rejection_left_alone_is_not_a_reprompt():
+    rows = [
+        prompt(0, "1", chat_id="A"),
+        decided(1, "A", "reject"),
+        completion(2, "1", chat_id="A"),
+        prompt(3, "2", chat_id="B"),
+        completion(4, "2", chat_id="B"),
+    ]
+    assert m.analyze_participant(rows, []).metrics()["reprompt_after_rejection_rate"] == 0.0
+
+
+def test_revision_rate_is_null_unless_revise_was_offered():
+    without_offer = [
+        prompt(0, "1", chat_id="A"),
+        ev("permission.requested", 1, chat_id="A", permission_id="p1"),
+        decided(2, "A", "allow", permission="p1"),
+        completion(3, "1", chat_id="A"),
+    ]
+    assert m.analyze_participant(without_offer, []).metrics()["revision_rate"] is None
+    offered = [
+        prompt(0, "1", chat_id="A"),
+        ev("permission.requested", 1, chat_id="A", permission_id="p1", offers_revise=True),
+        decided(2, "A", "allow", permission="p1"),
+        completion(3, "1", chat_id="A"),
+    ]
+    assert m.analyze_participant(offered, []).metrics()["revision_rate"] == 0.0
+
+
+def test_the_built_in_agents_revised_decision_reads_as_revise():
+    row = ev("permission.decided", 1, source="relay", decision="revised")
+    assert m.permission_decision(row) == "revise"
+
+
+def test_prompts_without_chat_ids_leave_chat_counts_unobservable():
+    rows = [prompt(0, "1"), completion(1, "1")]
+    metrics = m.analyze_participant(rows, []).metrics()
+    assert metrics["chats_opened"] is None
+    assert metrics["prompts_per_chat"] is None
+    assert m.chat_summary(m.analyze_participant(rows, []))["unattributed_prompts"] == 1
+
+
+def test_chat_history_groups_chats_by_number_and_previous_end():
+    analysis = m.analyze_participant(_three_chats(), [])
+    history = m.chat_history({"e1": analysis}, {"e1": "arm-a"}, ["arm-a"])
+    assert [(row["bucket"], row["chats"], row["prompts_per_chat"]) for row in history["by_ordinal"]] == [
+        ("1", 1, 2.0),
+        ("2", 1, 1.0),
+        ("3", 1, 1.0),
+    ]
+    assert {row["previous_end_reason"]: row["chats"] for row in history["by_previous_end"]} == {
+        "close": 1,
+        "host_closed": 1,
+    }
+    assert history["by_ordinal"][0]["rejections_per_prompt"] == 0.5

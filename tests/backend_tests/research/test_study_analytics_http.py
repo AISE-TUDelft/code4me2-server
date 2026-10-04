@@ -1050,7 +1050,23 @@ def test_participant_dashboard_for_a_seeded_participant(analytics_runtime):
         "seconds_to_first_agent_edit": 20.0,
         "ide_edits_per_session_hour": 2.0,
         "plan_completion_rate": 0.667,
+        # Legacy telemetry: one chat id (no lifecycle methods) on two of the three
+        # prompts; the decisions carry no chat id, so no reprompt rate, and
+        # "Revise…" was never offered, so no revision rate.
+        "revision_rate": None,
+        "reprompt_after_rejection_rate": None,
+        "chats_opened": 1,
+        "prompts_per_chat": 2.0,
     }
+    assert body["chat_summary"] == {
+        "chats": 1,
+        "unused_chats": 0,
+        "started": {"unknown": 1},
+        "ended": {"unknown": 1},
+        "unattributed_prompts": 1,
+        "lifecycle_coverage": "UNAVAILABLE",
+    }
+    assert [chat["prompts"] for chat in body["chats"]] == [2]
     assert body["context"] == {
         "cap_tokens": 8000,
         "model_calls": 3,
@@ -1482,4 +1498,73 @@ def test_the_timeline_query_leaves_out_decisions_no_one_made(analytics_runtime):
     assert not any(
         row.source == "relay" and row.event_type == "permission.decided"
         for row in rows[1:]
+    )
+
+
+def test_summary_filters_by_arm_and_participant(analytics_runtime):
+    client, session_factory, current_user = analytics_runtime
+    seeded = _seed_two_arm_study(client, session_factory, current_user)
+    current_user["value"] = _researcher(seeded.owner)
+
+    def summary(**params):
+        response = client.get(_url(seeded.study_id, "summary"), params=params)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        _assert_no_content_or_identity(body)
+        return body
+
+    everything = summary()
+    assert everything["filters"] == {
+        "arms": [],
+        "participants": [],
+        "matched_participants": 4,
+        "spend_scope": "study",
+    }
+    options = everything["filter_options"]
+    assert [arm["profile_id"] for arm in options["arms"]] == [seeded.managed_profile, seeded.byoa_profile]
+    assert [arm["participants"] for arm in options["arms"]] == [2, 2]
+    assert {row["enrollment_id"] for row in options["participants"]} == {
+        seeded.p1,
+        seeded.p2,
+        seeded.p3,
+        seeded.p4,
+    }
+
+    managed = summary(arm=seeded.managed_profile)
+    byoa = summary(arm=seeded.byoa_profile)
+    assert managed["filters"]["matched_participants"] == 2
+    assert managed["filters"]["spend_scope"] == "filtered"
+    assert managed["totals"]["participants_enrolled"] == 2
+    # Every arm stays listed (stable colours); the filtered one keeps its people.
+    assert [arm["profile_id"] for arm in managed["arms"]] == [seeded.managed_profile, seeded.byoa_profile]
+    for key in ("prompts", "tool_calls", "permission_requests", "errors", "sessions"):
+        assert managed["totals"][key] + byoa["totals"][key] == everything["totals"][key], key
+
+    p1 = summary(participant=seeded.p1)
+    rest = summary(participant=[seeded.p2, seeded.p3, seeded.p4])
+    assert p1["totals"]["participants_enrolled"] == 1
+    assert p1["filters"]["participants"] == [
+        {"enrollment_id": seeded.p1, "participant_code": p1["filters"]["participants"][0]["participant_code"]}
+    ]
+    for key in ("prompts", "tool_calls", "sessions"):
+        assert p1["totals"][key] + rest["totals"][key] == everything["totals"][key], key
+
+    nobody = summary(arm=seeded.byoa_profile, participant=seeded.p1)
+    assert nobody["filters"]["matched_participants"] == 0
+    assert nobody["totals"]["participants_enrolled"] == 0
+    assert nobody["totals"]["prompts"] == 0
+
+    for params in (
+        {"arm": str(uuid.uuid4())},
+        {"participant": seeded.foreign_enrollment},
+    ):
+        refused = client.get(_url(seeded.study_id, "summary"), params=params)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"]["code"] == "UNKNOWN_FILTER_VALUE"
+    assert client.get(_url(seeded.study_id, "summary"), params={"arm": "not-a-uuid"}).status_code == 422
+
+    current_user["value"] = _researcher(seeded.other)
+    assert (
+        client.get(_url(seeded.study_id, "summary"), params={"arm": seeded.managed_profile}).status_code
+        == 403
     )

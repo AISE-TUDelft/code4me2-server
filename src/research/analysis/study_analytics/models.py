@@ -48,6 +48,10 @@ class EnrollmentRow:
     status: str
     enrolled_at: Optional[datetime] = None
     consent_accepted_at: Optional[datetime] = None
+    # The accepted consent version and the participant's answers per statement
+    # (both null for enrollments created before versions were recorded).
+    consent_digest: Optional[str] = None
+    consent_answers: Optional[dict[str, bool]] = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,8 @@ class AssignmentRow:
     model: Optional[str] = None
     framework_version: Optional[str] = None
     max_context_tokens: Optional[int] = None
+    # RANDOM_EQUAL / DETERMINISTIC_HASH, or MANUAL after an owner override.
+    strategy: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,10 @@ class EventRow:
     (provider-reported, carried by relay-source model-call events).
     ``decision_scope`` is set on the built-in agent's own relay permission
     reports (``policy`` or ``session_cached`` when no one was asked).
+    ``session_id`` is the *research* session; ``chat_id`` is the ACP chat
+    (``payload.session_id``, stamped by the participant proxy). ``acp_method``,
+    ``end_reason`` and ``selected_option_id`` follow
+    :mod:`research.telemetry.chat_lifecycle`.
     """
 
     event_type: str
@@ -118,6 +128,12 @@ class EventRow:
     latency_ms: Optional[int] = None
     plan_size: Optional[int] = None
     plan_completed: Optional[int] = None
+    chat_id: Optional[str] = None
+    acp_method: Optional[str] = None
+    end_reason: Optional[str] = None
+    selected_option_id: Optional[str] = None
+    #: A ``permission.requested`` that offered the "Revise…" option.
+    offers_revise: bool = False
 
 
 @dataclass(frozen=True)

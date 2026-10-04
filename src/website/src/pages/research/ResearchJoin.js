@@ -8,12 +8,28 @@ import {
 import Icon from "../../components/common/Icon";
 import { Badge, Card, CopyButton, KpiTile, PageHeader } from "../../components/common/ui";
 import { daysUntil, formatDate, formatDateTime, formatNumber, formatRelative, formatUsd } from "../../utils/format";
+import { ConsentReview } from "./ConsentText";
 import { collectedClasses } from "./studyUtils";
 import "./research.css";
 
 export const RESEARCH_JOIN_INTENT_KEY = "code4me.research.join.intent";
 const SAFE_JOIN_PATH = "/research/join";
 const PRIVACY_PATH = "/settings/privacy";
+
+// The stock form's single statement, for servers that predate consent versions.
+const STOCK_STATEMENTS = [{ id: "accept", text: "I accept the study consent notice.", required: true }];
+
+/** The consent view to review: the server's, or the stock checkbox for older servers. */
+const reviewConsent = (data) => {
+  const consent = data.consent || {};
+  return {
+    custom: consent.custom === true,
+    document: consent.document || null,
+    notice: consent.notice || data.consentText || data.policyText || "",
+    statements: consent.statements && consent.statements.length ? consent.statements : STOCK_STATEMENTS,
+    digest: consent.digest || "",
+  };
+};
 
 // Join refusals that end the attempt, so the saved join intent is dropped.
 const TERMINAL_JOIN_CODES = ["STUDY_STOPPED", "ALREADY_ENROLLED", "ACTIVE_ENROLLMENT_EXISTS", "DATA_COLLECTION_OPTED_OUT"];
@@ -101,7 +117,7 @@ const SetupSteps = ({ runtime }) => {
   const steps = [
     {
       title: "Install the Code4Me plugin",
-      text: "In IntelliJ IDEA open Settings › Plugins › Install Plugin from Disk and choose the Code4Me ZIP your study coordinator sent. Also install JetBrains AI Assistant.",
+      text: "In IntelliJ IDEA open Settings › Plugins and install Code4Me V2 from the Marketplace or, if your study coordinator sent you a ZIP, choose ⚙ › Install Plugin from Disk. Also install JetBrains AI Assistant.",
     },
     ...(needsOwnAgent(runtime)
       ? [
@@ -248,6 +264,17 @@ const CurrentStudy = ({ enrollment }) => {
         </div>
       </div>
 
+      {enrollment.consent ? (
+        <details className="research-advanced participant-section">
+          <summary>Consent you accepted</summary>
+          <ConsentReview
+            consent={enrollment.consent}
+            answers={enrollment.consent.answers || {}}
+            idPrefix={`accepted-consent-${enrollment.enrollment_id}`}
+          />
+        </details>
+      ) : null}
+
       {enrollment.status === "ACTIVE" ? (
         <div className="participant-section">
           <h4 className="ui-section-title">Get set up</h4>
@@ -290,7 +317,8 @@ const ResearchJoin = ({ user }) => {
   const joinFocused = location.pathname === SAFE_JOIN_PATH;
   const [joinCode, setJoinCode] = useState("");
   const [study, setStudy] = useState(null);
-  const [acceptConsent, setAcceptConsent] = useState(false);
+  // Ticked consent statements by id; joining needs every required one.
+  const [answers, setAnswers] = useState({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [handoff, setHandoff] = useState(null);
@@ -333,7 +361,8 @@ const ResearchJoin = ({ user }) => {
     const result = await resolveResearchJoinCode(code);
     if (result.ok) {
       clearJoinIntent();
-      setStudy({ ...result.data.study, consentText: result.data.consentText || result.data.policyText || "" });
+      setStudy({ ...result.data.study, consent: reviewConsent(result.data) });
+      setAnswers({});
       setNotice("Review the study details and accept consent to join.");
     } else {
       setStudy(null);
@@ -346,25 +375,46 @@ const ResearchJoin = ({ user }) => {
 
   const join = async (event) => {
     event.preventDefault();
-    if (!acceptConsent) {
-      setError("You must accept the consent notice before joining.");
+    const consent = study?.consent || reviewConsent({});
+    const missing = consent.statements.filter((statement) => statement.required && answers[statement.id] !== true);
+    if (missing.length) {
+      setError(
+        consent.custom
+          ? "Tick every required consent statement to join."
+          : "You must accept the consent notice before joining.",
+      );
       return;
     }
     setIsBusy(true);
     setError("");
     const code = joinCode.trim();
-    const result = await redeemResearchJoinCode(code, true);
+    // A server that versions consent gets the reviewed digest and the answers.
+    const reviewed = consent.digest
+      ? {
+          digest: consent.digest,
+          statements: Object.fromEntries(consent.statements.map((statement) => [statement.id, answers[statement.id] === true])),
+        }
+      : undefined;
+    const result = reviewed ? await redeemResearchJoinCode(code, true, reviewed) : await redeemResearchJoinCode(code, true);
     if (result.ok) {
       setStudy(null);
       setHandoff(result.data);
       clearJoinIntent();
-      setAcceptConsent(false);
+      setAnswers({});
       setNotice(
         result.data.reused
           ? "You are already enrolled in this study."
           : "Enrollment complete. Assignment is managed by the study server. IntelliJ activation and bootstrap happen after enrollment.",
       );
       loadEnrollments();
+    } else if (result.code === "CONSENT_CHANGED") {
+      // The form changed since it was loaded: show the current version.
+      const fresh = await resolveResearchJoinCode(code);
+      if (fresh.ok) {
+        setStudy({ ...fresh.data.study, consent: reviewConsent(fresh.data) });
+        setAnswers({});
+      }
+      setError("The consent form has changed. Review it again before joining.");
     } else {
       if (result.status === 401) return rememberJoinIntent(code);
       if (TERMINAL_JOIN_CODES.includes(result.code)) clearJoinIntent();
@@ -375,7 +425,7 @@ const ResearchJoin = ({ user }) => {
 
   const cancelReview = () => {
     setStudy(null);
-    setAcceptConsent(false);
+    setAnswers({});
     setNotice("");
     setError("");
   };
@@ -432,24 +482,17 @@ const ResearchJoin = ({ user }) => {
               <h3>{study.name || "Research study"}</h3>
               {study.description ? <p>{study.description}</p> : null}
             </div>
-            {study.consentText ? (
-              <div className="participant-consent" aria-label="Consent notice">
-                <p>{study.consentText}</p>
-              </div>
-            ) : null}
+            <ConsentReview
+              consent={study.consent}
+              answers={answers}
+              onChange={(id, checked) => setAnswers((current) => ({ ...current, [id]: checked }))}
+              disabled={isBusy}
+              idPrefix="join-consent"
+            />
             <p className="research-hint">
               Assignment happens on the study server. IntelliJ is only used for post-enrollment activation and
               bootstrap.
             </p>
-            <label className="ui-check">
-              <input
-                type="checkbox"
-                checked={acceptConsent}
-                onChange={(event) => setAcceptConsent(event.target.checked)}
-                disabled={isBusy}
-              />
-              <span className="ui-check-text">I accept the study consent notice.</span>
-            </label>
             <div className="ui-row">
               <button type="submit" className="primary-button" disabled={isBusy || !joinCode.trim()}>
                 Accept and join

@@ -415,7 +415,8 @@ def test_owner_sees_study_local_participant_coverage(http_runtime):
 
     assignment = row["assignment"]
     assert assignment["agent_profile_id"] == str(profile_id)
-    assert assignment["strategy"] == "RANDOM_EQUAL"
+    # Studies created through the API freeze the salted-hash assignment policy.
+    assert assignment["strategy"] == "DETERMINISTIC_HASH"
     assert assignment["randomization_epoch"] == 0
     assert assignment["profile_digest"]
     assert assignment["status"] == "ACTIVE"

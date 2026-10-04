@@ -88,6 +88,11 @@ _CANONICAL_ONLY_COLUMNS = frozenset(
     {"run_id", "message_id", "tool_call_id", "decision", "decision_scope", "tool_kind"}
 )
 
+# Self-reported "Revise…" decision keys kept outside the content blob: the
+# strings go to the canonical payload, the counts to ``metrics.counts``.
+_REVISE_TEXT_KEYS = ("elicitation_action", "revise_status")
+_REVISE_COUNT_KEYS = ("hunk_count", "kept_hunk_count")
+
 
 def map_event_type(runtime_event_type: str) -> str:
     """Translate a runtime event type, defaulting unknown ones to `observation`.
@@ -258,6 +263,16 @@ def map_event_to_columns(
     # steps even when content is not stored.
     if event_type == "model_call" and isinstance(payload.get("call_purpose"), str):
         extra["call_purpose"] = payload["call_purpose"][:32]
+    # A "Revise…" decision: the form outcome and what became of the kept hunks
+    # (BEHAVIORAL) and the hunk counts (SYSTEM) are structural; the user's
+    # instructions (``text``) stay in the content blob.
+    for key in _REVISE_TEXT_KEYS:
+        if isinstance(payload.get(key), str):
+            extra[key] = payload[key][:32]
+    for key in _REVISE_COUNT_KEYS:
+        count = _as_int(payload.get(key))
+        if count is not None:
+            extra[key] = count
 
     # Content: the payload may quote user prompts, model output or file
     # contents, and raw_payload is the unredacted form of the same. Both are
@@ -357,6 +372,10 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
     total = columns.get("total_tokens")
     if total is not None:
         counts["total_tokens"] = int(total)
+    for key in _REVISE_COUNT_KEYS:
+        value = _as_int(_extra_value(columns.get("extra_json"), key))
+        if value is not None:
+            counts[key] = value
     payload: dict[str, Any] = {}
     for key in ("model", "finish_reason", "tool_name", "request_id"):
         value = columns.get(key)
@@ -372,6 +391,11 @@ def _fact_from_columns(columns: dict, *, content_included: bool = False) -> "Leg
         # BEHAVIORAL-classified ("call" token): kept or dropped by the study
         # policy like other structural metadata, never refused as content.
         payload["call_purpose"] = call_purpose
+    for key in _REVISE_TEXT_KEYS:
+        # BEHAVIORAL ("action"/"status" tokens), like the decision itself.
+        value = _extra_value(columns.get("extra_json"), key)
+        if isinstance(value, str):
+            payload[key] = value
     if content_included:
         if columns.get("tool_arguments") is not None:
             payload["tool_arguments"] = columns["tool_arguments"]

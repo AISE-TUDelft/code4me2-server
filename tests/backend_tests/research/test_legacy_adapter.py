@@ -232,3 +232,39 @@ def test_trace_and_span_default_to_the_run_and_the_source_event():
     # A producer's own handles win over the defaults.
     assert explicit.correlations.trace_id == "trace-9"
     assert explicit.correlations.span_id == "span-9"
+
+
+def test_a_secret_shaped_string_in_reported_content_is_redacted_not_a_lost_model_call():
+    """Content-capture studies: a self-reported model call whose conversation
+    mentions "Bearer tokens" used to be refused whole (SECRET_PRESENT), losing its
+    usage and timings, and every later call of the chat repeats that history."""
+    from research.telemetry.privacy import PrivacyPolicy
+    from research.telemetry.validation import TelemetryValidationCode, validate_canonical_event
+
+    content_capture = PrivacyPolicy.from_study_policy({"content_capture": True}, consent_active=True)
+    (event,) = build_legacy_events(
+        _task(),
+        [
+            _fact(
+                "model_call",
+                payload={
+                    "model": "m1",
+                    "payload": '{"messages": [{"content": "How do Bearer tokens work here?"}]}',
+                },
+                metrics=EventMetrics(usage_tokens=900),
+            )
+        ],
+        content_capture,
+    )
+
+    assert not event.privacy.blocked
+    assert event.payload["model"] == "m1"
+    assert "payload" not in event.payload
+    assert event.privacy.redacted_fields == ["payload"]
+    assert event.metrics.usage_tokens == 900
+    codes = {finding.code for finding in validate_canonical_event(event)}
+    assert TelemetryValidationCode.SECRET_PRESENT not in codes
+    # Ingestion accepts an event the study policy would not change again.
+    from research.telemetry.privacy import filter_event
+
+    assert filter_event(event, content_capture).event.payload == event.payload

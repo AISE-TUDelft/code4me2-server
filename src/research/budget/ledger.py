@@ -25,7 +25,7 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -949,8 +949,18 @@ def _participant_block(row: Any, now: datetime) -> dict:
     }
 
 
-def study_spend_summary(db, study_id: uuid.UUID) -> dict:
-    """Exact metered spend of a study from the ledger (settled + forfeited + expired)."""
+def study_spend_summary(
+    db, study_id: uuid.UUID, *, enrollment_ids: Optional[Sequence[uuid.UUID]] = None
+) -> dict:
+    """Exact metered spend of a study from the ledger (settled + forfeited + expired).
+
+    ``enrollment_ids`` restricts it to those participants (analytics filters).
+    """
+    scope = ""
+    params: dict[str, Any] = {"study_id": study_id}
+    if enrollment_ids is not None:
+        scope = " AND enrollment_id = ANY(CAST(:enrollment_ids AS uuid[]))"
+        params["enrollment_ids"] = [str(item) for item in enrollment_ids]
     row = (
         db.execute(
             text(
@@ -963,9 +973,10 @@ def study_spend_summary(db, study_id: uuid.UUID) -> dict:
                  WHERE study_id = :study_id
                    AND state IN (:settled, :forfeited, :expired)
                 """
+                + scope
             ),
             {
-                "study_id": study_id,
+                **params,
                 "voided": RESERVATION_VOIDED,
                 "settled": RESERVATION_SETTLED,
                 "forfeited": RESERVATION_FORFEITED,
@@ -978,9 +989,9 @@ def study_spend_summary(db, study_id: uuid.UUID) -> dict:
     open_holds = db.execute(
         text(
             "SELECT coalesce(sum(reserved_micro_usd), 0) FROM public.enrollment_inference_balance "
-            "WHERE study_id = :study_id"
+            "WHERE study_id = :study_id" + scope
         ),
-        {"study_id": study_id},
+        params,
     ).scalar_one()
     return {
         "metered_spend_micro_usd": int(row["spend"]),

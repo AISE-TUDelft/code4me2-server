@@ -7,7 +7,9 @@ Public surface:
 * :mod:`research.runtime.assignment.models` - ``AssignmentV1`` and typed
   results.
 * :mod:`research.runtime.assignment.service` - server-authoritative, sticky,
-  equal-random allocation over ``enrollment_id``.
+  equal-probability allocation over ``enrollment_id``.
+* :mod:`research.runtime.assignment.hashing` - the salted-hash draw and the
+  study's frozen assignment policy.
 * :mod:`research.runtime.assignment.store` - persistence adapters taking a
   caller-supplied SQLAlchemy ``Session``.
 

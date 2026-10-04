@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import platform
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event
@@ -12,7 +13,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from code4me2_agent import slash_commands
-from code4me2_agent.acp_updates import AcpUpdateBuilder
+from code4me2_agent.acp_updates import (
+    REVISE_INSTRUCTIONS_MAX_CHARS,
+    REVISE_OPTION_ID,
+    AcpUpdateBuilder,
+)
 from code4me2_agent.acp_utils import capability_value
 from code4me2_agent.async_bridge import EventLoopAsyncRunner, OperationCancelled
 from code4me2_agent.command_tools import available_commands, build_acp_command_backend
@@ -53,6 +58,7 @@ if TYPE_CHECKING:
 
     from code4me2_agent.config import AgentConfig, CommandConfig
     from code4me2_agent.events import ToolCallEvent
+    from code4me2_agent.hunks import RevisionOffer
     from code4me2_agent.telemetry import AgentTelemetryRecorder
 
 
@@ -145,6 +151,23 @@ async def _resource_link_text_async(block: object) -> str:
     resource_link = f"[Resource link: {name} <{uri}>{suffix}]"
     return resource_link
 
+
+# The parts _prompt_text_async adds for what the client attached to a prompt
+# (each on lines of its own), with the line break joining it to the previous part.
+_ATTACHMENT_PARTS = re.compile(
+    r"\n?(?:^\[Resource link: [^\n]*\]$"
+    r"|^\[Attached binary resource: [^\n]*\]$"
+    r"|^<attached_file path=\"[^\n]*>\n.*?\n</attached_file>$)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _typed_prompt_text(model_text: str) -> str:
+    """What the participant typed, from a prompt's model text: a replayed chat
+    shows their words, not the copies of attached files the model was given."""
+    typed = _ATTACHMENT_PARTS.sub("", model_text).strip()
+    return typed or model_text
+
 _ACP_STOP_REASONS = frozenset(
     {"end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled"}
 )
@@ -193,6 +216,7 @@ class AcpSessionEventSink:
         telemetry: object,
         async_runner: EventLoopAsyncRunner,
         cancel_event: Event | None = None,
+        elicitation_form: bool = False,
     ) -> None:
         self._conn = conn
         self._session_id = session_id
@@ -200,6 +224,8 @@ class AcpSessionEventSink:
         self._telemetry = telemetry
         self._async_runner = async_runner
         self._cancel_event = cancel_event
+        # The client advertised elicitation.form: approvals may offer "Revise…".
+        self._elicitation_form = elicitation_form
         self._session_approved_kinds: set[str] = set()
         self._tool_content: dict[str, list[Any] | None] = {}
 
@@ -355,9 +381,17 @@ class AcpSessionEventSink:
         )
 
     def request_approval(
-        self, tool_call: object, arguments: dict[str, Any]
+        self,
+        tool_call: object,
+        arguments: dict[str, Any],
+        *,
+        revise: RevisionOffer | None = None,
     ) -> ApprovalDecision:
-        """Synchronously bridge a worker-thread tool decision to ACP/JetBrains."""
+        """Synchronously bridge a worker-thread tool decision to ACP/JetBrains.
+
+        With ``revise`` and a client that renders ACP forms, a fourth option
+        "Revise…" opens a form for the parts to keep and what should change.
+        """
         name = str(getattr(tool_call, "name", "tool"))
         tool_call_id = str(getattr(tool_call, "tool_call_id", ""))
         metadata = approval_kind(name)
@@ -365,6 +399,7 @@ class AcpSessionEventSink:
             # Answered by the user's earlier "allow for this session": no one is
             # asked, so telemetry must not report a new decision.
             return ApprovalDecision("accepted", "session_cached")
+        offer = revise if self._elicitation_form else None
         summary = _approval_summary(name, arguments)
         permission = self._updates.permission_request(
             session_id=self._session_id,
@@ -375,6 +410,7 @@ class AcpSessionEventSink:
             raw_input=_approval_raw_input(name, arguments),
             session_option_name=_session_option_name(metadata),
             content=self._tool_content.get(tool_call_id),
+            revise=offer is not None,
         )
         try:
             response = self._run_blocking(
@@ -400,6 +436,8 @@ class AcpSessionEventSink:
             option_id = getattr(outcome, "option_id", None)
         if not selected:
             return ApprovalDecision("cancelled")
+        if offer is not None and option_id == REVISE_OPTION_ID:
+            return self._request_revision(tool_call_id, offer)
         scope = {
             "allow_once": "once",
             "allow_session": "session",
@@ -407,6 +445,52 @@ class AcpSessionEventSink:
         if scope == "session":
             self._session_approved_kinds.add(metadata)
         return ApprovalDecision("accepted", scope) if scope else ApprovalDecision("rejected")
+
+    def _request_revision(self, tool_call_id: str, offer: RevisionOffer) -> ApprovalDecision:
+        """Ask with an ACP form (``elicitation/create``) what to keep and what should change.
+
+        An accepted form is decision ``revised``; a declined or dismissed one,
+        or a form that could not be shown, is a rejection; a turn cancelled
+        while it is open is ``cancelled``.
+        """
+        hunks = offer.selectable_hunks
+        mode = self._updates.revision_form(
+            session_id=self._session_id,
+            tool_call_id=tool_call_id,
+            hunk_labels=[hunk.label for hunk in hunks],
+        )
+        message = (
+            "Which parts should be kept, and what should change?"
+            if hunks
+            else "What should change?"
+        )
+        try:
+            response = self._run_blocking(
+                self._conn.create_elicitation(message=message, mode=mode)
+            )
+        except OperationCancelled:
+            return ApprovalDecision("cancelled")
+        except Exception:  # noqa: BLE001
+            logger.exception("ACP revision form failed for tool call %s", tool_call_id)
+            return ApprovalDecision("rejected", elicitation_action="error")
+        action = capability_value(response, "action")
+        if action == "accept":
+            content = capability_value(response, "content")
+            instructions = capability_value(content, "instructions")
+            return ApprovalDecision(
+                "revised",
+                elicitation_action="accept",
+                kept_hunks=_kept_hunk_indexes(capability_value(content, "keep"), len(hunks)),
+                instructions=(
+                    instructions.strip()[:REVISE_INSTRUCTIONS_MAX_CHARS]
+                    if isinstance(instructions, str)
+                    else ""
+                ),
+            )
+        if action in ("decline", "cancel"):
+            return ApprovalDecision("rejected", elicitation_action=str(action))
+        # An action this runtime does not know counts as a form that failed.
+        return ApprovalDecision("rejected", elicitation_action="error")
 
     def _send_session_update(
         self,
@@ -519,6 +603,24 @@ def _session_option_name(kind: str) -> str:
         "execute": "Allow commands for session",
         "other": "Allow MCP tools for session",
     }[kind]
+
+
+def _supports_form_elicitation(client_capabilities: object | None) -> bool:
+    """Whether ``initialize`` advertised ``elicitation.form`` (``{}`` means yes)."""
+    form = capability_value(capability_value(client_capabilities, "elicitation"), "form")
+    return form is not None and form is not False
+
+
+def _kept_hunk_indexes(value: object, hunk_count: int) -> tuple[int, ...]:
+    """The listed hunks a "Revise…" form kept, from its ``keep`` option values."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    kept: set[int] = set()
+    for item in value:
+        text = str(item).strip()
+        if text.isdecimal() and int(text) < hunk_count:
+            kept.add(int(text))
+    return tuple(sorted(kept))
 
 
 def _normalize_capabilities(value: object | None) -> object | None:
@@ -669,6 +771,7 @@ def create_acp_agent(
                 telemetry=None,
                 async_runner=async_runner,
                 cancel_event=cancel_event,
+                elicitation_form=_supports_form_elicitation(self._client_capabilities),
             )
             core = EchoAgentCore(session_config, event_sink=event_sink)
             event_sink._telemetry = core._telemetry
@@ -1526,7 +1629,7 @@ def _replay_updates(
         if message.get("code4me_runtime"):
             continue
         if role == "user" and content.strip():
-            replay.append(updates.user_message(content))
+            replay.append(updates.user_message(_typed_prompt_text(content)))
             continue
         if role != "assistant":
             continue

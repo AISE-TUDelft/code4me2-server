@@ -59,15 +59,34 @@ def test_sessions_reject_stopped_enrollment_before_session_activity():
     assert error.value.detail["code"] == "STUDY_STOPPED"
 
 
-def test_telemetry_enrollment_resolver_marks_stopped_enrollment_terminal():
+def test_telemetry_enrollment_resolver_answers_stopped_without_rewriting_the_row():
+    from datetime import datetime, timezone
+
+    from research.participants.enums import EnrollmentStatus
+    from research.participants.models import Enrollment, ResearchEligibility
+
     app, row = _stopped_app_and_enrollment()
     db = app.get_db_session.return_value
-    with patch.object(telemetry.identity_store, "get_enrollment", return_value=row), patch.object(
-        telemetry.identity_store, "row_to_enrollment", return_value=row
-    ):
-        resolved = telemetry._enrollment_resolver(db)(row.enrollment_id)
-    assert row.status == "STUDY_STOPPED"
-    assert resolved is row
+    # An active participant of a stopped study is refused as stopped; a revoked
+    # or completed one keeps its own status, in the answer and in the database.
+    for stored, answered in (("ACTIVE", "STUDY_STOPPED"), ("REVOKED", "REVOKED"), ("COMPLETED", "COMPLETED")):
+        row.status = stored
+        enrollment = Enrollment(
+            enrollment_id=row.enrollment_id,
+            participant_id=row.participant_id,
+            study_id=row.study_id,
+            participant_code="P-1",
+            status=EnrollmentStatus(stored),
+            eligibility=ResearchEligibility(eligible=True),
+            enrolled_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        with patch.object(telemetry.identity_store, "get_enrollment", return_value=row), patch.object(
+            telemetry.identity_store, "row_to_enrollment", return_value=enrollment
+        ):
+            resolved = telemetry._enrollment_resolver(db)(row.enrollment_id)
+        assert resolved.status == EnrollmentStatus(answered)
+        assert row.status == stored, "ingestion never rewrites the stored status"
 
 
 def test_acp_chat_completions_gates_lifecycle_before_provider_resolution():

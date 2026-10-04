@@ -1406,6 +1406,8 @@ def test_catalogue_constants_match_decision_d01():
         "loop_guard",
         "instruction_reminders",
         "test_output_summary",
+        # Run 2026-10-03-pilot-feedback C1: offer "Revise…" on approvals.
+        "approval_revise",
     }
     assert tool_catalogue.HARNESS_PROMPT_PROFILES == (
         "auto",

@@ -532,6 +532,20 @@ test("built-in profiles save the command allowlist, timeout and harness options"
   expect(payload.max_context_tokens).toBeNull();
 });
 
+test("the Revise… switch is on by default and unticking it stores approval_revise false", async () => {
+  await renderPage();
+  fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+
+  const revise = screen.getByRole("checkbox", { name: "Offer Revise… on approvals" });
+  expect(revise).toBeChecked();
+  fireEvent.click(revise);
+  fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+  await waitFor(() => expect(api.updateAgentProfile).toHaveBeenCalled());
+  const payload = api.updateAgentProfile.mock.calls[0][1];
+  expect(payload.harness_options).toEqual({ approval_revise: false });
+});
+
 test("an unchanged edit omits the stored harness settings", async () => {
   api.getAgentProfiles.mockResolvedValue({ ok: true, data: [HARNESSED] });
   render(<AgentProfiles user={{ is_admin: true }} />);

@@ -84,3 +84,77 @@ class TestAcquireSession:
 
         assert response.status_code == 500
         assert response.json() == AcquireSessionError()
+
+
+class TestAcquireReusesOnlyLiveSessions:
+    """The plugin acquires a session at startup and when a call is refused; a
+    session recorded in the database but expired in Redis fails every project
+    call, so it must not be handed out again."""
+
+    USER_ID = "123e4567-e89b-12d3-a456-426614174000"
+    SESSION = "11111111-1111-1111-1111-111111111111"
+
+    @pytest.fixture
+    def client(self):
+        mock_app = MagicMock()
+        app.dependency_overrides[App.get_instance] = lambda: mock_app
+        try:
+            with TestClient(app) as client:
+                client.mock_app = mock_app
+                client.cookies.set("auth_token", "valid_token")
+                yield client
+        finally:
+            app.dependency_overrides.pop(App.get_instance, None)
+
+    def _redis(self, client, entries):
+        redis_manager = MagicMock()
+        redis_manager.get.side_effect = lambda kind, key: entries.get((kind, key))
+        redis_manager.touch.side_effect = lambda kind, key: (kind, key) in entries
+        client.mock_app.get_redis_manager.return_value = redis_manager
+        client.mock_app.get_config.return_value = MagicMock(session_token_expires_in_seconds=3600)
+        return redis_manager
+
+    def test_a_live_session_is_reused_and_kept_alive(self, client):
+        redis_manager = self._redis(
+            client,
+            {
+                ("auth_token", "valid_token"): {"user_id": self.USER_ID},
+                ("user_token", self.USER_ID): {"session_token": self.SESSION},
+                ("session_token", self.SESSION): {"user_token": self.USER_ID, "project_tokens": ["p1"]},
+            },
+        )
+        with patch("backend.routers.session.acquire.crud") as crud:
+            crud.get_session_by_id.return_value = object()
+            response = client.get("/api/session/acquire")
+
+        assert response.status_code == 200
+        assert response.json() == AcquireSessionGetResponse(session_token=self.SESSION)
+        crud.create_session.assert_not_called()
+        # Expiry restarted for both, values never rewritten (no lost update).
+        redis_manager.touch.assert_any_call("session_token", self.SESSION)
+        redis_manager.touch.assert_any_call("user_token", self.USER_ID)
+        redis_manager.set.assert_not_called()
+
+    def test_a_session_expired_in_redis_is_replaced(self, client):
+        fresh = "22222222-2222-2222-2222-222222222222"
+        redis_manager = self._redis(
+            client,
+            {
+                ("auth_token", "valid_token"): {"user_id": self.USER_ID},
+                ("user_token", self.USER_ID): {"session_token": self.SESSION},
+            },
+        )
+        with patch("backend.routers.session.acquire.crud") as crud, patch(
+            "backend.routers.session.acquire.create_uuid", return_value=fresh
+        ):
+            crud.get_session_by_id.return_value = object()  # the database row remains
+            response = client.get("/api/session/acquire")
+
+        assert response.status_code == 200
+        assert response.json() == AcquireSessionGetResponse(session_token=fresh)
+        crud.create_session.assert_called_once()
+        # The session is stored before the account's link names it.
+        assert [c.args[:2] for c in redis_manager.set.call_args_list] == [
+            ("session_token", fresh),
+            ("user_token", self.USER_ID),
+        ]

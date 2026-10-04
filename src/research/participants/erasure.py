@@ -26,9 +26,11 @@ from typing import TYPE_CHECKING, Optional
 from sqlalchemy import delete, func, or_, select
 
 from database.research_schemas import (
+    RECORD_KIND_STUDY_LIFECYCLE,
     ResearchEnrollment,
     ResearchEvent,
     ResearchParticipant,
+    ResearchRecord,
     ResearchRetentionJob,
     TelemetryBatchReceipt,
 )
@@ -133,6 +135,15 @@ def erase_participant_data(
         session.execute(
             delete(ResearchRetentionJob).where(
                 ResearchRetentionJob.enrollment_id == enrollment_id
+            )
+        )
+        # Manual arm changes are audited per enrollment; they go with the data
+        # (the deletion ledger written below is a different record kind).
+        session.execute(
+            delete(ResearchRecord).where(
+                ResearchRecord.kind == RECORD_KIND_STUDY_LIFECYCLE,
+                ResearchRecord.scope_type == "enrollment",
+                ResearchRecord.scope_id == enrollment_id,
             )
         )
         entry = DeletionLedgerEntry(

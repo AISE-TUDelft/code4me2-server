@@ -788,6 +788,86 @@ def test_managed_run_persists_explicit_research_attribution():
     assert create.call_args.kwargs["study_id"] == study_id
 
 
+def _run_after_rotation(supplied_state: str, *, supplied_enrollment=None):
+    """POST /api/acp/runs naming a window's old session after an idle rotation."""
+    scope = _scope()
+    study_id = uuid.uuid4()
+    enrollment_id = uuid.uuid4()
+    ended_session = uuid.uuid4()
+    live_session = uuid.uuid4()
+    assignment = _managed_assignment(study_id)
+    db = MagicMock()
+    app = MagicMock()
+    app.get_db_session.return_value = db
+    rows = {
+        ended_session: SimpleNamespace(
+            session_id=ended_session,
+            enrollment_id=supplied_enrollment or enrollment_id,
+            state=supplied_state,
+            context_id="ctx-1",
+        ),
+        live_session: SimpleNamespace(
+            session_id=live_session, enrollment_id=enrollment_id, state="not_started", context_id="ctx-1"
+        ),
+    }
+    with patch(
+        "backend.routers.acp.crud.get_agent_task_by_external_run_id", return_value=None
+    ), patch(
+        "agents.registry.resolve_assignment_context", return_value=assignment
+    ), patch("backend.routers.acp._require_funded_access"), patch(
+        "backend.routers.acp.access.resolve_research_binding",
+        return_value=SimpleNamespace(
+            enrollment_id=enrollment_id, study_id=study_id, research_session_id=live_session
+        ),
+    ), patch(
+        "backend.routers.acp.session_store.get_session", side_effect=lambda _db, session_id: rows.get(session_id)
+    ), patch(
+        "backend.routers.acp.session_store.get_active_session_for_context",
+        side_effect=lambda _db, enrollment, context: rows[live_session]
+        if (enrollment, context) == (enrollment_id, "ctx-1")
+        else None,
+    ), patch(
+        "backend.routers.acp._managed_policy",
+        return_value={"version": "1", "store_agent_content": False},
+    ), patch(
+        "backend.routers.acp.crud.create_agent_task", return_value=_created_task()
+    ) as create:
+        request = ManagedRunRequest(
+            run_id="run-1",
+            session_id="acp-session-1",
+            enrollment_id=enrollment_id,
+            research_session_id=ended_session,
+        )
+        try:
+            response = create_managed_run(request, app, scope)
+        except HTTPException as error:
+            return error, create, live_session
+    return response, create, live_session
+
+
+def test_a_run_naming_the_window_session_an_idle_rotation_ended_continues_in_its_live_session():
+    response, create, live_session = _run_after_rotation("ended")
+
+    assert response.status_code == 201, response
+    assert create.call_args.kwargs["research_session_id"] == live_session
+
+
+def test_a_run_naming_a_revoked_session_is_still_refused():
+    error, create, _ = _run_after_rotation("revoked")
+
+    assert isinstance(error, HTTPException) and error.status_code == 409
+    assert error.detail["code"] == "RESEARCH_CONTEXT_MISMATCH"
+    create.assert_not_called()
+
+
+def test_a_run_naming_another_participants_ended_session_is_still_refused():
+    error, create, _ = _run_after_rotation("ended", supplied_enrollment=uuid.uuid4())
+
+    assert isinstance(error, HTTPException) and error.status_code == 409
+    assert error.detail["code"] == "RESEARCH_CONTEXT_MISMATCH"
+    create.assert_not_called()
+
+
 def test_managed_run_refuses_an_ambiguous_research_context():
     """ISSUE-02: zero/ambiguous active sessions must be a typed refusal."""
     scope = _scope()

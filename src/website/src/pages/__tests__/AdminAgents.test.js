@@ -247,3 +247,37 @@ test("imports remote assets through the byte-verifying URL endpoint", async () =
     archive_urls: ["https://github.com/org/repo/releases/download/v1/agent.zip"],
   }));
 });
+
+test("a release imported just now shows its version without a reload", async () => {
+  const imported = { ...RELEASE, release_id: "code4me-agent-imported" };
+  const base = defaultFetch(approvals);
+  let catalogue = [{ release_id: RELEASE.release_id, version: "0.0.0-dev" }];
+  global.fetch = jest.fn((url, options) => {
+    const target = String(url);
+    if (target.includes("/agents/releases/import")) {
+      catalogue = [...catalogue, { release_id: imported.release_id, version: "9.9.9" }];
+      return Promise.resolve(jsonResponse(200, { accepted: true, release: imported }));
+    }
+    if (target.includes("/release-catalogue")) {
+      return Promise.resolve(jsonResponse(200, { releases: catalogue }));
+    }
+    if (target.endsWith("/api/research/agents/releases")) {
+      const listed = catalogue.length > 1 ? [RELEASE, imported] : [RELEASE];
+      return Promise.resolve(jsonResponse(200, { releases: listed }));
+    }
+    return base(url, options);
+  });
+  render(<AdminAgents />);
+  await screen.findByText(RELEASE.release_id);
+
+  fireEvent.change(screen.getByLabelText(/runtime manifest json/i), {
+    target: { value: JSON.stringify(MANIFEST) },
+  });
+  fireEvent.change(screen.getByLabelText(/agent archive files/i), {
+    target: { files: [new File(["zip-bytes"], "code4me-agent-macos-arm64.zip", { type: "application/zip" })] },
+  });
+  fireEvent.click(screen.getByRole("button", { name: /verify and import/i }));
+
+  const row = (await screen.findAllByText(imported.release_id))[0].closest("tr");
+  await waitFor(() => expect(row).toHaveTextContent("9.9.9"));
+});
