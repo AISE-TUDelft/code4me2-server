@@ -1010,6 +1010,25 @@ def _require_managed_task(db, body: ManagedRunRequest, scope: AcpServerAuthoriza
     return task
 
 
+def _live_session_of_window(db, research_session_id, enrollment_id):
+    """The live research session of the IDE window ``research_session_id`` belonged to.
+
+    The plugin writes its window's research session into the agent's ACP entry,
+    and an idle rotation keeps that entry, so the agent goes on naming the ended
+    session. The window's live session continues it. A revoked session, or one
+    of another enrollment, is returned unchanged and refused by the caller.
+    """
+    row = session_store.get_session(db, research_session_id)
+    if (
+        row is None
+        or row.enrollment_id != enrollment_id
+        or str(getattr(row, "state", "")) != "ended"
+    ):
+        return research_session_id
+    live = session_store.get_active_session_for_context(db, enrollment_id, row.context_id)
+    return live.session_id if live is not None else research_session_id
+
+
 @router.post("/runs")
 def create_managed_run(
     body: ManagedRunRequest,
@@ -1081,6 +1100,9 @@ def create_managed_run(
             )
         research_session_id = body.research_session_id
         if research_session_id is not None:
+            research_session_id = _live_session_of_window(
+                db, research_session_id, binding.enrollment_id
+            )
             if (
                 binding.research_session_id is not None
                 and binding.research_session_id != research_session_id

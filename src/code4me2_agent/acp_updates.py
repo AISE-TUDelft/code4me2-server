@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+# The "Revise…" permission option. The research proxy and analytics read this
+# literal (research.telemetry.chat_lifecycle.REVISE_OPTION_ID); keep them equal.
+REVISE_OPTION_ID = "revise"
+# Longest instructions the "Revise…" form accepts.
+REVISE_INSTRUCTIONS_MAX_CHARS = 4000
+
 
 class AcpUpdateBuilder:
     """Small compatibility layer over the pinned ACP Python SDK update surface."""
@@ -236,7 +242,35 @@ class AcpUpdateBuilder:
         raw_input: Any | None = None,
         session_option_name: str = "Allow for session",
         content: Sequence[Any] | None = None,
+        revise: bool = False,
     ) -> Any:
+        options = [
+            self._schema.PermissionOption(
+                option_id="allow_once",
+                name="Allow once",
+                kind="allow_once",
+            ),
+            self._schema.PermissionOption(
+                option_id="allow_session",
+                name=session_option_name,
+                kind="allow_always",
+            ),
+            self._schema.PermissionOption(
+                option_id="reject_once",
+                name="Reject",
+                kind="reject_once",
+            ),
+        ]
+        if revise:
+            # A reject for this call that asks for a revised proposal (see
+            # revision_form); last, so the usual options keep their places.
+            options.append(
+                self._schema.PermissionOption(
+                    option_id=REVISE_OPTION_ID,
+                    name="Revise…",
+                    kind="reject_once",
+                )
+            )
         return self._schema.RequestPermissionRequest(
             session_id=session_id,
             tool_call=self.update_tool_call(
@@ -247,21 +281,47 @@ class AcpUpdateBuilder:
                 content=content or [self.text_tool_content(summary)],
                 raw_input=raw_input,
             ),
-            options=[
-                self._schema.PermissionOption(
-                    option_id="allow_once",
-                    name="Allow once",
-                    kind="allow_once",
+            options=options,
+        )
+
+    def revision_form(
+        self,
+        *,
+        session_id: str,
+        tool_call_id: str,
+        hunk_labels: Sequence[str] = (),
+    ) -> Any:
+        """The ``elicitation/create`` form mode behind "Revise…" for one tool call.
+
+        ``keep`` lists the proposed change's hunks (option ``const`` = position
+        in ``hunk_labels``, none ticked by default) and is left out without
+        labels; ``instructions`` is required.
+        """
+        properties: dict[str, Any] = {}
+        if hunk_labels:
+            properties["keep"] = self._schema.ElicitationMultiSelectPropertySchema(
+                type="array",
+                title="Parts to keep",
+                description="Ticked parts are applied as proposed; the agent revises the rest.",
+                items=self._schema.TitledMultiSelectItems(
+                    any_of=[
+                        self._schema.EnumOption(const=str(index), title=str(label))
+                        for index, label in enumerate(hunk_labels)
+                    ]
                 ),
-                self._schema.PermissionOption(
-                    option_id="allow_session",
-                    name=session_option_name,
-                    kind="allow_always",
-                ),
-                self._schema.PermissionOption(
-                    option_id="reject_once",
-                    name="Reject",
-                    kind="reject_once",
-                ),
-            ],
+                default=[],
+            )
+        properties["instructions"] = self._schema.ElicitationStringPropertySchema(
+            type="string",
+            title="What should change?",
+            min_length=1,
+            max_length=REVISE_INSTRUCTIONS_MAX_CHARS,
+        )
+        return self._schema.ElicitationFormSessionMode(
+            session_id=session_id,
+            tool_call_id=tool_call_id or None,
+            requested_schema=self._schema.ElicitationSchema(
+                properties=properties,
+                required=["instructions"],
+            ),
         )

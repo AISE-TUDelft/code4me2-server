@@ -215,6 +215,37 @@ def test_embedded_resources_are_inlined_with_a_budget(tmp_path):
     assert "[Attached binary resource: /tmp/logo.png, image/png" in text
 
 
+def test_a_replayed_prompt_shows_what_was_typed_not_the_attachments(tmp_path):
+    # IntelliJ links the open file to every prompt; the model text carries that
+    # link and any attached file's contents, which the participant never typed.
+    workspace = tmp_path.resolve()
+    (workspace / "src").mkdir()
+    blocks = [
+        TextContentBlock(type="text", text="Explain this file"),
+        {
+            "type": "resource_link",
+            "name": "app.py",
+            "uri": (workspace / "src" / "app.py").as_uri(),
+            "description": "File that is opened in the IDE and is currently viewed by the user",
+        },
+        EmbeddedResourceContentBlock(
+            type="resource",
+            resource=TextResourceContents(
+                uri=(workspace / "src" / "app.py").as_uri(), mimeType="text/x-python", text="x = 1\n"
+            ),
+        ),
+        TextContentBlock(type="text", text="and keep it short"),
+        {"type": "resource", "resource": {"uri": "file:///tmp/logo.png", "blob": "AAAA", "mimeType": "image/png"}},
+    ]
+    text = asyncio.run(_prompt_text_async(blocks, workspace_root=workspace))
+
+    updates = _replay_updates(
+        [{"role": "user", "content": text}], updates=AcpUpdateBuilder(), workspace_root=workspace
+    )
+
+    assert [u.content.text for u in updates] == ["Explain this file\nand keep it short"]
+
+
 def test_replay_skips_card_less_tools_and_marks_failures(tmp_path):
     messages = [
         {"role": "user", "content": "plan and fail"},

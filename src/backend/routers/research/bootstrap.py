@@ -38,6 +38,7 @@ from research.compatibility.models import (
 from research.participants import identity as identity_store
 from research.runtime.assignment import store as assignment_store
 from research.runtime.assignment.enums import AllocationOutcome
+from research.runtime.assignment.hashing import assignment_strategy, manual_override_enabled
 from research.runtime.assignment.service import allocate
 from research.runtime.bootstrap.models import (
     BootstrapAgentProfile,
@@ -395,8 +396,12 @@ def create_research_session(
         study = db.get(StudyRow, enrollment.study_id)
         if study is None:
             raise HTTPException(status_code=404, detail="Study not found")
+        # Only a study whose owner may change an arm by hand needs the share
+        # lock that serializes a first session with that change.
         assignment_row = assignment_store.get_assignment_for_enrollment(
-            db, enrollment.enrollment_id
+            db,
+            enrollment.enrollment_id,
+            lock=manual_override_enabled(getattr(study, "research_config_json", None)),
         )
         existing = (
             assignment_store.row_to_assignment(assignment_row)
@@ -424,7 +429,12 @@ def create_research_session(
                 )
                 for row in profile_rows
             ]
-            allocation = allocate(enrollment, profiles, now=_now())
+            allocation = allocate(
+                enrollment,
+                profiles,
+                now=_now(),
+                strategy=assignment_strategy(getattr(study, "research_config_json", None)),
+            )
         if allocation.outcome not in (
             AllocationOutcome.CREATED,
             AllocationOutcome.EXISTING,

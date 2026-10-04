@@ -495,13 +495,19 @@ class WorkspaceFileTools:
         tool_call_id: str | None = None,
         run_id: str | None = None,
         request_id: str | None = None,
+        tool_name: str = "write_file",
     ) -> FileWriteResult:
+        """Write ``content`` to ``path``, reported as ``tool_name``.
+
+        The registry also writes the hunks a user kept with "Revise…" through
+        here, reported under the edit tool that proposed them.
+        """
         started_at = perf_counter()
         tool_call_id = tool_call_id or uuid4().hex
         run_id = run_id or uuid4().hex
         request_id = request_id or uuid4().hex
         resolved_path = self._resolve_or_record_denial(
-            "write_file", path, tool_call_id, run_id, request_id, started_at
+            tool_name, path, tool_call_id, run_id, request_id, started_at
         )
         relative_path = self._relative_path(resolved_path)
         if resolved_path.is_dir():
@@ -510,7 +516,7 @@ class WorkspaceFileTools:
             )
         before, before_known = self._read_before(
             resolved_path,
-            tool_name="write_file",
+            tool_name=tool_name,
             tool_call_id=tool_call_id,
             run_id=run_id,
             request_id=request_id,
@@ -519,7 +525,7 @@ class WorkspaceFileTools:
         backend_type = self._write_text(
             resolved_path,
             content,
-            tool_name="write_file",
+            tool_name=tool_name,
             tool_call_id=tool_call_id,
             run_id=run_id,
             request_id=request_id,
@@ -529,7 +535,7 @@ class WorkspaceFileTools:
         self._notify_change(FileChange(relative_path, before, content, before_known=before_known))
         syntax_error = self._syntax_problem(relative_path, before, content)
         self._record_tool_event(
-            tool_name="write_file",
+            tool_name=tool_name,
             tool_call_id=tool_call_id,
             run_id=run_id,
             request_id=request_id,

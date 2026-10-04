@@ -276,6 +276,67 @@ div.research-card:not(.ui-card) {
   margin: 0;
 }
 
+/* Consent documents and the platform notice are plain text shown as typed. */
+.consent-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.consent-review {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.consent-document,
+.consent-notice {
+  background-color: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-color);
+  font-size: 13.5px;
+  line-height: 1.6;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+
+.consent-notice .ui-section-title {
+  margin: 0 0 6px;
+}
+
+.consent-statements {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.consent-answers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.consent-answers li {
+  align-items: flex-start;
+  display: flex;
+  gap: 6px;
+}
+
+.consent-answers small {
+  color: var(--text-secondary);
+}
+
+.consent-statement-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
 .participant-history {
   display: flex;
   flex-direction: column;
@@ -380,4 +441,52 @@ div.research-card:not(.ui-card) {
   .timeline-detail {
     grid-column: 2;
   }
+}
+
+/* ---- Chat trace (owner view of one participant chat) ----------------------- */
+
+.chat-trace .trace-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trace-block-head,
+.chat-trace .trace-row {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trace-offset {
+  margin-left: auto;
+}
+
+.trace-text {
+  background-color: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.55;
+  max-height: 360px;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+
+.trace-diff {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.trace-tool {
+  border-left: 3px solid var(--border-color);
+  padding-left: 10px;
+}
+
+.trace-revision {
+  margin-top: 4px;
 }

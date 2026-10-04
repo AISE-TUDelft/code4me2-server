@@ -26,10 +26,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from App import App
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.analytics.auth_utils import AuthenticatedUser, get_current_user
+from database.db_schemas import ResearchStudyStatus
+from database.db_schemas import Study as StudyRow
 from research.analysis.study_analytics import metrics as analytics
 from research.analysis.study_analytics import store as analytics_store
 from research.analysis.study_analytics.models import DateWindow
 from research.budget import ledger as budget_ledger
+from research.runtime.assignment.hashing import manual_override_enabled
+from research.study.lifecycle import enrollments_with_activity
 from research.study.protocol import store as study_store
 
 router = APIRouter()
@@ -102,6 +106,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _mark_reassignable(db: Any, study_id: uuid.UUID, body: dict[str, Any]) -> None:
+    """Flag the rows whose arm the owner may still set by hand.
+
+    Only studies whose frozen policy allows manual assignment, only active
+    enrollments, and only before any activity (the same guard the override
+    route enforces, computed with one study-wide query).
+    """
+    row = db.get(StudyRow, study_id)
+    config = getattr(row, "research_config_json", None)
+    allowed = (
+        row is not None
+        and manual_override_enabled(config)
+        and getattr(row, "research_status", None) != ResearchStudyStatus.STUDY_STOPPED.value
+    )
+    used = {str(item) for item in enrollments_with_activity(db, study_id)} if allowed else set()
+    for participant in body.get("participants") or []:
+        participant["reassignable"] = bool(
+            allowed
+            and participant.get("status") == "ACTIVE"
+            and participant.get("arm") is not None
+            and participant.get("enrollment_id") not in used
+        )
+
+
 @router.get(
     "/{study_id}/analytics/participants",
     summary="Participants table with arm and activity (study owner/admin only)",
@@ -125,6 +153,7 @@ def study_participants_analytics(
                 for view in budget_ledger.list_study_balances(db, study_id)
             },
         )
+        _mark_reassignable(db, study_id, body)
         return JsonResponseWithStatus(status_code=200, content=body)
     finally:
         db.close()
@@ -173,6 +202,10 @@ def study_analytics_summary(
     study_id: uuid.UUID,
     start: Optional[str] = Query(None, description="Inclusive UTC start date (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="Inclusive UTC end date (YYYY-MM-DD)"),
+    arm: Optional[list[uuid.UUID]] = Query(None, description="Only these arms (profile ids); repeatable"),
+    participant: Optional[list[uuid.UUID]] = Query(
+        None, description="Only these participants (enrollment ids); repeatable"
+    ),
     current_user: AuthenticatedUser = Depends(get_current_user),
     app: App = Depends(App.get_instance),
 ):
@@ -180,15 +213,33 @@ def study_analytics_summary(
     try:
         _authorize(db, current_user, study_id)
         window = _window(start, end)
+        full_frame = analytics_store.load_study_frame(db, study_id)
+        try:
+            frame, enrollment_ids, applied = analytics.resolve_filters(full_frame, arm, participant)
+        except analytics.FilterError as error:
+            raise HTTPException(
+                status_code=422, detail={"code": error.code, "message": str(error)}
+            ) from error
+        # A filter that matches nobody needs no event scan.
+        scan = enrollment_ids is None or bool(enrollment_ids)
+        scoped = [uuid.UUID(item) for item in enrollment_ids] if enrollment_ids is not None else None
         body = analytics.build_study_summary(
-            analytics_store.load_study_frame(db, study_id),
-            analytics_store.load_events(db, study_id, window=window),
-            analytics_store.load_daily_event_counts(db, study_id, window=window),
+            frame,
+            analytics_store.load_events(db, study_id, enrollment_ids=scoped, window=window) if scan else [],
+            (
+                analytics_store.load_daily_event_counts(
+                    db, study_id, enrollment_ids=scoped, window=window
+                )
+                if scan
+                else []
+            ),
             study_id=str(study_id),
             now=_now(),
             window=window,
-            spend=budget_ledger.study_spend_summary(db, study_id),
+            spend=budget_ledger.study_spend_summary(db, study_id, enrollment_ids=scoped),
         )
+        body["filters"] = applied
+        body["filter_options"] = analytics.filter_options(full_frame)
         return JsonResponseWithStatus(status_code=200, content=body)
     finally:
         db.close()

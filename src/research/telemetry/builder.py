@@ -14,6 +14,7 @@ event reaches a spool, log, retry queue, or export.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from typing import TYPE_CHECKING, Any, Mapping, Optional
 
@@ -45,16 +46,21 @@ class SequenceAllocator:
     def __init__(self, start: int = 1) -> None:
         self._start = start
         self._last: dict[str, int] = {}
+        # The research proxy numbers events from both forwarding threads and,
+        # when it stops, from its main thread: no two may share a sequence.
+        self._lock = threading.Lock()
 
     def next(self, emitter_id: str) -> int:
         """Return the next sequence for ``emitter_id`` (starting at ``start``)."""
-        value = self._last.get(emitter_id, self._start - 1) + 1
-        self._last[emitter_id] = value
+        with self._lock:
+            value = self._last.get(emitter_id, self._start - 1) + 1
+            self._last[emitter_id] = value
         return value
 
     def current(self, emitter_id: str) -> int:
         """Return the last allocated sequence for ``emitter_id`` (0 if none)."""
-        return self._last.get(emitter_id, self._start - 1)
+        with self._lock:
+            return self._last.get(emitter_id, self._start - 1)
 
 
 def canonical_event_type(raw: Any) -> tuple[str, Optional[str]]:

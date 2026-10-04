@@ -319,16 +319,11 @@ class App:
             This method performs cleanup in the reverse order of initialization
             to ensure dependencies are properly handled.
         """
-        if os.getenv("TEST_MODE", "false").lower() == "true":
-            # A test process must never flush the Redis it may share with a
-            # development server (that logs every user out): only close.
-            self.__redis_manager.close()
-        else:
-            # Clean up Redis manager with a database session for final operations
-            self.__redis_manager.cleanup(db_session=self.__db_session_factory())
-
-            # Close Redis connection to stop background threads gracefully
-            self.__redis_manager.close()
+        # Only close: logins and sessions live in Redis and outlive this process.
+        # Flushing them here signed every user out on each restart, and with
+        # several workers sharing one Redis, whenever any one worker stopped.
+        # Sessions still end, and persist, through their expiry hooks.
+        self.__redis_manager.close()
 
         # Clean up Celery broker connections
         self.__celery_broker.cleanup()

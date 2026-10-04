@@ -1,14 +1,14 @@
 import React, { useMemo, useState } from "react";
 import Icon from "../../components/common/Icon";
 import { Alert, Badge, MoneyInput } from "../../components/common/ui";
-import { parseUsdInput } from "../../utils/format";
+import { formatDateTime, parseUsdInput } from "../../utils/format";
+import { ConsentReview } from "./ConsentText";
 import {
   DEFAULT_TELEMETRY_CLASSES,
   RUNTIME_CLASS_SHORT_LABELS,
   RUNTIME_LABELS,
   TELEMETRY_CLASS_LABELS,
   collectedClasses,
-  describeSessionPolicy,
   isMeteredRuntime,
   resolveFieldClasses,
 } from "./studyUtils";
@@ -63,7 +63,19 @@ export const parsePolicyDraft = (text) => {
 
 const asPolicyObject = (policy) => (policy && typeof policy === "object" && !Array.isArray(policy) ? policy : {});
 
-const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// Stored policies come back in the database's key order (PostgreSQL JSONB), so
+// presets are matched key-order-insensitively.
+const canonical = (value) => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, canonical(value[key])]),
+  );
+};
+
+const sameJson = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 
 const presetForSession = (policy) =>
   Object.entries(SESSION_PRESETS).find(([, preset]) => sameJson(preset.policy, policy))?.[0] || "custom";
@@ -76,26 +88,62 @@ const storedList = (policy) =>
     .map((name) => RUNTIME_CLASS_SHORT_LABELS[name])
     .join(", ");
 
-const capitalised = (text) => text.charAt(0).toUpperCase() + text.slice(1);
-
-// What the policy actually stores (the runtime's classes, content included).
-const telemetrySummary = (policy) => {
-  const classes = Array.isArray(policy.allowed_field_classes) ? policy.allowed_field_classes : [];
-  if (classes.length === 0 && policy.content_capture !== true) return "Metadata only (server default)";
-  return capitalised(storedList(policy));
-};
-
 const toLocalDateTime = (value) => (value ? new Date(value) : null);
 
+// Limits the server enforces on a custom consent form (research/study/consent.py).
+export const CONSENT_LIMITS = { document: 20000, statement: 500, statements: 20 };
+const STATEMENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+
+let statementKeySeed = 0;
+const newStatement = (fields = {}) => {
+  statementKeySeed += 1;
+  return { key: `statement-${statementKeySeed}`, id: "", text: "", required: true, ...fields };
+};
+
+const initialStatements = (consent) =>
+  consent && Array.isArray(consent.statements) && consent.custom
+    ? consent.statements.map((statement) => newStatement(statement))
+    : [newStatement({ text: "I have read the information above and agree to take part in this study." })];
+
+/** Statement ids: kept when valid and unique, otherwise s1, s2, … */
+export const statementPayload = (statements) => {
+  const used = new Set();
+  return statements.map((statement, index) => {
+    let id = STATEMENT_ID_PATTERN.test(statement.id || "") && !used.has(statement.id) ? statement.id : "";
+    for (let next = index + 1; !id; next += 1) {
+      if (!used.has(`s${next}`)) id = `s${next}`;
+    }
+    used.add(id);
+    return { id, text: statement.text.trim(), required: Boolean(statement.required) };
+  });
+};
+
+/** The first problem with a custom consent form, or "" when it is complete. */
+export const consentFormError = (document, statements) => {
+  if (!document.trim()) return "Write the consent document participants read before joining.";
+  if (document.length > CONSENT_LIMITS.document) return "The consent document is limited to 20,000 characters.";
+  if (!statements.length) return "Add at least one statement for participants to tick.";
+  if (statements.some((statement) => !statement.text.trim())) return "Every statement needs text.";
+  if (statements.some((statement) => statement.text.length > CONSENT_LIMITS.statement)) {
+    return "Statements are limited to 500 characters.";
+  }
+  if (!statements.some((statement) => statement.required)) return "At least one statement must be required.";
+  return "";
+};
+
 /**
- * Create a Draft study, or — with `cloneSource` — the profile-selection step of
- * cloning a stopped study (the server copies the stored configuration).
- * `budgetError` is the server's typed message for the budget field
+ * Create a Draft study, or — with `cloneSource` — a duplicate of any study:
+ * every field is prefilled from the source and stays editable, and it is
+ * submitted through the normal create (so validation and the frozen digest are
+ * the same). `budgetError` is the server's typed message for the budget field
  * (BUDGET_REQUIRED / BUDGET_INVALID / BUDGET_PRICE_MISSING).
  */
 const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, budgetError = "" }) => {
   const initialTelemetry = cloneSource ? asPolicyObject(cloneSource.telemetry_policy) : {};
-  const initialSession = cloneSource ? asPolicyObject(cloneSource.session_policy) : DEFAULT_SESSION_POLICY;
+  // A source without a frozen session policy (none echoed) falls back to the
+  // default: the server refuses an empty one.
+  const sourceSession = cloneSource ? asPolicyObject(cloneSource.session_policy) : {};
+  const initialSession = Object.keys(sourceSession).length ? sourceSession : DEFAULT_SESSION_POLICY;
   // Participant budget: the source's default when cloning (a 0 default means
   // none was set), otherwise empty until a metered arm is selected.
   const sourceBudget = cloneSource ? asPolicyObject(cloneSource.budget_policy) : {};
@@ -107,13 +155,30 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
   const [warningPercent, setWarningPercent] = useState(
     Number(sourceBudget.warning_fraction) > 0 ? String(Math.round(Number(sourceBudget.warning_fraction) * 100)) : "80",
   );
+  const activeProfiles = useMemo(() => profiles.filter((profile) => profile.is_active !== false), [profiles]);
+  // A duplicate keeps the source's arms that can still be selected; the others
+  // are named in an alert (their profiles were deactivated or are not visible).
+  const sourceSelections = cloneSource && Array.isArray(cloneSource.profile_selections) ? cloneSource.profile_selections : [];
+  const droppedArms = sourceSelections.filter(
+    (selection) => !activeProfiles.some((profile) => profile.profile_id === selection.profile_id),
+  );
   const [form, setForm] = useState({
     name: cloneSource ? `${cloneSource.name} (copy)` : "",
     description: cloneSource ? cloneSource.description || "" : "",
     startsAt: "",
     endsAt: "",
-    profileIds: [],
+    profileIds: sourceSelections
+      .map((selection) => selection.profile_id)
+      .filter((profileId) => activeProfiles.some((profile) => profile.profile_id === profileId)),
   });
+  const [allowManualAssignment, setAllowManualAssignment] = useState(
+    cloneSource?.assignment_policy?.manual_override === true,
+  );
+  const [consentMode, setConsentMode] = useState(cloneSource?.consent?.custom ? "custom" : "standard");
+  const [consentDocument, setConsentDocument] = useState(
+    cloneSource?.consent?.custom ? cloneSource.consent.document || "" : "",
+  );
+  const [statements, setStatements] = useState(() => initialStatements(cloneSource?.consent));
   // Raw drafts are the source of truth: invalid input stays visible and the
   // submitted policy is always exactly what the draft parses to (ISSUE-05).
   const [telemetryPolicyText, setTelemetryPolicyText] = useState(JSON.stringify(initialTelemetry));
@@ -132,7 +197,7 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
     ? telemetryDraft.value.allowed_field_classes
     : [];
 
-  const activeProfiles = useMemo(() => profiles.filter((profile) => profile.is_active !== false), [profiles]);
+  const consentError = consentMode === "custom" ? consentFormError(consentDocument, statements) : "";
 
   // Budgets apply only when a selected arm runs Goose or the built-in agent
   // (they spend from the study's shared key); a metered model without a
@@ -184,6 +249,9 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
     if (SESSION_PRESETS[preset]) setSessionPolicyText(JSON.stringify(SESSION_PRESETS[preset].policy));
   };
 
+  const updateStatement = (key, fields) =>
+    setStatements((current) => current.map((statement) => (statement.key === key ? { ...statement, ...fields } : statement)));
+
   const toggleProfile = (profileId, checked) => {
     setForm((current) => ({
       ...current,
@@ -195,8 +263,8 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
 
   const handleSubmit = (event) => {
     event.preventDefault();
-    if (!telemetryDraft.ok || !sessionDraft.ok) return;
-    if (!cloneSource && form.startsAt && form.endsAt) {
+    if (!telemetryDraft.ok || !sessionDraft.ok || consentError) return;
+    if (form.startsAt && form.endsAt) {
       const starts = toLocalDateTime(form.startsAt);
       const ends = toLocalDateTime(form.endsAt);
       if (starts && ends && ends <= starts) {
@@ -211,9 +279,12 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
       telemetryPolicy: telemetryDraft.value,
       sessionPolicy: sessionDraft.value,
       // Empty/null without a metered arm: the server ignores them for
-      // Codex-only studies. A clone keeps the source's warning threshold.
+      // Codex-only studies.
       defaultBudgetUsd: metered ? budgetDraft.value : "",
-      budgetWarningFraction: metered && !cloneSource ? warningValue / 100 : null,
+      budgetWarningFraction: metered ? warningValue / 100 : null,
+      allowManualAssignment,
+      consent:
+        consentMode === "custom" ? { document: consentDocument, statements: statementPayload(statements) } : null,
     });
   };
 
@@ -223,18 +294,19 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
     form.profileIds.length === 0 ||
     Boolean(telemetryPolicyError) ||
     Boolean(sessionPolicyError) ||
-    (metered && (!budgetValid || unpricedProfiles.length > 0 || (!cloneSource && !warningValid)));
+    Boolean(consentError) ||
+    (metered && (!budgetValid || unpricedProfiles.length > 0 || !warningValid));
 
   return (
     <form className="research-card ui-card study-create-form" onSubmit={handleSubmit} aria-labelledby="study-create-title">
       <div className="ui-card-header">
         <div>
           <h3 className="ui-card-title" id="study-create-title">
-            {cloneSource ? "Clone study" : "New study"}
+            {cloneSource ? "Duplicate study" : "New study"}
           </h3>
           <p className="ui-card-subtitle">
             {cloneSource
-              ? "A clone starts as a Draft with its own join code."
+              ? `Everything below is copied from “${cloneSource.name}” and can be changed. The duplicate starts as a Draft with its own join code.`
               : "The configuration is frozen when the study is created; only the name and description stay editable until the first participant consents."}
           </p>
         </div>
@@ -245,259 +317,240 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
 
       <div className="ui-card-body study-create-body">
         {cloneSource ? (
-          <>
-            <p className="research-hint">
-              Copies the name, description, schedule, telemetry policy, and session policy from “{cloneSource.name}”.
-              Participants, consent, assignments, telemetry data, join code, and study ID are not copied. Agent
-              profiles are not copied either: select them below, and without a selection the clone cannot be joined.
-            </p>
-            <dl className="ui-dl study-create-summary">
-              <div>
-                <dt>Name</dt>
-                <dd>{form.name}</dd>
-              </div>
-              <div>
-                <dt>Description</dt>
-                <dd>{form.description || "No description"}</dd>
-              </div>
-              <div>
-                <dt>Telemetry policy</dt>
-                <dd>{telemetryDraft.ok ? telemetrySummary(telemetryDraft.value) : "—"}</dd>
-              </div>
-              <div>
-                <dt>Session policy</dt>
-                <dd>
-                  {sessionDraft.ok
-                    ? describeSessionPolicy(sessionDraft.value)
-                        .map(([label, value]) => `${label} ${value}`)
-                        .join(" · ") || "—"
-                    : "—"}
-                </dd>
-              </div>
-            </dl>
-          </>
-        ) : (
-          <>
-            <section className="study-create-section">
-              <h4 className="ui-section-title">Basics</h4>
-              <div className="ui-form-grid">
-                <div className="ui-field ui-span-2">
-                  <label className="ui-label" htmlFor="study-name">
-                    Name
-                  </label>
-                  <input
-                    id="study-name"
-                    className="ui-input"
-                    value={form.name}
-                    onChange={(event) => setForm({ ...form, name: event.target.value })}
-                    required
-                    disabled={isBusy}
-                    placeholder="e.g. Context window pilot"
-                  />
-                </div>
-                <div className="ui-field ui-span-2">
-                  <label className="ui-label" htmlFor="study-description">
-                    Description
-                  </label>
-                  <textarea
-                    id="study-description"
-                    className="ui-textarea"
-                    value={form.description}
-                    onChange={(event) => setForm({ ...form, description: event.target.value })}
-                    rows={3}
-                    disabled={isBusy}
-                    placeholder="Shown to participants when they review the study."
-                  />
-                </div>
-                <div className="ui-field">
-                  <label className="ui-label" htmlFor="study-starts">
-                    Starts at
-                  </label>
-                  <input
-                    id="study-starts"
-                    className="ui-input"
-                    type="datetime-local"
-                    value={form.startsAt}
-                    onChange={(event) => setForm({ ...form, startsAt: event.target.value })}
-                    disabled={isBusy}
-                  />
-                </div>
-                <div className="ui-field">
-                  <label className="ui-label" htmlFor="study-ends">
-                    Ends at
-                  </label>
-                  <input
-                    id="study-ends"
-                    className="ui-input"
-                    type="datetime-local"
-                    value={form.endsAt}
-                    onChange={(event) => setForm({ ...form, endsAt: event.target.value })}
-                    disabled={isBusy}
-                    aria-invalid={dateError ? "true" : undefined}
-                  />
-                  {dateError ? <p className="ui-field-error">{dateError}</p> : null}
-                  <p className="ui-hint">Enrollments complete automatically once the end has passed.</p>
-                </div>
-              </div>
-            </section>
-
-            <fieldset className="research-policy ui-fieldset">
-              <legend>Telemetry policy</legend>
-              <div className="ui-option-list">
-                <label className={`ui-option-card${telemetryPreset === "metadata" ? " is-selected" : ""}`}>
-                  <input
-                    type="radio"
-                    name="telemetry-preset"
-                    checked={telemetryPreset === "metadata"}
-                    onChange={() => applyTelemetryPreset("metadata")}
-                    disabled={isBusy}
-                  />
-                  <span className="ui-check-text">
-                    <strong>
-                      Metadata only — how the agent ran, timings and errors. No prompt, response or file text; tool
-                      titles and error messages are kept. (default)
-                    </strong>
-                    <small>Recommended unless the research question needs the content itself.</small>
-                  </span>
-                </label>
-                <label className={`ui-option-card${telemetryPreset === "everything" ? " is-selected" : ""}`}>
-                  <input
-                    type="radio"
-                    name="telemetry-preset"
-                    checked={telemetryPreset === "everything"}
-                    onChange={() => applyTelemetryPreset("everything")}
-                    disabled={isBusy}
-                  />
-                  <span className="ui-check-text">
-                    <strong>
-                      Everything — also collect prompts, model responses and reasoning, tool arguments and output, and
-                      file contents.
-                    </strong>
-                    <small>Participants see this in the consent notice. Stored only after they consent.</small>
-                  </span>
-                </label>
-                <label className={`ui-option-card${telemetryPreset === "custom" ? " is-selected" : ""}`}>
-                  <input
-                    type="radio"
-                    name="telemetry-preset"
-                    checked={telemetryPreset === "custom"}
-                    onChange={() => applyTelemetryPreset("custom")}
-                    disabled={isBusy}
-                  />
-                  <span className="ui-check-text">
-                    <strong>Custom — choose which categories are collected.</strong>
-                  </span>
-                </label>
-              </div>
-              {telemetryPreset === "custom" ? (
-                <div className="research-policy-classes">
-                  {AUTHORING_CLASSES.map((name) => (
-                    <label key={name} className="ui-check">
-                      <input
-                        type="checkbox"
-                        checked={telemetryClasses.includes(name)}
-                        onChange={() => toggleTelemetryClass(name)}
-                        disabled={isBusy || !telemetryDraft.ok}
-                      />
-                      <span className="ui-check-text">{TELEMETRY_CLASS_LABELS[name]}</span>
-                    </label>
-                  ))}
-                  <p className="research-hint">
-                    Content is stored only when content capture is on (selecting the sensitive category turns it on)
-                    and the participant has consented. Provider credentials are never collected: Goose and built-in
-                    arms use the study's shared provider key on the server, and Codex signs in with the participant's
-                    ChatGPT account.
-                  </p>
-                  {telemetryDraft.ok ? (
-                    <p className="research-hint">Stored at runtime: {storedList(telemetryDraft.value)}.</p>
-                  ) : null}
-                  {!resolveFieldClasses(telemetryClasses).includes("BEHAVIORAL") ? (
-                    <p className="ui-field-error">
-                      Without agent and session structure the study dashboards cannot identify prompts, tool calls or
-                      approvals; the built-in agent's own reports keep only their timings and token counts.
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-              {telemetryPolicyError ? (
-                <p id="telemetry-policy-error" className="research-error" role="alert">
-                  {telemetryPolicyError}
-                </p>
-              ) : null}
-              <details className="research-advanced">
-                <summary>Advanced: raw JSON</summary>
-                <textarea
-                  className="ui-textarea ui-mono"
-                  aria-label="Telemetry policy (JSON)"
-                  value={telemetryPolicyText}
-                  onChange={(event) => {
-                    setTelemetryPolicyText(event.target.value);
-                    setTelemetryPreset("custom");
-                  }}
-                  rows={2}
-                  disabled={isBusy}
-                  aria-invalid={Boolean(telemetryPolicyError)}
-                  aria-describedby={telemetryPolicyError ? "telemetry-policy-error" : undefined}
-                />
-              </details>
-            </fieldset>
-
-            <fieldset className="research-policy ui-fieldset">
-              <legend>Session policy</legend>
-              <div className="ui-field">
-                <label className="ui-label" htmlFor="study-session-preset">
-                  Session length
-                </label>
-                <select
-                  id="study-session-preset"
-                  className="ui-select"
-                  value={sessionPreset}
-                  onChange={(event) => applySessionPreset(event.target.value)}
-                  disabled={isBusy}
-                >
-                  {Object.entries(SESSION_PRESETS).map(([value, preset]) => (
-                    <option key={value} value={value}>
-                      {preset.label}
-                    </option>
-                  ))}
-                  <option value="custom">Custom (edit the JSON below)</option>
-                </select>
+          <p className="research-hint">
+            Participants, consent records, assignments, telemetry data, the schedule and the join code are not copied.
+          </p>
+        ) : null}
+        <section className="study-create-section">
+          <h4 className="ui-section-title">Basics</h4>
+          <div className="ui-form-grid">
+            <div className="ui-field ui-span-2">
+              <label className="ui-label" htmlFor="study-name">
+                Name
+              </label>
+              <input
+                id="study-name"
+                className="ui-input"
+                value={form.name}
+                onChange={(event) => setForm({ ...form, name: event.target.value })}
+                required
+                disabled={isBusy}
+                placeholder="e.g. Context window pilot"
+              />
+            </div>
+            <div className="ui-field ui-span-2">
+              <label className="ui-label" htmlFor="study-description">
+                Description
+              </label>
+              <textarea
+                id="study-description"
+                className="ui-textarea"
+                value={form.description}
+                onChange={(event) => setForm({ ...form, description: event.target.value })}
+                rows={3}
+                disabled={isBusy}
+                placeholder="Shown to participants when they review the study."
+              />
+            </div>
+            <div className="ui-field">
+              <label className="ui-label" htmlFor="study-starts">
+                Starts at
+              </label>
+              <input
+                id="study-starts"
+                className="ui-input"
+                type="datetime-local"
+                value={form.startsAt}
+                onChange={(event) => setForm({ ...form, startsAt: event.target.value })}
+                disabled={isBusy}
+              />
+            </div>
+            <div className="ui-field">
+              <label className="ui-label" htmlFor="study-ends">
+                Ends at
+              </label>
+              <input
+                id="study-ends"
+                className="ui-input"
+                type="datetime-local"
+                value={form.endsAt}
+                onChange={(event) => setForm({ ...form, endsAt: event.target.value })}
+                disabled={isBusy}
+                aria-invalid={dateError ? "true" : undefined}
+              />
+              {dateError ? <p className="ui-field-error">{dateError}</p> : null}
+              <p className="ui-hint">Enrollments complete automatically once the end has passed.</p>
+              {cloneSource && (cloneSource.starts_at || cloneSource.ends_at) ? (
                 <p className="ui-hint">
-                  A session ends after the idle timeout; activity within the resume grace continues the same session.
-                </p>
-              </div>
-              {sessionPolicyError ? (
-                <p id="session-policy-error" className="research-error" role="alert">
-                  {sessionPolicyError}
+                  The source ran {cloneSource.starts_at ? `from ${formatDateTime(cloneSource.starts_at)}` : "from creation"}
+                  {cloneSource.ends_at ? ` until ${formatDateTime(cloneSource.ends_at)}` : " with no end"}.
                 </p>
               ) : null}
-              <details className="research-advanced" open={sessionPreset === "custom"}>
-                <summary>Advanced: raw JSON</summary>
-                <textarea
-                  className="ui-textarea ui-mono"
-                  aria-label="Session policy (JSON)"
-                  value={sessionPolicyText}
-                  onChange={(event) => {
-                    setSessionPolicyText(event.target.value);
-                    const parsed = parsePolicyDraft(event.target.value);
-                    setSessionPreset(parsed.ok ? presetForSession(parsed.value) : "custom");
-                  }}
-                  rows={2}
-                  disabled={isBusy}
-                  aria-invalid={Boolean(sessionPolicyError)}
-                  aria-describedby={sessionPolicyError ? "session-policy-error" : undefined}
-                />
-              </details>
-            </fieldset>
-          </>
-        )}
+            </div>
+          </div>
+        </section>
+
+        <fieldset className="research-policy ui-fieldset">
+          <legend>Telemetry policy</legend>
+          <div className="ui-option-list">
+            <label className={`ui-option-card${telemetryPreset === "metadata" ? " is-selected" : ""}`}>
+              <input
+                type="radio"
+                name="telemetry-preset"
+                checked={telemetryPreset === "metadata"}
+                onChange={() => applyTelemetryPreset("metadata")}
+                disabled={isBusy}
+              />
+              <span className="ui-check-text">
+                <strong>
+                  Metadata only — how the agent ran, timings and errors. No prompt, response or file text; tool
+                  titles and error messages are kept. (default)
+                </strong>
+                <small>Recommended unless the research question needs the content itself.</small>
+              </span>
+            </label>
+            <label className={`ui-option-card${telemetryPreset === "everything" ? " is-selected" : ""}`}>
+              <input
+                type="radio"
+                name="telemetry-preset"
+                checked={telemetryPreset === "everything"}
+                onChange={() => applyTelemetryPreset("everything")}
+                disabled={isBusy}
+              />
+              <span className="ui-check-text">
+                <strong>
+                  Everything — also collect prompts, model responses and reasoning, tool arguments and output, and
+                  file contents.
+                </strong>
+                <small>Participants see this in the consent notice. Stored only after they consent.</small>
+              </span>
+            </label>
+            <label className={`ui-option-card${telemetryPreset === "custom" ? " is-selected" : ""}`}>
+              <input
+                type="radio"
+                name="telemetry-preset"
+                checked={telemetryPreset === "custom"}
+                onChange={() => applyTelemetryPreset("custom")}
+                disabled={isBusy}
+              />
+              <span className="ui-check-text">
+                <strong>Custom — choose which categories are collected.</strong>
+              </span>
+            </label>
+          </div>
+          {telemetryPreset === "custom" ? (
+            <div className="research-policy-classes">
+              {AUTHORING_CLASSES.map((name) => (
+                <label key={name} className="ui-check">
+                  <input
+                    type="checkbox"
+                    checked={telemetryClasses.includes(name)}
+                    onChange={() => toggleTelemetryClass(name)}
+                    disabled={isBusy || !telemetryDraft.ok}
+                  />
+                  <span className="ui-check-text">{TELEMETRY_CLASS_LABELS[name]}</span>
+                </label>
+              ))}
+              <p className="research-hint">
+                Content is stored only when content capture is on (selecting the sensitive category turns it on)
+                and the participant has consented. Provider credentials are never collected: Goose and built-in
+                arms use the study's shared provider key on the server, and Codex signs in with the participant's
+                ChatGPT account.
+              </p>
+              {telemetryDraft.ok ? (
+                <p className="research-hint">Stored at runtime: {storedList(telemetryDraft.value)}.</p>
+              ) : null}
+              {!resolveFieldClasses(telemetryClasses).includes("BEHAVIORAL") ? (
+                <p className="ui-field-error">
+                  Without agent and session structure the study dashboards cannot identify prompts, tool calls or
+                  approvals; the built-in agent's own reports keep only their timings and token counts.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+          {telemetryPolicyError ? (
+            <p id="telemetry-policy-error" className="research-error" role="alert">
+              {telemetryPolicyError}
+            </p>
+          ) : null}
+          <details className="research-advanced">
+            <summary>Advanced: raw JSON</summary>
+            <textarea
+              className="ui-textarea ui-mono"
+              aria-label="Telemetry policy (JSON)"
+              value={telemetryPolicyText}
+              onChange={(event) => {
+                setTelemetryPolicyText(event.target.value);
+                setTelemetryPreset("custom");
+              }}
+              rows={2}
+              disabled={isBusy}
+              aria-invalid={Boolean(telemetryPolicyError)}
+              aria-describedby={telemetryPolicyError ? "telemetry-policy-error" : undefined}
+            />
+          </details>
+        </fieldset>
+
+        <fieldset className="research-policy ui-fieldset">
+          <legend>Session policy</legend>
+          <div className="ui-field">
+            <label className="ui-label" htmlFor="study-session-preset">
+              Session length
+            </label>
+            <select
+              id="study-session-preset"
+              className="ui-select"
+              value={sessionPreset}
+              onChange={(event) => applySessionPreset(event.target.value)}
+              disabled={isBusy}
+            >
+              {Object.entries(SESSION_PRESETS).map(([value, preset]) => (
+                <option key={value} value={value}>
+                  {preset.label}
+                </option>
+              ))}
+              <option value="custom">Custom (edit the JSON below)</option>
+            </select>
+            <p className="ui-hint">
+              A session ends after the idle timeout; activity within the resume grace continues the same session.
+            </p>
+          </div>
+          {sessionPolicyError ? (
+            <p id="session-policy-error" className="research-error" role="alert">
+              {sessionPolicyError}
+            </p>
+          ) : null}
+          <details className="research-advanced" open={sessionPreset === "custom"}>
+            <summary>Advanced: raw JSON</summary>
+            <textarea
+              className="ui-textarea ui-mono"
+              aria-label="Session policy (JSON)"
+              value={sessionPolicyText}
+              onChange={(event) => {
+                setSessionPolicyText(event.target.value);
+                const parsed = parsePolicyDraft(event.target.value);
+                setSessionPreset(parsed.ok ? presetForSession(parsed.value) : "custom");
+              }}
+              rows={2}
+              disabled={isBusy}
+              aria-invalid={Boolean(sessionPolicyError)}
+              aria-describedby={sessionPolicyError ? "session-policy-error" : undefined}
+            />
+          </details>
+        </fieldset>
 
         <fieldset className="research-profile-selection ui-fieldset">
           <legend>Agent profiles (arms)</legend>
           <p className="ui-hint">
-            Each participant is randomly assigned one selected profile with equal probability; the assignment never
-            changes. Profile selection is fixed once the study is created.
+            Each participant is assigned one selected profile (see Assignment below). Profile selection is fixed once
+            the study is created.
           </p>
+          {droppedArms.length > 0 ? (
+            <Alert tone="warning" live={false} title="Some arms of the source study cannot be selected.">
+              {droppedArms.map((arm) => arm.name || arm.profile_id).join(", ")}: the profile is no longer active. Arms
+              are frozen again from each profile's current settings.
+            </Alert>
+          ) : null}
           {activeProfiles.length === 0 ? (
             <p className="research-hint">No active agent profiles available.</p>
           ) : (
@@ -543,6 +596,141 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
           ) : null}
         </fieldset>
 
+        <fieldset className="research-policy ui-fieldset">
+          <legend>Assignment</legend>
+          <p className="ui-hint">
+            Each participant gets one arm at random with equal probability. The draw is a salted hash of the study and
+            the participant's enrollment, so it can be reproduced from exported data, and it never changes once the
+            participant has started.
+          </p>
+          <label className="ui-check">
+            <input
+              type="checkbox"
+              checked={allowManualAssignment}
+              onChange={(event) => setAllowManualAssignment(event.target.checked)}
+              disabled={isBusy}
+            />
+            <span className="ui-check-text">
+              Allow manual assignment
+              <small>
+                You can set a participant's arm by hand until they first use the agent. The consent notice then says
+                participants are assigned “at random or by the research team”.
+              </small>
+            </span>
+          </label>
+        </fieldset>
+
+        <fieldset className="research-policy ui-fieldset">
+          <legend>Consent form</legend>
+          <div className="ui-option-list">
+            <label className={`ui-option-card${consentMode === "standard" ? " is-selected" : ""}`}>
+              <input
+                type="radio"
+                name="consent-mode"
+                checked={consentMode === "standard"}
+                onChange={() => setConsentMode("standard")}
+                disabled={isBusy}
+              />
+              <span className="ui-check-text">
+                <strong>Standard notice — what this study records, with one checkbox. (default)</strong>
+              </span>
+            </label>
+            <label className={`ui-option-card${consentMode === "custom" ? " is-selected" : ""}`}>
+              <input
+                type="radio"
+                name="consent-mode"
+                checked={consentMode === "custom"}
+                onChange={() => setConsentMode("custom")}
+                disabled={isBusy}
+              />
+              <span className="ui-check-text">
+                <strong>Custom form — your own information text and statements participants tick.</strong>
+                <small>The platform's notice of what the study records is always shown below your text.</small>
+              </span>
+            </label>
+          </div>
+          {consentMode === "custom" ? (
+            <div className="ui-stack-sm">
+              <div className="ui-field">
+                <label className="ui-label" htmlFor="study-consent-document">
+                  Consent document
+                </label>
+                <textarea
+                  id="study-consent-document"
+                  className="ui-textarea"
+                  value={consentDocument}
+                  onChange={(event) => setConsentDocument(event.target.value)}
+                  rows={10}
+                  disabled={isBusy}
+                  placeholder="Purpose of the study, what participants do, risks, data protection, contact…"
+                />
+                <p className="ui-hint">
+                  Plain text, shown exactly as typed: line breaks are kept and web or mail links become clickable.{" "}
+                  {consentDocument.length.toLocaleString()} / {CONSENT_LIMITS.document.toLocaleString()} characters.
+                </p>
+              </div>
+              <div className="ui-field">
+                <span className="ui-label">Statements participants tick</span>
+                {statements.map((statement, index) => (
+                  <div key={statement.key} className="consent-statement-row">
+                    <input
+                      className="ui-input"
+                      aria-label={`Statement ${index + 1}`}
+                      value={statement.text}
+                      onChange={(event) => updateStatement(statement.key, { text: event.target.value })}
+                      disabled={isBusy}
+                    />
+                    <label className="ui-check">
+                      <input
+                        type="checkbox"
+                        aria-label={`Statement ${index + 1} is required`}
+                        checked={statement.required}
+                        onChange={(event) => updateStatement(statement.key, { required: event.target.checked })}
+                        disabled={isBusy}
+                      />
+                      <span className="ui-check-text">Required</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="ghost-button button-sm"
+                      aria-label={`Remove statement ${index + 1}`}
+                      onClick={() => setStatements((current) => current.filter((item) => item.key !== statement.key))}
+                      disabled={isBusy || statements.length === 1}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <div className="ui-row">
+                  <button
+                    type="button"
+                    className="secondary-button button-sm"
+                    onClick={() => setStatements((current) => [...current, newStatement({ required: false })])}
+                    disabled={isBusy || statements.length >= CONSENT_LIMITS.statements}
+                  >
+                    Add statement
+                  </button>
+                </div>
+                {consentError ? <p className="ui-field-error">{consentError}</p> : null}
+              </div>
+              <details className="research-advanced">
+                <summary>Preview what participants see</summary>
+                <ConsentReview
+                  consent={{
+                    document: consentDocument,
+                    notice: "The platform adds its notice of what this study records here.",
+                    statements: statementPayload(statements),
+                  }}
+                />
+              </details>
+              <p className="ui-hint">
+                The form is frozen with the study. To change it later, duplicate the study (an ethics amendment usually
+                means new consent anyway).
+              </p>
+            </div>
+          ) : null}
+        </fieldset>
+
         {form.profileIds.length > 0 ? (
           <fieldset className="research-policy ui-fieldset study-budget-fieldset">
             <legend>Participant budgets</legend>
@@ -573,31 +761,27 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
                       </p>
                     ) : null}
                     <p className="ui-hint">
-                      {cloneSource
-                        ? "Copied from the source study unless you change it here."
-                        : "Applies to every participant who joins; changeable later in Settings, even after the consent lock."}
+                      Applies to every participant who joins; changeable later in Settings, even after the consent lock.
                     </p>
                   </div>
-                  {!cloneSource ? (
-                    <div className="ui-field">
-                      <label className="ui-label" htmlFor="study-budget-warning">
-                        Warn participants at (% of budget used)
-                      </label>
-                      <input
-                        id="study-budget-warning"
-                        className="ui-input"
-                        type="number"
-                        min={1}
-                        max={100}
-                        step={1}
-                        value={warningPercent}
-                        onChange={(event) => setWarningPercent(event.target.value)}
-                        disabled={isBusy}
-                        aria-invalid={warningValid ? undefined : "true"}
-                      />
-                      {!warningValid ? <p className="ui-field-error">Enter a whole number from 1 to 100.</p> : null}
-                    </div>
-                  ) : null}
+                  <div className="ui-field">
+                    <label className="ui-label" htmlFor="study-budget-warning">
+                      Warn participants at (% of budget used)
+                    </label>
+                    <input
+                      id="study-budget-warning"
+                      className="ui-input"
+                      type="number"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={warningPercent}
+                      onChange={(event) => setWarningPercent(event.target.value)}
+                      disabled={isBusy}
+                      aria-invalid={warningValid ? undefined : "true"}
+                    />
+                    {!warningValid ? <p className="ui-field-error">Enter a whole number from 1 to 100.</p> : null}
+                  </div>
                 </div>
                 {unpricedProfiles.length > 0 ? (
                   <Alert tone="warning" live={false} title="A selected model has no price on the server.">
@@ -622,7 +806,7 @@ const StudyCreateForm = ({ profiles, cloneSource, isBusy, onSubmit, onCancel, bu
           Cancel
         </button>
         <button type="submit" className="primary-button" disabled={submitDisabled}>
-          {cloneSource ? "Clone Draft study" : "Create Draft study"}
+          Create Draft study
         </button>
       </div>
     </form>

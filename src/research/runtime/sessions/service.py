@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from typing import Any
 
 _LEGAL_TARGETS: dict[SessionState, frozenset[SessionState]] = {
-    SessionState.NOT_STARTED: frozenset({SessionState.RUNNING}),
+    SessionState.NOT_STARTED: frozenset({SessionState.RUNNING, SessionState.ENDED}),
     SessionState.RUNNING: frozenset(
         {
             SessionState.OFFLINE,
@@ -264,8 +264,16 @@ def on_qualifying_activity(
     now: Optional[datetime] = None,
     *,
     kill_switch_check: Optional[Callable[[], bool]] = None,
+    idle_timeout_seconds: Optional[int] = None,
 ) -> SessionResult:
-    """First qualifying activity: ``not_started -> running``."""
+    """First qualifying activity: ``not_started -> running``.
+
+    A not-started session is a placeholder: bootstrap stamps it when a window
+    opens or an idle rotation replaces the last session, and heartbeats keep it
+    alive while the IDE stays open. With ``idle_timeout_seconds``, a placeholder
+    that waited longer than that (a night, a lunch break) starts at this
+    activity rather than at its creation.
+    """
     timestamp = _now(now)
     blocked = _kill_switch_result(session, kill_switch_check)
     if blocked is not None:
@@ -282,7 +290,13 @@ def on_qualifying_activity(
             ),
         )
     if session.state == SessionState.NOT_STARTED:
-        return _apply(session, SessionState.RUNNING, timestamp)
+        waited = (
+            idle_timeout_seconds is not None
+            and session.opened_at is not None
+            and (timestamp - session.opened_at).total_seconds() > idle_timeout_seconds
+        )
+        start = session.model_copy(update={"opened_at": None}) if waited else session
+        return _apply(start, SessionState.RUNNING, timestamp)
     return record_activity(session, timestamp)
 
 
@@ -468,14 +482,23 @@ def expire_if_idle(
     policy: SessionPolicyV1,
     kill_switch_check: Optional[Callable[[], bool]] = None,
 ) -> SessionResult:
-    """End a live session when it exceeds the revision idle timeout."""
+    """End a session silent past the idle timeout: a live one on its last
+    qualifying activity, a not-started one on its last heartbeat."""
     timestamp = _now(now)
     blocked = _kill_switch_result(session, kill_switch_check)
     if blocked is not None:
         return blocked
-    if session.state.is_terminal or session.state == SessionState.NOT_STARTED:
+    if session.state.is_terminal:
         return SessionResult(accepted=True, session=session, reason=SessionReasonCode.OK)
-    last_activity = session.last_activity_at
+    # A window that never started its session keeps it across restarts, days
+    # apart: its interval would then run from the first start to the latest
+    # heartbeat. Once it has been silent past the timeout it ends, and the
+    # window's next start gets a fresh session.
+    last_activity = (
+        session.last_heartbeat_at or session.opened_at
+        if session.state == SessionState.NOT_STARTED
+        else session.last_activity_at
+    )
     if last_activity is None:
         return SessionResult(accepted=True, session=session, reason=SessionReasonCode.OK)
     if (timestamp - last_activity).total_seconds() <= policy.idle_timeout_seconds:

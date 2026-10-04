@@ -64,6 +64,15 @@ def _stack_ready(scenario: Scenario) -> bool:
     return status == 200 and isinstance(payload, dict) and bool(payload.get("schema_ready"))
 
 
+def _server_reason(record: Dict[str, Any]) -> str:
+    """The backend's own reason for a handled server error: its ``detail`` code or text."""
+    response = record.get("response")
+    detail = response.get("detail") if isinstance(response, dict) else None
+    if isinstance(detail, dict):
+        detail = detail.get("code") or detail.get("message")
+    return str(detail)[:200] if detail else "no detail"
+
+
 def _run_one(ctx: Ctx, step_id: str) -> StepResult:
     start_index = len(ctx.exchange_log)
     started = time.monotonic()
@@ -100,23 +109,39 @@ def _run_one(ctx: Ctx, step_id: str) -> StepResult:
             if isinstance(record.get("status"), int) and record["status"] >= 500
         ]
         if server_errors:
-            finding_id = f"BACKEND_5XX_{step_id.upper()}"
+            # Only a 500 is an unhandled exception. The backend's deliberate 503s
+            # (store, provider or configuration unavailable) and gateway 502/504s
+            # point at the environment. The last error is cited: an earlier one may
+            # have been retried. The two kinds keep separate ids, so a resumed run
+            # that now crashes still reports the bug.
+            crashes = [record for record in server_errors if record["status"] == 500]
+            error = (crashes or server_errors)[-1]
+            where = f"HTTP {error['status']} from {error['method']} {error['path']}"
+            finding_id = f"BACKEND_{'500' if crashes else '5XX'}_{step_id.upper()}"
             if not any(item.get("id") == finding_id for item in ctx.findings):
-                ctx.findings.append(
-                    {
-                        "id": finding_id,
+                if crashes:
+                    finding = {
                         "severity": "bug",
                         "message": (
-                            f"step {step_id} received HTTP "
-                            f"{server_errors[0]['status']} from "
-                            f"{server_errors[0]['method']} {server_errors[0]['path']}: "
-                            "an unhandled backend exception. This is an application bug, "
-                            "not a harness failure; the harness keeps the exact request/"
-                            "response and the backend traceback for the report."
+                            f"step {step_id} received {where}: an unhandled backend exception. "
+                            "This is an application bug, not a harness failure; the harness "
+                            "keeps the exact request/response and the backend traceback for "
+                            "the report."
                         ),
                         "location": "see logs/backend.log for the Python traceback",
                     }
-                )
+                else:
+                    finding = {
+                        "severity": "environment",
+                        "message": (
+                            f"step {step_id} received {where} ({_server_reason(error)}): the "
+                            "backend or a gateway reported something it depends on as "
+                            "unavailable. Check the stack, the provider stub and the backend "
+                            "configuration before suspecting the application."
+                        ),
+                        "location": "see the step's exchanges in report.json and logs/backend.log",
+                    }
+                ctx.findings.append({"id": finding_id, **finding})
                 ctx.state["findings"] = ctx.findings
     return StepResult(step_id, status, duration_ms, details, fix_hint)
 

@@ -24,39 +24,67 @@ single frame:
   selected option id, so the request's options are needed to resolve the option
   *kind*);
 * ``agent.message.completed`` is derived from the response to a previously
-  observed ``session/prompt`` request.
+  observed ``session/prompt`` request;
+* ``interaction.started`` for ``session/new`` / ``session/fork`` is derived from
+  the agent's successful response, the first frame that names the new chat;
+* while a ``session/load`` request is pending, the agent replays the chat's
+  history as ``session/update`` notifications. Those were recorded when they
+  happened, so they are dropped rather than recorded twice.
 
 Those correlations (and the "``tool.created`` once per tool call" rule) are held
 as bounded, per-session state on the normalizer instance. Every other mapping is
 a pure function of one message. The state never changes an observation's
 identity, order, or fidelity.
+
+Candidates derived from a mapped ACP method carry it as ``acp_method``
+(:data:`~research.telemetry.chat_lifecycle.ACP_METHOD_KEY`): readers tell chat
+starts, chat ends and user interrupts apart by it.
 """
 
 from __future__ import annotations
 
+from itertools import islice
 from typing import Any, Mapping, Optional, Protocol
 
+from ..chat_lifecycle import ACP_METHOD_KEY, CHAT_END_METHODS
 from ..enums import CanonicalEventType, CanonicalFidelity, CoverageState, EventSource
 from ..models import Correlations, Coverage, EventMetrics
 from .models import CanonicalCandidateV1, NormalizationResultV1
 
-GENERIC_ACP_NORMALIZER_VERSION = "generic-acp-v1"
+GENERIC_ACP_NORMALIZER_VERSION = "generic-acp-v2"
 
 #: Canonical ACP permission option kinds that mean "allow".
 _ALLOW_OPTION_KINDS = frozenset({"allow_once", "allow_always"})
 #: Canonical ACP permission option kinds that mean "reject".
 _REJECT_OPTION_KINDS = frozenset({"reject_once", "reject_always"})
 
+#: Requests mapped from the frame alone. A chat end (``CHAT_END_METHODS``) is
+#: ``interaction.completed`` with lifecycle ``completed``; ``session/cancel``, a
+#: user interrupt, keeps no lifecycle state.
 _METHOD_RULES: dict[str, tuple[str, CanonicalEventType]] = {
     "initialize": ("acp.initialize", CanonicalEventType.INTERACTION_STARTED),
-    "session/new": ("acp.session.new", CanonicalEventType.INTERACTION_STARTED),
     "session/load": ("acp.session.load", CanonicalEventType.INTERACTION_STARTED),
+    "session/resume": ("acp.session.resume", CanonicalEventType.INTERACTION_STARTED),
     "session/prompt": ("acp.session.prompt", CanonicalEventType.AGENT_MESSAGE_STARTED),
     "session/cancel": ("acp.session.cancel", CanonicalEventType.INTERACTION_COMPLETED),
+    "session/close": ("acp.session.close", CanonicalEventType.INTERACTION_COMPLETED),
+    "session/delete": ("acp.session.delete", CanonicalEventType.INTERACTION_COMPLETED),
     "fs/read_text_file": ("acp.fs.read_text_file", CanonicalEventType.IDE_FILE_OPENED),
     "fs/write_text_file": ("acp.fs.write_text_file", CanonicalEventType.IDE_FILE_SAVED),
     "terminal/create": ("acp.terminal.create", CanonicalEventType.TOOL_STARTED),
 }
+
+#: Chat starts whose request names no chat yet. The request maps to nothing; the
+#: agent's successful response, which carries the new chat's id, maps to
+#: ``interaction.started``. A failed one maps to its error response alone.
+_RESPONSE_CHAT_STARTS: dict[str, str] = {
+    "session/new": "acp.session.new",
+    "session/fork": "acp.session.fork",
+}
+
+#: Bounds on the prompt one ``session/prompt`` content candidate carries.
+_PROMPT_MAX_BLOCKS = 32
+_PROMPT_MAX_CHARS = 64 * 1024
 
 
 def _candidate(
@@ -312,19 +340,132 @@ def _tool_call_request_tool_id(params: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
+class _TextBudget:
+    """Characters of prompt text one content candidate may still carry."""
+
+    def __init__(self, limit: int) -> None:
+        self.remaining = limit
+
+    def take(self, value: str) -> tuple[str, bool]:
+        """``value`` cut to the remaining budget, and whether it was cut."""
+        kept = value[: self.remaining]
+        self.remaining -= len(kept)
+        return kept, len(kept) < len(value)
+
+
+def _take_strings(
+    source: Mapping[str, Any],
+    keys: tuple[str, ...],
+    target: dict[str, Any],
+    budget: _TextBudget,
+) -> bool:
+    """Copy the string values of ``keys`` within the budget; whether one was cut."""
+    truncated = False
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str):
+            target[key], cut = budget.take(value)
+            truncated = truncated or cut
+    return truncated
+
+
+def _prompt_block(
+    block: Mapping[str, Any],
+    budget: _TextBudget,
+    typed: Optional[tuple[str, bool]],
+) -> dict[str, Any]:
+    """One ACP content block with only the fields worth keeping.
+
+    ``typed`` is the text block's already budgeted text. Binary data is reduced
+    to its ``data_length``; ``_meta`` and annotations are never copied.
+    """
+    kind = block.get("type")
+    entry: dict[str, Any] = {"type": kind} if isinstance(kind, str) else {}
+    truncated = False
+    if typed is not None:
+        entry["text"], truncated = typed
+    elif kind == "resource_link":
+        truncated = _take_strings(
+            block, ("uri", "name", "title", "description", "mimeType"), entry, budget
+        )
+        size = block.get("size")
+        if isinstance(size, int) and not isinstance(size, bool):
+            entry["size"] = size
+    elif kind == "resource" and isinstance(block.get("resource"), Mapping):
+        resource = block["resource"]
+        embedded: dict[str, Any] = {}
+        truncated = _take_strings(resource, ("uri", "mimeType", "text"), embedded, budget)
+        if isinstance(resource.get("blob"), str):
+            embedded["data_length"] = len(resource["blob"])
+        entry["resource"] = embedded
+    elif kind in ("image", "audio"):
+        truncated = _take_strings(block, ("mimeType", "uri"), entry, budget)
+        if isinstance(block.get("data"), str):
+            entry["data_length"] = len(block["data"])
+    if truncated:
+        entry["truncated"] = True
+    return entry
+
+
+def _prompt_blocks(prompt: list[Any]) -> list[dict[str, Any]]:
+    """Bounded copies of a ``session/prompt``'s content blocks.
+
+    At most ``_PROMPT_MAX_BLOCKS`` blocks and ``_PROMPT_MAX_CHARS`` characters
+    are kept. Typed text is what the participant asked, so it is served from
+    the budget first and a large attached file never crowds it out; embedded
+    resource text and resource links share what is left. A block that lost
+    text to the budget is marked ``truncated``.
+    """
+    blocks = list(
+        islice((block for block in prompt if isinstance(block, Mapping)), _PROMPT_MAX_BLOCKS)
+    )
+    budget = _TextBudget(_PROMPT_MAX_CHARS)
+    typed = {
+        index: budget.take(block["text"])
+        for index, block in enumerate(blocks)
+        if block.get("type") == "text" and isinstance(block.get("text"), str)
+    }
+    return [_prompt_block(block, budget, typed.get(index)) for index, block in enumerate(blocks)]
+
+
+def _prompt_content_candidate(params: Mapping[str, Any]) -> Optional[CanonicalCandidateV1]:
+    """The participant's prompt as a second ``agent.message.started``, if sent.
+
+    ``message_kind`` ``user`` and lifecycle ``started`` make readers count it
+    with the streamed chunks, never as another turn start. ``prompt`` is
+    CONTENT: a metadata-only study keeps only ``[REDACTED]``.
+    """
+    prompt = params.get("prompt")
+    if not isinstance(prompt, list):
+        return None
+    payload: dict[str, Any] = {ACP_METHOD_KEY: "session/prompt", "message_kind": "user"}
+    session_id = params.get("sessionId")
+    if isinstance(session_id, str):
+        payload["session_id"] = session_id
+    payload["prompt"] = _prompt_blocks(prompt)
+    return _candidate(
+        CanonicalEventType.AGENT_MESSAGE_STARTED,
+        "acp.session.prompt.content",
+        payload=payload,
+        lifecycle_state="started",
+    )
+
+
 class GenericAcpNormalizer:
     """Maps ACP JSON-RPC messages to canonical candidates.
 
     A normalizer instance is bound to one observer stream (session): it keeps
     only the correlation state required for ``permission.decided`` /
-    ``agent.message.completed`` and for emitting ``tool.created`` exactly once
-    per tool call.
+    ``agent.message.completed`` / response-derived chat starts, for dropping a
+    ``session/load`` history replay, and for emitting ``tool.created`` exactly
+    once per tool call.
     """
 
     normalizer_version = GENERIC_ACP_NORMALIZER_VERSION
 
     def __init__(self) -> None:
-        #: jsonrpc permission request id -> {"options": {optionId: kind}, "tool_call_id": ...}
+        #: jsonrpc permission request id ->
+        #: {"options": {optionId: kind}, "tool_call_id": ..., "session_id": ...}
         self._pending_permissions: dict[str, dict[str, Any]] = {}
         #: jsonrpc ``session/prompt`` request id -> ACP session key awaiting its response.
         self._pending_prompts: dict[str, str] = {}
@@ -334,6 +475,12 @@ class GenericAcpNormalizer:
         self._request_turns: dict[str, str] = {}
         #: tool call ids for which ``tool.created`` was already emitted.
         self._created_tool_calls: set[str] = set()
+        #: jsonrpc ``session/new``/``session/fork`` request id -> that method,
+        #: until the agent's answer names the new chat.
+        self._pending_chat_starts: dict[str, str] = {}
+        #: jsonrpc ``session/load`` request id -> the ACP session whose history
+        #: the agent replays until it answers.
+        self._pending_loads: dict[str, str] = {}
 
     @staticmethod
     def _session_key(message: Mapping[str, Any]) -> Optional[str]:
@@ -406,6 +553,33 @@ class GenericAcpNormalizer:
         ]:
             del self._request_turns[request_id]
 
+    def _replaying(self, params: Any) -> bool:
+        """Whether this ``session/update`` is history a pending load replays."""
+        if not isinstance(params, Mapping):
+            return False
+        session_id = params.get("sessionId")
+        return isinstance(session_id, str) and session_id in self._pending_loads.values()
+
+    def _end_replay(self, session_id: Optional[str]) -> None:
+        """Forget pending loads of ``session_id``: its updates are live again."""
+        for request_id in [
+            key for key, loading in self._pending_loads.items() if loading == session_id
+        ]:
+            del self._pending_loads[request_id]
+
+    def _settle_agent_answer(
+        self, response_id: str, direction: Optional[str]
+    ) -> Optional[str]:
+        """Settle a chat-start or load request the agent answered or failed.
+
+        Returns the chat-start method the answer belongs to, if any. Any answer
+        to a ``session/load`` ends its replay window.
+        """
+        if direction not in (None, "agent_to_host"):
+            return None
+        self._pending_loads.pop(response_id, None)
+        return self._pending_chat_starts.pop(response_id, None)
+
     def normalize(
         self,
         message: Any,
@@ -465,6 +639,17 @@ class GenericAcpNormalizer:
             else (str(message_id) if message_id is not None else None)
         )
 
+        if method == "session/update" and self._replaying(params):
+            # Replayed history was recorded when it happened; it is not flagged
+            # and recorded again, it is dropped.
+            return NormalizationResultV1(
+                source=EventSource.ACP,
+                normalizer_version=self.normalizer_version,
+                source_event_id=resolved_source_id,
+                candidates=[],
+                unmapped_reason="history replayed for session/load",
+            )
+
         if method == "session/update" and isinstance(params, Mapping):
             update = params.get("update")
             if isinstance(update, Mapping):
@@ -483,21 +668,54 @@ class GenericAcpNormalizer:
                 candidates=[self._permission_request(message_id, params)],
             )
 
-        if isinstance(method, str) and method in _METHOD_RULES:
-            rule_id, event_type = _METHOD_RULES[method]
-            payload: dict[str, Any] = {}
-            if isinstance(params, Mapping):
-                session_id = params.get("sessionId")
-                if isinstance(session_id, str):
-                    payload["session_id"] = session_id
+        if isinstance(method, str) and method in _RESPONSE_CHAT_STARTS:
+            if message_id is not None:
+                self._pending_chat_starts[str(message_id)] = method
             return NormalizationResultV1(
                 source=EventSource.ACP,
                 normalizer_version=self.normalizer_version,
                 source_event_id=resolved_source_id,
-                candidates=[_candidate(event_type, rule_id, payload=payload)],
+                candidates=[],
+                unmapped_reason="chat start is mapped from the agent's response",
+            )
+
+        if isinstance(method, str) and method in _METHOD_RULES:
+            rule_id, event_type = _METHOD_RULES[method]
+            payload: dict[str, Any] = {ACP_METHOD_KEY: method}
+            session_id: Optional[str] = None
+            if isinstance(params, Mapping):
+                raw_session_id = params.get("sessionId")
+                if isinstance(raw_session_id, str):
+                    session_id = raw_session_id
+                    payload["session_id"] = session_id
+            candidates = [
+                _candidate(
+                    event_type,
+                    rule_id,
+                    payload=payload,
+                    lifecycle_state="completed" if method in CHAT_END_METHODS else None,
+                )
+            ]
+            if method == "session/load" and session_id and message_id is not None:
+                self._pending_loads[str(message_id)] = session_id
+            if method == "session/prompt" and isinstance(params, Mapping):
+                # A new prompt means the chat is live, even if a load's answer
+                # was never observed.
+                self._end_replay(session_id)
+                content = _prompt_content_candidate(params)
+                if content is not None:
+                    candidates.append(content)
+            return NormalizationResultV1(
+                source=EventSource.ACP,
+                normalizer_version=self.normalizer_version,
+                source_event_id=resolved_source_id,
+                candidates=candidates,
             )
 
         if "error" in message:
+            if method is None and message_id is not None:
+                # A failed chat start or load maps to this error alone.
+                self._settle_agent_answer(str(message_id), direction)
             return NormalizationResultV1(
                 source=EventSource.ACP,
                 normalizer_version=self.normalizer_version,
@@ -664,7 +882,12 @@ class GenericAcpNormalizer:
         permission_id = str(message_id) if message_id is not None else None
         tool_call_id = _tool_call_request_tool_id(params)
         options, option_kinds = _normalized_options(params)
+        session_id = params.get("sessionId") if isinstance(params, Mapping) else None
+        if not isinstance(session_id, str) or not session_id:
+            session_id = None
         payload: dict[str, Any] = {}
+        if session_id is not None:
+            payload["session_id"] = session_id
         if tool_call_id is not None:
             payload["tool_call_id"] = tool_call_id
         if options:
@@ -674,6 +897,8 @@ class GenericAcpNormalizer:
             self._pending_permissions[permission_id] = {
                 "tool_call_id": tool_call_id,
                 "options": option_kinds,
+                # The host's answer names no chat; it belongs to the request's.
+                "session_id": session_id,
             }
         return _candidate(
             CanonicalEventType.PERMISSION_REQUESTED,
@@ -692,6 +917,8 @@ class GenericAcpNormalizer:
         option_kinds: Mapping[str, Optional[str]] = spec.get("options") or {}
         result = message.get("result")
         payload: dict[str, Any] = {}
+        if spec.get("session_id") is not None:
+            payload["session_id"] = spec["session_id"]
         if isinstance(result, Mapping):
             outcome = result.get("outcome")
             if isinstance(outcome, Mapping):
@@ -738,12 +965,35 @@ class GenericAcpNormalizer:
         if response_id in self._pending_prompts and direction in (None, "agent_to_host"):
             session_key = self._pending_prompts.pop(response_id)
             self._close_turn(response_id, session_key)
-            return self._message_completed(message)
+            return self._message_completed(message, session_key)
+        chat_start = self._settle_agent_answer(response_id, direction)
+        if chat_start is not None:
+            return self._chat_started(chat_start, message)
         return None
 
-    def _message_completed(self, message: Mapping[str, Any]) -> CanonicalCandidateV1:
+    @staticmethod
+    def _chat_started(method: str, message: Mapping[str, Any]) -> CanonicalCandidateV1:
+        """``interaction.started`` for a new or forked chat, named by the answer."""
+        payload: dict[str, Any] = {ACP_METHOD_KEY: method}
+        result = message.get("result")
+        if isinstance(result, Mapping):
+            session_id = result.get("sessionId")
+            if isinstance(session_id, str) and session_id:
+                payload["session_id"] = session_id
+        return _candidate(
+            CanonicalEventType.INTERACTION_STARTED,
+            _RESPONSE_CHAT_STARTS[method],
+            payload=payload,
+        )
+
+    def _message_completed(
+        self, message: Mapping[str, Any], session_key: str
+    ) -> CanonicalCandidateV1:
         result = message.get("result")
         payload: dict[str, Any] = {}
+        if session_key:
+            # The response names no chat; it belongs to the prompt's.
+            payload["session_id"] = session_key
         usage_source: Any = result
         if isinstance(result, Mapping):
             stop_reason = result.get("stopReason")

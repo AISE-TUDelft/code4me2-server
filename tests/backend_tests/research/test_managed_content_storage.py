@@ -602,6 +602,54 @@ def test_the_agent_dashboard_rates_only_decisions_someone_was_asked_for(db_runti
         db.close()
 
 
+def test_a_revised_decision_keeps_its_metadata_but_never_the_instructions(db_runtime):
+    """A "Revise…" self-report (run 2026-10-03-pilot-feedback C1) passes a
+    metadata-only policy: the form outcome, status and hunk counts are stored,
+    the user's instructions (``text``) are not."""
+    db = db_runtime()
+    try:
+        task = _seed(db, content_capture=False)
+        event = _runtime_event(
+            "agent.permission.decided",
+            {
+                "tool_name": "edit_file",
+                "tool_call_id": "tc-1",
+                "kind": "edit",
+                "decision": "revised",
+                "decision_scope": "none",
+                "elicitation_action": "accept",
+                "hunk_count": 3,
+                "kept_hunk_count": 1,
+                "revise_status": "applied",
+                "text": CONTENT_SENTINEL,
+            },
+        )
+        ingested, _skipped = ingest_event_batch(
+            db,
+            task_id=task.task_id,
+            events=[event],
+            content_included=False,
+            agent_profile="managed-arm",
+        )
+        assert ingested == 1
+
+        envelope = db.execute(
+            text(
+                "SELECT envelope_json FROM public.research_event "
+                "WHERE agent_run_id = :run_id"
+            ),
+            {"run_id": task.external_run_id},
+        ).scalar_one()
+        assert CONTENT_SENTINEL not in json.dumps(envelope)
+        payload = envelope["payload"]
+        assert payload["decision"] == "revised"
+        assert (payload["elicitation_action"], payload["revise_status"]) == ("accept", "applied")
+        assert envelope["metrics"]["counts"]["hunk_count"] == 3
+        assert envelope["metrics"]["counts"]["kept_hunk_count"] == 1
+    finally:
+        db.close()
+
+
 @pytest.mark.parametrize(
     "allowed_field_classes",
     [["SYSTEM", "BEHAVIORAL"], ["METRICS"]],

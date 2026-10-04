@@ -467,3 +467,50 @@
 .study-history-table td {
   font-size: 12.5px;
 }
+
+/* ---- Analytics filters and categories ------------------------------------ */
+
+.analytics-filters {
+  position: relative;
+}
+
+.analytics-filters > summary {
+  list-style: none;
+}
+
+.analytics-filters > summary::-webkit-details-marker {
+  display: none;
+}
+
+.analytics-filters-panel {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  left: 0;
+  margin-top: 6px;
+  padding: 12px 14px;
+  position: absolute;
+  top: 100%;
+  width: min(360px, 90vw);
+  z-index: 20;
+}
+
+.analytics-filter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.analytics-filter-summary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

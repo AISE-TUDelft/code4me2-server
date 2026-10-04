@@ -166,6 +166,7 @@ HARNESS_BOOLEAN_OPTIONS: tuple[str, ...] = (
     "loop_guard",
     "instruction_reminders",
     "test_output_summary",
+    "approval_revise",
 )
 #: Every key ``harness_options`` may carry; any other key is refused.
 HARNESS_OPTION_KEYS: tuple[str, ...] = HARNESS_BOOLEAN_OPTIONS + (

@@ -12,30 +12,39 @@ import {
   ShareBars,
   colorForIndex,
 } from "../../components/charts/Charts";
-import { Alert, Card, EmptyState, KpiTile, Loading, SegmentedControl } from "../../components/common/ui";
-import { formatCompact, formatDate, formatDuration, formatNumber, formatPercent, humanize } from "../../utils/format";
 import {
+  Alert,
+  Card,
+  CollapsibleSection,
+  Drawer,
+  EmptyState,
+  KpiTile,
+  Loading,
+  SegmentedControl,
+} from "../../components/common/ui";
+import { formatCompact, formatDate, formatDuration, formatNumber, formatPercent, humanize } from "../../utils/format";
+import AnalyticsFilters, { NO_FILTERS, filterCount } from "./AnalyticsFilters";
+import ParticipantDashboard from "./ParticipantDashboard";
+import StudyExportPanel from "./StudyExportPanel";
+import {
+  CHAT_END_LABELS,
   DECISION_LABELS,
   DECISION_ORDER,
-  METRICS,
   METRIC_BY_KEY,
+  METRIC_CATEGORIES,
   STOP_REASON_LABELS,
   STOP_REASON_ORDER,
   TOOL_KIND_ORDER,
   formatMetric,
   labelFor,
+  metricsInCategory,
   orderedKeys,
 } from "./studyMetrics";
 import { ToolName, armsForStudy } from "./studyUtils";
 
-const KEY_METRICS = [
-  "tool_calls_per_prompt",
-  "tool_failure_rate",
-  "cancel_rate",
-  "median_turn_seconds",
-  "prompts_per_session_hour",
-  "tokens_per_prompt",
-];
+// Remembered per browser: which analytics sections are open.
+const SECTIONS_KEY = "code4me.research.analytics.sections";
+
 
 const RANGE_OPTIONS = [
   { value: "all", label: "All time" },
@@ -88,15 +97,20 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
   const [customError, setCustomError] = useState("");
   const [windowed, setWindowed] = useState(LOADING);
   const [reloadCount, setReloadCount] = useState(0);
-  const [showAllMetrics, setShowAllMetrics] = useState(false);
   const [transitionArm, setTransitionArm] = useState("");
-  const usesAllTime = isAllTime(range, appliedCustom);
+  const [filters, setFilters] = useState(NO_FILTERS);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const filtered = filterCount(filters) > 0;
+  // The preloaded all-time summary is only reused without filters.
+  const usesAllTime = isAllTime(range, appliedCustom) && !filtered;
 
   useEffect(() => {
     if (usesAllTime) return undefined;
     let cancelled = false;
     setWindowed((current) => ({ ...current, isLoading: true, error: "" }));
-    Promise.resolve(getStudyAnalyticsSummary(study.study_id, windowFor(range, appliedCustom))).then((result) => {
+    const request = { ...windowFor(range, appliedCustom), ...(filtered ? filters : {}) };
+    Promise.resolve(getStudyAnalyticsSummary(study.study_id, request)).then((result) => {
       if (cancelled) return;
       if (result && result.ok) setWindowed({ isLoading: false, error: "", data: result.data });
       else setWindowed({ isLoading: false, error: (result && result.error) || "Study analytics could not be loaded.", data: null });
@@ -104,7 +118,7 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
     return () => {
       cancelled = true;
     };
-  }, [usesAllTime, study.study_id, range, appliedCustom, refreshToken, reloadCount]);
+  }, [usesAllTime, study.study_id, range, appliedCustom, refreshToken, reloadCount, filtered, filters]);
 
   const state = usesAllTime ? allTime || LOADING : windowed;
   const refresh = () => {
@@ -126,8 +140,19 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
   };
 
   const data = state.data;
-  const arms = useMemo(() => armsForStudy(study, data?.arms || []), [study, data]);
   const armById = useMemo(() => new Map((data?.arms || []).map((arm) => [arm.profile_id, arm])), [data]);
+  // While filtering, arms without a selected participant drop out (colours
+  // stay with their arm because they come from the full study list).
+  const arms = useMemo(() => {
+    const all = armsForStudy(study, data?.arms || []);
+    return filtered ? all.filter((arm) => Number(armById.get(arm.profile_id)?.participants ?? 1) > 0) : all;
+  }, [study, data, filtered, armById]);
+  const filterOptions = data?.filter_options || allTime?.data?.filter_options || null;
+  const singleParticipant =
+    filters.participants.length === 1
+      ? (filterOptions?.participants || []).find((row) => row.enrollment_id === filters.participants[0]) || null
+      : null;
+  const singleArm = singleParticipant ? armsForStudy(study, data?.arms || []).find((arm) => arm.profile_id === singleParticipant.profile_id) : null;
   const legendItems = arms.map((arm) => ({ key: arm.profile_id, label: arm.name, color: arm.color }));
 
   const totals = data?.totals || {};
@@ -142,7 +167,12 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
     values: Object.fromEntries(arms.map((arm) => [arm.profile_id, Number(day.by_arm?.[arm.profile_id]?.prompts) || 0])),
   }));
 
-  const metricKeys = showAllMetrics ? METRICS.map((metric) => metric.key) : KEY_METRICS;
+  const chatHistory = data?.chat_history || { by_ordinal: [], by_previous_end: [] };
+  // Every arm of the study, so a filter that matches nobody still shows names.
+  const armName = (profileId) =>
+    armsForStudy(study, data?.arms || []).find((arm) => arm.profile_id === profileId)?.name ||
+    (filterOptions?.arms || []).find((arm) => arm.profile_id === profileId)?.name ||
+    profileId;
 
   const shareCategories = (field, order, labels) => {
     const keys = orderedKeys(
@@ -213,6 +243,56 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
 
   const tools = Array.isArray(data?.tools) ? data.tools : [];
 
+  const metricCard = (key) => {
+    const metric = METRIC_BY_KEY[key];
+    const armStats = arms.map((arm) => {
+      const stats = armById.get(arm.profile_id)?.metrics?.[key] || {};
+      return {
+        key: arm.profile_id,
+        label: arm.name,
+        color: arm.color,
+        values: Array.isArray(stats.values) ? stats.values : [],
+        n: stats.n,
+        median: stats.median,
+        p25: stats.p25,
+        p75: stats.p75,
+        mean: stats.mean,
+      };
+    });
+    return (
+      <ChartCard
+        key={key}
+        title={metric.label}
+        subtitle={metric.help}
+        table={
+          <DataTable
+            caption={metric.label}
+            columns={[
+              { key: "label", label: "Arm" },
+              { key: "n", label: "n", numeric: true, render: (row) => formatNumber(row.n ?? row.values.length) },
+              { key: "median", label: "Median", numeric: true, render: (row) => formatMetric(key, row.median) },
+              { key: "p25", label: "P25", numeric: true, render: (row) => formatMetric(key, row.p25) },
+              { key: "p75", label: "P75", numeric: true, render: (row) => formatMetric(key, row.p75) },
+              { key: "mean", label: "Mean", numeric: true, render: (row) => formatMetric(key, row.mean) },
+            ]}
+            rows={armStats}
+          />
+        }
+      >
+        <ArmStripPlot arms={armStats} format={(value) => formatMetric(key, value)} />
+      </ChartCard>
+    );
+  };
+
+  const chatGroupColumns = [
+    { key: "participants", label: "Participants", numeric: true, render: (row) => formatNumber(row.participants) },
+    { key: "chats", label: "Chats", numeric: true, render: (row) => formatNumber(row.chats) },
+    { key: "prompts_per_chat", label: "Prompts / chat", numeric: true, render: (row) => formatMetric("prompts_per_chat", row.prompts_per_chat) },
+    { key: "cancel_rate", label: "Interrupted / prompt", numeric: true, render: (row) => formatMetric("cancel_rate", row.cancel_rate) },
+    { key: "rejections", label: "Rejections / prompt", numeric: true, render: (row) => formatNumber(row.rejections_per_prompt, { maximumFractionDigits: 2 }) },
+    { key: "revisions", label: "Revise chosen / prompt", numeric: true, render: (row) => formatNumber(row.revisions_per_prompt, { maximumFractionDigits: 2 }) },
+  ];
+
   return (
     <div className="ui-stack study-analytics">
       <div className="ui-toolbar study-analytics-filters">
@@ -243,11 +323,47 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
             </button>
           </form>
         ) : null}
+        <AnalyticsFilters
+          options={filterOptions}
+          value={filters}
+          onApply={(next) => {
+            setFilters(next);
+            setDashboardOpen(false);
+          }}
+          disabled={state.isLoading}
+        />
         <button type="button" className="secondary-button button-sm" onClick={refresh} disabled={state.isLoading} style={{ marginLeft: "auto" }}>
           <Icon name="refresh" size={14} />
           Refresh
         </button>
+        <button type="button" className="secondary-button button-sm" onClick={() => setExportOpen(true)}>
+          <Icon name="external" size={14} />
+          Export data
+        </button>
       </div>
+
+      {filtered ? (
+        <div className="analytics-filter-summary" role="status">
+          <span className="ui-subtle">
+            Showing {formatNumber(data?.filters?.matched_participants ?? 0)} participant
+            {(data?.filters?.matched_participants ?? 0) === 1 ? "" : "s"}
+            {filters.arms.length ? ` in ${filters.arms.map(armName).join(", ")}` : ""}
+            {filters.participants.length
+              ? ` (${(data?.filters?.participants || []).map((row) => row.participant_code).join(", ")})`
+              : ""}
+            .
+          </span>
+          {singleParticipant ? (
+            <button type="button" className="secondary-button button-sm" onClick={() => setDashboardOpen(true)}>
+              <Icon name="user" size={14} />
+              Open participant dashboard
+            </button>
+          ) : null}
+          <button type="button" className="ghost-button button-sm" onClick={() => setFilters(NO_FILTERS)}>
+            Clear filters
+          </button>
+        </div>
+      ) : null}
 
       {range === "custom" && customError ? (
         <p className="research-error" role="alert">
@@ -308,195 +424,176 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
             </Card>
           ) : null}
 
-          <ChartCard
-            title="Prompts per day by arm"
-            subtitle="Stacked by assigned arm (UTC days)"
-            legend={legendItems.length > 1 ? <Legend items={legendItems} /> : null}
-            table={
-              <DataTable
-                caption="Prompts per day by arm"
-                columns={[
-                  { key: "date", label: "Date" },
-                  { key: "active", label: "Active participants", numeric: true },
-                  ...arms.map((arm) => ({
-                    key: arm.profile_id,
-                    label: arm.name,
-                    numeric: true,
-                    render: (row) => formatNumber(row.values[arm.profile_id] || 0),
-                  })),
-                ]}
-                rows={daily.map((day, index) => ({
-                  key: day.date,
-                  date: days[index].fullLabel,
-                  active: formatNumber(day.active_participants),
-                  values: days[index].values,
-                }))}
-              />
-            }
-          >
-            <DailyColumns days={days} series={series} height={200} />
-          </ChartCard>
-
-          <section className="ui-stack-sm">
-            <div className="ui-row-between">
-              <div>
-                <h3 className="ui-card-title">Arm comparison</h3>
-                <p className="ui-card-subtitle">
-                  One dot per participant (the randomisation unit); the dark tick marks the median, the shaded band the
-                  interquartile range.
-                </p>
-              </div>
-              <button type="button" className="secondary-button button-sm" onClick={() => setShowAllMetrics((value) => !value)}>
-                {showAllMetrics ? "Show key metrics" : `Show all ${METRICS.length} metrics`}
-              </button>
-            </div>
-            {legendItems.length > 1 ? <Legend items={legendItems} /> : null}
-            <div className="study-chart-grid is-wide">
-              {metricKeys.map((key) => {
-                const metric = METRIC_BY_KEY[key];
-                const armStats = arms.map((arm) => {
-                  const stats = armById.get(arm.profile_id)?.metrics?.[key] || {};
-                  return {
-                    key: arm.profile_id,
-                    label: arm.name,
-                    color: arm.color,
-                    values: Array.isArray(stats.values) ? stats.values : [],
-                    n: stats.n,
-                    median: stats.median,
-                    p25: stats.p25,
-                    p75: stats.p75,
-                    mean: stats.mean,
-                  };
-                });
-                return (
-                  <ChartCard
-                    key={key}
-                    title={metric.label}
-                    subtitle={metric.help}
-                    table={
-                      <DataTable
-                        caption={metric.label}
-                        columns={[
-                          { key: "label", label: "Arm" },
-                          { key: "n", label: "n", numeric: true, render: (row) => formatNumber(row.n ?? row.values.length) },
-                          { key: "median", label: "Median", numeric: true, render: (row) => formatMetric(key, row.median) },
-                          { key: "p25", label: "P25", numeric: true, render: (row) => formatMetric(key, row.p25) },
-                          { key: "p75", label: "P75", numeric: true, render: (row) => formatMetric(key, row.p75) },
-                          { key: "mean", label: "Mean", numeric: true, render: (row) => formatMetric(key, row.mean) },
-                        ]}
-                        rows={armStats}
-                      />
-                    }
-                  >
-                    <ArmStripPlot arms={armStats} format={(value) => formatMetric(key, value)} />
-                  </ChartCard>
-                );
-              })}
-            </div>
-          </section>
-
-          <div className="study-chart-grid">
+          <CollapsibleSection id="activity" title="Activity over time" subtitle="Prompts per day by arm" defaultOpen storageKey={SECTIONS_KEY}>
             <ChartCard
-              title="Tool mix by arm"
-              subtitle="Share of tool calls per ACP kind"
-              legend={kindCategories.length ? <Legend items={kindCategories} /> : null}
-              table={shareTable(kindCategories, shareRows("tool_kinds", "tool_kind", "calls"))}
-            >
-              <ShareBars rows={shareRows("tool_kinds", "tool_kind", "calls")} categories={kindCategories} emptyText="No tool calls yet." />
-            </ChartCard>
-            <ChartCard
-              title="How turns ended"
-              subtitle="Agent stop reasons per arm"
-              legend={stopCategories.length ? <Legend items={stopCategories} /> : null}
-              table={shareTable(stopCategories, shareRows("stop_reasons", "stop_reason", "count"))}
-            >
-              <ShareBars rows={shareRows("stop_reasons", "stop_reason", "count")} categories={stopCategories} emptyText="No completed turns yet." />
-            </ChartCard>
-            <ChartCard
-              title="Approval decisions"
-              subtitle="Permission requests per arm"
-              legend={decisionCategories.length ? <Legend items={decisionCategories} /> : null}
-              table={shareTable(decisionCategories, shareRows("permission_decisions", "decision", "count"))}
-            >
-              <ShareBars
-                rows={shareRows("permission_decisions", "decision", "count")}
-                categories={decisionCategories}
-                emptyText="No approvals requested."
-              />
-            </ChartCard>
-          </div>
-
-          <div className="study-chart-grid is-wide">
-            <ChartCard
-              title="Context cap compliance"
-              subtitle="Provider-reported prompt tokens per model call vs. each arm's max context tokens"
+              title="Prompts per day by arm"
+              subtitle="Stacked by assigned arm (UTC days)"
+              legend={legendItems.length > 1 ? <Legend items={legendItems} /> : null}
               table={
                 <DataTable
-                  caption="Context cap compliance"
+                  caption="Prompts per day by arm"
                   columns={[
-                    { key: "label", label: "Arm" },
-                    { key: "cap", label: "Cap", numeric: true, render: (row) => formatNumber(row.cap) },
-                    { key: "calls", label: "Model calls", numeric: true, render: (row) => formatNumber(row.context.model_calls) },
-                    { key: "p50", label: "P50", numeric: true, render: (row) => formatNumber(row.context.prompt_tokens_p50) },
-                    { key: "p95", label: "P95", numeric: true, render: (row) => formatNumber(row.context.prompt_tokens_p95) },
-                    { key: "max", label: "Max", numeric: true, render: (row) => formatNumber(row.context.prompt_tokens_max) },
-                    { key: "over", label: "Over cap", numeric: true, render: (row) => formatNumber(row.context.over_cap_calls) },
+                    { key: "date", label: "Date" },
+                    { key: "active", label: "Active participants", numeric: true },
+                    ...arms.map((arm) => ({
+                      key: arm.profile_id,
+                      label: arm.name,
+                      numeric: true,
+                      render: (row) => formatNumber(row.values[arm.profile_id] || 0),
+                    })),
                   ]}
-                  rows={contextRows}
+                  rows={daily.map((day, index) => ({
+                    key: day.date,
+                    date: days[index].fullLabel,
+                    active: formatNumber(day.active_participants),
+                    values: days[index].values,
+                  }))}
                 />
               }
             >
-              {anyContext ? (
-                <>
-                  <CapBullet rows={contextRows} />
-                  <p className="ui-hint">
-                    Bar: 95th percentile · thin line: maximum · red marker: the arm's cap. Built-in and Goose arms route
-                    model calls through the metered relay; Codex signs in with ChatGPT and bypasses it, so it cannot be
-                    observed here.
-                  </p>
-                </>
-              ) : (
-                <p className="viz-empty">No relay-observed model calls yet.</p>
-              )}
+              <DailyColumns days={days} series={series} height={200} />
             </ChartCard>
+          </CollapsibleSection>
 
-            <ChartCard
-              title="Tool transitions"
-              subtitle="Consecutive tool kinds within a turn (count); hover for the lift"
-              actions={
-                arms.length > 1 ? (
-                  <select
-                    className="ui-select"
-                    value={selectedTransitionArm}
-                    onChange={(event) => setTransitionArm(event.target.value)}
-                    aria-label="Arm for tool transitions"
-                    style={{ width: "auto", minHeight: 30, paddingTop: 4, paddingBottom: 4 }}
-                  >
-                    {arms.map((arm) => (
-                      <option key={arm.profile_id} value={arm.profile_id}>
-                        {arm.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : null
-              }
-            >
-              <Heatmap
-                rowsLabel="From"
-                columnsLabel="to"
-                keys={transitionKeys}
-                cells={transitions.map((cell) => ({
-                  from: cell.from,
-                  to: cell.to,
-                  value: cell.count,
-                  detail: cell.lift === null || cell.lift === undefined ? null : `lift ${formatNumber(cell.lift, { maximumFractionDigits: 2 })}`,
-                }))}
-              />
-            </ChartCard>
-          </div>
+          <section className="ui-stack-sm" aria-label="Arm comparison">
+            <div>
+              <h3 className="ui-card-title">Arm comparison</h3>
+              <p className="ui-card-subtitle">
+                One dot per participant (the randomisation unit); the dark tick marks the median, the shaded band the
+                interquartile range. Open a category to see its metrics.
+              </p>
+            </div>
+            {legendItems.length > 1 ? <Legend items={legendItems} /> : null}
+            {METRIC_CATEGORIES.map((category) => (
+              <CollapsibleSection
+                key={category.key}
+                id={`metrics-${category.key}`}
+                title={category.label}
+                subtitle={category.help}
+                defaultOpen={category.defaultOpen}
+                storageKey={SECTIONS_KEY}
+              >
+                <div className="study-chart-grid is-wide">{metricsInCategory(category.key).map((metric) => metricCard(metric.key))}</div>
+              </CollapsibleSection>
+            ))}
+          </section>
+
+          <CollapsibleSection
+            id="behaviour"
+            title="Behaviour mix"
+            subtitle="Tool kinds, how turns ended and approval decisions per arm"
+            storageKey={SECTIONS_KEY}
+          >
+            <div className="study-chart-grid">
+              <ChartCard
+                title="Tool mix by arm"
+                subtitle="Share of tool calls per ACP kind"
+                legend={kindCategories.length ? <Legend items={kindCategories} /> : null}
+                table={shareTable(kindCategories, shareRows("tool_kinds", "tool_kind", "calls"))}
+              >
+                <ShareBars rows={shareRows("tool_kinds", "tool_kind", "calls")} categories={kindCategories} emptyText="No tool calls yet." />
+              </ChartCard>
+              <ChartCard
+                title="How turns ended"
+                subtitle="Agent stop reasons per arm"
+                legend={stopCategories.length ? <Legend items={stopCategories} /> : null}
+                table={shareTable(stopCategories, shareRows("stop_reasons", "stop_reason", "count"))}
+              >
+                <ShareBars rows={shareRows("stop_reasons", "stop_reason", "count")} categories={stopCategories} emptyText="No completed turns yet." />
+              </ChartCard>
+              <ChartCard
+                title="Approval decisions"
+                subtitle="Permission requests per arm"
+                legend={decisionCategories.length ? <Legend items={decisionCategories} /> : null}
+                table={shareTable(decisionCategories, shareRows("permission_decisions", "decision", "count"))}
+              >
+                <ShareBars
+                  rows={shareRows("permission_decisions", "decision", "count")}
+                  categories={decisionCategories}
+                  emptyText="No approvals requested."
+                />
+              </ChartCard>
+            </div>
+          </CollapsibleSection>
+
+          <CollapsibleSection
+            id="context"
+            title="Context and tool transitions"
+            subtitle="Context-window use against each arm's cap, and which tools follow which"
+            storageKey={SECTIONS_KEY}
+          >
+            <div className="study-chart-grid is-wide">
+              <ChartCard
+                title="Context cap compliance"
+                subtitle="Provider-reported prompt tokens per model call vs. each arm's max context tokens"
+                table={
+                  <DataTable
+                    caption="Context cap compliance"
+                    columns={[
+                      { key: "label", label: "Arm" },
+                      { key: "cap", label: "Cap", numeric: true, render: (row) => formatNumber(row.cap) },
+                      { key: "calls", label: "Model calls", numeric: true, render: (row) => formatNumber(row.context.model_calls) },
+                      { key: "p50", label: "P50", numeric: true, render: (row) => formatNumber(row.context.prompt_tokens_p50) },
+                      { key: "p95", label: "P95", numeric: true, render: (row) => formatNumber(row.context.prompt_tokens_p95) },
+                      { key: "max", label: "Max", numeric: true, render: (row) => formatNumber(row.context.prompt_tokens_max) },
+                      { key: "over", label: "Over cap", numeric: true, render: (row) => formatNumber(row.context.over_cap_calls) },
+                    ]}
+                    rows={contextRows}
+                  />
+                }
+              >
+                {anyContext ? (
+                  <>
+                    <CapBullet rows={contextRows} />
+                    <p className="ui-hint">
+                      Bar: 95th percentile · thin line: maximum · red marker: the arm's cap. Built-in and Goose arms route
+                      model calls through the metered relay; Codex signs in with ChatGPT and bypasses it, so it cannot be
+                      observed here.
+                    </p>
+                  </>
+                ) : (
+                  <p className="viz-empty">No relay-observed model calls yet.</p>
+                )}
+              </ChartCard>
+
+              <ChartCard
+                title="Tool transitions"
+                subtitle="Consecutive tool kinds within a turn (count); hover for the lift"
+                actions={
+                  arms.length > 1 ? (
+                    <select
+                      className="ui-select"
+                      value={selectedTransitionArm}
+                      onChange={(event) => setTransitionArm(event.target.value)}
+                      aria-label="Arm for tool transitions"
+                      style={{ width: "auto", minHeight: 30, paddingTop: 4, paddingBottom: 4 }}
+                    >
+                      {arms.map((arm) => (
+                        <option key={arm.profile_id} value={arm.profile_id}>
+                          {arm.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null
+                }
+              >
+                <Heatmap
+                  rowsLabel="From"
+                  columnsLabel="to"
+                  keys={transitionKeys}
+                  cells={transitions.map((cell) => ({
+                    from: cell.from,
+                    to: cell.to,
+                    value: cell.count,
+                    detail: cell.lift === null || cell.lift === undefined ? null : `lift ${formatNumber(cell.lift, { maximumFractionDigits: 2 })}`,
+                  }))}
+                />
+              </ChartCard>
+            </div>
+          </CollapsibleSection>
 
           {tools.length ? (
-            <Card title="Most used tools" subtitle="Across the study, with calls per arm">
+            <CollapsibleSection id="tools" title="Most used tools" subtitle="Across the study, with calls per arm" storageKey={SECTIONS_KEY}>
               <DataTable
                 caption="Most used tools"
                 columns={[
@@ -518,10 +615,59 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
                 ]}
                 rows={tools.map((tool, index) => ({ ...tool, key: `${tool.tool_name}-${tool.tool_kind}-${index}` }))}
               />
-            </Card>
+            </CollapsibleSection>
           ) : null}
 
-          <Card title="Data coverage and method" subtitle="Read the comparisons with these limits in mind.">
+          <CollapsibleSection
+            id="chat-history"
+            title="Chat history"
+            subtitle="Do earlier chats relate to later ones? Chats by their number and by how the previous chat ended"
+            storageKey={SECTIONS_KEY}
+          >
+            {chatHistory.by_ordinal.length ? (
+              <div className="ui-stack">
+                <DataTable
+                  caption="Chats by their number in each participant's history"
+                  columns={[
+                    { key: "arm", label: "Arm", render: (row) => armName(row.profile_id) },
+                    { key: "bucket", label: "Chat #", render: (row) => (row.bucket === "4+" ? "4th and later" : `#${row.bucket}`) },
+                    ...chatGroupColumns,
+                  ]}
+                  rows={chatHistory.by_ordinal.map((row) => ({ ...row, key: `${row.profile_id}-${row.bucket}` }))}
+                />
+                {chatHistory.by_previous_end.length ? (
+                  <DataTable
+                    caption="Chats by how the participant's previous chat ended"
+                    columns={[
+                      { key: "arm", label: "Arm", render: (row) => armName(row.profile_id) },
+                      {
+                        key: "previous",
+                        label: "Previous chat",
+                        render: (row) => CHAT_END_LABELS[row.previous_end_reason] || humanize(row.previous_end_reason),
+                      },
+                      ...chatGroupColumns,
+                    ]}
+                    rows={chatHistory.by_previous_end.map((row) => ({ ...row, key: `${row.profile_id}-${row.previous_end_reason}` }))}
+                  />
+                ) : null}
+                <p className="ui-hint">
+                  Pooled over chats and descriptive. Chat numbers count from the start of the selected range. IntelliJ
+                  has no explicit delete signal: it ends a chat's agent process when the chat is deleted from its
+                  history, and also when the IDE closes.
+                </p>
+              </div>
+            ) : (
+              <p className="viz-empty">No chats observed yet (they need chat ids from the participant proxy).</p>
+            )}
+          </CollapsibleSection>
+
+          <CollapsibleSection
+            id="coverage"
+            title="Data coverage and method"
+            subtitle="Read the comparisons with these limits in mind."
+            defaultOpen
+            storageKey={SECTIONS_KEY}
+          >
             <div className="ui-row">
               {Object.entries(data.coverage || {}).map(([key, value]) => (
                 <span key={key} className={`ui-badge ui-badge-${COVERAGE_TONE[value] || "neutral"}`}>
@@ -538,13 +684,43 @@ const StudyAnalytics = ({ study, allTime, onReloadAllTime, refreshToken = 0 }) =
                 intent need additional instrumentation.
               </li>
             </ul>
-          </Card>
+          </CollapsibleSection>
         </div>
       ) : null}
 
       {!data && !state.isLoading && !state.error ? (
         <Alert tone="info">No analytics available for this study.</Alert>
       ) : null}
+
+      <Drawer
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        title="Export study data"
+        subtitle="A ZIP of CSV or JSONL files with a manifest and data dictionary"
+      >
+        {exportOpen ? <StudyExportPanel study={study} filters={filters} /> : null}
+      </Drawer>
+
+      <Drawer
+        open={Boolean(dashboardOpen && singleParticipant)}
+        onClose={() => setDashboardOpen(false)}
+        title={singleParticipant ? `Participant ${singleParticipant.participant_code}` : ""}
+        subtitle={singleArm ? singleArm.name : null}
+      >
+        {dashboardOpen && singleParticipant ? (
+          <ParticipantDashboard
+            studyId={study.study_id}
+            participant={{
+              enrollment_id: singleParticipant.enrollment_id,
+              participant_code: singleParticipant.participant_code,
+              status: singleParticipant.status,
+              arm: singleArm ? { profile_id: singleArm.profile_id, name: singleArm.name } : null,
+            }}
+            color={singleArm?.color || "var(--viz-1)"}
+            canAdjustBudget={false}
+          />
+        ) : null}
+      </Drawer>
     </div>
   );
 };

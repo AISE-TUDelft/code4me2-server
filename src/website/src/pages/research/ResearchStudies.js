@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   applyStudyDefaultBudget,
-  cloneResearchStudy,
   createResearchStudy,
   engageResearchKillSwitch,
   getAgentProfiles,
@@ -76,7 +75,7 @@ const ResearchStudies = () => {
   const [selectedStudyId, setSelectedStudyId] = useState(params.studyId || "");
   const [activeTab, setActiveTab] = useState(TABS.includes(searchParams.get("tab")) ? searchParams.get("tab") : "overview");
   const [isCreating, setIsCreating] = useState(false);
-  // Non-null while the create form is acting as the clone submission step.
+  // Non-null while the create form is duplicating this study.
   const [cloneSource, setCloneSource] = useState(null);
   const [profiles, setProfiles] = useState([]);
   const [isBusy, setIsBusy] = useState(false);
@@ -311,9 +310,8 @@ const ResearchStudies = () => {
     setCreateBudgetError("");
   };
 
-  // Opens the create form prefilled from the stopped source. The clone
-  // endpoint copies the stored configuration and accepts only new profile
-  // selections, so the copied fields are shown for reference.
+  // Opens the create form prefilled from the selected study (any status);
+  // every field stays editable and the duplicate is created like a new study.
   const openCloneForm = () => {
     if (!selectedStudy) return;
     setCloneSource(selectedStudy);
@@ -325,29 +323,19 @@ const ResearchStudies = () => {
   };
 
   const handleCreate = async (form) => {
-    if (cloneSource && form.profileIds.length === 0) {
-      setError("Select at least one agent profile; a clone without profile selections cannot be joined.");
-      return;
-    }
     const source = cloneSource;
     setIsBusy(true);
     setError("");
     setNotice("");
     setCreateBudgetError("");
-    const result = source
-      ? await cloneResearchStudy(source.study_id, {
-          profileIds: form.profileIds,
-          // Omitted, the clone keeps the source study's default budget.
-          ...(form.defaultBudgetUsd ? { defaultBudgetUsd: form.defaultBudgetUsd } : {}),
-        })
-      : await createResearchStudy(form);
+    const result = await createResearchStudy(form);
     if (result && result.ok) {
       setIsCreating(false);
       setCloneSource(null);
       const created = result.data?.study || result.data;
       if (source) {
         setNotice(
-          "Clone created in Draft state with the selected agent profiles. Name, description, schedule, telemetry policy, and session policy were copied; participants, consent, assignments, telemetry data, join code, and study ID were not.",
+          `Duplicate of “${source.name}” created in Draft state. Participants, consent records, assignments, telemetry data and the join code were not copied.`,
         );
       } else {
         setNotice("Study created in Draft state.");
@@ -358,10 +346,13 @@ const ResearchStudies = () => {
     } else if (result && CREATE_BUDGET_CODES.includes(result.code)) {
       // A typed budget failure belongs on the budget field, not the banner.
       setCreateBudgetError(result.error || "The default budget per participant is invalid.");
-    } else if (result && (result.code === "SESSION_POLICY_INVALID" || result.code === "TELEMETRY_POLICY_INVALID")) {
-      setError(`${result.code}: ${result.error || "invalid policy"}`);
+    } else if (
+      result &&
+      ["SESSION_POLICY_INVALID", "TELEMETRY_POLICY_INVALID", "CONSENT_INVALID"].includes(result.code)
+    ) {
+      setError(`${result.code}: ${result.error || "invalid configuration"}`);
     } else {
-      setError((result && result.error) || (source ? "Study could not be cloned." : "Study could not be created."));
+      setError((result && result.error) || (source ? "Study could not be duplicated." : "Study could not be created."));
     }
     setIsBusy(false);
   };
@@ -693,12 +684,10 @@ const ResearchStudies = () => {
                     All studies
                   </button>
                 ) : null}
-                {selectedStudy.research_status === "STUDY_STOPPED" ? (
-                  <button type="button" className="primary-button" onClick={openCloneForm} disabled={isBusy}>
-                    <Icon name="copy" size={15} />
-                    Clone as new Draft
-                  </button>
-                ) : null}
+                <button type="button" className="secondary-button" onClick={openCloneForm} disabled={isBusy}>
+                  <Icon name="copy" size={15} />
+                  Duplicate
+                </button>
               </div>
             </div>
 

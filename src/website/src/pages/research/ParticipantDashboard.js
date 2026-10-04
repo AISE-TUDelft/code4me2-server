@@ -11,7 +11,9 @@ import {
   formatPercent,
   humanize,
 } from "../../utils/format";
+import ChatTrace from "./ChatTrace";
 import {
+  CHAT_END_LABELS,
   DECISION_LABELS,
   DECISION_ORDER,
   STOP_REASON_LABELS,
@@ -73,6 +75,24 @@ const EVENT_LABELS = {
   "system.proxy.error": "Proxy error",
 };
 
+// Chat lifecycle (research.telemetry.chat_lifecycle) refines two generic types.
+const CHAT_METHOD_LABELS = {
+  "session/new": "Chat opened",
+  "session/fork": "Chat forked",
+  "session/load": "Chat reopened",
+  "session/resume": "Chat resumed",
+  "session/close": "Chat closed",
+  "session/delete": "Chat deleted",
+};
+
+const CHAT_START_KINDS = { new: "New", fork: "Forked", load: "Reopened", resume: "Resumed", unknown: "—" };
+
+export const eventLabel = (event) => {
+  if (event.end_reason) return "Chat ended";
+  if (event.acp_method && CHAT_METHOD_LABELS[event.acp_method]) return CHAT_METHOD_LABELS[event.acp_method];
+  return EVENT_LABELS[event.event_type] || event.event_type;
+};
+
 const eventTone = (event) => {
   const type = String(event.event_type || "");
   if (type.includes("error") || type.includes("crashed") || type === "tool.failed" || event.status === "failed") return "danger";
@@ -119,6 +139,8 @@ const ParticipantDashboard = ({
 }) => {
   const [state, setState] = useState({ isLoading: true, error: "", data: null });
   const [showAllTurns, setShowAllTurns] = useState(false);
+  // The chat whose trace replaces the dashboard (Back returns to it).
+  const [traceChat, setTraceChat] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -165,6 +187,12 @@ const ParticipantDashboard = ({
     );
   }
 
+  if (traceChat) {
+    return (
+      <ChatTrace studyId={studyId} enrollmentId={participant.enrollment_id} chat={traceChat} onBack={() => setTraceChat(null)} />
+    );
+  }
+
   const data = state.data || {};
   const metrics = data.metrics || {};
   const enrollment = ENROLLMENT_STATUS[data.status || participant.status] || { label: data.status || "Unknown", tone: "neutral" };
@@ -173,6 +201,11 @@ const ParticipantDashboard = ({
   const turns = Array.isArray(data.turns) ? data.turns : [];
   const sessions = Array.isArray(data.sessions_list) ? data.sessions_list : [];
   const timeline = Array.isArray(data.timeline) ? data.timeline : [];
+  const chats = Array.isArray(data.chats) ? data.chats : [];
+  // Chats the IDE opened without a prompt are listed apart (no number).
+  const usedChats = chats.filter((chat) => chat.used !== false);
+  const unusedChats = chats.filter((chat) => chat.used === false);
+  const chatSummary = data.chat_summary || null;
   const toolKinds = Array.isArray(data.tool_kinds) ? data.tool_kinds : [];
   const tools = Array.isArray(data.tools) ? data.tools : [];
   const stopReasons = Array.isArray(data.stop_reasons) ? data.stop_reasons : [];
@@ -401,6 +434,79 @@ const ParticipantDashboard = ({
         </Card>
       ) : null}
 
+      {chats.length ? (
+        <Card
+          title="Chats"
+          subtitle="Each chat with a prompt, in the order the participant opened it. Open a trace to read the turns: prompts, reasoning and tool calls."
+        >
+          <DataTable
+            caption="Chats"
+            columns={[
+              { key: "ordinal", label: "#", numeric: true, render: (row) => formatNumber(row.ordinal) },
+              { key: "started_at", label: "Opened", render: (row) => formatDateTime(row.started_at) },
+              { key: "start_kind", label: "Start", render: (row) => CHAT_START_KINDS[row.start_kind] || humanize(row.start_kind) },
+              { key: "end_reason", label: "Ended", render: (row) => CHAT_END_LABELS[row.end_reason] || humanize(row.end_reason) },
+              { key: "prompts", label: "Prompts", numeric: true, render: (row) => formatNumber(row.prompts) },
+              { key: "tool_calls", label: "Tool calls", numeric: true, render: (row) => formatNumber(row.tool_calls) },
+              { key: "rejections", label: "Rejected", numeric: true, render: (row) => formatNumber(row.rejections) },
+              { key: "revisions", label: "Revise chosen", numeric: true, render: (row) => formatNumber(row.revisions) },
+              {
+                key: "previous",
+                label: "Previous chat",
+                render: (row) => (row.previous_end_reason ? CHAT_END_LABELS[row.previous_end_reason] || humanize(row.previous_end_reason) : "—"),
+              },
+              {
+                key: "trace",
+                label: "Trace",
+                render: (row) => (
+                  <button
+                    type="button"
+                    className="ghost-button button-sm"
+                    onClick={() => setTraceChat(row)}
+                    aria-label={`View trace of chat ${row.ordinal}`}
+                  >
+                    View trace
+                  </button>
+                ),
+              },
+            ]}
+            rows={usedChats.map((chat) => ({ ...chat, key: chat.chat_id }))}
+          />
+          {unusedChats.length ? (
+            <details className="research-advanced">
+              <summary>
+                {formatNumber(unusedChats.length)} more chat{unusedChats.length === 1 ? "" : "s"} opened without a prompt
+              </summary>
+              <p className="ui-hint">
+                IntelliJ also starts the agent for a chat it only creates or shows, such as a new empty chat or the chat
+                it switches to after one is deleted. These are not numbered or counted in the chat metrics.
+              </p>
+              <DataTable
+                caption="Chats without a prompt"
+                columns={[
+                  { key: "started_at", label: "Opened", render: (row) => formatDateTime(row.started_at) },
+                  { key: "start_kind", label: "Start", render: (row) => CHAT_START_KINDS[row.start_kind] || humanize(row.start_kind) },
+                  { key: "end_reason", label: "Ended", render: (row) => CHAT_END_LABELS[row.end_reason] || humanize(row.end_reason) },
+                ]}
+                rows={unusedChats.map((chat) => ({ ...chat, key: chat.chat_id }))}
+              />
+            </details>
+          ) : null}
+          {chatSummary && chatSummary.lifecycle_coverage !== "AVAILABLE" ? (
+            <p className="ui-hint">
+              Some chats come from an older plugin that did not report when chats start and end; their start and end
+              show as “—” or “Unknown”.
+            </p>
+          ) : null}
+          {chatSummary && chatSummary.unattributed_prompts ? (
+            <p className="ui-hint">
+              {formatNumber(chatSummary.unattributed_prompts)} prompt{chatSummary.unattributed_prompts === 1 ? "" : "s"} carried no
+              chat id and {chatSummary.unattributed_prompts === 1 ? "is" : "are"} not in this list.
+            </p>
+          ) : null}
+        </Card>
+      ) : null}
+
       {timeline.length ? (
         <Card title="Activity timeline" subtitle="Most recent events, metadata only (no prompt or code content).">
           <ol className="participant-timeline">
@@ -408,7 +514,7 @@ const ParticipantDashboard = ({
               <li key={`${event.occurred_at}-${index}`}>
                 <span className={`timeline-dot tone-${eventTone(event)}`} aria-hidden="true" />
                 <span className="timeline-time ui-num">{formatDateTime(event.occurred_at)}</span>
-                <span className="timeline-label">{EVENT_LABELS[event.event_type] || event.event_type}</span>
+                <span className="timeline-label">{eventLabel(event)}</span>
                 <span className="timeline-detail ui-muted">{eventDetail(event)}</span>
               </li>
             ))}

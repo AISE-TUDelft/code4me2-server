@@ -175,6 +175,8 @@ def test_create_study_starts_draft_with_study_owned_join_code_and_config():
             "heartbeat_seconds": 30,
         },
         "profile_ids": [str(profile_id)],
+        # Every new study freezes the salted-hash assignment policy.
+        "assignment": {"strategy": "DETERMINISTIC_HASH", "manual_override": False},
     }
     assert create.call_args.kwargs["join_code"] == "ABCD1234"
 

@@ -99,7 +99,8 @@ class AssignmentPolicy(BaseModel):
     """Legacy authoring policy retained only for protocol validation compatibility.
 
     Active runtime assignment uses immutable study profile selections and the
-    ``RANDOM_EQUAL`` strategy in ``research.runtime.assignment``.
+    study's frozen ``assignment`` policy (``DETERMINISTIC_HASH``, or
+    ``RANDOM_EQUAL`` for older studies) in ``research.runtime.assignment``.
     """
 
     model_config = _BASE_CONFIG

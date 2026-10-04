@@ -8,6 +8,12 @@ from typing import Any, Protocol
 class ApprovalDecision:
     decision: str
     scope: str = "none"
+    # Set only when the user picked "Revise…": the ACP form's outcome
+    # ("accept", "decline", "cancel" or "error"), and for an accepted form
+    # (decision "revised") the indexes of the hunks to keep and what should change.
+    elicitation_action: str | None = None
+    kept_hunks: tuple[int, ...] = ()
+    instructions: str = ""
 
     @property
     def accepted(self) -> bool:

@@ -331,3 +331,100 @@ test("Codex participants keep their ChatGPT sign-in and see no budget tile", asy
   expect(screen.getByText(/sign in with your ChatGPT account/)).toBeInTheDocument();
   expect(screen.queryByText("Budget remaining")).not.toBeInTheDocument();
 });
+
+test("a custom consent form needs its required statements and sends the reviewed version", async () => {
+  const consent = {
+    custom: true,
+    document: "About this study\nContact: https://example.org/contact",
+    notice: "The platform records metadata.",
+    statements: [
+      { id: "participate", text: "I agree to take part.", required: true },
+      { id: "future-use", text: "My data may be reused.", required: false },
+    ],
+    digest: "a".repeat(64),
+  };
+  api.resolveResearchJoinCode.mockResolvedValue({
+    ok: true,
+    data: { study: { studyId: "study-1", name: "Consent study" }, consentText: consent.notice, consent },
+  });
+  api.redeemResearchJoinCode.mockResolvedValue({ ok: true, data: { study_id: "study-1", status: "ACTIVE" } });
+
+  renderJoin();
+  fireEvent.change(screen.getByLabelText("Join code"), { target: { value: "JOIN1234" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review study" }));
+
+  expect(await screen.findByText(/About this study/)).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "https://example.org/contact" })).toHaveAttribute("rel", "noopener noreferrer");
+  expect(screen.getByText("What the platform records")).toBeInTheDocument();
+  expect(screen.getByText("The platform records metadata.")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByLabelText(/my data may be reused/i));
+  fireEvent.click(screen.getByRole("button", { name: "Accept and join" }));
+  expect(await screen.findByText(/tick every required consent statement/i)).toBeInTheDocument();
+  expect(api.redeemResearchJoinCode).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByLabelText(/i agree to take part/i));
+  fireEvent.click(screen.getByRole("button", { name: "Accept and join" }));
+  await waitFor(() =>
+    expect(api.redeemResearchJoinCode).toHaveBeenCalledWith("JOIN1234", true, {
+      digest: "a".repeat(64),
+      statements: { participate: true, "future-use": true },
+    }),
+  );
+});
+
+test("a changed consent form is reloaded for review instead of joining", async () => {
+  const version = (digest, document) => ({
+    ok: true,
+    data: {
+      study: { studyId: "study-1", name: "Consent study" },
+      consentText: "notice",
+      consent: { custom: true, document, notice: "notice", statements: [{ id: "ok", text: "I agree.", required: true }], digest },
+    },
+  });
+  api.resolveResearchJoinCode
+    .mockResolvedValueOnce(version("b".repeat(64), "First version"))
+    .mockResolvedValueOnce(version("c".repeat(64), "Second version"));
+  api.redeemResearchJoinCode.mockResolvedValue({ ok: false, status: 409, code: "CONSENT_CHANGED", error: "changed" });
+
+  renderJoin();
+  fireEvent.change(screen.getByLabelText("Join code"), { target: { value: "JOIN1234" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review study" }));
+  fireEvent.click(await screen.findByLabelText("I agree."));
+  fireEvent.click(screen.getByRole("button", { name: "Accept and join" }));
+
+  expect(await screen.findByText("Second version")).toBeInTheDocument();
+  expect(screen.getByText(/consent form has changed/i)).toBeInTheDocument();
+  expect(screen.getByLabelText("I agree.")).not.toBeChecked();
+});
+
+test("my studies shows the consent the participant accepted", async () => {
+  api.getMyResearchEnrollments.mockResolvedValue({
+    ok: true,
+    data: [
+      {
+        enrollment_id: "e-1",
+        study_id: "study-1",
+        status: "ACTIVE",
+        participant_code: "P-1",
+        study: { name: "Consent study" },
+        sessions: {},
+        activity: {},
+        consent: {
+          digest: "d".repeat(64),
+          document: "Accepted document text",
+          notice: "Accepted notice",
+          statements: [{ id: "ok", text: "I agree.", required: true }],
+          answers: { ok: true },
+        },
+      },
+    ],
+  });
+
+  renderJoin({ user: { email: "p@example.com" } }, "/research");
+  fireEvent.click(await screen.findByText("Consent you accepted"));
+  expect(screen.getByText("Accepted document text")).toBeInTheDocument();
+  // A record, not a form: no checkbox on My studies.
+  expect(screen.queryByRole("checkbox")).toBeNull();
+  expect(screen.getByText(/I agree\./).closest("li").querySelector("title").textContent).toBe("Ticked");
+});

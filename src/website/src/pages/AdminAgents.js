@@ -86,7 +86,19 @@ const AdminAgents = () => {
     setIsLoading(true);
     setError("");
     setFieldErrors([]);
-    const response = await listRegisteredReleases();
+    // The catalogue supplies the release version the compact list omits; it is
+    // reloaded with the list, so a release imported just now shows its version.
+    const [response, catalogue] = await Promise.all([
+      listRegisteredReleases(),
+      getReleaseCatalogue(),
+    ]);
+    if (catalogue && catalogue.ok) {
+      const next = {};
+      (catalogue.data || []).forEach((entry) => {
+        next[entry.release_id] = entry.version || "";
+      });
+      setVersions(next);
+    }
     if (response.ok) {
       setReleases(Array.isArray(response.data) ? response.data : []);
     } else {
@@ -98,16 +110,6 @@ const AdminAgents = () => {
 
   useEffect(() => {
     loadReleases();
-    // The catalogue supplies the release version the compact list omits.
-    getReleaseCatalogue().then((response) => {
-      if (response && response.ok) {
-        const next = {};
-        (response.data || []).forEach((entry) => {
-          next[entry.release_id] = entry.version || "";
-        });
-        setVersions(next);
-      }
-    });
   }, []);
 
   const openDetail = async (releaseId) => {

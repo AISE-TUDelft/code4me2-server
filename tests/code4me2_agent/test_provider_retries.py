@@ -271,3 +271,34 @@ def test_null_arguments_are_treated_as_an_empty_object():
 
     calls = _normalize_tool_calls([{"id": "c2", "name": "list_files", "arguments": None}])
     assert calls[0].arguments == {} and calls[0].argument_error is None
+
+
+def test_tool_calls_without_a_provider_id_get_distinct_ids_across_steps():
+    """Providers that omit call ids (or send null/blank ones) used to get
+    ``tool-call-1`` on every step, or ``"None"`` for all of them, so telemetry
+    and traces merged the calls of different steps into one."""
+    from code4me2_agent.adapters import _normalize_tool_calls
+
+    def step():
+        return _normalize_openai_provider_response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"function": {"name": "read_file", "arguments": "{}"}},
+                                {"id": None, "function": {"name": "list_files", "arguments": "{}"}},
+                                {"id": " ", "function": {"name": "list_files", "arguments": "{}"}},
+                            ]
+                        }
+                    }
+                ]
+            }
+        )["tool_calls"]
+
+    ids = [call["id"] for call in step() + step()]
+    assert len(set(ids)) == 6 and all(ids)
+    # A provider's own id is kept, and the parsed id reaches the tool call as is.
+    assert _normalize_tool_calls([{"id": "c7", "name": "read_file", "arguments": {}}])[0].tool_call_id == "c7"
+    first = step()[0]
+    assert _normalize_tool_calls([first])[0].tool_call_id == first["id"]

@@ -12,30 +12,39 @@ from datetime import datetime, timezone
 from typing import Any, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from sqlalchemy import select
 
 from App import App
 from backend.Responses import JsonResponseWithStatus
 from backend.routers.analytics.auth_utils import AuthenticatedUser, get_current_user
 from backend.routers.research.access import require_researcher, require_study_owner
+from backend.routers.research.join import study_consent_view
+from database.db_schemas import AgentProfile
+from database.db_schemas import Study as StudyRow
+from research.analysis.operations import store as operations_store
+from research.budget import study_policy
+from research.budget.pricing import parse_usd_amount, usd_to_micro
+from research.runtime.assignment.hashing import (
+    assignment_strategy,
+    manual_override_enabled,
+    new_study_assignment_policy,
+)
 from research.runtime.sessions.models import SessionPolicyV1
+from research.study import consent
+from research.study.agents.enums import METERED_FRAMEWORKS
 from research.study.lifecycle import (
+    AssignmentOverrideError,
     CloneNotAllowedError,
     ResearchStudyNotFoundError,
     allocate_join_code,
     clone_stopped_research_study,
+    reassign_enrollment,
     revoke_research_enrollment,
     stop_research_study,
     update_research_metadata,
 )
 from research.study.protocol import store
-from research.analysis.operations import store as operations_store
-from research.budget import study_policy
-from research.budget.pricing import parse_usd_amount, usd_to_micro
-from research.study.agents.enums import METERED_FRAMEWORKS
-from database.db_schemas import AgentProfile
-from database.db_schemas import Study as StudyRow
-from sqlalchemy import select
 
 router = APIRouter()
 
@@ -57,6 +66,12 @@ class StudyCreateRequest(BaseModel):
     # profile runs Goose or the built-in agent; ignored for Codex-only studies.
     default_budget_usd: Optional[str] = None
     budget_warning_fraction: float = Field(default=0.8, gt=0, le=1)
+    # Arms are always drawn by salted hash; this only lets the owner change a
+    # participant's arm by hand before first use (disclosed in the consent text).
+    allow_manual_assignment: bool = False
+    # A custom consent form (document + tick-box statements); omitted, the stock
+    # notice applies. Frozen with the configuration like the policies.
+    consent: Optional[dict[str, Any]] = None
 
     @field_validator("name")
     @classmethod
@@ -98,6 +113,14 @@ class RevokeEnrollmentRequest(BaseModel):
     actor: Optional[str] = None
 
 
+class AssignmentOverrideRequest(BaseModel):
+    """The arm (one of the study's selected profiles) to give the participant."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_id: uuid.UUID
+
+
 def _load_study(db: Any, study_id: uuid.UUID):
     study = store.get_study(db, study_id)
     if study is None:
@@ -135,6 +158,16 @@ def _validated_session_policy(session_policy: dict[str, Any]) -> dict[str, Any]:
                 "message": f"{location}: {message}" if location else message,
             },
         ) from error
+    if parsed.heartbeat_seconds is not None and parsed.idle_timeout_seconds <= parsed.heartbeat_seconds:
+        # A window shows it is alive once per heartbeat: an idle timeout no
+        # longer than that would end and rotate its session on every tick.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SESSION_POLICY_INVALID",
+                "message": "idle_timeout_seconds must be longer than heartbeat_seconds",
+            },
+        )
     return parsed.model_dump(mode="json")
 
 
@@ -284,6 +317,15 @@ def _resolve_default_budget(
     return usd_to_micro(amount)
 
 
+def _consent_view_payload(config: Any) -> dict[str, Any]:
+    view = study_consent_view(config)
+    return {
+        **view,
+        "custom": view["document"] is not None,
+        "digest": consent.view_digest(view),
+    }
+
+
 def _study_payload(study: Any, db: Any) -> dict[str, Any]:
     def iso(value: Any) -> Any:
         return value.isoformat() if isinstance(value, datetime) else value
@@ -295,7 +337,12 @@ def _study_payload(study: Any, db: Any) -> dict[str, Any]:
         budget_row if budget_row is not None else study,
         study_policy.metered_selections(db, study.study_id),
     )
-    config = getattr(study, "research_config_json", None) or {}
+    # A ``StudyView`` carries no config: the frozen policies live on the row.
+    config = (
+        getattr(budget_row, "research_config_json", None)
+        or getattr(study, "research_config_json", None)
+        or {}
+    )
     switch = operations_store.latest_study_kill_switch(db, study.study_id)
     switch_status = None
     if switch is not None:
@@ -319,6 +366,13 @@ def _study_payload(study: Any, db: Any) -> dict[str, Any]:
         # authority; metadata PATCH never changes them.
         "telemetry_policy": config.get("telemetry_policy") or {},
         "session_policy": config.get("session_policy") or {},
+        "assignment_policy": {
+            "strategy": assignment_strategy(config),
+            "manual_override": manual_override_enabled(config),
+        },
+        # Exactly what participants review and accept (document, platform
+        # notice, statements) and its version digest.
+        "consent": _consent_view_payload(config),
         "starts_at": iso(getattr(study, "starts_at", None)),
         "ends_at": iso(getattr(study, "ends_at", None)),
         "created_at": iso(getattr(study, "created_at", None)),
@@ -365,6 +419,19 @@ def create_study(
         default_budget = _resolve_default_budget(
             db, list(payload.profile_ids), payload.default_budget_usd
         )
+        research_config: dict[str, Any] = {
+            "telemetry_policy": telemetry_policy,
+            "session_policy": session_policy,
+            "profile_ids": [str(profile_id) for profile_id in payload.profile_ids],
+            "assignment": new_study_assignment_policy(
+                manual_override=payload.allow_manual_assignment
+            ),
+        }
+        if payload.consent is not None:
+            try:
+                research_config["consent"] = consent.validate_consent_config(payload.consent)
+            except consent.ConsentError as error:
+                raise HTTPException(status_code=error.status_code, detail=error.detail()) from error
         study = store.create_study(
             db,
             study_id=uuid.uuid4(),
@@ -374,11 +441,7 @@ def create_study(
             starts_at=payload.starts_at,
             ends_at=payload.ends_at,
             is_research=True,
-            research_config_json={
-                "telemetry_policy": telemetry_policy,
-                "session_policy": session_policy,
-                "profile_ids": [str(profile_id) for profile_id in payload.profile_ids],
-            },
+            research_config_json=research_config,
             join_code=allocate_join_code(db),
             profile_ids=payload.profile_ids,
             allow_shared_profiles=current_user.is_admin,
@@ -604,6 +667,56 @@ def revoke_enrollment(
                 "revoked": True,
                 "enrollment_id": str(summary.enrollment_id),
                 "session_count": summary.session_count,
+            }),
+        )
+    finally:
+        db.close()
+
+
+@router.put(
+    "/{study_id}/enrollments/{enrollment_id}/assignment",
+    summary="Set a participant's arm by hand before first use (opt-in per study)",
+)
+def override_enrollment_assignment(
+    study_id: uuid.UUID,
+    enrollment_id: uuid.UUID,
+    payload: AssignmentOverrideRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    app: App = Depends(App.get_instance),
+):
+    require_researcher(current_user)
+    db = app.get_db_session()
+    try:
+        _authorize_study(db, current_user, study_id)
+        try:
+            summary = reassign_enrollment(
+                db,
+                study_id,
+                enrollment_id,
+                payload.profile_id,
+                actor=current_user.email,
+            )
+        except AssignmentOverrideError as error:
+            db.rollback()
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": str(error)},
+            ) from error
+        except ResearchStudyNotFoundError as error:
+            db.rollback()
+            raise HTTPException(status_code=404, detail="Study not found") from error
+        return JsonResponseWithStatus(
+            status_code=200,
+            content=cast(Any, {
+                "enrollment_id": str(summary.enrollment_id),
+                "changed": summary.changed,
+                "assignment": {
+                    "profile_id": str(summary.to_profile_id),
+                    "strategy": summary.strategy,
+                    "assigned_at": (
+                        summary.assigned_at.isoformat() if summary.assigned_at else None
+                    ),
+                },
             }),
         )
     finally:

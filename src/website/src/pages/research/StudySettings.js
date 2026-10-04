@@ -331,7 +331,7 @@ const StudySettings = ({
         </Card>
       ) : (
         <Card title="Study details">
-          <p className="research-hint">Stopped studies cannot be edited. Clone the study to run it again.</p>
+          <p className="research-hint">Stopped studies cannot be edited. Duplicate the study to run it again.</p>
         </Card>
       )}
 
@@ -394,7 +394,7 @@ const StudySettings = ({
           <div className="ui-row-between">
             <p className="ui-muted" style={{ margin: 0, maxWidth: 620 }}>
               Stopping is terminal. Enrollments close, new joins are refused, and all research data collected so far is
-              retained for analysis. You can clone a stopped study to run it again.
+              retained for analysis. You can duplicate a stopped study to run it again.
             </p>
             <button type="button" className="danger-button" onClick={onStop} disabled={isBusy}>
               <Icon name="power" size={15} />

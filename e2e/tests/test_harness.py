@@ -170,6 +170,37 @@ class HarnessTest(unittest.TestCase):
             with patch.dict(workflow.STEPS, failing):
                 self.assertEqual(1, workflow.run_workflow(load_scenario(), only="create_accounts", run_dir=directory))
 
+    def test_only_an_unhandled_500_is_reported_as_an_application_bug(self):
+        """Regression: a deliberate 503 (an unavailable store) was reported as an application bug."""
+        bodies = {503: {"detail": "telemetry store is unavailable"}, 502: "<html>502 Bad Gateway</html>"}
+
+        def failing_after(*statuses):
+            def step(ctx):
+                for status in statuses:
+                    ctx.exchange_log.append({
+                        "client": "participant", "method": "POST", "path": f"/api/{status}",
+                        "status": status, "response": bodies.get(status),
+                    })
+                raise steps.StepFailure("boom")
+            return step
+
+        ctx = Ctx(load_scenario(), {}, Path("."))
+        with patch.dict(workflow.STEPS, {"handled": failing_after(502, 503), "crashed": failing_after(500, 503)}):
+            workflow._run_one(ctx, "handled")
+            workflow._run_one(ctx, "crashed")
+        handled, crashed = ctx.findings
+        self.assertEqual("environment", handled["severity"])
+        self.assertIn("HTTP 503 from POST /api/503 (telemetry store is unavailable)", handled["message"])
+        self.assertNotIn("application bug", handled["message"])
+        self.assertEqual("bug", crashed["severity"])
+        self.assertIn("HTTP 500 from POST /api/500", crashed["message"])
+
+        # Resumed after the environment was fixed, the same step now crashes.
+        with patch.dict(workflow.STEPS, {"handled": failing_after(500)}):
+            workflow._run_one(ctx, "handled")
+        self.assertEqual("bug", ctx.findings[-1]["severity"])
+        self.assertIn("step handled received HTTP 500", ctx.findings[-1]["message"])
+
     def test_multipart_body_carries_the_manifest_and_archive(self):
         from code4me_e2e.http import encode_multipart
         body, content_type = encode_multipart(

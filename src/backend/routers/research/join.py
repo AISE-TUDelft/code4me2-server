@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +17,8 @@ from research.study.lifecycle import (
     StudyStoppedError,
     open_study_enrollment,
 )
+from research.runtime.assignment.hashing import manual_override_enabled
+from research.study import consent
 from research.study.protocol import store as study_store
 from research.telemetry.enums import FieldClass
 from research.telemetry.privacy.engine import PrivacyPolicy
@@ -37,6 +39,14 @@ GLOBAL_CONSENT_TEXT = (
     "are removed, although that filter only recognises common formats. Your "
     "study-local pseudonym is used in research data; your account identity "
     "remains private."
+)
+
+#: The assignment sentence of ``GLOBAL_CONSENT_TEXT`` and its replacement for a
+#: study whose protocol lets the owner set an arm by hand before first use.
+RANDOM_ASSIGNMENT_SENTENCE = "You are randomly assigned to one of the study's agent configurations."
+MANUAL_ASSIGNMENT_SENTENCE = (
+    "You are assigned to one of the study's agent configurations, at random or by "
+    "the research team."
 )
 
 TOOL_TITLES_CONSENT_TEXT = (
@@ -71,14 +81,18 @@ CONTENT_CAPTURE_CONSENT_TEXT = (
 )
 
 
-def consent_text(telemetry_policy: Any) -> str:
+def consent_text(telemetry_policy: Any, *, manual_assignment: bool = False) -> str:
     """The participant-facing notice for a frozen study telemetry policy."""
     raw = telemetry_policy if isinstance(telemetry_policy, dict) else {}
     allowed = set(
         PrivacyPolicy.from_study_policy(raw, consent_active=True).allowed_field_classes
     )
     titles_kept = FieldClass.BEHAVIORAL in allowed
-    parts = [GLOBAL_CONSENT_TEXT]
+    parts = [
+        GLOBAL_CONSENT_TEXT.replace(RANDOM_ASSIGNMENT_SENTENCE, MANUAL_ASSIGNMENT_SENTENCE)
+        if manual_assignment
+        else GLOBAL_CONSENT_TEXT
+    ]
     if titles_kept:
         parts.append(TOOL_TITLES_CONSENT_TEXT)
     parts.append(
@@ -109,12 +123,29 @@ def _collection_policy(study: Any) -> dict[str, Any]:
     }
 
 
+def study_consent_view(config: Any) -> dict[str, Any]:
+    """The consent view of a study: its own form (if any) plus the platform notice."""
+    config = config if isinstance(config, dict) else {}
+    notice = consent_text(
+        config.get("telemetry_policy"),
+        manual_assignment=manual_override_enabled(config),
+    )
+    return consent.build_view(config, notice)
+
+
 def _consent_payload(study: Any) -> dict[str, Any]:
     """Render the actual frozen collection policy in participant-facing text."""
     config = getattr(study, "research_config_json", None) or {}
+    view = study_consent_view(config)
     return {
-        "text": consent_text(config.get("telemetry_policy")),
+        # ``text`` stays the platform notice so older clients keep working.
+        "text": view["notice"],
         "collection_policy": _collection_policy(study),
+        "custom": view["document"] is not None,
+        "document": view["document"],
+        "notice": view["notice"],
+        "statements": view["statements"],
+        "digest": consent.view_digest(view),
     }
 
 
@@ -129,6 +160,10 @@ class JoinRequestBody(BaseModel):
 
     join_code: str = Field(min_length=1)
     accept_consent: bool = False
+    # The digest of the consent view the participant reviewed, and which of its
+    # statements they ticked. Required for a study with its own consent form.
+    consent_digest: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    consent_statements: Optional[dict[str, bool]] = Field(default=None, max_length=20)
 
 
 def _study_from_code(db: Any, join_code: str):
@@ -197,8 +232,25 @@ def redeem_join_code(
                     "message": "you have opted out of data collection; turn it back on to join a study",
                 },
             )
+        study = _study_from_code(db, payload.join_code)
+        if study is None:
+            raise HTTPException(status_code=404, detail="join code not found")
         try:
-            result = open_study_enrollment(db, current_user.user_id, payload.join_code)
+            consent_digest, consent_snapshot = consent.accept(
+                study_consent_view(getattr(study, "research_config_json", None)),
+                payload.consent_digest,
+                payload.consent_statements,
+            )
+        except consent.ConsentError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.detail()) from error
+        try:
+            result = open_study_enrollment(
+                db,
+                current_user.user_id,
+                payload.join_code,
+                consent_digest=consent_digest,
+                consent_snapshot=consent_snapshot,
+            )
         except StudyStoppedError as error:
             code = "STUDY_STOPPED"
             raise HTTPException(status_code=409, detail={"code": code, "message": str(error)}) from error

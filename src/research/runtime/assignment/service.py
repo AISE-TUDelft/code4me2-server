@@ -3,7 +3,8 @@
 The unit of assignment is ``enrollment_id`` (never account, device, task, or
 process). Assignments are always sticky: a repeated bootstrap returns the
 existing profile and never re-randomizes it. Profiles are selected by the study
-at creation time and carry a digest-pinned, non-secret snapshot.
+at creation time and carry a digest-pinned, non-secret snapshot. The draw follows
+the study's frozen assignment policy (see :mod:`.hashing`).
 """
 
 from __future__ import annotations
@@ -15,8 +16,10 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 from research.participants.enums import EnrollmentStatus
+from research.study.protocol.enums import AssignmentStrategy
 
 from .enums import AllocationOutcome, AssignmentReasonCode
+from .hashing import hashed_profile
 from .models import AssignmentIssue, AssignmentResult, AssignmentV1, StudyProfileSelection
 
 if TYPE_CHECKING:
@@ -46,8 +49,14 @@ def allocate(
     existing: Optional[AssignmentV1] = None,
     rng: Optional[random.Random] = None,
     now: Optional[datetime] = None,
+    strategy: str = AssignmentStrategy.RANDOM_EQUAL.value,
 ) -> AssignmentResult:
-    """Allocate (or return) one sticky profile with equal probability."""
+    """Allocate (or return) one sticky profile with equal probability.
+
+    ``strategy`` is the study's frozen policy (``hashing.assignment_strategy``):
+    ``RANDOM_EQUAL`` draws from the system CSPRNG, ``DETERMINISTIC_HASH`` takes
+    the salted-hash arm; anything else is refused.
+    """
     timestamp = _now(now)
 
     if enrollment is None:
@@ -108,9 +117,25 @@ def allocate(
             "study_id",
         )
 
-    strategy = "RANDOM_EQUAL"
     randomization_epoch = 0
-    selected = (rng or random.SystemRandom()).choice(normalized_profiles)
+    if strategy == AssignmentStrategy.DETERMINISTIC_HASH.value:
+        selected = hashed_profile(
+            normalized_profiles,
+            study_id=enrollment.study_id,
+            enrollment_id=enrollment.enrollment_id,
+            randomization_epoch=randomization_epoch,
+        )
+        reason = AssignmentReasonCode.DETERMINISTIC_HASH
+    elif strategy == AssignmentStrategy.RANDOM_EQUAL.value:
+        selected = (rng or random.SystemRandom()).choice(normalized_profiles)
+        reason = AssignmentReasonCode.RANDOM_EQUAL
+    else:
+        return _blocked(
+            AllocationOutcome.INSUFFICIENT_EVIDENCE,
+            AssignmentReasonCode.UNKNOWN_STRATEGY,
+            f"unknown assignment strategy {strategy!r}",
+            "strategy",
+        )
 
     assignment = AssignmentV1(
         assignment_id=uuid.uuid4(),
@@ -127,5 +152,5 @@ def allocate(
         outcome=AllocationOutcome.CREATED,
         assignment=assignment,
         created=True,
-        reason=AssignmentReasonCode.RANDOM_EQUAL,
+        reason=reason,
     )

@@ -45,7 +45,7 @@ PROJECTION_KEYS = {
     "enrolled_at",
     "updated_at",
 }
-ADDED_KEYS = {"consent_accepted_at", "study", "runtime", "sessions", "activity", "budget"}
+ADDED_KEYS = {"consent_accepted_at", "study", "runtime", "sessions", "activity", "budget", "consent"}
 TELEMETRY_POLICY = {
     "allowed_field_classes": ["STRUCTURAL", "METRICS", "CONTENT"],
     "content_capture": True,

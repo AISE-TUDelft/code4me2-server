@@ -80,15 +80,14 @@ def acquire_session(
             )
 
         user_info = redis_manager.get("user_token", user_id)
-        session_token = None
-        # Create a new session token if none exists or invalid
+        session_token = (user_info or {}).get("session_token")
+        # Reuse the account's session only while it is live in Redis, not merely
+        # recorded in the database (a dead one fails every project call); reusing
+        # it restarts its expiry. Create a new session token otherwise.
         if (
-            not user_info
-            or not user_info.get("session_token")
-            or crud.get_session_by_id(
-                db_session, uuid.UUID(user_info.get("session_token"))
-            )
-            is None
+            not session_token
+            or crud.get_session_by_id(db_session, uuid.UUID(session_token)) is None
+            or not redis_manager.touch("session_token", session_token)
         ):
             session_token = create_uuid()
             crud.create_session(
@@ -97,17 +96,15 @@ def acquire_session(
                 session_token,
             )
 
-            # Update session token in Redis with new session token while preserving TTL
-            redis_manager.set("user_token", user_id, {"session_token": session_token})
-
-            # Store session token entry separately
+            # The session entry first: the account's link never names a missing one.
             redis_manager.set(
                 "session_token",
                 session_token,
                 {"user_token": user_id, "project_tokens": []},
             )
+            redis_manager.set("user_token", user_id, {"session_token": session_token})
         else:
-            session_token = user_info.get("session_token")
+            redis_manager.touch("user_token", user_id)
 
         response_obj = JsonResponseWithStatus(
             status_code=200,

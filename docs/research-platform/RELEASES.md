@@ -117,9 +117,8 @@ plugin and is not demonstrated by server tests.
 
 The plugin's recipe CLI (`scripts/participant-release.py`) is local tooling for
 ZIPs with a bundled agent recipe; participant ZIPs bundle no agent and come from
-the plugin workflow (see `code4me2/docs/PARTICIPANT_RELEASE.md`). Its `apply`
-command targets release and approval endpoints the server no longer has; register
-releases through the website import. Plugin ZIP publication, native host permission/tool behavior and all
+the plugin workflow (see `code4me2/docs/PARTICIPANT_RELEASE.md`). It registers
+nothing on a server; register releases through the website import. Plugin ZIP publication, native host permission/tool behavior and all
 four CI jobs require their own verification. Server protocol restrictions on
 participant-ready runtimes are unchanged.
 
@@ -351,3 +350,28 @@ research data in one transaction and leaves one content-free deletion-ledger
 record per erased enrollment. `DELETE /api/user/delete` now always erases the
 data (`delete_data` is ignored), revokes the account's tokens, and refuses with
 `409` an account that owns research studies or agent profiles.
+
+## Study consent versions and assignment policy
+
+Studies can carry their own consent document and tick-box statements, and each
+enrollment records which consent view it accepted (`consent_digest`) together with
+that view and the participant's answers (`consent_snapshot_json`). Alembic
+revision `c5e8f1a2d3b4` (after `b7c1d2e3f4a5`) adds the two columns, so the
+deployment step `python src/database/migration/migration_manager.py migrate`
+applies it (the new backend needs the columns before it starts). It is
+idempotent; run by hand it is:
+
+```sql
+ALTER TABLE public.research_enrollment
+    ADD COLUMN IF NOT EXISTS consent_digest VARCHAR NULL,
+    ADD COLUMN IF NOT EXISTS consent_snapshot_json JSONB NULL;
+```
+
+Both are nullable and the previous code ignores them, so they are safe to add
+while the old backend is still running. Enrollments created earlier keep null
+values: their consent version was never recorded.
+
+Studies created from this release on freeze an `assignment` block in their
+configuration (`DETERMINISTIC_HASH` salted-hash draw, plus the opt-in manual
+override); existing studies keep the `RANDOM_EQUAL` draw. This needs no schema
+change. See `docs/RESEARCH_ANALYTICS_SCOPE.md`.

@@ -64,7 +64,9 @@ def _my_study_payload(study_row: Any) -> Optional[dict[str, Any]]:
     }
 
 
-def _my_enrollment_payload(enrollment: Any, details: dict[str, Any]) -> dict[str, Any]:
+def _my_enrollment_payload(
+    enrollment: Any, details: dict[str, Any], row: Any = None
+) -> dict[str, Any]:
     """The caller's own enrollment: projection fields plus study context.
 
     Additive over :func:`store.researcher_projection` (the plugin parses
@@ -81,6 +83,15 @@ def _my_enrollment_payload(enrollment: Any, details: dict[str, Any]) -> dict[str
     # Budget numbers only (no model, price or profile): ``null`` when the arm
     # is not metered or no balance exists yet.
     payload["budget"] = details.get("budget")
+    # The consent the participant accepted (document, platform notice,
+    # statements and their answers); ``null`` for enrollments created before
+    # consent versions were recorded.
+    snapshot = getattr(row, "consent_snapshot_json", None)
+    payload["consent"] = (
+        {"digest": getattr(row, "consent_digest", None), **snapshot}
+        if isinstance(snapshot, dict)
+        else None
+    )
     return payload
 
 
@@ -124,6 +135,7 @@ def get_my_status(
         if participant_row is None:
             return JsonResponseWithStatus(status_code=200, content={"enrollments": []})
         rows = store.list_enrollments(db, participant_row.participant_id)
+        rows_by_id = {row.enrollment_id: row for row in rows}
         enrollments = [store.row_to_enrollment(row) for row in rows]
         details = store.participant_enrollment_details(db, enrollments)
         return JsonResponseWithStatus(
@@ -131,7 +143,9 @@ def get_my_status(
             content={
                 "enrollments": [
                     _my_enrollment_payload(
-                        enrollment, details[enrollment.enrollment_id]
+                        enrollment,
+                        details[enrollment.enrollment_id],
+                        rows_by_id.get(enrollment.enrollment_id),
                     )
                     for enrollment in enrollments
                 ]

@@ -2,9 +2,20 @@ import React from "react";
 import { ChartCard, DailyColumns, DataTable } from "../../components/charts/Charts";
 import { Alert, Badge, Card, KpiTile } from "../../components/common/ui";
 import { formatCompact, formatDate, formatDateTime, formatNumber, formatUsd, humanize } from "../../utils/format";
+import { ConsentReview } from "./ConsentText";
 import { CONTENT_DESCRIPTION, RUNTIME_CLASS_LABELS, RUNTIME_LABELS, collectedClasses, describeSessionPolicy } from "./studyUtils";
 
 const unavailable = (value) => (value === null || value === undefined ? "Unavailable" : value);
+
+// How the study's frozen policy draws arms (studies created before the policy
+// carry no block and draw with equal probability from the system CSPRNG).
+export const assignmentText = (policy) => {
+  const hashed = policy?.strategy === "DETERMINISTIC_HASH";
+  const draw = hashed
+    ? "Equal-probability salted-hash assignment (reproducible), fixed per enrollment"
+    : "Equal-probability random assignment, sticky per enrollment";
+  return policy?.manual_override ? `${draw}; the owner may set an arm by hand before first use.` : `${draw}.`;
+};
 
 const shortDay = (date) => {
   const parsed = new Date(`${date}T00:00:00Z`);
@@ -81,7 +92,7 @@ const StudyOverview = ({ study, arms, participantsData, summary, summaryError, o
       <div className="ui-grid-2 study-overview-grid">
         <Card
           title="Selected agent profiles"
-          subtitle="Equal-probability random assignment, sticky per enrollment."
+          subtitle={assignmentText(study.assignment_policy)}
           className="research-profile-summary"
           actions={
             arms.length ? (
@@ -142,6 +153,14 @@ const StudyOverview = ({ study, arms, participantsData, summary, summaryError, o
               <dt>First consent</dt>
               <dd>{study.consent_locked_at ? formatDateTime(study.consent_locked_at) : "Not yet"}</dd>
             </div>
+            <div>
+              <dt>Consent form</dt>
+              <dd>
+                {study.consent?.custom
+                  ? `Custom (${(study.consent.statements || []).length} statement${(study.consent.statements || []).length === 1 ? "" : "s"})`
+                  : "Standard notice"}
+              </dd>
+            </div>
             {sessionRows.map(([label, value]) => (
               <div key={label}>
                 <dt>{label}</dt>
@@ -174,8 +193,14 @@ const StudyOverview = ({ study, arms, participantsData, summary, summaryError, o
             ) : (
               <span className="ui-hint">No classes declared: the server's metadata default applies.</span>
             )}
+            {study.consent ? (
+              <details className="research-advanced">
+                <summary>Consent form participants see</summary>
+                <ConsentReview consent={study.consent} idPrefix={`overview-consent-${study.study_id}`} />
+              </details>
+            ) : null}
             {contentCapture ? (
-              <Badge tone="warning">Content capture on — {CONTENT_DESCRIPTION} are stored after consent</Badge>
+              <Badge tone="warning" className="is-wrap">Content capture on — {CONTENT_DESCRIPTION} are stored after consent</Badge>
             ) : (
               <span className="ui-hint">
                 Prompt and response text, tool arguments and output, and file contents are not stored

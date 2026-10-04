@@ -136,8 +136,35 @@ class RedisManager:
                     expiration - self.token_hook_activation_in_seconds,
                     "",
                 )
+            if type == "session_token":
+                self.__extend_account_link(token, info)
         else:
             self.__redis_client.set(key, json_info, keepttl=True)
+
+    def touch(self, type: str, token: str) -> bool:
+        """Restart a token's expiry (and its hook's) without rewriting its value,
+        so a concurrent update is never lost; False when the token is gone."""
+        if not token:
+            return False
+        expiration = self.__get_exp(type)
+        # A token whose hook is gone is ending (its expiry is being handled, or
+        # was missed): never extend it.
+        if self.__get_set_hook(type) and not self.__redis_client.expire(
+            f"{type}_hook:{token}", expiration - self.token_hook_activation_in_seconds
+        ):
+            return False
+        return bool(self.__redis_client.expire(f"{type}:{token}", expiration))
+
+    def __extend_account_link(self, session_token: str, session_info) -> None:
+        """Keep the account's link to a session alive as long as the session.
+
+        Project and agent calls find the session through that link only, so a
+        link expiring first cut off a session still in use.
+        """
+        user_id = session_info.get("user_token") if isinstance(session_info, dict) else None
+        link = self.get("user_token", user_id) if user_id else None
+        if link and link.get("session_token") == session_token:
+            self.__redis_client.expire(f"user_token:{user_id}", self.__get_exp("user_token"))
 
     def get(self, type: str, token: str, reset_exp: bool = False) -> Optional[dict]:
         """
@@ -160,6 +187,8 @@ class RedisManager:
                         expiration - self.token_hook_activation_in_seconds,
                         "",
                     )
+                if type == "session_token":
+                    self.__extend_account_link(token, recursive_json_loads(data))
             return recursive_json_loads(data)  # Parse JSON string to dict
         return None
 
@@ -221,18 +250,27 @@ class RedisManager:
             self.__redis_client.delete(f"{type}_hook:{token}")
 
             if session_dict:
-                # Remove user token if exists
+                # Remove the account's link to this session, unless the account
+                # has moved on to a newer session meanwhile: an old session that
+                # expires must not cut off the one the plugin is using now.
                 user_token = session_dict.get("user_token")
-                if user_token:
+                user_info = self.get("user_token", user_token) if user_token else None
+                if user_info and user_info.get("session_token") == token:
                     self.__redis_client.delete(f"user_token:{user_token}")
 
-                # Remove this session token from related project tokens
+                # Remove this session token from related project tokens, and any
+                # session already gone: one whose expiry nobody heard (no listener
+                # during a restart) must not keep the project open for good, and
+                # a second worker handling this same expiry finds it removed.
                 for project_token in session_dict.get("project_tokens", []):
                     project_dict = self.get("project_token", project_token)
                     if project_dict:
-                        new_session_tokens = project_dict.get("session_tokens", [])
-                        new_session_tokens.remove(token)
-                        project_dict["session_tokens"] = new_session_tokens
+                        project_dict["session_tokens"] = [
+                            other
+                            for other in project_dict.get("session_tokens", [])
+                            if other != token
+                            and self.__redis_client.exists(f"session_token:{other}")
+                        ]
                         self.set("project_token", project_token, project_dict)
                     self.delete("project_token", project_token, db_session)
 
@@ -386,22 +424,3 @@ class RedisManager:
             self.__redis_client.close()
         except Exception:
             pass
-
-    def cleanup(self, db_session: Session):
-        """
-        Clean all tokens from Redis and persist necessary data to DB.
-        WARNING: Use with caution as it flushes the entire Redis DB.
-        """
-        patterns = [
-            "session_token:*",
-            "project_token:*",
-            "auth_token:*",
-            "user_token:*",
-        ]
-        for pattern in patterns:
-            # Iterate over all keys matching pattern and delete each
-            for key in self.__redis_client.keys(pattern):  # type: ignore
-                type, token = key.split(":")
-                self.delete(type, token, db_session)
-        self.__redis_client.flushdb()
-        self.__redis_client.close()

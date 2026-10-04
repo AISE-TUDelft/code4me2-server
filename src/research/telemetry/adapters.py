@@ -44,7 +44,7 @@ from research.telemetry.ingestion.models import (
 from research.telemetry.ingestion.service import ingest_events_for_context
 from research.telemetry.ingestion.store import SqlAlchemyIngestionStore
 from research.telemetry.models import Correlations, Coverage, EventMetrics
-from research.telemetry.privacy import PrivacyPolicy, classify_field
+from research.telemetry.privacy import PrivacyPolicy, classify_field, filter_event
 
 __all__ = [
     "CanonicalIngestionFailed",
@@ -182,7 +182,8 @@ def _policy_payload(
     activity (e.g. usage and timings only) would otherwise refuse every
     self-report and model call, losing the timings and token counts the study
     does collect. Content, secrets and code metadata are left for the ingestion
-    check, which refuses them rather than stripping (ISSUE-01).
+    check, which refuses them rather than stripping (ISSUE-01); only secrets
+    inside consented content are dropped first (see ``build_legacy_events``).
     """
     if policy is None:
         return dict(payload)
@@ -208,7 +209,13 @@ def build_legacy_events(
     """Build canonical events for a research-bound task, in order.
 
     With ``policy``, plain metadata fields it excludes are left out of each
-    payload (see ``_policy_payload``).
+    payload (see ``_policy_payload``). Under a content-capture policy with
+    consent, each event is then filtered like a client's (``filter_event``): a
+    secret-shaped value inside the consented content is dropped instead of
+    refusing the whole fact. A model call that quotes "Bearer tokens" in its
+    conversation would otherwise lose its usage and timings, and so would every
+    later call of that chat, which repeats the history. Content the policy does
+    not allow, or a class it blocks, is still refused by ingestion (ISSUE-01).
 
     ``(research_session_id, emitter_id, emitter_sequence)`` is a unique key in
     the store, so sequences must never be reused within a session+emitter.
@@ -259,25 +266,28 @@ def build_legacy_events(
         correlations = (
             base_corr.model_copy(update=corr_update) if corr_update else base_corr
         )
-        events.append(
-            builder.build(
-                emitter_id=f"{fact.emitter_id}:{task_namespace}",
-                event_type=event_type,
-                source=EventSource.RELAY,
-                occurred_at=fact.occurred_at,
-                normalizer_version=RELAY_NORMALIZER_VERSION,
-                payload=_policy_payload({**fact.payload, "legacy_kind": fact.kind}, policy),
-                metrics=fact.metrics,
-                coverage=fact.coverage,
-                correlations=correlations,
-                source_event_id=fact.source_event_id,
-                study_id=getattr(task, "study_id", None),
-                enrollment_id=getattr(task, "enrollment_id", None),
-                research_session_id=getattr(task, "research_session_id", None),
-                agent_run_id=getattr(task, "external_run_id", None),
-                emitter_sequence=sequence,
-            )
+        built = builder.build(
+            emitter_id=f"{fact.emitter_id}:{task_namespace}",
+            event_type=event_type,
+            source=EventSource.RELAY,
+            occurred_at=fact.occurred_at,
+            normalizer_version=RELAY_NORMALIZER_VERSION,
+            payload=_policy_payload({**fact.payload, "legacy_kind": fact.kind}, policy),
+            metrics=fact.metrics,
+            coverage=fact.coverage,
+            correlations=correlations,
+            source_event_id=fact.source_event_id,
+            study_id=getattr(task, "study_id", None),
+            enrollment_id=getattr(task, "enrollment_id", None),
+            research_session_id=getattr(task, "research_session_id", None),
+            agent_run_id=getattr(task, "external_run_id", None),
+            emitter_sequence=sequence,
         )
+        if policy is not None and policy.content_allowed and policy.consent_active:
+            filtered = filter_event(built, policy)
+            if not filtered.summary.blocked:
+                built = filtered.event
+        events.append(built)
     return events
 
 

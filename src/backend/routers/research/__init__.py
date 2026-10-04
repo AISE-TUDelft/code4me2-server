@@ -22,6 +22,8 @@ from .researchers import router as researchers_router
 from .sessions import router as sessions_router
 from .studies import router as studies_router
 from .study_analytics import router as study_analytics_router
+from .study_export import router as study_export_router
+from .study_traces import router as study_traces_router
 from .telemetry import router as telemetry_router
 
 router = APIRouter()
@@ -36,6 +38,20 @@ router.include_router(
     study_analytics_router,
     prefix="/studies",
     tags=["Research Study Analytics"],
+)
+# Study-owner/administrator chat traces (stored content, never cached):
+# ``/{study_id}/enrollments/{enrollment_id}/trace?chat_id=...``.
+router.include_router(
+    study_traces_router,
+    prefix="/studies",
+    tags=["Research Study Traces"],
+)
+# Study-owner/administrator raw data export (ZIP of CSV/JSONL + manifest):
+# ``/{study_id}/export``.
+router.include_router(
+    study_export_router,
+    prefix="/studies",
+    tags=["Research Study Export"],
 )
 # Participant budgets on the shared provider key (study owner/admin):
 # study default, apply-default, per-enrollment balance/adjustments/ledger.

@@ -217,8 +217,13 @@ class ResearchEnrollment(Base):
     enrolled_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
     # The single consent acceptance: set once when the participant joins. There
-    # is no document identity, re-consent or withdrawal.
+    # is no re-consent or withdrawal.
     consent_accepted_at = Column(DateTime(timezone=True), nullable=True)
+    # What was accepted: the digest of the consent view (document, platform
+    # notice, statements) and that view with the participant's answers. Null for
+    # enrollments created before consent versions were recorded.
+    consent_digest = Column(String, nullable=True)
+    consent_snapshot_json = Column(JSONB, nullable=True)
     retention_action = Column(String, nullable=False)
 
 

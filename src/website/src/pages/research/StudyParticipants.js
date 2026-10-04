@@ -1,9 +1,20 @@
 import React, { useMemo, useState } from "react";
 import Icon from "../../components/common/Icon";
 import { Alert, Badge, Card, Drawer, EmptyState, Loading, Meter } from "../../components/common/ui";
+import { changeEnrollmentAssignment } from "../../utils/api";
 import { formatDuration, formatNumber, formatRelative, formatShortDateTime, formatUsd, microToUsd } from "../../utils/format";
+import { ConsentReview } from "./ConsentText";
 import ParticipantDashboard from "./ParticipantDashboard";
 import { ENROLLMENT_STATUS, HEALTH, RUNTIME_LABELS, armColor, downloadCsv, slugify } from "./studyUtils";
+
+const SET_BY_HAND_TITLE =
+  "The research team set this arm by hand before first use; the randomized arm stays recomputable for analysis.";
+
+/** "2 of 3 consent statements ticked" for a participant's recorded answers. */
+const consentTicked = (answers, statements) => {
+  const ticked = statements.filter((statement) => answers[statement.id] === true).length;
+  return `${ticked} of ${statements.length} consent statement${statements.length === 1 ? "" : "s"} ticked`;
+};
 
 const HEALTH_FILTERS = [
   { value: "", label: "Any status" },
@@ -49,9 +60,13 @@ const CSV_COLUMNS = [
   { label: "health", value: (row) => row.health },
   { label: "arm", value: (row) => row.arm?.name },
   { label: "arm_profile_id", value: (row) => row.arm?.profile_id },
+  // DETERMINISTIC_HASH / RANDOM_EQUAL, or MANUAL after an owner override.
+  { label: "assignment_strategy", value: (row) => row.arm?.strategy },
   { label: "model", value: (row) => row.arm?.model },
   { label: "runtime", value: (row) => row.arm?.framework_version },
   { label: "enrolled_at", value: (row) => row.enrolled_at },
+  // The consent version the participant accepted (null before versions were recorded).
+  { label: "consent_digest", value: (row) => row.consent_digest },
   { label: "sessions", value: (row) => row.sessions?.total },
   { label: "session_hours", value: (row) => (row.sessions?.session_seconds == null ? "" : (row.sessions.session_seconds / 3600).toFixed(3)) },
   { label: "prompts", value: (row) => row.activity?.prompts },
@@ -74,6 +89,95 @@ const CSV_COLUMNS = [
   { label: "budget_exhausted_at", value: (row) => row.budget?.exhausted_at },
 ];
 
+// One column per consent statement any exported participant answered, so
+// optional statements (e.g. reuse of data) can be honoured downstream.
+const consentColumns = (rows) => {
+  const ids = [];
+  rows.forEach((row) =>
+    Object.keys(row.consent_answers || {}).forEach((id) => {
+      if (!ids.includes(id)) ids.push(id);
+    }),
+  );
+  return ids.map((id) => ({
+    label: `consent_${id}`,
+    value: (row) => (row.consent_answers && id in row.consent_answers ? String(row.consent_answers[id]) : ""),
+  }));
+};
+
+const ARM_CHANGE_ERRORS = {
+  ASSIGNMENT_IN_USE: "The participant has already used their arm, so it can no longer be changed.",
+  MANUAL_ASSIGNMENT_DISABLED: "This study does not allow manual assignment.",
+  ENROLLMENT_NOT_ACTIVE: "The enrollment is no longer active.",
+  STUDY_STOPPED: "Stopped studies cannot be changed.",
+};
+
+/** Set one participant's arm by hand (manual-assignment studies, before first use). */
+const ChangeArmForm = ({ study, row, arms, onDone, onCancel }) => {
+  const [profileId, setProfileId] = useState(row.arm?.profile_id || "");
+  const [state, setState] = useState({ busy: false, error: "" });
+  const unchanged = !profileId || profileId === row.arm?.profile_id;
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (unchanged) return;
+    const target = arms.find((arm) => arm.profile_id === profileId);
+    const confirmed = window.confirm(
+      `Assign ${row.participant_code} to “${target?.name || profileId}”? The change is recorded as a manual assignment.`,
+    );
+    if (!confirmed) return;
+    setState({ busy: true, error: "" });
+    const result = await changeEnrollmentAssignment(study.study_id, row.enrollment_id, profileId);
+    if (result && result.ok) {
+      setState({ busy: false, error: "" });
+      onDone();
+    } else {
+      setState({
+        busy: false,
+        error: ARM_CHANGE_ERRORS[result && result.code] || (result && result.error) || "The arm could not be changed.",
+      });
+    }
+  };
+
+  return (
+    <form className="ui-card ui-card-body ui-stack-sm" onSubmit={submit} aria-label="Change arm">
+      <div className="ui-field">
+        <label className="ui-label" htmlFor={`change-arm-${row.enrollment_id}`}>
+          Arm
+        </label>
+        <select
+          id={`change-arm-${row.enrollment_id}`}
+          className="ui-select"
+          value={profileId}
+          onChange={(event) => setProfileId(event.target.value)}
+          disabled={state.busy}
+        >
+          {arms.map((arm) => (
+            <option key={arm.profile_id} value={arm.profile_id}>
+              {arm.name || arm.profile_id}
+            </option>
+          ))}
+        </select>
+        <p className="ui-hint">
+          Possible until the participant first uses the agent. The randomized arm stays recomputable for analysis.
+        </p>
+      </div>
+      {state.error ? (
+        <p className="research-error" role="alert">
+          {state.error}
+        </p>
+      ) : null}
+      <div className="ui-row">
+        <button type="submit" className="primary-button button-sm" disabled={state.busy || unchanged}>
+          Change arm
+        </button>
+        <button type="button" className="ghost-button button-sm" onClick={onCancel} disabled={state.busy}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+};
+
 /** Enrolled participants with their frozen arm and an activity summary. */
 const StudyParticipants = ({ study, arms, state, onReload }) => {
   const [query, setQuery] = useState("");
@@ -83,6 +187,8 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
   const [openEnrollment, setOpenEnrollment] = useState(null);
   // The drawer's "Adjust budget" form (closed again for another participant).
   const [adjustOpen, setAdjustOpen] = useState(false);
+  // The drawer's "Change arm" form (manual-assignment studies only).
+  const [armFormOpen, setArmFormOpen] = useState(false);
 
   const participants = useMemo(
     () => (Array.isArray(state.data?.participants) ? state.data.participants : []),
@@ -103,12 +209,18 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
 
   const openRow = participants.find((row) => row.enrollment_id === openEnrollment) || null;
   const stopped = study.research_status === "STUDY_STOPPED";
+  // Answers are shown for a custom consent form (the stock form has one checkbox).
+  const consentStatements = study.consent?.custom && Array.isArray(study.consent.statements) ? study.consent.statements : [];
   const metered = participants.some((row) => row.budget);
   const warningFraction = Number(study.budget_policy?.warning_fraction) > 0 ? Number(study.budget_policy.warning_fraction) : 0.8;
   const openParticipant = (enrollmentId) => {
     setOpenEnrollment(enrollmentId);
     setAdjustOpen(false);
+    setArmFormOpen(false);
   };
+  const canChangeArm = Boolean(
+    openRow && study.assignment_policy?.manual_override && openRow.reassignable && !stopped,
+  );
 
   if (state.isLoading && !state.data) return <Loading label="Loading participants…" />;
   if (state.error) {
@@ -120,7 +232,7 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
   }
 
   const exportCsv = () =>
-    downloadCsv(`${slugify(study.name)}-participants.csv`, CSV_COLUMNS, visible);
+    downloadCsv(`${slugify(study.name)}-participants.csv`, [...CSV_COLUMNS, ...consentColumns(visible)], visible);
 
   return (
     <div className="ui-stack">
@@ -235,6 +347,9 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
                         <div className="ui-cell-stack">
                           <span className="ui-cell-primary ui-mono">{row.participant_code || "—"}</span>
                           <small className="ui-nowrap">Enrolled {formatShortDateTime(row.enrolled_at)}</small>
+                          {consentStatements.length && row.consent_answers ? (
+                            <small className="ui-nowrap">{consentTicked(row.consent_answers, consentStatements)}</small>
+                          ) : null}
                         </div>
                       </td>
                       <td>
@@ -247,6 +362,11 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
                                 {row.arm.model}
                                 {row.arm.framework_version ? ` · ${RUNTIME_LABELS[row.arm.framework_version] || row.arm.framework_version}` : ""}
                               </small>
+                              {row.arm.strategy === "MANUAL" ? (
+                                <Badge tone="info" title={SET_BY_HAND_TITLE}>
+                                  Set by hand
+                                </Badge>
+                              ) : null}
                             </div>
                           </div>
                         ) : (
@@ -345,16 +465,31 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
         onClose={() => openParticipant(null)}
         title={openRow ? `Participant ${openRow.participant_code}` : ""}
         actions={
-          openRow && openRow.budget && !stopped ? (
-            <button
-              type="button"
-              className="secondary-button button-sm"
-              onClick={() => setAdjustOpen((value) => !value)}
-              aria-pressed={adjustOpen}
-            >
-              <Icon name="sliders" size={14} />
-              Adjust budget
-            </button>
+          openRow && ((openRow.budget && !stopped) || canChangeArm) ? (
+            <>
+              {canChangeArm ? (
+                <button
+                  type="button"
+                  className="secondary-button button-sm"
+                  onClick={() => setArmFormOpen((value) => !value)}
+                  aria-pressed={armFormOpen}
+                >
+                  <Icon name="layers" size={14} />
+                  Change arm
+                </button>
+              ) : null}
+              {openRow.budget && !stopped ? (
+                <button
+                  type="button"
+                  className="secondary-button button-sm"
+                  onClick={() => setAdjustOpen((value) => !value)}
+                  aria-pressed={adjustOpen}
+                >
+                  <Icon name="sliders" size={14} />
+                  Adjust budget
+                </button>
+              ) : null}
+            </>
           ) : null
         }
         subtitle={
@@ -362,10 +497,38 @@ const StudyParticipants = ({ study, arms, state, onReload }) => {
             <span className="ui-row">
               <span className="viz-swatch is-dot" style={{ backgroundColor: armColor(arms, openRow.arm.profile_id) }} aria-hidden="true" />
               {openRow.arm.name} · {openRow.arm.model}
+              {openRow.arm.strategy === "MANUAL" ? (
+                <Badge tone="info" title={SET_BY_HAND_TITLE}>
+                  Set by hand
+                </Badge>
+              ) : null}
             </span>
           ) : null
         }
       >
+        {openRow && canChangeArm && armFormOpen ? (
+          <ChangeArmForm
+            key={openRow.enrollment_id}
+            study={study}
+            row={openRow}
+            arms={arms}
+            onDone={() => {
+              setArmFormOpen(false);
+              onReload();
+            }}
+            onCancel={() => setArmFormOpen(false)}
+          />
+        ) : null}
+        {openRow && consentStatements.length && openRow.consent_answers ? (
+          <details className="research-advanced">
+            <summary>Consent answers · {consentTicked(openRow.consent_answers, consentStatements)}</summary>
+            <ConsentReview
+              consent={{ statements: consentStatements }}
+              answers={openRow.consent_answers}
+              idPrefix={`participant-consent-${openRow.enrollment_id}`}
+            />
+          </details>
+        ) : null}
         {openRow ? (
           <ParticipantDashboard
             studyId={study.study_id}

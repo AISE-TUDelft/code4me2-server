@@ -188,11 +188,19 @@ def _enrollment_resolver(db):
         # Lock the enrollment row so concurrent batches for the same subject
         # serialize inside the ingestion transaction.
         row = identity_store.get_enrollment(db, enrollment_id, for_update=True)
-        if row is not None:
-            study = db.get(StudyRow, row.study_id)
-            if getattr(study, "research_status", None) == ResearchStudyStatus.STUDY_STOPPED.value:
-                setattr(row, "status", EnrollmentStatus.STUDY_STOPPED.value)
-        return identity_store.row_to_enrollment(row) if row is not None else None
+        if row is None:
+            return None
+        enrollment = identity_store.row_to_enrollment(row)
+        study = db.get(StudyRow, row.study_id)
+        # A stopped study refuses an active enrollment's events. Only this answer
+        # says so: the stored status is the stop cascade's to write, and the
+        # ingestion commit must never turn a revoked or completed one into it.
+        if (
+            getattr(study, "research_status", None) == ResearchStudyStatus.STUDY_STOPPED.value
+            and enrollment.status == EnrollmentStatus.ACTIVE
+        ):
+            enrollment = enrollment.model_copy(update={"status": EnrollmentStatus.STUDY_STOPPED})
+        return enrollment
 
     return resolve
 

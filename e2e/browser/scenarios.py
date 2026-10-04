@@ -472,26 +472,27 @@ def main() -> int:
             )
 
             clone_name = f"{renamed} (copy)"
-            owner.click('button:has-text("Clone as new Draft")')
-            # The clone form renders above the study list, not inside the details panel.
-            clone_form = owner.locator("form.study-create-form").filter(has_text="Clone study")
+            owner.click('button:has-text("Duplicate")')
+            # The duplicate form renders above the study list, not inside the
+            # details panel: every field is prefilled and stays editable.
+            clone_form = owner.locator("form.study-create-form").filter(has_text="Duplicate study")
             clone_form.wait_for()
             clone_profile = clone_form.get_by_label(PROFILE_NAME, exact=True)
-            clone_copies = clone_form.get_by_text(clone_name).count() >= 1
+            clone_copies = clone_form.get_by_label("Name", exact=True).input_value() == clone_name
             record(
                 "C3",
-                "clone form is prefilled from the stopped study without profiles",
+                "duplicate form is prefilled from the stopped study, including its still-active profile",
                 clone_copies
                 and "not copied" in clone_form.inner_text()
                 and clone_profile.count() == 1
-                and not clone_profile.is_checked(),
+                and clone_profile.is_checked(),
             )
             if clone_profile.count() != 1:
-                record_blocked("C4", "clone persists a distinct DRAFT study with the reselected profile", "the agent profile is not offered in the clone form")
+                record_blocked("C4", "clone persists a distinct DRAFT study with the reselected profile", "the agent profile is not offered in the duplicate form")
             else:
                 clone_profile.check()
-                clone_form.get_by_role("button", name="Clone Draft study").click()
-                owner.wait_for_selector("text=/Clone created/", timeout=20000)
+                clone_form.get_by_role("button", name="Create Draft study").click()
+                owner.wait_for_selector("text=/Duplicate of .* created in Draft state/", timeout=20000)
                 clone_id = find_study_id(owner, clone_name)
                 clone_study = study_detail(owner, clone_id) if clone_id else {}
                 clone_profiles = [item.get("profile_id") for item in clone_study.get("profile_selections") or []]

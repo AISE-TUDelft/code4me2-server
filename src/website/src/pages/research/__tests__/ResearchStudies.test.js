@@ -8,6 +8,8 @@ jest.mock("../../../utils/api");
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Analytics sections remember their open state per browser.
+  localStorage.clear();
   api.getCurrentUser.mockResolvedValue({ ok: true, user: { is_admin: false, can_research: true } });
   api.getStudyParticipants.mockResolvedValue({
     ok: true,
@@ -104,6 +106,59 @@ test("lists participants with their assigned arm in the Participants tab", async
   expect(screen.getByText("Study-local participant codes only; account identities never appear here.")).toBeInTheDocument();
 });
 
+test("an arm set by hand and the consent answers show in the table and the drawer", async () => {
+  const study = {
+    ...STUDY,
+    assignment_policy: { strategy: "DETERMINISTIC_HASH", manual_override: true },
+    consent: {
+      custom: true,
+      statements: [
+        { id: "participate", text: "I agree to take part.", required: true },
+        { id: "follow-up", text: "You may contact me later.", required: false },
+      ],
+    },
+  };
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [study] });
+  api.getStudyParticipants.mockResolvedValue({
+    ok: true,
+    data: {
+      study_id: "study-1",
+      arms: [{ profile_id: "profile-1", name: "Code4Me", model: "model-a", participants: 1 }],
+      participants: [
+        {
+          enrollment_id: "e-1",
+          participant_code: "P-ALPHA",
+          status: "ACTIVE",
+          enrolled_at: "2026-09-01T10:00:00Z",
+          arm: { profile_id: "profile-1", name: "Code4Me", model: "model-a", strategy: "MANUAL" },
+          consent_answers: { participate: true, "follow-up": false },
+          reassignable: false,
+          sessions: { total: 1 },
+          activity: { prompts: 2 },
+          health: "ACTIVE",
+        },
+      ],
+    },
+  });
+  api.getStudyParticipantDashboard.mockResolvedValue({ ok: true, data: { enrollment_id: "e-1", participant_code: "P-ALPHA", metrics: {} } });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /participants/i }));
+  const table = await screen.findByRole("table", { name: "Enrolled participants" });
+  expect(within(table).getByText("Set by hand")).toBeInTheDocument();
+  expect(within(table).getByText("1 of 2 consent statements ticked")).toBeInTheDocument();
+
+  fireEvent.click(within(table).getByRole("button", { name: "Open dashboard for participant P-ALPHA" }));
+  const drawer = await screen.findByRole("dialog", { name: "Participant P-ALPHA" });
+  expect(within(drawer).getByText("Set by hand")).toBeInTheDocument();
+  expect(within(drawer).getByText("Consent answers · 1 of 2 consent statements ticked")).toBeInTheDocument();
+  expect(within(drawer).getByTitle("Ticked")).toBeInTheDocument();
+  expect(within(drawer).getByTitle("Not ticked")).toBeInTheDocument();
+  // Used already: no Change arm control.
+  expect(within(drawer).queryByRole("button", { name: "Change arm" })).not.toBeInTheDocument();
+});
+
 test("opens a participant's telemetry dashboard in a drawer", async () => {
   api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
   api.getStudyParticipants.mockResolvedValue({
@@ -160,6 +215,221 @@ test("opens a participant's telemetry dashboard in a drawer", async () => {
   expect(within(drawer).getByText(/metadata only/i)).toBeInTheDocument();
 });
 
+test("a participant's chat opens as a turn-by-turn trace inside the drawer", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.getStudyParticipants.mockResolvedValue({
+    ok: true,
+    data: {
+      arms: [],
+      participants: [
+        { enrollment_id: "e-1", participant_code: "P-ALPHA", status: "ACTIVE", arm: { profile_id: "profile-1", name: "Code4Me" }, sessions: { total: 1 }, activity: { prompts: 2 }, health: "ACTIVE" },
+      ],
+    },
+  });
+  api.getStudyParticipantDashboard.mockResolvedValue({
+    ok: true,
+    data: {
+      enrollment_id: "e-1",
+      participant_code: "P-ALPHA",
+      metrics: {},
+      chats: [
+        { chat_id: "chat-1", ordinal: 1, used: true, started_at: "2026-10-01T09:00:00Z", start_kind: "new", end_reason: "host_closed", prompts: 2, tool_calls: 1, rejections: 0, revisions: 1, previous_end_reason: null },
+        // A chat the IDE showed after a delete but nobody prompted.
+        { chat_id: "chat-0", ordinal: null, used: false, started_at: "2026-10-01T09:30:00Z", start_kind: "load", end_reason: "open", prompts: 0, tool_calls: 0, rejections: 0, revisions: 0, previous_end_reason: null },
+      ],
+      chat_summary: { chats: 1, unused_chats: 1, started: { new: 1 }, ended: { host_closed: 1 }, unattributed_prompts: 0, lifecycle_coverage: "AVAILABLE" },
+      timeline: [{ occurred_at: "2026-10-01T09:00:00Z", event_type: "interaction.started", source: "acp", acp_method: "session/new" }],
+    },
+  });
+  const turn = (index, blocks) => ({
+    index,
+    kind: "turn",
+    turn_id: String(index),
+    started_at: "2026-10-01T09:00:01Z",
+    completed_at: "2026-10-01T09:00:09Z",
+    duration_ms: 8000,
+    stop_reason: "end_turn",
+    usage_tokens: 120,
+    continues: false,
+    blocks,
+  });
+  api.getStudyChatTrace
+    .mockResolvedValueOnce({
+      ok: true,
+      data: {
+        content_capture_enabled: true,
+        next_cursor: "page-2",
+        turns: [
+          turn(1, [
+            {
+              type: "prompt",
+              text: "Fix the failing test",
+              redacted: false,
+              truncated: false,
+              captured: true,
+              attachments: [
+                { name: "test_math.py", type: "resource_link" },
+                { name: "Calc.java", type: "resource" },
+              ],
+              offset_ms: 0,
+            },
+            { type: "thought", text: "The assertion is off by one.", redacted: false, truncated: false, chunks: 3, offset_ms: 900 },
+            {
+              type: "tool",
+              title: "Edit test_math.py",
+              tool_kind: "edit",
+              status: "completed",
+              duration_ms: 1500,
+              arguments: { text: '{"path": "test_math.py"}', redacted: false, truncated: false },
+              result: null,
+              diffs: [{ path: "test_math.py", diff: "-assert 3\n+assert 4", truncated: false }],
+              permission: { decision: "revise", wait_ms: 4000 },
+              offset_ms: 2000,
+            },
+            {
+              type: "tool",
+              title: "Write Calc.java",
+              tool_kind: "edit",
+              status: "failed",
+              duration_ms: 9000,
+              arguments: null,
+              result: null,
+              diffs: [],
+              permission: {
+                decision: "revise",
+                wait_ms: 3000,
+                revision: {
+                  form: "accept",
+                  status: "applied",
+                  hunks: 3,
+                  kept_hunks: 2,
+                  instructions: { text: "Keep LIMIT; return value + value.", redacted: false, truncated: false },
+                },
+              },
+              offset_ms: 4000,
+            },
+          ]),
+        ],
+      },
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      data: {
+        content_capture_enabled: true,
+        next_cursor: null,
+        turns: [turn(2, [{ type: "prompt", text: null, redacted: true, truncated: false, captured: true, offset_ms: 0 }])],
+      },
+    });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /participants/i }));
+  fireEvent.click(await screen.findByRole("button", { name: "Open dashboard for participant P-ALPHA" }));
+  const drawer = await screen.findByRole("dialog", { name: "Participant P-ALPHA" });
+  expect(await within(drawer).findByText("Chat opened")).toBeInTheDocument();
+  // Unused chats are listed apart, without a number or a trace.
+  expect(within(drawer).getByText("1 more chat opened without a prompt")).toBeInTheDocument();
+  expect(within(drawer).getAllByRole("button", { name: /^View trace of chat/ })).toHaveLength(1);
+  fireEvent.click(within(drawer).getByRole("button", { name: "View trace of chat 1" }));
+
+  await waitFor(() => expect(api.getStudyChatTrace).toHaveBeenCalledWith("study-1", "e-1", "chat-1", { cursor: null, limit: 20 }));
+  expect(await within(drawer).findByText("Fix the failing test")).toBeInTheDocument();
+  // What the IDE sent along is named apart from what the participant typed.
+  expect(within(drawer).getByText("Sent along by the IDE: test_math.py (link), Calc.java (contents)")).toBeInTheDocument();
+  expect(within(drawer).getByText("The assertion is off by one.")).toBeInTheDocument();
+  expect(within(drawer).getByText("Edit test_math.py")).toBeInTheDocument();
+  expect(within(drawer).getAllByText("Revise chosen")).toHaveLength(2);
+  // A sent Revise form: the proposed call never ran as such, it was revised.
+  expect(within(drawer).getByText("Revised")).toBeInTheDocument();
+  expect(within(drawer).getByText("Revise… · Form sent · kept parts written · kept 2 of 3 changes")).toBeInTheDocument();
+  expect(within(drawer).getByText("Keep LIMIT; return value + value.")).toBeInTheDocument();
+
+  fireEvent.click(within(drawer).getByRole("button", { name: "Load more turns" }));
+  await waitFor(() => expect(api.getStudyChatTrace).toHaveBeenLastCalledWith("study-1", "e-1", "chat-1", { cursor: "page-2", limit: 20 }));
+  expect(await within(drawer).findByText("Turn 2")).toBeInTheDocument();
+  expect(within(drawer).getByText("Not captured")).toBeInTheDocument();
+  expect(within(drawer).queryByRole("button", { name: "Load more turns" })).not.toBeInTheDocument();
+
+  fireEvent.click(within(drawer).getByRole("button", { name: "Back to the dashboard" }));
+  expect(await within(drawer).findByRole("button", { name: "View trace of chat 1" })).toBeInTheDocument();
+});
+
+test("a manual-assignment study lets the owner change an unused participant's arm", async () => {
+  const manual = {
+    ...STUDY,
+    research_status: "ACTIVE",
+    assignment_policy: { strategy: "DETERMINISTIC_HASH", manual_override: true },
+    profile_selections: [
+      { profile_id: "profile-1", name: "Code4Me", model: "model-a" },
+      { profile_id: "profile-2", name: "Codex", model: "model-b" },
+    ],
+  };
+  const row = {
+    enrollment_id: "e-1",
+    participant_code: "P-ALPHA",
+    status: "ACTIVE",
+    reassignable: true,
+    arm: { profile_id: "profile-1", name: "Code4Me", model: "model-a", strategy: "DETERMINISTIC_HASH" },
+    sessions: { total: 0 },
+    activity: { prompts: 0 },
+    health: "NO_TELEMETRY",
+  };
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [manual] });
+  api.getStudyParticipants.mockResolvedValue({ ok: true, data: { arms: [], participants: [row] } });
+  api.getStudyParticipantDashboard.mockResolvedValue({ ok: true, data: { enrollment_id: "e-1", participant_code: "P-ALPHA" } });
+  api.changeEnrollmentAssignment
+    .mockResolvedValueOnce({ ok: false, status: 409, code: "ASSIGNMENT_IN_USE", error: "in use" })
+    .mockResolvedValueOnce({ ok: true, data: { changed: true } });
+  jest.spyOn(window, "confirm").mockReturnValue(true);
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /participants/i }));
+  fireEvent.click(await screen.findByRole("button", { name: "Open dashboard for participant P-ALPHA" }));
+  const drawer = await screen.findByRole("dialog", { name: "Participant P-ALPHA" });
+  fireEvent.click(within(drawer).getByRole("button", { name: "Change arm" }));
+  const form = within(drawer).getByRole("form", { name: "Change arm" });
+  fireEvent.change(within(form).getByLabelText("Arm"), { target: { value: "profile-2" } });
+
+  fireEvent.click(within(form).getByRole("button", { name: "Change arm" }));
+  expect(await within(form).findByText(/already used their arm/i)).toBeInTheDocument();
+  fireEvent.click(within(form).getByRole("button", { name: "Change arm" }));
+
+  await waitFor(() => expect(api.changeEnrollmentAssignment).toHaveBeenLastCalledWith("study-1", "e-1", "profile-2"));
+  await waitFor(() => expect(api.getStudyParticipants).toHaveBeenCalledTimes(2));
+  window.confirm.mockRestore();
+});
+
+test("participants without an override-able arm get no Change arm control", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.getStudyParticipants.mockResolvedValue({
+    ok: true,
+    data: {
+      arms: [],
+      participants: [
+        {
+          enrollment_id: "e-1",
+          participant_code: "P-ALPHA",
+          status: "ACTIVE",
+          reassignable: false,
+          arm: { profile_id: "profile-1", name: "Code4Me", model: "model-a" },
+          sessions: { total: 1 },
+          activity: { prompts: 1 },
+          health: "ACTIVE",
+        },
+      ],
+    },
+  });
+  api.getStudyParticipantDashboard.mockResolvedValue({ ok: true, data: { enrollment_id: "e-1" } });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /participants/i }));
+  fireEvent.click(await screen.findByRole("button", { name: "Open dashboard for participant P-ALPHA" }));
+  const drawer = await screen.findByRole("dialog", { name: "Participant P-ALPHA" });
+  expect(within(drawer).queryByRole("button", { name: "Change arm" })).not.toBeInTheDocument();
+});
+
 test("the analytics tab compares arms on participant-level metrics", async () => {
   const twoArms = {
     ...STUDY,
@@ -206,9 +476,14 @@ test("the analytics tab compares arms on participant-level metrics", async () =>
   fireEvent.click(screen.getByRole("tab", { name: /analytics/i }));
 
   expect(await screen.findByText("Arm comparison")).toBeInTheDocument();
+  // "Agent autonomy" is open on a first visit; collapsed categories mount nothing.
   expect(screen.getByText("Tool calls per prompt")).toBeInTheDocument();
+  expect(screen.queryByText("Approval denial rate")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText("Human oversight"));
+  expect(await screen.findByText("Approval denial rate")).toBeInTheDocument();
   // Codex signs in with ChatGPT and bypasses the metered relay.
-  expect(screen.getByText("Not observable (Codex)")).toBeInTheDocument();
+  fireEvent.click(screen.getByText("Context and tool transitions"));
+  expect(await screen.findByText("Not observable (Codex)")).toBeInTheDocument();
   // "All time" reuses the summary the overview loaded: one request, not two.
   expect(api.getStudyAnalyticsSummary).toHaveBeenCalledTimes(1);
   expect(api.getStudyAnalyticsSummary).toHaveBeenCalledWith("study-1", {});
@@ -220,6 +495,116 @@ test("the analytics tab compares arms on participant-level metrics", async () =>
       expect.objectContaining({ start: expect.any(String), end: expect.any(String) }),
     ),
   );
+});
+
+const FILTERABLE_SUMMARY = {
+  totals: { participants_enrolled: 2, participants_with_telemetry: 2, participants_active: 2, prompts: 9, tool_calls: 4, sessions: 2 },
+  arms: [{ profile_id: "profile-1", name: "Code4Me", participants: 2, metrics: {} }],
+  daily: [],
+  tools: [],
+  coverage: {},
+  filters: { arms: [], participants: [], matched_participants: 2, spend_scope: "study" },
+  filter_options: {
+    arms: [{ profile_id: "profile-1", name: "Code4Me", participants: 2 }],
+    participants: [
+      { enrollment_id: "e-1", participant_code: "P-ONE", profile_id: "profile-1", status: "ACTIVE" },
+      { enrollment_id: "e-2", participant_code: "P-TWO", profile_id: "profile-1", status: "ACTIVE" },
+    ],
+  },
+  chat_history: {
+    by_ordinal: [
+      { profile_id: "profile-1", bucket: "1", participants: 2, chats: 2, prompts_per_chat: 3, cancel_rate: 0, rejections_per_prompt: 0.5, revisions_per_prompt: 0, end_reasons: [] },
+      { profile_id: "profile-1", bucket: "2", participants: 1, chats: 1, prompts_per_chat: 2, cancel_rate: 0, rejections_per_prompt: 0, revisions_per_prompt: 0, end_reasons: [] },
+    ],
+    by_previous_end: [
+      { profile_id: "profile-1", previous_end_reason: "host_closed", participants: 1, chats: 1, prompts_per_chat: 2, cancel_rate: 0, rejections_per_prompt: 0, revisions_per_prompt: 0, end_reasons: [] },
+    ],
+  },
+};
+
+test("analytics filters narrow the summary and open a single participant's dashboard", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.getStudyAnalyticsSummary.mockImplementation((studyId, request) =>
+    Promise.resolve({
+      ok: true,
+      data:
+        request && request.participants && request.participants.length
+          ? {
+              ...FILTERABLE_SUMMARY,
+              totals: { ...FILTERABLE_SUMMARY.totals, participants_enrolled: 1, prompts: 4 },
+              filters: {
+                arms: [],
+                participants: [{ enrollment_id: "e-1", participant_code: "P-ONE" }],
+                matched_participants: 1,
+                spend_scope: "filtered",
+              },
+            }
+          : FILTERABLE_SUMMARY,
+    }),
+  );
+  api.getStudyParticipantDashboard.mockResolvedValue({ ok: true, data: { enrollment_id: "e-1", participant_code: "P-ONE" } });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /analytics/i }));
+  fireEvent.click(await screen.findByText("Filters"));
+  fireEvent.click(screen.getByLabelText(/P-ONE/));
+  fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+
+  await waitFor(() =>
+    expect(api.getStudyAnalyticsSummary).toHaveBeenLastCalledWith("study-1", { arms: [], participants: ["e-1"] }),
+  );
+  expect(await screen.findByText(/Showing 1 participant/)).toBeInTheDocument();
+  // The floating panel closes once filters apply, so it covers nothing.
+  expect(screen.getByText("Filters (1)").closest("details").open).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Open participant dashboard" }));
+  expect(await screen.findByRole("dialog", { name: "Participant P-ONE" })).toBeInTheDocument();
+  await waitFor(() => expect(api.getStudyParticipantDashboard).toHaveBeenCalledWith("study-1", "e-1"));
+
+  // Clearing returns to the preloaded all-time summary without a new request.
+  const calls = api.getStudyAnalyticsSummary.mock.calls.length;
+  fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  await waitFor(() => expect(screen.queryByText(/Showing 1 participant/)).not.toBeInTheDocument());
+  expect(api.getStudyAnalyticsSummary.mock.calls.length).toBe(calls);
+});
+
+test("an arm filter that matches nobody still names the arm", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.getStudyAnalyticsSummary.mockImplementation((studyId, request) =>
+    Promise.resolve({
+      ok: true,
+      data:
+        request && request.arms && request.arms.length
+          ? {
+              ...FILTERABLE_SUMMARY,
+              arms: [{ profile_id: "profile-1", name: "Code4Me", participants: 0, metrics: {} }],
+              filters: { arms: ["profile-1"], participants: [], matched_participants: 0, spend_scope: "filtered" },
+            }
+          : FILTERABLE_SUMMARY,
+    }),
+  );
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /analytics/i }));
+  fireEvent.click(await screen.findByText("Filters"));
+  fireEvent.click(screen.getByLabelText(/^Code4Me/));
+  fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+  expect(await screen.findByText(/Showing 0 participants in Code4Me\./)).toBeInTheDocument();
+});
+
+test("the chat history section compares chats by number and by how the previous one ended", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [STUDY] });
+  api.getStudyAnalyticsSummary.mockResolvedValue({ ok: true, data: FILTERABLE_SUMMARY });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /analytics/i }));
+  fireEvent.click(await screen.findByText("Chat history"));
+
+  expect(await screen.findByText("#1")).toBeInTheDocument();
+  expect(screen.getByText("#2")).toBeInTheDocument();
+  expect(screen.getByText(/IDE ended the agent \(chat deleted or IDE closed\)/)).toBeInTheDocument();
 });
 
 test("a superseded analytics range never replaces the newer one", async () => {
@@ -449,6 +834,8 @@ test("creates a Draft study through the lifecycle API", async () => {
     // No metered arm selected: no budget, no warning threshold.
     defaultBudgetUsd: "",
     budgetWarningFraction: null,
+    allowManualAssignment: false,
+    consent: null,
   }));
 });
 
@@ -479,7 +866,52 @@ test("selects agent profiles when creating a study", async () => {
     profileIds: ["profile-1"],
     defaultBudgetUsd: "",
     budgetWarningFraction: null,
+    allowManualAssignment: false,
+    consent: null,
   }));
+});
+
+test("a custom consent form and manual assignment reach the create request", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [] });
+  api.getAgentProfiles.mockResolvedValue({
+    ok: true,
+    data: [{ profile_id: "profile-1", name: "Code4Me", model: "model-a", is_active: true }],
+  });
+  api.createResearchStudy.mockResolvedValue({ ok: true, data: { study: STUDY } });
+
+  renderPage();
+  fireEvent.click(await screen.findByRole("button", { name: "New study" }));
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Consent study" } });
+  fireEvent.click(await screen.findByLabelText("Code4Me"));
+  fireEvent.click(screen.getByLabelText(/allow manual assignment/i));
+  fireEvent.click(screen.getByLabelText(/custom form/i));
+
+  const submit = screen.getByRole("button", { name: "Create Draft study" });
+  // The document is required before the study can be created.
+  expect(submit).toBeDisabled();
+  expect(screen.getByText(/write the consent document/i)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Consent document"), {
+    target: { value: "Purpose\nWe compare agents. https://example.org" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Add statement" }));
+  fireEvent.change(screen.getByLabelText("Statement 2"), { target: { value: "My data may be reused." } });
+  expect(submit).not.toBeDisabled();
+  fireEvent.click(submit);
+
+  await waitFor(() =>
+    expect(api.createResearchStudy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowManualAssignment: true,
+        consent: {
+          document: "Purpose\nWe compare agents. https://example.org",
+          statements: [
+            { id: "s1", text: "I have read the information above and agree to take part in this study.", required: true },
+            { id: "s2", text: "My data may be reused.", required: false },
+          ],
+        },
+      }),
+    ),
+  );
 });
 
 test("defaults the session policy to a complete valid policy", async () => {
@@ -539,7 +971,7 @@ test("surfaces typed policy errors from the server", async () => {
   expect(await screen.findByText(/SESSION_POLICY_INVALID/)).toBeInTheDocument();
 });
 
-test("stops a study and opens the clone profile-selection step", async () => {
+test("stops a study and offers to duplicate it", async () => {
   const stopped = { ...STUDY, research_status: "STUDY_STOPPED" };
   api.listResearchStudies
     .mockResolvedValueOnce({ ok: true, data: [STUDY] })
@@ -553,45 +985,92 @@ test("stops a study and opens the clone profile-selection step", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Stop study" }));
 
   await waitFor(() => expect(api.stopResearchStudy).toHaveBeenCalledWith("study-1"));
-  fireEvent.click(await screen.findByRole("button", { name: "Clone as new Draft" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Duplicate" }));
 
-  expect(await screen.findByRole("heading", { name: "Clone study" })).toBeInTheDocument();
-  expect(screen.getByText("Pilot study (copy)")).toBeInTheDocument();
-  expect(screen.getByText(/participants, consent, assignments, telemetry data, join code, and study ID are not copied/i)).toBeInTheDocument();
-  expect(api.cloneResearchStudy).not.toHaveBeenCalled();
+  expect(await screen.findByRole("heading", { name: "Duplicate study" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Name")).toHaveValue("Pilot study (copy)");
+  expect(
+    screen.getByText(/participants, consent records, assignments, telemetry data, the schedule and the join code are not copied/i),
+  ).toBeInTheDocument();
+  expect(api.createResearchStudy).not.toHaveBeenCalled();
   window.confirm.mockRestore();
 });
 
-test("clone submits reselected profiles and explains what is copied", async () => {
-  const stopped = { ...STUDY, research_status: "STUDY_STOPPED" };
-  const clone = { ...STUDY, study_id: "study-2", name: "Pilot study (copy)" };
+test("a duplicate of a running study prefills every option and is created like a new study", async () => {
+  const source = {
+    ...STUDY,
+    research_status: "ACTIVE",
+    telemetry_policy: { allowed_field_classes: ["STRUCTURAL", "BEHAVIORAL"] },
+    session_policy: { idle_timeout_seconds: 3600, resume_grace_seconds: 900, heartbeat_seconds: 60 },
+    assignment_policy: { strategy: "DETERMINISTIC_HASH", manual_override: true },
+    consent: {
+      custom: true,
+      document: "About the study",
+      notice: "The platform records metadata.",
+      statements: [{ id: "participate", text: "I agree.", required: true }],
+      digest: "d".repeat(64),
+    },
+    profile_selections: [
+      { profile_id: "profile-1", name: "Code4Me", model: "model-a" },
+      { profile_id: "profile-gone", name: "Retired arm", model: "model-z" },
+    ],
+  };
+  const duplicate = { ...STUDY, study_id: "study-2", name: "Pilot study (copy)" };
   api.listResearchStudies
-    .mockResolvedValueOnce({ ok: true, data: [stopped] })
-    .mockResolvedValueOnce({ ok: true, data: [stopped, clone] });
+    .mockResolvedValueOnce({ ok: true, data: [source] })
+    .mockResolvedValueOnce({ ok: true, data: [source, duplicate] });
   api.getAgentProfiles.mockResolvedValue({
     ok: true,
     data: [{ profile_id: "profile-1", name: "Code4Me", model: "model-a", is_active: true }],
   });
-  api.cloneResearchStudy.mockResolvedValue({ ok: true, data: { study: clone } });
+  api.createResearchStudy.mockResolvedValue({ ok: true, data: { study: duplicate } });
 
   renderPage();
   fireEvent.click(await screen.findByText("Pilot study"));
-  fireEvent.click(screen.getByRole("button", { name: "Clone as new Draft" }));
+  fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
 
-  const submit = await screen.findByRole("button", { name: "Clone Draft study" });
-  expect(submit).toBeDisabled();
-  fireEvent.click(submit);
-  expect(api.cloneResearchStudy).not.toHaveBeenCalled();
-
-  fireEvent.click(screen.getByLabelText("Code4Me"));
-  expect(submit).not.toBeDisabled();
-  fireEvent.click(submit);
+  expect(await screen.findByLabelText("Code4Me")).toBeChecked();
+  expect(screen.getByText(/Retired arm: the profile is no longer active/)).toBeInTheDocument();
+  expect(screen.getByLabelText(/allow manual assignment/i)).toBeChecked();
+  expect(screen.getByLabelText("Consent document")).toHaveValue("About the study");
+  fireEvent.click(screen.getByRole("button", { name: "Create Draft study" }));
 
   await waitFor(() =>
-    expect(api.cloneResearchStudy).toHaveBeenCalledWith("study-1", { profileIds: ["profile-1"] }),
+    expect(api.createResearchStudy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Pilot study (copy)",
+        profileIds: ["profile-1"],
+        telemetryPolicy: source.telemetry_policy,
+        sessionPolicy: source.session_policy,
+        allowManualAssignment: true,
+        consent: { document: "About the study", statements: [{ id: "participate", text: "I agree.", required: true }] },
+      }),
+    ),
   );
   expect(await screen.findByRole("heading", { name: "Pilot study (copy)" })).toBeInTheDocument();
-  expect(await screen.findByText(/Clone created in Draft state with the selected agent profiles/i)).toBeInTheDocument();
+  expect(await screen.findByText(/Duplicate of “Pilot study” created in Draft state/i)).toBeInTheDocument();
+});
+
+test("a duplicate recognises the presets whatever key order the server stores", async () => {
+  // PostgreSQL JSONB returns keys in its own order, not the order sent.
+  const source = {
+    ...STUDY,
+    research_status: "ACTIVE",
+    telemetry_policy: { content_capture: true, allowed_field_classes: ["STRUCTURAL", "METRICS", "DIAGNOSTICS", "CODE_METADATA", "CONTENT"] },
+    session_policy: { heartbeat_seconds: 30, idle_timeout_seconds: 600, resume_grace_seconds: 120 },
+  };
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [source] });
+  api.getAgentProfiles.mockResolvedValue({
+    ok: true,
+    data: [{ profile_id: "profile-1", name: "Code4Me", model: "model-a", is_active: true }],
+  });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+
+  expect(await screen.findByRole("radio", { name: /^Everything/ })).toBeChecked();
+  expect(document.getElementById("study-session-preset")).toHaveValue("standard");
 });
 
 test("shows the kill-switch control to admins and calls the operations API", async () => {
@@ -764,7 +1243,7 @@ test("renders safe unavailable counts and hides terminal controls for stopped st
   expect(screen.getByText("Unavailable (Unavailable active)")).toBeInTheDocument();
   expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(2);
   expect(screen.queryByRole("button", { name: "Stop study" })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Clone as new Draft" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Duplicate" })).toBeInTheDocument();
 });
 
 test("a profile-less clone is shown as not joinable", async () => {
@@ -901,7 +1380,7 @@ test("a typed budget error from the server lands on the budget field", async () 
   expect(screen.getAllByRole("alert")).toHaveLength(1);
 });
 
-test("a clone prefills the source study's default budget for its metered arms", async () => {
+test("a duplicate prefills the source study's budget and warning threshold for its metered arms", async () => {
   const stopped = {
     ...STUDY,
     research_status: "STUDY_STOPPED",
@@ -909,22 +1388,23 @@ test("a clone prefills the source study's default budget for its metered arms", 
   };
   api.listResearchStudies.mockResolvedValue({ ok: true, data: [stopped] });
   api.getAgentProfiles.mockResolvedValue({ ok: true, data: [GOOSE_PROFILE] });
-  api.cloneResearchStudy.mockResolvedValue({ ok: true, data: { study: { ...STUDY, study_id: "study-2" } } });
+  api.createResearchStudy.mockResolvedValue({ ok: true, data: { study: { ...STUDY, study_id: "study-2" } } });
 
   renderPage();
   fireEvent.click(await screen.findByText("Pilot study"));
-  fireEvent.click(screen.getByRole("button", { name: "Clone as new Draft" }));
+  fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
   fireEvent.click(await screen.findByLabelText("Goose arm"));
 
   const budget = screen.getByLabelText("Default budget per participant (USD)");
   expect(budget).toHaveValue("20.00");
-  // The warning threshold is copied by the server, so the clone form has no field for it.
-  expect(screen.queryByLabelText("Warn participants at (% of budget used)")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Warn participants at (% of budget used)")).toHaveValue(80);
   fireEvent.change(budget, { target: { value: "25" } });
-  fireEvent.click(screen.getByRole("button", { name: "Clone Draft study" }));
+  fireEvent.click(screen.getByRole("button", { name: "Create Draft study" }));
 
   await waitFor(() =>
-    expect(api.cloneResearchStudy).toHaveBeenCalledWith("study-1", { profileIds: ["profile-goose"], defaultBudgetUsd: "25.00" }),
+    expect(api.createResearchStudy).toHaveBeenCalledWith(
+      expect.objectContaining({ profileIds: ["profile-goose"], defaultBudgetUsd: "25.00", budgetWarningFraction: 0.8 }),
+    ),
   );
 });
 
@@ -1072,4 +1552,44 @@ test("the overview says Codex arms are not metered", async () => {
 
   expect(await screen.findByText("Codex arms are not metered")).toBeInTheDocument();
   expect(screen.queryByText("Budget per participant")).not.toBeInTheDocument();
+});
+
+test("the analytics tab exports the selected datasets as a ZIP", async () => {
+  api.listResearchStudies.mockResolvedValue({ ok: true, data: [{ ...STUDY, telemetry_policy: {} }] });
+  api.getStudyAnalyticsSummary.mockResolvedValue({ ok: true, data: FILTERABLE_SUMMARY });
+  api.downloadStudyExport
+    .mockResolvedValueOnce({ ok: false, status: 422, code: "UNKNOWN_FILTER_VALUE", error: "unknown" })
+    .mockResolvedValueOnce({ ok: true, blob: new Blob(["zip"]), filename: "Pilot-study-export.zip" });
+  const createObjectURL = jest.fn(() => "blob:export");
+  const revokeObjectURL = jest.fn();
+  Object.assign(URL, { createObjectURL, revokeObjectURL });
+
+  renderPage();
+  fireEvent.click(await screen.findByText("Pilot study"));
+  fireEvent.click(screen.getByRole("tab", { name: /analytics/i }));
+  fireEvent.click(await screen.findByRole("button", { name: "Export data" }));
+  const drawer = await screen.findByRole("dialog", { name: "Export study data" });
+
+  fireEvent.click(within(drawer).getByLabelText(/Research sessions/));
+  fireEvent.click(within(drawer).getByLabelText(/JSONL/));
+  // A metadata-only study has no content to export.
+  expect(within(drawer).getByLabelText(/Include captured content/)).toBeDisabled();
+  fireEvent.click(within(drawer).getByLabelText("Tool calls"));
+  fireEvent.click(within(drawer).getByRole("button", { name: /Download ZIP/ }));
+
+  expect(await within(drawer).findByText(/not part of this study any more/)).toBeInTheDocument();
+  expect(api.downloadStudyExport).toHaveBeenCalledWith("study-1", {
+    datasets: ["participants", "participant_metrics", "chats", "events"],
+    format: "jsonl",
+    eventCategories: ["tools"],
+    start: undefined,
+    end: undefined,
+    arms: [],
+    participants: [],
+    includeContent: false,
+  });
+
+  fireEvent.click(within(drawer).getByRole("button", { name: /Download ZIP/ }));
+  expect(await within(drawer).findByText("Downloaded Pilot-study-export.zip.")).toBeInTheDocument();
+  expect(createObjectURL).toHaveBeenCalled();
 });

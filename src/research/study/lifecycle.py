@@ -13,20 +13,29 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from agents.tools import set_harness_profile_fields
-from database.db_schemas import ResearchStudyStatus, Study
+from database.db_schemas import AgentTask, ResearchStudyStatus, Study
 from database.research_schemas import (
     RECORD_KIND_STUDY_LIFECYCLE,
+    InferenceReservation,
     ResearchEnrollment,
+    ResearchEvent,
     ResearchRecord,
     ResearchSessionV1,
     StudyAgentProfile,
     StudyAssignment,
 )
 from research.budget import ledger as budget_ledger
+from research.canonical import canonical_hash
 from research.participants import identity as identity_store
 from research.participants.enums import EnrollmentStatus
 from research.participants.models import ResearchEligibility
+from research.runtime.assignment.hashing import (
+    assignment_strategy,
+    hashed_profile,
+    manual_override_enabled,
+)
 from research.runtime.sessions.enums import CloseReason
+from research.study.protocol.enums import AssignmentStrategy
 from research.study.protocol.store import build_profile_selections
 
 
@@ -78,6 +87,27 @@ class ResearchStudyNotFoundError(ValueError):
 
 class CloneNotAllowedError(PermissionError):
     """Raised when a study that is not stopped is asked to clone."""
+
+
+@dataclass(frozen=True)
+class AssignmentOverrideSummary:
+    """The outcome of a manual arm change (``changed`` is False for a no-op)."""
+
+    enrollment_id: uuid.UUID
+    changed: bool
+    from_profile_id: Optional[uuid.UUID]
+    to_profile_id: uuid.UUID
+    strategy: str
+    assigned_at: Optional[datetime]
+
+
+class AssignmentOverrideError(Exception):
+    """A refused manual arm change; ``code``/``status_code`` map to the API error."""
+
+    def __init__(self, code: str, message: str, status_code: int = 409) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
 
 
 def profile_snapshot(profile: Any) -> dict[str, Any]:
@@ -163,8 +193,14 @@ def open_study_enrollment(
     *,
     now: Optional[datetime] = None,
     rng: Optional[Any] = None,
+    consent_digest: Optional[str] = None,
+    consent_snapshot: Optional[dict[str, Any]] = None,
 ) -> StudyEnrollmentSummary:
-    """Accept web consent and create enrollment/profile assignment atomically."""
+    """Accept web consent and create enrollment/profile assignment atomically.
+
+    ``consent_digest``/``consent_snapshot`` record the consent view the
+    participant accepted (see :mod:`research.study.consent`).
+    """
     timestamp = now or datetime.now(timezone.utc)
     normalized_code = str(join_code or "").strip().upper()
     study = session.execute(
@@ -217,8 +253,18 @@ def open_study_enrollment(
     )
     if not selected_profiles:
         raise ValueError("study has no selected agent profiles")
-    selected = rng.choice(selected_profiles) if rng is not None else secrets.choice(selected_profiles)
     enrollment_id = uuid.uuid4()
+    # The study's frozen assignment policy decides the draw; studies created
+    # before the policy existed keep the equal-probability CSPRNG pick.
+    strategy = assignment_strategy(getattr(study, "research_config_json", None))
+    if strategy == AssignmentStrategy.DETERMINISTIC_HASH.value:
+        selected = hashed_profile(
+            selected_profiles, study_id=study.study_id, enrollment_id=enrollment_id
+        )
+    elif strategy == AssignmentStrategy.RANDOM_EQUAL.value:
+        selected = rng.choice(selected_profiles) if rng is not None else secrets.choice(selected_profiles)
+    else:
+        raise ValueError(f"unknown assignment strategy {strategy!r}")
     enrollment = ResearchEnrollment(
         enrollment_id=enrollment_id,
         participant_id=participant_row.participant_id,
@@ -230,6 +276,8 @@ def open_study_enrollment(
         enrolled_at=timestamp,
         updated_at=timestamp,
         consent_accepted_at=timestamp,
+        consent_digest=consent_digest,
+        consent_snapshot_json=consent_snapshot,
         retention_action="RETAIN_ANONYMIZED",
     )
     assignment = StudyAssignment(
@@ -237,7 +285,7 @@ def open_study_enrollment(
         enrollment_id=enrollment_id,
         study_id=study.study_id,
         agent_profile_id=selected.profile_id,
-        strategy="RANDOM_EQUAL",
+        strategy=strategy,
         randomization_epoch=0,
         profile_digest=selected.profile_digest,
         profile_snapshot_json=selected.profile_snapshot_json,
@@ -326,7 +374,7 @@ def clone_stopped_research_study(
         is_research=True,
         research_status=ResearchStudyStatus.DRAFT.value,
         research_config_json=source_config,
-        research_config_digest=None,
+        research_config_digest=canonical_hash(source_config),
         join_code=allocate_join_code(session),
         created_at=timestamp,
         # Participant budgets are copied (or overridden), never reset to zero.
@@ -347,6 +395,152 @@ def clone_stopped_research_study(
     session.commit()
     session.refresh(clone)
     return clone
+
+
+def enrollments_with_activity(
+    session: Session,
+    study_id: uuid.UUID,
+    enrollment_ids: Optional[Sequence[uuid.UUID]] = None,
+) -> set[uuid.UUID]:
+    """Enrollments of a study that have used their arm.
+
+    Any research session, canonical event, metered inference reservation or agent
+    task counts: the built-in agent and the inference relay resolve the
+    assignment without a research session, so sessions alone are not enough.
+    """
+    scope = select(ResearchEnrollment.enrollment_id).where(ResearchEnrollment.study_id == study_id)
+    if enrollment_ids is not None:
+        scope = scope.where(ResearchEnrollment.enrollment_id.in_(list(enrollment_ids)))
+    used: set[uuid.UUID] = set()
+    for column in (
+        ResearchSessionV1.enrollment_id,
+        ResearchEvent.enrollment_id,
+        InferenceReservation.enrollment_id,
+        AgentTask.enrollment_id,
+    ):
+        used.update(
+            session.execute(select(column).where(column.in_(scope)).distinct()).scalars().all()
+        )
+    used.discard(None)
+    return used
+
+
+def reassign_enrollment(
+    session: Session,
+    study_id: uuid.UUID,
+    enrollment_id: uuid.UUID,
+    profile_id: uuid.UUID,
+    *,
+    actor: Optional[str],
+    now: Optional[datetime] = None,
+) -> AssignmentOverrideSummary:
+    """Set one participant's arm by hand before they have used it.
+
+    Only studies whose frozen assignment policy allows it, only for an active
+    enrollment with no activity yet, and only to one of the study's own arms.
+    The row keeps its ``randomization_epoch``, so the randomized arm stays
+    recomputable; ``strategy`` becomes ``MANUAL``. The enrollment's revocation
+    epoch is bumped so any credential minted concurrently is void, and an
+    audit record names the old and new arm.
+    """
+    timestamp = now or datetime.now(timezone.utc)
+    # Lock order matches stop/revoke: study, enrollment, assignment. The
+    # bootstrap of a manual-assignment study reads the assignment under a share
+    # lock, so a first session and an override serialize on that row; the
+    # enrollment is locked FOR NO KEY UPDATE so the session insert's foreign-key
+    # check is never blocked behind it (which would deadlock the two).
+    study = session.execute(
+        select(Study).where(Study.study_id == study_id).with_for_update(read=True)
+    ).scalar_one_or_none()
+    if study is None or not bool(getattr(study, "is_research", False)):
+        raise ResearchStudyNotFoundError("research study not found")
+    if not manual_override_enabled(getattr(study, "research_config_json", None)):
+        raise AssignmentOverrideError(
+            "MANUAL_ASSIGNMENT_DISABLED", "this study does not allow manual assignment"
+        )
+    if getattr(study, "research_status", None) == ResearchStudyStatus.STUDY_STOPPED.value:
+        raise AssignmentOverrideError("STUDY_STOPPED", "the study has been stopped")
+    enrollment = session.execute(
+        select(ResearchEnrollment)
+        .where(
+            ResearchEnrollment.enrollment_id == enrollment_id,
+            ResearchEnrollment.study_id == study_id,
+        )
+        .with_for_update(key_share=True)
+    ).scalar_one_or_none()
+    if enrollment is None:
+        raise AssignmentOverrideError(
+            "ENROLLMENT_NOT_FOUND", "no such enrollment in this study", status_code=404
+        )
+    if getattr(enrollment, "status", None) != EnrollmentStatus.ACTIVE.value:
+        raise AssignmentOverrideError("ENROLLMENT_NOT_ACTIVE", "the enrollment is not active")
+    selection = session.execute(
+        select(StudyAgentProfile).where(
+            StudyAgentProfile.study_id == study_id,
+            StudyAgentProfile.profile_id == profile_id,
+        )
+    ).scalar_one_or_none()
+    if selection is None:
+        raise AssignmentOverrideError(
+            "PROFILE_NOT_IN_STUDY", "the profile is not one of this study's arms", status_code=422
+        )
+    assignment = session.execute(
+        select(StudyAssignment)
+        .where(StudyAssignment.enrollment_id == enrollment_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if assignment is None:
+        raise AssignmentOverrideError("ASSIGNMENT_MISSING", "the enrollment has no assignment yet")
+    if enrollment_id in enrollments_with_activity(session, study_id, [enrollment_id]):
+        raise AssignmentOverrideError(
+            "ASSIGNMENT_IN_USE", "the participant has already used the assigned arm"
+        )
+
+    from_profile_id = getattr(assignment, "agent_profile_id", None)
+    if from_profile_id == profile_id:
+        # Nothing changes; end the transaction so the locks are released.
+        session.commit()
+        return AssignmentOverrideSummary(
+            enrollment_id=enrollment_id,
+            changed=False,
+            from_profile_id=from_profile_id,
+            to_profile_id=profile_id,
+            strategy=str(getattr(assignment, "strategy", "")),
+            assigned_at=getattr(assignment, "assigned_at", None),
+        )
+
+    setattr(assignment, "agent_profile_id", selection.profile_id)
+    setattr(assignment, "profile_digest", selection.profile_digest)
+    setattr(assignment, "profile_snapshot_json", selection.profile_snapshot_json)
+    setattr(assignment, "strategy", AssignmentStrategy.MANUAL.value)
+    setattr(assignment, "assigned_at", timestamp)
+    setattr(enrollment, "revocation_epoch", int(getattr(enrollment, "revocation_epoch", 0) or 0) + 1)
+    setattr(enrollment, "updated_at", timestamp)
+    session.add(
+        ResearchRecord(
+            record_id=uuid.uuid4(),
+            kind=RECORD_KIND_STUDY_LIFECYCLE,
+            scope_type="enrollment",
+            scope_id=enrollment_id,
+            study_id=study_id,
+            actor=actor,
+            occurred_at=timestamp,
+            payload_json={
+                "event": "ASSIGNMENT_OVERRIDDEN",
+                "from_profile_id": str(from_profile_id) if from_profile_id else None,
+                "to_profile_id": str(selection.profile_id),
+            },
+        )
+    )
+    session.commit()
+    return AssignmentOverrideSummary(
+        enrollment_id=enrollment_id,
+        changed=True,
+        from_profile_id=from_profile_id,
+        to_profile_id=selection.profile_id,
+        strategy=AssignmentStrategy.MANUAL.value,
+        assigned_at=timestamp,
+    )
 
 
 def revoke_research_enrollment(

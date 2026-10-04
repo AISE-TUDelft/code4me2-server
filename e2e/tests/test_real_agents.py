@@ -443,6 +443,8 @@ class TelemetryScopeTest(unittest.TestCase):
         frames = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": 1}},
             {"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {"cwd": "/tmp"}},
+            # The chat start is taken from the agent's answer, which names the chat.
+            {"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s1"}},
             {"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": {"sessionId": "s1"}},
             {
                 "jsonrpc": "2.0",

@@ -1,30 +1,58 @@
 # Research analytics scope
 
 This note records the scope boundaries of the research analytics read paths and
-the assignment-model protocol decision (ISSUE-13). It is documentation only: no
-randomization algorithm changed.
+the assignment-model protocol decisions (ISSUE-13, then the 2026-10 assignment
+policy).
 
 ## Assignment model (protocol decision)
 
-Assignment is **enrollment-owned, equal-probability, sticky random**:
+Assignment is **enrollment-owned, equal-probability, sticky random**, and every
+study freezes how it draws in its configuration
+(`research_config_json["assignment"]`, part of the configuration digest):
 
 - The unit of randomization is the `enrollment_id` (never account, device, task
-  or process).
-- Each enrollment receives one profile drawn with equal probability from the
-  study's frozen, digest-pinned profile selections
-  (`research.runtime.assignment.service.allocate`, strategy `RANDOM_EQUAL`).
-- The assignment is immutable and sticky: a repeated bootstrap/join returns the
-  existing assignment and never re-randomizes it
-  (`StudyAssignment`, unique `enrollment_id`; `randomization_epoch = 0`).
-- There is **no balancing, stratification, minimization, block randomization or
-  manual assignment** in V1. `AssignmentStrategy.STRATIFIED` /
-  `WEIGHTED_RANDOM` / `DETERMINISTIC_HASH` exist only as additive protocol
-  vocabulary; the V1 join path always allocates `RANDOM_EQUAL`.
+  or process); it is a server-generated UUID created when the participant
+  consents, so nobody can choose or re-roll it.
+- **Studies created since the 2026-10 decision** draw with
+  `DETERMINISTIC_HASH` (`research.runtime.assignment.hashing`). With `s` the
+  study id, `e` the randomization epoch (0), `u` the enrollment id and the
+  study's K arms ordered by `selection_order`:
 
-This is a deliberate study-protocol decision, not a randomization bug. If a
-study protocol requires balancing or stratification, that is a new protocol
-version and a separate issue; it must not be added by silently changing
-`allocate` or the join path.
+      h(u) = first 64 bits (big-endian) of SHA-256("s:e:u")
+      arm(u) = arm k with k = floor(K * h(u) / 2^64)
+
+  UUIDs are lowercase and hyphenated. The draw is reproducible from exported
+  data, P(arm k) = 1/K up to an error below 2^-64, and the study id salts it, so
+  studies are independent. Golden vector:
+  `00000000-0000-0000-0000-000000000001:0:00000000-0000-0000-0000-000000000002`
+  gives h = 0x39673deb8a861ef7, so k = 0 (K = 2 or 3) and k = 1 (K = 5).
+- **Studies created earlier** carry no `assignment` block and keep
+  `RANDOM_EQUAL`: an equal-probability draw from the system CSPRNG
+  (`secrets.choice` at join; `SystemRandom` in the bootstrap fallback).
+- Both are **simple randomization**: arm sizes are Multinomial(N, 1/K), so small
+  studies are often unbalanced (two arms: P(larger arm >= 60%) is .50 at N = 20,
+  .31 at N = 24, .27 at N = 40 and .06 at N = 100). There is no blocking,
+  stratification or minimization.
+- **Manual override (opt-in per study).** A study created with
+  `allow_manual_assignment` lets its owner set a participant's arm by hand
+  (`PUT /api/research/studies/{id}/enrollments/{enrollment_id}/assignment`), only
+  while the enrollment is active and before any research session, event,
+  metered inference reservation or agent task exists for it. The consent notice
+  of such a study says participants are assigned "at random or by the research
+  team". The row keeps its `randomization_epoch` and becomes `strategy = MANUAL`,
+  so the randomized arm stays recomputable (as-randomized vs. as-assigned
+  analyses); a `STUDY_LIFECYCLE` record (`ASSIGNMENT_OVERRIDDEN`) names the old
+  and new arm, and the session bootstrap reads the assignment under a share lock
+  so an override and a first session serialize.
+- Otherwise the assignment is immutable and sticky: a repeated bootstrap/join
+  returns the existing assignment and never re-randomizes it
+  (`StudyAssignment`, unique `enrollment_id`).
+- `AssignmentStrategy.STRATIFIED` / `WEIGHTED_RANDOM` remain additive protocol
+  vocabulary; `allocate` refuses any strategy other than `RANDOM_EQUAL` and
+  `DETERMINISTIC_HASH`.
+
+Changing how a study draws is a protocol decision recorded here, never a silent
+change to `allocate` or the join path.
 
 ## Personal agent analytics (unchanged)
 

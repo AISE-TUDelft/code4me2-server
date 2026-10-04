@@ -71,12 +71,18 @@ def get_assignment(
 
 
 def get_assignment_for_enrollment(
-    session: Session, enrollment_id: uuid.UUID
+    session: Session, enrollment_id: uuid.UUID, *, lock: bool = False
 ) -> Optional[StudyAssignment]:
-    """Fetch the unique sticky assignment for one enrollment."""
+    """Fetch the unique sticky assignment for one enrollment.
+
+    ``lock`` takes a share lock until the transaction ends, so a session start
+    and a manual arm change (which locks the row for update) serialize.
+    """
     statement = select(StudyAssignment).where(
         StudyAssignment.enrollment_id == enrollment_id,
     )
+    if lock:
+        statement = statement.with_for_update(read=True)
     return session.execute(statement).scalars().first()
 
 

@@ -7,6 +7,7 @@ import os
 import platform
 import random
 import re
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import date
@@ -31,6 +32,7 @@ from code4me2_agent.events import (
     emit_event,
 )
 from code4me2_agent.file_tools import TextEdit, apply_text_edits, describe_strategy
+from code4me2_agent.hunks import Hunk, RevisionOffer, apply_hunks
 from code4me2_agent.patching import PatchError, parse_patch
 from code4me2_agent.session_state import SessionToolState, normalize_workspace_path
 from code4me2_agent.tool_catalog import (
@@ -162,6 +164,17 @@ class ToolRegistryError(RuntimeError):
     def __init__(self, message: str, *, failure_reason: str) -> None:
         super().__init__(message)
         self.failure_reason = failure_reason
+
+
+class ToolRevisionRequested(ToolRegistryError):
+    """The user chose "Revise…": the call did not run as proposed.
+
+    ``result`` is the tool result the model sees instead (status ``revise``).
+    """
+
+    def __init__(self, message: str, *, result: dict[str, Any]) -> None:
+        super().__init__(message, failure_reason="approval_revised")
+        self.result = result
 
 
 def _turn_was_cancelled(cancellation_event: Event | None) -> bool:
@@ -484,6 +497,73 @@ class EditPreview:
         return self.new_text is not None
 
 
+# Tools whose "Revise…" form can keep some hunks of the change (apply_patch
+# only for a single update without a move); others get instructions only.
+_REVISE_HUNK_TOOLS = frozenset({"create_file", "write_file", "replace_text", "edit_file"})
+
+
+@dataclass(frozen=True)
+class _Revision:
+    """What became of an accepted "Revise…" form (``revise_status``).
+
+    ``applied``: the kept hunks were written; ``file_changed``: the file no
+    longer held the previewed text, so nothing was written; ``write_failed``:
+    writing them failed; ``instructions_only``: no hunk was kept.
+    """
+
+    status: str
+    kept: tuple[Hunk, ...]
+    total: int
+    instructions: str
+    path: str | None = None
+    merged_text: str | None = None
+    error: str | None = None
+    syntax_error: dict[str, Any] | None = None
+
+    def result(self) -> dict[str, Any]:
+        """The tool result the model sees instead of the tool output."""
+        result: dict[str, Any] = {
+            "status": "revise",
+            "kept_hunks": [hunk.label for hunk in self.kept],
+            "total_hunks": self.total,
+            "applied_path": self.path if self.status == "applied" else None,
+            "user_instructions": self.instructions,
+            "message": self._message(),
+        }
+        if self.syntax_error:
+            result["syntax_error"] = self.syntax_error
+        return result
+
+    def _message(self) -> str:
+        parts = f"{len(self.kept)} of the {self.total} parts of the proposed change"
+        if self.status == "applied":
+            done = (
+                f"The user kept {parts}; they are already written to {self.path} (re-read the "
+                "file before changing it again). Nothing else was applied."
+            )
+        elif self.status == "file_changed":
+            done = (
+                f"The user kept {parts}, but {self.path} changed after the change was proposed, "
+                "so nothing was written; re-read the file."
+            )
+        elif self.status == "write_failed":
+            done = (
+                f"The user kept {parts}, but writing them to {self.path} failed ({self.error}); "
+                "re-read the file."
+            )
+        else:
+            done = "The user did not approve this call as proposed; nothing was applied."
+        if self.instructions:
+            return (
+                f"{done} The user asked for a revision: follow user_instructions and propose the "
+                "revised version in this turn; it needs the user's approval again."
+            )
+        return (
+            f"{done} The user gave no further instructions: do not propose the dropped parts "
+            "again; continue the task or ask the user what should change."
+        )
+
+
 # Tools whose success means the workspace changed; a loop-guard count resets
 # after one, and verify-on-stop / self-review look at the turn's changes.
 _WORKSPACE_MUTATIONS = frozenset(
@@ -800,13 +880,26 @@ class ToolRegistry:
                 },
             )
             request_approval = getattr(self._event_sink, "request_approval", None)
-            decision = (
-                request_approval(tool_call, validated)
-                if callable(request_approval)
-                else None
-            )
+            offer = self._revision_offer(name, validated, preview)
+            if not callable(request_approval):
+                decision = None
+            elif offer is not None and _accepts_keyword(request_approval, "revise"):
+                decision = request_approval(tool_call, validated, revise=offer)
+            else:
+                decision = request_approval(tool_call, validated)
             outcome = getattr(decision, "decision", "unavailable")
             scope = getattr(decision, "scope", None)
+            revision = (
+                self._apply_revision(
+                    tool_call,
+                    decision,
+                    offer or RevisionOffer(),
+                    run_id=run_id,
+                    request_id=request_id,
+                )
+                if outcome == "revised"
+                else None
+            )
             self._record_permission(
                 "agent.permission.decided",
                 run_id=run_id,
@@ -818,12 +911,18 @@ class ToolRegistry:
                     "kind": metadata["kind"] if metadata else None,
                     "decision": (
                         outcome
-                        if outcome in ("accepted", "rejected", "cancelled", "unavailable")
+                        if outcome in ("accepted", "rejected", "cancelled", "unavailable", "revised")
                         else "unavailable"
                     ),
                     "decision_scope": scope,
+                    **_revision_telemetry(decision, offer, revision),
                 },
             )
+            if revision is not None:
+                self._emit_revision_card(tool_call, validated, metadata, preview, offer, revision)
+                raise ToolRevisionRequested(
+                    f"Tool approval revised for: {name}", result=revision.result()
+                )
             if not getattr(decision, "accepted", bool(decision)):
                 self._emit_tool_failed(
                     tool_call,
@@ -893,6 +992,90 @@ class ToolRegistry:
             dict(tool_call.arguments),
             metadata,
             message=f"Invalid arguments: {tool_call.argument_error}",
+        )
+
+    # ------------------------------------------------------------ revise
+
+    def _revision_offer(
+        self, name: str, arguments: dict[str, Any], preview: EditPreview | None
+    ) -> RevisionOffer | None:
+        """What "Revise…" offers on this approval; None when the profile switched it off.
+
+        A single-file text change offers its hunks; any other call offers
+        instructions only.
+        """
+        if not self._harness.approval_revise:
+            return None
+        path: object = None
+        if preview is not None and preview.has_diff:
+            if name in _REVISE_HUNK_TOOLS:
+                path = arguments.get("path")
+            elif name == "apply_patch":
+                actions = list(arguments.get("_patch") or [])
+                if (
+                    len(actions) == 1
+                    and getattr(actions[0], "action", None) == "update"
+                    and getattr(actions[0], "move_to", None) is None
+                ):
+                    path = getattr(actions[0], "path", None)
+        if not isinstance(path, str) or not path or preview is None:
+            return RevisionOffer()
+        return RevisionOffer(path=path, old_text=preview.old_text, new_text=preview.new_text)
+
+    def _apply_revision(
+        self,
+        tool_call: ToolCall,
+        decision: object,
+        offer: RevisionOffer,
+        *,
+        run_id: str,
+        request_id: str,
+    ) -> _Revision:
+        """Write the hunks the user kept, once, if the file still holds the previewed text.
+
+        The proposed call itself never runs. Nothing is written when no hunk
+        was kept or the file changed since the preview.
+        """
+        wanted = set(getattr(decision, "kept_hunks", ()) or ())
+        kept = tuple(hunk for hunk in offer.selectable_hunks if hunk.index in wanted)
+        instructions = str(getattr(decision, "instructions", "") or "")
+        total = len(offer.hunks)
+        if not kept or offer.path is None or offer.old_text is None or offer.new_text is None:
+            return _Revision("instructions_only", (), total, instructions)
+        try:
+            current: str | None = self._read_current_text(
+                offer.path, tool_call, run_id=run_id, request_id=request_id
+            )
+        except Exception:  # noqa: BLE001 - gone or unreadable: not the previewed text
+            current = None
+        if current != offer.old_text:
+            return _Revision("file_changed", kept, total, instructions, path=offer.path)
+        merged = apply_hunks(offer.old_text, offer.new_text, [hunk.index for hunk in kept])
+        write_file = self._file_tools.write_file
+        kwargs: dict[str, Any] = {
+            "path": offer.path,
+            "content": merged,
+            "tool_call_id": tool_call.tool_call_id,
+            "run_id": run_id,
+            "request_id": request_id,
+        }
+        if _accepts_keyword(write_file, "tool_name"):
+            kwargs["tool_name"] = tool_call.name
+        try:
+            written = write_file(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            return _Revision(
+                "write_failed", kept, total, instructions, path=offer.path, error=str(exc)
+            )
+        syntax_error = getattr(written, "syntax_error", None)
+        return _Revision(
+            "applied",
+            kept,
+            total,
+            instructions,
+            path=offer.path,
+            merged_text=merged,
+            syntax_error=syntax_error if isinstance(syntax_error, dict) else None,
         )
 
     # ---------------------------------------------------------- handlers
@@ -1235,6 +1418,48 @@ class ToolRegistry:
         self._emit_tool_start(tool_call, arguments, metadata, None, pending=False)
         self._emit_tool_failed(tool_call, arguments, metadata, None, message=f"Not run: {message}")
 
+    def _emit_revision_card(
+        self,
+        tool_call: ToolCall,
+        arguments: dict[str, Any],
+        metadata: dict[str, Any] | None,
+        preview: EditPreview | None,
+        offer: RevisionOffer | None,
+        revision: _Revision,
+    ) -> None:
+        """Close the card of a revised call: the old→merged diff when kept hunks were written."""
+        if revision.status != "applied":
+            detail = {
+                "file_changed": " (the file changed, so the kept parts were not applied)",
+                "write_failed": f" (applying the kept parts failed: {revision.error})",
+            }.get(revision.status, "")
+            self._emit_tool_failed(
+                tool_call, arguments, metadata, preview, message=f"Not run: revision requested{detail}."
+            )
+            return
+        if metadata is None:
+            return
+        self._event_sink.tool_call(
+            ToolCallEvent(
+                phase="completed",
+                tool_call_id=tool_call.tool_call_id,
+                tool_name=tool_call.name,
+                run_id="",
+                request_id="",
+                title=metadata["title"],
+                kind=metadata["kind"],
+                status="completed",
+                path=metadata.get("path"),
+                diff_old_text=offer.old_text if offer is not None else None,
+                diff_new_text=revision.merged_text,
+                content_text=(
+                    f"Applied {len(revision.kept)} of {revision.total} parts; "
+                    "the agent is revising the rest."
+                ),
+                locations=metadata.get("locations"),
+            )
+        )
+
     # ---------------------------------------------------------- previews
 
     def _edit_preview(
@@ -1370,6 +1595,35 @@ def _accepts_keyword(function: Any, name: str) -> bool:
     if name in parameters:
         return True
     return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+
+
+def _revision_telemetry(
+    decision: object, offer: RevisionOffer | None, revision: _Revision | None
+) -> dict[str, Any]:
+    """Decision payload keys of a "Revise…" form; empty when no form was shown.
+
+    The form outcome and status are behavioural and the counts system
+    metadata; the instructions travel as ``text`` (content: dropped when
+    content is not stored).
+    """
+    action = getattr(decision, "elicitation_action", None)
+    if not isinstance(action, str):
+        return {}
+    payload: dict[str, Any] = {
+        "elicitation_action": action,
+        "hunk_count": len(offer.hunks) if offer is not None else 0,
+    }
+    if revision is not None:
+        payload["kept_hunk_count"] = len(revision.kept)
+        payload["revise_status"] = revision.status
+        if revision.instructions:
+            payload["text"] = revision.instructions
+    return payload
+
+
+def _wrote_revision(result: dict[str, Any]) -> bool:
+    """A "Revise…" result whose kept hunks were written (the workspace changed)."""
+    return result.get("status") == "revise" and bool(result.get("applied_path"))
 
 
 def _requires_manual_approval(tool_name: str) -> bool:
@@ -3280,7 +3534,7 @@ class OpenAICompatibleReactAdapter:
         state.step += 1
         status = result.get("status")
         tool_class = self._tool_class(tool_call.name)
-        if tool_class == "edit" and status == "ok":
+        if tool_class == "edit" and (status == "ok" or _wrote_revision(result)):
             state.last_change_step = state.step
             # A verification result describes the code as it was; any later
             # change voids it (the gate verifies again when it can).
@@ -3303,7 +3557,9 @@ class OpenAICompatibleReactAdapter:
             return
         worst, worst_name = 0, ""
         for call, result in zip(tool_calls, results):
-            if self._tool_class(call.name) == "edit" and result.get("status") == "ok":
+            if self._tool_class(call.name) == "edit" and (
+                result.get("status") == "ok" or _wrote_revision(result)
+            ):
                 # The workspace changed: repeating a read or a test is progress.
                 state.call_counts.clear()
                 worst, worst_name = 0, ""
@@ -3466,6 +3722,8 @@ class OpenAICompatibleReactAdapter:
                 denial_reason=exc.failure_reason,
                 error_message=str(exc),
             )
+            if isinstance(exc, ToolRevisionRequested):
+                return {**base, **exc.result}
             if exc.failure_reason == "approval_rejected":
                 return {
                     **base,
@@ -4414,11 +4672,21 @@ def _hint_for(tool_name: str, exc: BaseException) -> str:
     return "Adjust the arguments or try a different approach."
 
 
+def _tool_call_id(raw_id: Any) -> str:
+    """The provider's call id, or a fresh one when it sends none (or null/blank).
+
+    A step counter would repeat every step, so telemetry and traces would merge
+    the calls of different steps into one.
+    """
+    text = str(raw_id).strip() if raw_id is not None else ""
+    return text or f"call-{uuid.uuid4().hex}"
+
+
 def _normalize_tool_calls(value: Any) -> list[ToolCall]:
     if not isinstance(value, list):
         return []
     normalized: list[ToolCall] = []
-    for index, raw_tool_call in enumerate(value):
+    for raw_tool_call in value:
         if not isinstance(raw_tool_call, dict):
             continue
         arguments = raw_tool_call.get("arguments", {})
@@ -4440,7 +4708,7 @@ def _normalize_tool_calls(value: Any) -> list[ToolCall]:
             continue
         normalized.append(
             ToolCall(
-                tool_call_id=str(raw_tool_call.get("id", f"tool-call-{index + 1}")),
+                tool_call_id=_tool_call_id(raw_tool_call.get("id")),
                 name=name,
                 arguments=dict(arguments),
                 argument_error=str(argument_error) if argument_error else None,
@@ -4890,7 +5158,7 @@ def _normalize_openai_provider_response(
     tool_calls = []
     raw_tool_calls = message.get("tool_calls", [])
     if isinstance(raw_tool_calls, list):
-        for index, raw_tool_call in enumerate(raw_tool_calls):
+        for raw_tool_call in raw_tool_calls:
             if not isinstance(raw_tool_call, dict):
                 continue
             function_data = raw_tool_call.get("function", {})
@@ -4919,7 +5187,7 @@ def _normalize_openai_provider_response(
             if not name:
                 continue
             entry: dict[str, Any] = {
-                "id": str(raw_tool_call.get("id", f"tool-call-{index + 1}")),
+                "id": _tool_call_id(raw_tool_call.get("id")),
                 "name": name,
                 "arguments": arguments,
             }

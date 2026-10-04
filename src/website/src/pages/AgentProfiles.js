@@ -73,6 +73,11 @@ const HARNESS_SWITCHES = [
   { key: "loop_guard", label: "Loop guard", hint: "Stop repeated identical tool calls." },
   { key: "instruction_reminders", label: "Instruction reminders", hint: "Re-inject the instructions during long turns." },
   { key: "test_output_summary", label: "Test output summary", hint: "Summarise test-runner output for the model." },
+  {
+    key: "approval_revise",
+    label: "Offer Revise… on approvals",
+    hint: "With per-step approval, let the participant keep parts of a proposed edit and say what should change (IDEs that render ACP forms).",
+  },
 ];
 const PROMPT_PROFILES = [
   { value: "", label: "Runtime default (auto)" },

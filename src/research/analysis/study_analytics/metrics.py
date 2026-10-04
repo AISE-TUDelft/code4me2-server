@@ -53,6 +53,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from research.telemetry.chat_lifecycle import (
+    CANCEL_METHOD,
+    CHAT_END_METHODS,
+    CHAT_START_METHODS,
+    REVISE_OPTION_ID,
+    REVISED_DECISION,
+)
 from research.telemetry.enums import CanonicalEventType, EventSource
 
 from .models import (
@@ -68,6 +75,7 @@ from .models import (
 
 __all__ = [
     "ANALYTIC_EVENT_TYPES",
+    "ChatSpan",
     "FALLBACK_MAX_CONTEXT_TOKENS",
     "METRIC_KEYS",
     "ParticipantAnalysis",
@@ -76,6 +84,7 @@ __all__ = [
     "ToolCall",
     "analyze_participant",
     "build_participant_detail",
+    "build_chats",
     "build_participants",
     "build_study_summary",
     "build_turns",
@@ -95,6 +104,7 @@ __all__ = [
 PROMPT_EVENT = CanonicalEventType.AGENT_MESSAGE_STARTED.value
 COMPLETION_EVENT = CanonicalEventType.AGENT_MESSAGE_COMPLETED.value
 CANCEL_EVENT = CanonicalEventType.INTERACTION_COMPLETED.value
+CHAT_STARTED_EVENT = CanonicalEventType.INTERACTION_STARTED.value
 TOOL_CREATED_EVENT = CanonicalEventType.TOOL_CREATED.value
 TOOL_STARTED_EVENT = CanonicalEventType.TOOL_STARTED.value
 TOOL_COMPLETED_EVENT = CanonicalEventType.TOOL_COMPLETED.value
@@ -123,6 +133,7 @@ ANALYTIC_EVENT_TYPES = frozenset(
         PROMPT_EVENT,
         COMPLETION_EVENT,
         CANCEL_EVENT,
+        CHAT_STARTED_EVENT,
         PERMISSION_REQUESTED_EVENT,
         PERMISSION_DECIDED_EVENT,
         PLAN_EVENT,
@@ -150,9 +161,20 @@ UNKNOWN = "unknown"
 UNASKED_DECISION_SCOPES = frozenset({"policy", "session_cached"})
 #: A self-reported approval request that reached no one.
 UNANSWERED_DECISION = "unavailable"
-#: The built-in agent's decision vocabulary, read as the ACP one.
-RELAY_DECISIONS = {"accepted": "allow", "rejected": "reject"}
+#: The built-in agent's decision vocabulary, read as the ACP one. ``revise``
+#: is the "Revise…" answer (keep some hunks, instructions for the rest).
+REVISE_DECISION = "revise"
+RELAY_DECISIONS = {"accepted": "allow", "rejected": "reject", REVISED_DECISION: REVISE_DECISION}
+#: Chat-number buckets of the history-dependence view.
+CHAT_ORDINAL_BUCKETS = ("1", "2", "3", "4+")
+#: End reason of a chat whose end was never observed.
+OPEN_CHAT = "open"
 TERMINAL_SESSION_STATES = frozenset({"ended", "revoked"})
+#: Closes the server stamps when it notices them: an idle timeout or an expired
+#: resume grace once the participant comes back, a withdrawal, a stopped study.
+#: That can be days after the IDE last reported, so such a session ends at its
+#: last heartbeat at the latest.
+SERVER_CLOSE_REASONS = frozenset({"idle_timeout", "resume_grace_expired", "revoked", "STUDY_STOPPED"})
 ACTIVE_ENROLLMENT_STATUS = "ACTIVE"
 #: A participant is ``ACTIVE`` when their last event is this recent.
 ACTIVE_WINDOW = timedelta(days=7)
@@ -166,6 +188,7 @@ TOP_TOOLS_PARTICIPANT = 15
 TOP_TOOLS_STUDY = 20
 MAX_SESSIONS_LIST = 50
 MAX_TURNS = 100
+MAX_CHATS = 100
 MAX_TIMELINE = 200
 
 #: A tool identifier (``read_file``, ``developer__shell``, ``mcp__github__search``).
@@ -193,6 +216,10 @@ METRIC_KEYS: tuple[str, ...] = (
     "seconds_to_first_agent_edit",
     "ide_edits_per_session_hour",
     "plan_completion_rate",
+    "revision_rate",
+    "reprompt_after_rejection_rate",
+    "chats_opened",
+    "prompts_per_chat",
 )
 #: Count-type metrics include every assigned participant (a participant without
 #: telemetry contributes 0); every other metric excludes participants without
@@ -304,8 +331,37 @@ def is_model_call(row: EventRow) -> bool:
 
 
 def is_cancel(row: EventRow) -> bool:
-    """An ACP ``session/cancel`` (a user interrupt)."""
-    return row.event_type == CANCEL_EVENT and row.source == ACP_SOURCE
+    """An ACP ``session/cancel`` (a user interrupt).
+
+    Chat ends share the event type but carry lifecycle ``completed`` (and an
+    ``acp_method``/``end_reason``); they are never interrupts.
+    """
+    return (
+        row.event_type == CANCEL_EVENT
+        and row.source == ACP_SOURCE
+        and row.lifecycle_state in (None, "cancelled")
+        and row.acp_method in (None, CANCEL_METHOD)
+        and row.end_reason is None
+    )
+
+
+def is_chat_start(row: EventRow) -> bool:
+    """A chat opened or reattached (``session/new|fork|load|resume``)."""
+    return (
+        row.event_type == CHAT_STARTED_EVENT
+        and row.source == ACP_SOURCE
+        and row.acp_method in CHAT_START_METHODS
+    )
+
+
+def is_chat_end(row: EventRow) -> bool:
+    """A chat closed by the client or its agent process ending."""
+    return (
+        row.event_type == CANCEL_EVENT
+        and row.source == ACP_SOURCE
+        and row.lifecycle_state == "completed"
+        and (row.acp_method in CHAT_END_METHODS or row.end_reason is not None)
+    )
 
 
 def relay_decision_made(row: EventRow) -> bool:
@@ -363,7 +419,12 @@ class PermissionFilter:
 
 
 def permission_decision(row: EventRow) -> Optional[str]:
-    """A ``permission.decided`` outcome in the ACP vocabulary (``None`` if absent)."""
+    """A ``permission.decided`` outcome in the ACP vocabulary (``None`` if absent).
+
+    The proxy sees "Revise…" as a reject-kind option; its id tells them apart.
+    """
+    if row.selected_option_id == REVISE_OPTION_ID:
+        return REVISE_DECISION
     if row.decision is None:
         return None
     return RELAY_DECISIONS.get(row.decision, row.decision)
@@ -400,12 +461,17 @@ def session_interval(
     """``[opened_at, coalesce(closed, last activity, last heartbeat)]`` clipped.
 
     ``None`` for a session that never opened. A missing or earlier end yields a
-    zero-length interval (negatives are clamped to 0).
+    zero-length interval (negatives are clamped to 0). A session the server
+    closed on its own (``SERVER_CLOSE_REASONS``) ends at its last heartbeat at
+    the latest.
     """
     start = as_utc(row.opened_at)
     if start is None:
         return None
     end = as_utc(row.closed_at or row.last_activity_at or row.last_heartbeat_at)
+    heartbeat = as_utc(row.last_heartbeat_at)
+    if row.close_reason in SERVER_CLOSE_REASONS and heartbeat is not None and end is not None:
+        end = min(end, heartbeat)
     if end is None or end < start:
         end = start
     if window is not None and not window.is_open:
@@ -515,6 +581,8 @@ class Turn:
     turn_id: Optional[str]
     started_at: datetime
     start_order: tuple
+    #: The ACP chat of the prompt (``None`` on telemetry without chat ids).
+    chat_id: Optional[str] = None
     completed_at: Optional[datetime] = None
     stop_reason: Optional[str] = None
     completion_usage: Optional[int] = None
@@ -576,6 +644,7 @@ def build_turns(prompts: Iterable[EventRow], completions: Iterable[EventRow]) ->
             turn_id=prompt.turn_id,
             started_at=prompt.occurred_at,
             start_order=order_key(prompt),
+            chat_id=prompt.chat_id,
         )
         for prompt in ordered_prompts
     ]
@@ -793,6 +862,152 @@ def transitions(turns: Iterable[Turn]) -> list[dict[str, Any]]:
 # -- participant analysis ---------------------------------------------------------
 
 
+# -- chats ---------------------------------------------------------------------
+
+
+@dataclass
+class ChatSpan:
+    """One ACP chat of a participant, from its lifecycle events and turns."""
+
+    chat_id: str
+    first_at: datetime
+    last_at: datetime
+    research_session_ids: set = field(default_factory=set)
+    #: ``new``/``fork``/``load``/``resume`` from the first start seen, else None.
+    start_kind: Optional[str] = None
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    #: ``close`` or a proxy end reason (``host_closed``, ``agent_exited``, …).
+    end_reason: Optional[str] = None
+    reopen_count: int = 0
+    prompts: int = 0
+    tool_calls: int = 0
+    cancels: int = 0
+    rejections: int = 0
+    revisions: int = 0
+    usage_tokens: Optional[int] = None
+    ordinal: int = 0
+    previous_end_reason: Optional[str] = None
+    gap_since_previous_seconds: Optional[float] = None
+
+    @property
+    def opened_at(self) -> datetime:
+        return self.started_at or self.first_at
+
+    @property
+    def used(self) -> bool:
+        """Whether the participant sent a prompt in the chat. IntelliJ also
+        starts an agent for a chat it only creates or shows (a new empty chat,
+        the chat it switches to after a delete), so such chats are listed but
+        neither numbered nor counted."""
+        return self.prompts > 0
+
+    @property
+    def end_label(self) -> str:
+        """How the chat ended: a reason, ``open`` when it is still going, or
+        ``unknown`` on telemetry without chat lifecycle events."""
+        if self.end_reason:
+            return self.end_reason
+        return OPEN_CHAT if self.start_kind else UNKNOWN
+
+
+def build_chats(
+    rows: Sequence[EventRow], turns: Sequence[Turn], decisions: Sequence[EventRow]
+) -> list[ChatSpan]:
+    """A participant's chats in opening order, each linked to the one before.
+
+    Chats are keyed by the ACP chat id the proxy stamps on its events. Turns
+    count in the chat of their prompt, permission decisions in their own chat.
+    A reopened chat (``session/load|resume`` after an end) is open again. Only
+    used chats (with a prompt) are numbered and linked to the one before.
+    """
+    spans: dict[str, ChatSpan] = {}
+
+    def span(chat_id: str, at: datetime) -> ChatSpan:
+        current = spans.get(chat_id)
+        if current is None:
+            current = spans[chat_id] = ChatSpan(chat_id=chat_id, first_at=at, last_at=at)
+        else:
+            current.first_at = min(current.first_at, at)
+            current.last_at = max(current.last_at, at)
+        return current
+
+    for row in rows:
+        if not row.chat_id or row.source != ACP_SOURCE:
+            continue
+        current = span(row.chat_id, row.occurred_at)
+        if row.session_id:
+            current.research_session_ids.add(row.session_id)
+        if is_chat_start(row):
+            kind = CHAT_START_METHODS[row.acp_method or ""]
+            if kind in ("load", "resume"):
+                current.reopen_count += 1
+            if current.start_kind is None:
+                current.start_kind = kind
+                current.started_at = row.occurred_at
+            if current.ended_at is not None and row.occurred_at >= current.ended_at:
+                current.ended_at = None
+                current.end_reason = None
+        elif is_chat_end(row):
+            reason = "close" if row.acp_method in CHAT_END_METHODS else row.end_reason
+            # The client's own close outranks the process ending after it.
+            if current.end_reason is None or reason == "close":
+                current.end_reason = reason
+            current.ended_at = row.occurred_at
+    for turn in turns:
+        if not turn.chat_id:
+            continue
+        current = span(turn.chat_id, turn.started_at)
+        current.prompts += 1
+        current.tool_calls += len(turn.tool_calls)
+        current.cancels += 1 if turn.cancelled else 0
+        if turn.usage_tokens is not None:
+            current.usage_tokens = (current.usage_tokens or 0) + turn.usage_tokens
+    for decision in decisions:
+        if not decision.chat_id:
+            continue
+        outcome = permission_decision(decision)
+        current = span(decision.chat_id, decision.occurred_at)
+        if outcome == "reject":
+            current.rejections += 1
+        elif outcome == REVISE_DECISION:
+            current.revisions += 1
+
+    ordered = sorted(spans.values(), key=lambda chat: (chat.opened_at, chat.chat_id))
+    previous: Optional[ChatSpan] = None
+    for ordinal, chat in enumerate((chat for chat in ordered if chat.used), start=1):
+        chat.ordinal = ordinal
+        if previous is not None:
+            chat.previous_end_reason = previous.end_label
+            gap = (chat.opened_at - (previous.ended_at or previous.last_at)).total_seconds()
+            chat.gap_since_previous_seconds = max(0.0, gap)
+        previous = chat
+    return ordered
+
+
+def reprompted_rejections(
+    decisions: Iterable[EventRow], prompts: Iterable[EventRow]
+) -> tuple[int, int]:
+    """``(followed, total)``: rejections in a chat, and those followed by
+    another prompt in the same chat (the participant re-prompted instead of
+    leaving it there)."""
+    prompt_times: dict[str, list[datetime]] = defaultdict(list)
+    for prompt in prompts:
+        if prompt.chat_id:
+            prompt_times[prompt.chat_id].append(prompt.occurred_at)
+    for moments in prompt_times.values():
+        moments.sort()
+    followed = total = 0
+    for decision in decisions:
+        if not decision.chat_id or permission_decision(decision) != "reject":
+            continue
+        total += 1
+        moments = prompt_times.get(decision.chat_id, [])
+        if bisect.bisect_right(moments, decision.occurred_at) < len(moments):
+            followed += 1
+    return followed, total
+
+
 @dataclass
 class ParticipantAnalysis:
     """Every intermediate needed for one participant's rows and metrics."""
@@ -822,6 +1037,12 @@ class ParticipantAnalysis:
     last_event_at: Optional[datetime]
     first_edit_seconds: list[float]
     permission_filter: PermissionFilter = field(default_factory=PermissionFilter)
+    chats: list[ChatSpan] = field(default_factory=list)
+    #: Whether the participant's agent ever offered "Revise…" (built-in arms).
+    revise_offered: bool = False
+    #: Rejections followed by another prompt in the same chat / all rejections in a chat.
+    reprompted_rejections: int = 0
+    chat_rejections: int = 0
 
     @property
     def has_telemetry(self) -> bool:
@@ -862,6 +1083,8 @@ class ParticipantAnalysis:
         auto_run = sum(1 for call in acp_calls if not call.requested_permission)
         allow = self.decision_counts.get("allow", 0)
         reject = self.decision_counts.get("reject", 0)
+        revise = self.decision_counts.get(REVISE_DECISION, 0)
+        prompted_chats = [chat for chat in self.chats if chat.prompts]
         turns = len(self.turns)
         cancelled = sum(1 for turn in self.turns if turn.cancelled)
         usage = [
@@ -892,7 +1115,29 @@ class ParticipantAnalysis:
             "seconds_to_first_agent_edit": _r3(median(self.first_edit_seconds)),
             "ide_edits_per_session_hour": _r3(_ratio(self.ide_edits, session_hours)),
             "plan_completion_rate": _r3(_mean(plan_rates)),
+            # Null, not 0, where the agent never offered "Revise…" (other arms).
+            "revision_rate": (
+                _r3(_ratio(revise, allow + reject + revise)) if self.revise_offered else None
+            ),
+            "reprompt_after_rejection_rate": _r3(
+                _ratio(self.reprompted_rejections, self.chat_rejections)
+            ),
+            "chats_opened": self.chats_opened,
+            "prompts_per_chat": _r3(
+                _ratio(sum(chat.prompts for chat in prompted_chats), len(prompted_chats))
+            ),
         }
+
+    @property
+    def chats_opened(self) -> Optional[int]:
+        """Chats opened afresh and used (a reopened old chat is not a new one, a
+        chat without a prompt is not counted); ``None`` when prompts carry no
+        chat ids, so the count is not observable."""
+        if not self.chats:
+            return None if self.prompts else 0
+        return sum(
+            1 for chat in self.chats if chat.used and chat.start_kind in (None, "new", "fork")
+        )
 
 
 def analyze_participant(
@@ -1038,16 +1283,31 @@ def analyze_participant(
             else turn.relay_usage
         )
 
-    # Sessions (clipped to the window).
+    # Chats (ACP chat ids) and what follows a rejection inside one.
+    chats = build_chats(rows, turns, decisions)
+    reprompted, chat_rejections = reprompted_rejections(decisions, prompts)
+
+    # Sessions (clipped to the window). Two project windows open at the same
+    # time are one stretch of the participant's time, so overlapping sessions
+    # are merged before their time is added up.
     session_rows = list(sessions)
     seconds_by_session: dict[str, float] = {}
     seconds_by_day: dict[date, float] = defaultdict(float)
+    intervals = []
     for session in session_rows:
         seconds_by_session[session.session_id] = session_seconds(session, window)
         interval = session_interval(session, window)
         if interval is not None:
-            for day, seconds in split_seconds_by_day(*interval).items():
-                seconds_by_day[day] += seconds
+            intervals.append(interval)
+    merged: list[list[datetime]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    for start, end in merged:
+        for day, seconds in split_seconds_by_day(start, end).items():
+            seconds_by_day[day] += seconds
 
     # Presence, first/last event and IDE edits.
     events_by_day: dict[date, int] = defaultdict(int)
@@ -1110,7 +1370,7 @@ def analyze_participant(
         agent_saves=agent_saves,
         agent_file_writes=agent_file_writes,
         usage_tokens=usage_total,
-        session_seconds=sum(seconds_by_session.values()),
+        session_seconds=sum((end - start).total_seconds() for start, end in merged),
         session_seconds_by_session=seconds_by_session,
         session_seconds_by_day=dict(seconds_by_day),
         ide_edits=sum(ide_by_day.values()),
@@ -1121,6 +1381,13 @@ def analyze_participant(
         last_event_at=last_event_at,
         first_edit_seconds=first_edit_seconds,
         permission_filter=permission_filter,
+        chats=chats,
+        revise_offered=(
+            any(request.offers_revise for request in permission_requests)
+            or decision_counts.get(REVISE_DECISION, 0) > 0
+        ),
+        reprompted_rejections=reprompted,
+        chat_rejections=chat_rejections,
     )
 
 
@@ -1146,6 +1413,121 @@ def _counter_rows(counter: Mapping[str, int], label: str) -> list[dict[str, Any]
         for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
         if count
     ]
+
+
+def chat_rows(chats: Sequence[ChatSpan], limit: int = MAX_CHATS) -> list[dict[str, Any]]:
+    """The participant's latest chats in opening order (no content); chats
+    without a prompt have no number (``ordinal`` None, ``used`` False)."""
+    return [
+        {
+            "chat_id": chat.chat_id,
+            "ordinal": chat.ordinal or None,
+            "used": chat.used,
+            "research_session_ids": sorted(chat.research_session_ids),
+            "started_at": iso(chat.opened_at),
+            "ended_at": iso(chat.ended_at),
+            "last_event_at": iso(chat.last_at),
+            "start_kind": chat.start_kind or UNKNOWN,
+            "end_reason": chat.end_label,
+            "reopen_count": chat.reopen_count,
+            "prompts": chat.prompts,
+            "tool_calls": chat.tool_calls,
+            "cancels": chat.cancels,
+            "rejections": chat.rejections,
+            "revisions": chat.revisions,
+            "usage_tokens": chat.usage_tokens,
+            "previous_end_reason": chat.previous_end_reason,
+            "gap_since_previous_seconds": _r1(chat.gap_since_previous_seconds),
+        }
+        for chat in list(chats)[-limit:]
+    ]
+
+
+def chat_summary(analysis: "ParticipantAnalysis") -> dict[str, Any]:
+    """How a participant's used chats started and ended, how many chats the IDE
+    opened without a prompt, and how observable that is."""
+    chats = [chat for chat in analysis.chats if chat.used]
+    return {
+        "chats": len(chats),
+        "unused_chats": len(analysis.chats) - len(chats),
+        "started": dict(Counter(chat.start_kind or UNKNOWN for chat in chats)),
+        "ended": dict(Counter(chat.end_label for chat in chats)),
+        "unattributed_prompts": sum(1 for turn in analysis.turns if not turn.chat_id),
+        "lifecycle_coverage": _coverage_state(
+            sum(1 for chat in chats if chat.start_kind), len(chats)
+        ),
+    }
+
+
+def _ordinal_bucket(ordinal: int) -> str:
+    return CHAT_ORDINAL_BUCKETS[min(max(ordinal, 1), len(CHAT_ORDINAL_BUCKETS)) - 1]
+
+
+def _new_chat_group() -> dict[str, Any]:
+    return {
+        "participants": set(),
+        "chats": 0,
+        "prompts": 0,
+        "cancels": 0,
+        "rejections": 0,
+        "revisions": 0,
+        "ends": Counter(),
+    }
+
+
+def _chat_group_row(group: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "participants": len(group["participants"]),
+        "chats": group["chats"],
+        "prompts_per_chat": _r3(_ratio(group["prompts"], group["chats"])),
+        "cancel_rate": _r3(_ratio(group["cancels"], group["prompts"])),
+        "rejections_per_prompt": _r3(_ratio(group["rejections"], group["prompts"])),
+        "revisions_per_prompt": _r3(_ratio(group["revisions"], group["prompts"])),
+        "end_reasons": _counter_rows(group["ends"], "end_reason"),
+    }
+
+
+def chat_history(
+    analyses: Mapping[str, "ParticipantAnalysis"],
+    arm_of: Mapping[str, str],
+    arm_ids: Sequence[str],
+) -> dict[str, Any]:
+    """History dependence, descriptively: used chats grouped by their number in
+    the participant's history and by how the previous one ended (pooled over
+    chats, per arm; numbers count from the start of the selected range)."""
+    by_ordinal: dict[tuple, dict[str, Any]] = defaultdict(_new_chat_group)
+    by_previous: dict[tuple, dict[str, Any]] = defaultdict(_new_chat_group)
+    for enrollment_id, analysis in analyses.items():
+        arm_id = arm_of.get(enrollment_id)
+        if arm_id is None:
+            continue
+        for chat in analysis.chats:
+            if not chat.used:
+                continue
+            groups = [by_ordinal[(arm_id, _ordinal_bucket(chat.ordinal))]]
+            if chat.previous_end_reason is not None:
+                groups.append(by_previous[(arm_id, chat.previous_end_reason)])
+            for group in groups:
+                group["participants"].add(enrollment_id)
+                group["chats"] += 1
+                group["prompts"] += chat.prompts
+                group["cancels"] += chat.cancels
+                group["rejections"] += chat.rejections
+                group["revisions"] += chat.revisions
+                group["ends"][chat.end_label] += 1
+    return {
+        "by_ordinal": [
+            {"profile_id": arm_id, "bucket": bucket, **_chat_group_row(by_ordinal[(arm_id, bucket)])}
+            for arm_id in arm_ids
+            for bucket in CHAT_ORDINAL_BUCKETS
+            if (arm_id, bucket) in by_ordinal
+        ],
+        "by_previous_end": [
+            {"profile_id": arm_id, "previous_end_reason": reason, **_chat_group_row(by_previous[(arm_id, reason)])}
+            for arm_id in arm_ids
+            for reason in sorted({key[1] for key in by_previous if key[0] == arm_id})
+        ],
+    }
 
 
 def tool_kind_rows(calls: Iterable[ToolCall]) -> list[dict[str, Any]]:
@@ -1309,6 +1691,7 @@ def _participant_arm(
         "framework_version": label(assignment.framework_version, "framework_version"),
         "assignment_status": assignment.status,
         "assigned_at": iso(assignment.assigned_at),
+        "strategy": assignment.strategy,
     }
 
 
@@ -1350,6 +1733,8 @@ def participant_header(
         "status": enrollment.status,
         "enrolled_at": iso(enrollment.enrolled_at),
         "consent_accepted_at": iso(enrollment.consent_accepted_at),
+        "consent_digest": enrollment.consent_digest,
+        "consent_answers": enrollment.consent_answers,
         "arm": _participant_arm(assignment, arms_by_id),
         "sessions": {
             "total": len(sessions),
@@ -1505,6 +1890,9 @@ def _timeline_rows(
                 ),
                 "stop_reason": row.stop_reason,
                 "error_code": row.error_code,
+                # Chat lifecycle (which ACP method; why a chat's process ended).
+                "acp_method": row.acp_method,
+                "end_reason": row.end_reason,
             }
         )
     return output
@@ -1628,6 +2016,8 @@ def build_participant_detail(
             [row for row in timeline if row.enrollment_id in (None, enrollment_id)],
             analysis,
         ),
+        "chats": chat_rows(analysis.chats),
+        "chat_summary": chat_summary(analysis),
     }
 
 
@@ -1640,6 +2030,86 @@ def _coverage_state(covered: int, total: int) -> str:
     if covered >= total:
         return "AVAILABLE"
     return "PARTIAL"
+
+
+class FilterError(ValueError):
+    """An analytics filter value that names no arm or participant of the study."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def resolve_filters(
+    frame: StudyFrame,
+    arms: Optional[Sequence[str]] = None,
+    participants: Optional[Sequence[str]] = None,
+) -> tuple[StudyFrame, Optional[frozenset[str]], dict[str, Any]]:
+    """Restrict a study frame to the selected arms and participants (AND).
+
+    Returns the restricted frame (every arm is kept, so colours and order stay
+    stable), the enrollment ids event queries must be scoped to (``None`` when
+    nothing is filtered) and the applied filters to echo back.
+    """
+    arm_ids = list(dict.fromkeys(str(item) for item in arms or ()))
+    participant_ids = list(dict.fromkeys(str(item) for item in participants or ()))
+    enrollments = {enrollment.enrollment_id: enrollment for enrollment in frame.enrollments}
+    known_arms = {arm.profile_id for arm in frame.arms}
+    unknown = [item for item in arm_ids if item not in known_arms] + [
+        item for item in participant_ids if item not in enrollments
+    ]
+    if unknown:
+        raise FilterError("UNKNOWN_FILTER_VALUE", f"not part of this study: {', '.join(unknown)}")
+    if not arm_ids and not participant_ids:
+        return frame, None, {
+            "arms": [],
+            "participants": [],
+            "matched_participants": len(frame.enrollments),
+            "spend_scope": "study",
+        }
+    arm_of = {assignment.enrollment_id: assignment.profile_id for assignment in frame.assignments}
+    selected = frozenset(
+        enrollment_id
+        for enrollment_id in enrollments
+        if (not arm_ids or arm_of.get(enrollment_id) in arm_ids)
+        and (not participant_ids or enrollment_id in participant_ids)
+    )
+    restricted = StudyFrame(
+        arms=frame.arms,
+        enrollments=tuple(row for row in frame.enrollments if row.enrollment_id in selected),
+        assignments=tuple(row for row in frame.assignments if row.enrollment_id in selected),
+        sessions=tuple(row for row in frame.sessions if row.enrollment_id in selected),
+    )
+    return restricted, selected, {
+        "arms": arm_ids,
+        "participants": [
+            {"enrollment_id": item, "participant_code": enrollments[item].participant_code}
+            for item in participant_ids
+        ],
+        "matched_participants": len(selected),
+        "spend_scope": "filtered",
+    }
+
+
+def filter_options(frame: StudyFrame) -> dict[str, Any]:
+    """The arms and participants an analytics view can be filtered by."""
+    arm_of = {assignment.enrollment_id: assignment.profile_id for assignment in frame.assignments}
+    members = Counter(arm_of.values())
+    return {
+        "arms": [
+            {"profile_id": arm.profile_id, "name": arm.name, "participants": members.get(arm.profile_id, 0)}
+            for arm in sorted(frame.arms, key=lambda arm: (arm.selection_order is None, arm.selection_order or 0))
+        ],
+        "participants": [
+            {
+                "enrollment_id": enrollment.enrollment_id,
+                "participant_code": enrollment.participant_code,
+                "profile_id": arm_of.get(enrollment.enrollment_id),
+                "status": enrollment.status,
+            }
+            for enrollment in sorted(frame.enrollments, key=_enrollment_sort_key)
+        ],
+    }
 
 
 def build_study_summary(
@@ -1876,4 +2346,5 @@ def build_study_summary(
         "stop_reasons": _counter_rows(stop_reasons, "stop_reason"),
         "permission_decisions": _counter_rows(decisions, "decision"),
         "coverage": coverage,
+        "chat_history": chat_history(analyses, arm_of, arm_ids),
     }
