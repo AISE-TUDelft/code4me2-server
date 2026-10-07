@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 from urllib import request
 from uuid import uuid4
 
+from code4me2_agent.tls import https_context
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -166,7 +168,7 @@ def upload_event_batch_http(
         headers=headers,
         method="POST",
     )
-    with request.urlopen(http_request, timeout=timeout_seconds) as response:
+    with request.urlopen(http_request, timeout=timeout_seconds, context=https_context()) as response:
         if response.status >= 400:
             raise RuntimeError(f"Telemetry upload failed with HTTP {response.status}.")
 

@@ -216,7 +216,9 @@ async def acp_chat_completions(
             upstream_response = await client.post(
                 upstream.endpoint(responses_api=False),
                 json=payload,
-                headers={"Authorization": f"Bearer {upstream.api_key}"},
+                headers=provider_module.upstream_request_headers(
+                    upstream, session_key=scope.acp_token
+                ),
             )
     except httpx.HTTPError as error:
         await meter.resolve_transport_error(error)

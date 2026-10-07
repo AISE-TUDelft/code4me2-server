@@ -16,11 +16,13 @@ special-cased normalization path keyed on ``framework_version == "codex"``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlparse
 
 __all__ = [
     "ProviderReadinessError",
@@ -172,6 +174,34 @@ class Upstream:
         suffix = "responses" if responses_api else "chat/completions"
         return f"{self.base_url.rstrip('/')}/{suffix}"
 
+
+# OpenCode (Zen and Go) rejects a request without ``x-opencode-session``
+# (400 MissingSessionID) and asks clients to send their own user agent.
+OPENCODE_USER_AGENT = "code4me-research/1.0"
+_OPENCODE_SESSION_DOMAIN = b"code4me-opencode-session\x00"
+
+
+def is_opencode_upstream(base_url: Optional[str]) -> bool:
+    """Whether ``base_url`` points at OpenCode's gateway (opencode.ai or a subdomain)."""
+    host = (urlparse(base_url or "").hostname or "").lower()
+    return host == "opencode.ai" or host.endswith(".opencode.ai")
+
+
+def upstream_request_headers(upstream: "Upstream", *, session_key: Optional[str]) -> dict[str, str]:
+    """Headers for one provider call.
+
+    Every provider receives only the bearer key, exactly as before. OpenCode
+    additionally gets our user agent and a session id that stays stable for one
+    agent session (``session_key``) so it can route and cache the conversation.
+    The id is a one-way hash, so no internal id or token leaves the backend.
+    """
+    headers = {"Authorization": f"Bearer {upstream.api_key}"}
+    if is_opencode_upstream(upstream.base_url):
+        headers["User-Agent"] = OPENCODE_USER_AGENT
+        if session_key:
+            digest = hashlib.sha256(_OPENCODE_SESSION_DOMAIN + session_key.encode("utf-8")).hexdigest()
+            headers["x-opencode-session"] = f"c4m-{digest[:32]}"
+    return headers
 
 def connection_model_allowed(connection, model: str) -> bool:
     """Whether ``model`` is in the connection's allowed model list."""

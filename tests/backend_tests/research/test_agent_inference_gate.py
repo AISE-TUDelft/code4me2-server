@@ -221,9 +221,11 @@ class RecordingMeter:
         return {"X-Test-Meter": "1"}
 
 
-def _chat_completions(upstream_handler, *, refusal=None):
+def _chat_completions(
+    upstream_handler, *, refusal=None, base_url="https://provider.example/v1", acp_token="acp-token"
+):
     RecordingMeter.instances.clear()
-    scope = SimpleNamespace(user_id=str(uuid.uuid4()))
+    scope = SimpleNamespace(user_id=str(uuid.uuid4()), acp_token=acp_token)
     profile = SimpleNamespace(
         model="frozen-model", temperature=0.5, framework_version="code4me2-agent",
         connection_id=uuid.uuid4(), funding_owner_user_id=uuid.uuid4(),
@@ -231,8 +233,8 @@ def _chat_completions(upstream_handler, *, refusal=None):
     assignment = SimpleNamespace(profile=profile, study_id=uuid.uuid4())
     enrollment = SimpleNamespace(enrollment_id=uuid.uuid4(), study_id=assignment.study_id)
     upstream = SimpleNamespace(
-        base_url="https://provider.example/v1", api_key="k",
-        endpoint=lambda responses_api=False: "https://provider.example/v1/chat/completions",
+        base_url=base_url, api_key="k",
+        endpoint=lambda responses_api=False: f"{base_url}/chat/completions",
     )
     app = MagicMock()
     app.get_db_session.return_value = MagicMock()
@@ -296,6 +298,39 @@ def test_acp_chat_completions_voids_on_upstream_error_and_returns_refusals():
     assert [call[0] for call in meter.calls] == ["reserve"]
 
 
+
+def _upstream_headers(base_url, *, acp_token="acp-token"):
+    seen = {}
+
+    def handler(request):
+        seen.update(request.headers)
+        return httpx.Response(200, json={"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+
+    response, _, _, _ = _chat_completions(handler, base_url=base_url, acp_token=acp_token)
+    assert response.status_code == 200
+    return seen
+
+
+@pytest.mark.parametrize("base_url", ["https://openrouter.ai/api/v1", "https://provider.example/v1"])
+def test_acp_chat_completions_sends_other_providers_only_the_bearer(base_url):
+    headers = _upstream_headers(base_url)
+    assert headers["authorization"] == "Bearer k"
+    assert headers["user-agent"].startswith("python-httpx/")
+    assert "x-opencode-session" not in headers
+
+
+@pytest.mark.parametrize("base_url", ["https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"])
+def test_acp_chat_completions_identifies_itself_to_opencode(base_url):
+    headers = _upstream_headers(base_url, acp_token="secret-acp-token")
+    assert headers["authorization"] == "Bearer k"
+    assert headers["user-agent"] == "code4me-research/1.0"
+    session = headers["x-opencode-session"]
+    assert session.startswith("c4m-") and len(session) == 36
+    assert "secret-acp-token" not in session
+    # Stable for one agent session, distinct across sessions.
+    assert _upstream_headers(base_url, acp_token="secret-acp-token")["x-opencode-session"] == session
+    assert _upstream_headers(base_url, acp_token="other-token")["x-opencode-session"] != session
+
 # --------------------------------------------------------------------------- /api/acp/grant wiring
 
 
@@ -315,3 +350,20 @@ def test_grant_uses_the_scoped_funded_gate():
     assert error.value.status_code == 403
     assert error.value.detail["code"] == "KILL_SWITCH_ENGAGED"
     assert gate.call_args.kwargs["account_id"] == user_id
+
+
+@pytest.mark.parametrize(
+    "base_url, expected",
+    [
+        ("https://opencode.ai/zen/go/v1", True),
+        ("https://api.opencode.ai/v1", True),
+        ("https://opencode.ai.evil.example/v1", False),
+        ("https://notopencode.ai/v1", False),
+        ("https://openrouter.ai/api/v1", False),
+        (None, False),
+    ],
+)
+def test_opencode_detection_matches_only_its_host(base_url, expected):
+    from agents import provider
+
+    assert provider.is_opencode_upstream(base_url) is expected
