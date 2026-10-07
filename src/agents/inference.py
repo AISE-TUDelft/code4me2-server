@@ -543,7 +543,7 @@ async def run_inference(
 
     upstream_url = upstream.endpoint(responses_api=is_responses_api)
     upstream_headers = {
-        "Authorization": f"Bearer {upstream.api_key}",
+        **provider_module.upstream_request_headers(upstream, session_key=str(session_uuid)),
         "Content-Type": "application/json",
     }
 
