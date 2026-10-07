@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 from urllib import error, request
 from urllib.parse import urlparse
 
+from code4me2_agent.tls import https_context
+
 if TYPE_CHECKING:
     from code4me2_agent.config import ServerAgentConfig
 
@@ -356,7 +358,7 @@ class AcpBackendAuthorization:
             _secret_for_log(f"Bearer {self._acp_token}"),
         )
         try:
-            with request.urlopen(http_request, timeout=timeout) as response:
+            with request.urlopen(http_request, timeout=timeout, context=https_context()) as response:
                 return json.loads(response.read().decode("utf-8"))
         except error.HTTPError as exc:
             if exc.code == 404 and method.upper() == "GET":
@@ -509,7 +511,7 @@ class AcpBackendAuthorization:
             _secret_for_log(headers.get("Authorization") if headers else None),
         )
         try:
-            with request.urlopen(http_request, timeout=10.0) as response:
+            with request.urlopen(http_request, timeout=10.0, context=https_context()) as response:
                 return json.loads(response.read().decode("utf-8"))
         except error.HTTPError as exc:
             logger.warning(
@@ -557,7 +559,7 @@ class AcpBackendAuthorization:
             _secret_for_log(headers.get("Authorization") if headers else None),
         )
         try:
-            with request.urlopen(http_request, timeout=10.0) as response:
+            with request.urlopen(http_request, timeout=10.0, context=https_context()) as response:
                 parsed = json.loads(response.read().decode("utf-8"))
                 return parsed if isinstance(parsed, dict) else {}
         except error.HTTPError as exc:
@@ -703,7 +705,7 @@ def _bridge_is_live(bridge: PluginBridge) -> bool:
         method="GET",
     )
     try:
-        with request.urlopen(status_request, timeout=0.75) as response:
+        with request.urlopen(status_request, timeout=0.75, context=https_context()) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return (
             response.status == 200
@@ -793,7 +795,7 @@ class ManagedBridgeAuthorization(AcpBackendAuthorization):
             method="POST",
         )
         try:
-            with request.urlopen(http_request, timeout=5.0) as response:
+            with request.urlopen(http_request, timeout=5.0, context=https_context()) as response:
                 bridge_payload = json.loads(response.read().decode("utf-8"))
         except (error.HTTPError, error.URLError, TimeoutError, ValueError) as exc:
             raise AcpAuthorizationFailure(

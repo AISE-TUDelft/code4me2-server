@@ -18,6 +18,9 @@ dependencies = [
     # (starlette<0.47). 3.0.0 is the last release without that hard floor.
     "sse-starlette>=3.0.0,<3.0.3",
     "openai>=1.0,<2",
+    # Trust roots for the agent's own HTTPS calls; the packaged runtime has no
+    # usable platform CA store on macOS (code4me2_agent.tls).
+    "certifi",
 ]
 
 [project.scripts]
