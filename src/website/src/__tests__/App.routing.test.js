@@ -71,6 +71,25 @@ test("registered route tag count matches the route enumeration (ISSUE-007)", () 
   expect(matches.length).toBe(14);
 });
 
+test("a signed-in researcher opening / lands on Studies", async () => {
+  api.getCurrentUser.mockResolvedValue({
+    ok: true,
+    user: { email: "researcher@example.com", is_admin: false, can_research: true },
+    config: {},
+  });
+  renderAt("/");
+
+  expect(await screen.findByText("STUDIES-PAGE")).toBeInTheDocument();
+  expect(window.location.pathname).toBe("/research/studies");
+});
+
+test("a signed-in participant opening / lands on My studies", async () => {
+  renderAt("/");
+
+  expect(await screen.findByText("JOIN-PAGE")).toBeInTheDocument();
+  expect(window.location.pathname).toBe("/research/my-studies");
+});
+
 test("a study deep link renders the studies workspace", async () => {
   renderAt(`/research/studies/${STUDY_ID}`);
 

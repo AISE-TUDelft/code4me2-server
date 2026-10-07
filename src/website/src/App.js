@@ -5,7 +5,7 @@ import ResearchStudies from "./pages/research/ResearchStudies";
 import ResearchStudyEditor from "./pages/research/ResearchStudyEditor";
 import ResearchJoin from "./pages/research/ResearchJoin";
 import PrivacySettings from "./pages/PrivacySettings";
-import AppShell from "./components/layout/AppShell";
+import AppShell, { homePath } from "./components/layout/AppShell";
 import "./App.css";
 import { ThemeProvider } from "./context/ThemeContext";
 import { getCurrentUser, logoutUser } from "./utils/api";
@@ -168,7 +168,7 @@ function App() {
     const onAuth = (userData) => {
       handleAuthenticated(userData);
       const pendingJoin = sessionStorage.getItem(RESEARCH_JOIN_INTENT_KEY);
-      navigate(pendingJoin ? "/research/join" : "/dashboard", { replace: true });
+      navigate(pendingJoin ? "/research/join" : homePath(userData.user), { replace: true });
     };
     return <Auth onAuthenticated={onAuth} initialMode={mode} />;
   };
@@ -193,7 +193,7 @@ function App() {
           <Routes>
             <Route
               path="/"
-              element={user ? <Navigate to="/dashboard" replace /> : <Start isAuthenticated={!!user} />}
+              element={user ? <Navigate to={homePath(user)} replace /> : <Start isAuthenticated={!!user} />}
             />
             <Route path="/login" element={<AuthPage mode="login" />} />
             <Route path="/signup" element={<AuthPage mode="signup" />} />

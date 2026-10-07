@@ -1,7 +1,7 @@
 import React from "react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import AppShell, { buildNavigation } from "../AppShell";
+import AppShell, { buildNavigation, homePath } from "../AppShell";
 import { ThemeProvider } from "../../../context/ThemeContext";
 import * as api from "../../../utils/api";
 
@@ -11,7 +11,7 @@ beforeEach(() => {
   api.checkVerificationStatus.mockResolvedValue({ ok: true, verified: true });
 });
 
-const renderShell = (user, path = "/dashboard?view=overview") =>
+const renderShell = (user, path = "/research/my-studies") =>
   render(
     <ThemeProvider>
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }} initialEntries={[path]}>
@@ -25,12 +25,32 @@ const renderShell = (user, path = "/dashboard?view=overview") =>
 const navLabels = (user) =>
   buildNavigation(user).flatMap((group) => group.items.map((item) => item.label));
 
-test("participants see analytics and My studies only", () => {
-  const labels = navLabels({ is_admin: false, can_research: false });
-  expect(labels).toContain("My studies");
-  expect(labels).not.toContain("Studies");
-  expect(labels).not.toContain("Agent profiles");
-  expect(labels).not.toContain("Accounts");
+const ARCHIVED_VIEWS = ["Overview", "Usage", "Model performance", "Agent telemetry", "Calibration"];
+
+test("participants see My studies and Privacy & data only", () => {
+  expect(navLabels({ is_admin: false, can_research: false })).toEqual(["My studies", "Privacy & data"]);
+});
+
+test("no role sees the archived analytics views", () => {
+  [{ is_admin: false, can_research: false }, { is_admin: false, can_research: true }, { is_admin: true }].forEach(
+    (user) => {
+      const labels = navLabels(user);
+      ARCHIVED_VIEWS.forEach((label) => expect(labels).not.toContain(label));
+      expect(buildNavigation(user).map((group) => group.id)).not.toContain("analytics");
+    },
+  );
+});
+
+test("researchers land on Studies, participants on My studies", () => {
+  expect(homePath({ is_admin: true })).toBe("/research/studies");
+  expect(homePath({ is_admin: false, can_research: true })).toBe("/research/studies");
+  expect(homePath({ is_admin: false, can_research: false })).toBe("/research/my-studies");
+  expect(homePath(null)).toBe("/research/my-studies");
+});
+
+test("the brand link goes to the user's home page", () => {
+  renderShell({ is_admin: false, can_research: true });
+  expect(screen.getByRole("link", { name: "Code4Me home" })).toHaveAttribute("href", "/research/studies");
 });
 
 test("researchers get the research section", () => {

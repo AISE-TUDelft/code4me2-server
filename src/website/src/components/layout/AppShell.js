@@ -7,22 +7,16 @@ import "./AppShell.css";
 
 export const isResearcher = (user) => Boolean(user?.is_admin || user?.can_research);
 
+// Where a signed-in user lands: researchers on their studies, participants on
+// the studies they take part in.
+export const homePath = (user) => (isResearcher(user) ? "/research/studies" : "/research/my-studies");
+
 // One navigation model for every signed-in page. Dashboard views keep their
-// `?view=` deep links; research surfaces are real routes.
+// `?view=` deep links; research surfaces are real routes. The first-generation
+// analytics views (overview, usage, model performance, agent telemetry,
+// calibration) are archived and no longer listed; see pages/Dashboard.js.
 export const buildNavigation = (user) => {
-  const groups = [
-    {
-      id: "analytics",
-      label: "Analytics",
-      items: [
-        { id: "overview", view: "overview", label: "Overview", icon: "overview" },
-        { id: "usage", view: "usage", label: "Usage", icon: "usage" },
-        { id: "models", view: "models", label: "Model performance", icon: "models" },
-        { id: "agents", view: "agents", label: "Agent telemetry", icon: "activity" },
-        { id: "calibration", view: "calibration", label: "Calibration", icon: "target" },
-      ],
-    },
-  ];
+  const groups = [];
   if (isResearcher(user)) {
     groups.push({
       id: "research",
@@ -66,7 +60,7 @@ const currentView = (location) => {
   const fromQuery = params.get("view");
   if (fromQuery) return fromQuery.toLowerCase();
   if (location.hash) return location.hash.slice(1).toLowerCase();
-  return "overview";
+  return "";
 };
 
 const isItemActive = (item, location) => {
@@ -134,7 +128,7 @@ const AppShell = ({ user, onLogout, children }) => {
         >
           <Icon name={navOpen ? "x" : "menu"} size={18} />
         </button>
-        <Link to="/dashboard" className="shell-brand" aria-label="Code4Me home">
+        <Link to={homePath(user)} className="shell-brand" aria-label="Code4Me home">
           <span className="shell-logo" aria-hidden="true">
             C4
           </span>
