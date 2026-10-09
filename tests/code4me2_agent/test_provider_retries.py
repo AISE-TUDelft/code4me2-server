@@ -302,3 +302,202 @@ def test_tool_calls_without_a_provider_id_get_distinct_ids_across_steps():
     assert _normalize_tool_calls([{"id": "c7", "name": "read_file", "arguments": {}}])[0].tool_call_id == "c7"
     first = step()[0]
     assert _normalize_tool_calls([first])[0].tool_call_id == first["id"]
+
+
+@pytest.mark.parametrize("base_url", ["https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"])
+def test_direct_opencode_calls_carry_a_stable_session_header(monkeypatch, base_url):
+    monkeypatch.setenv("OPENCODE_TEST_KEY", "secret-key")
+
+    def headers(session_id):
+        return OpenAICompatibleProvider(
+            kind="openai",
+            base_url=base_url,
+            model="deepseek-v4-flash",
+            api_key_env="OPENCODE_TEST_KEY",
+            timeout_seconds=5.0,
+            tool_definitions=[],
+            session_id=session_id,
+        )._headers()
+
+    first = headers("swebench-run-a")
+    assert first["Authorization"] == "Bearer secret-key"
+    assert first["x-opencode-session"].startswith("c4m-")
+    assert "swebench-run-a" not in first["x-opencode-session"]
+    assert headers("swebench-run-a")["x-opencode-session"] == first["x-opencode-session"]
+    assert headers("swebench-run-b")["x-opencode-session"] != first["x-opencode-session"]
+
+
+def test_other_direct_providers_get_no_opencode_header():
+    provider = OpenAICompatibleProvider(
+        kind="openai",
+        base_url="https://openrouter.ai/api/v1",
+        model="m",
+        api_key_env="",
+        timeout_seconds=5.0,
+        tool_definitions=[],
+        session_id="s",
+    )
+
+    assert "x-opencode-session" not in provider._headers()
+
+
+def test_request_deadline_abandons_a_request_that_never_answers(monkeypatch):
+    import time as _time
+    from types import SimpleNamespace
+
+    from openai import APITimeoutError
+
+    from code4me2_agent.adapters import _classify_sdk_error
+
+    provider = OpenAICompatibleProvider(
+        kind="openai",
+        base_url="http://model.test",
+        model="m",
+        api_key_env="",
+        timeout_seconds=300.0,
+        tool_definitions=[],
+        request_deadline_seconds=0.3,
+    )
+    # A server that keeps the connection alive (DeepSeek's blank-line keep-alive)
+    # never trips the SDK's read timeout; only the wall-clock deadline ends it.
+    hanging = SimpleNamespace(create=lambda **_kwargs: _time.sleep(30))
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(with_raw_response=hanging))
+    )
+    monkeypatch.setattr(provider, "_client", lambda: client)
+
+    started = _time.perf_counter()
+    with pytest.raises(APITimeoutError) as caught:
+        provider._sdk_call({"model": "m", "messages": []}, None)
+
+    assert _time.perf_counter() - started < 5
+    assert _classify_sdk_error(FAST)(caught.value).retryable
+
+
+def test_request_deadline_is_read_from_the_config_file(tmp_path):
+    import json
+
+    from code4me2_agent.config import AgentConfig
+
+    path = tmp_path / "agent-config.json"
+    path.write_text(json.dumps({"adapter": {"provider": {"request_deadline_seconds": 120}}}))
+    assert AgentConfig.from_file(path).adapter.provider.request_deadline_seconds == 120.0
+    path.write_text(json.dumps({"adapter": {"provider": {}}}))
+    assert AgentConfig.from_file(path).adapter.provider.request_deadline_seconds is None
+
+
+def test_reasoning_goes_back_exactly_as_received_and_only_where_produced(monkeypatch):
+    import json as _json
+
+    from openai import OpenAI
+
+    from code4me2_agent.adapters import _normalize_openai_provider_response
+
+    captured = []
+
+    def handler(request):
+        captured.append(_json.loads(request.content))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"role": "assistant", "content": "done",
+                                     "reasoning_content": "thought 2"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        })
+
+    provider = OpenAICompatibleProvider(kind="openai", base_url="http://model.test", model="m",
+                                        api_key_env="", timeout_seconds=5.0, tool_definitions=[])
+    client = OpenAI(api_key="x", base_url="http://model.test/v1", max_retries=0,
+                    http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(provider, "_client", lambda: client)
+
+    turn = provider.generate([
+        {"role": "user", "content": "fix it"},
+        {"role": "assistant", "content": "", "provider_reasoning": {"reasoning_content": "thought 1"},
+         "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "a.py"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "x = 1"},
+        {"role": "assistant", "content": "earlier answer without reasoning"},
+    ])
+
+    sent = captured[0]["messages"]
+    assert sent[1]["reasoning_content"] == "thought 1"  # the SDK passes it through unchanged
+    assert "provider_reasoning" not in sent[1]
+    assert "reasoning_content" not in sent[3]  # never invented for other messages
+    assert turn.output["reasoning_fields"] == {"reasoning_content": "thought 2"}
+    # OpenRouter-style `reasoning` is normalised to the one field we send back.
+    openrouter = _normalize_openai_provider_response({"choices": [{"message": {
+        "content": "x", "reasoning": "r", "reasoning_details": [{"type": "reasoning.text", "text": "r"}]}}]})
+    assert openrouter["reasoning_fields"] == {"reasoning_content": "r"}
+    empty = _normalize_openai_provider_response({"choices": [{"message": {"content": "x", "reasoning_content": ""}}]})
+    assert empty["reasoning_fields"] == {"reasoning_content": ""}  # "" kept distinct from absent
+    plain = _normalize_openai_provider_response({"choices": [{"message": {"content": "x"}}]})
+    assert "reasoning_fields" not in plain
+
+
+def _capturing_provider(monkeypatch, model, responses):
+    import json as _json
+
+    from openai import OpenAI
+
+    captured = []
+
+    def handler(request):
+        captured.append(_json.loads(request.content))
+        status, body = responses.pop(0)
+        return httpx.Response(status, json=body)
+
+    provider = OpenAICompatibleProvider(kind="openai", base_url="http://model.test", model=model, api_key_env="",
+                                        timeout_seconds=5.0,
+                                        tool_definitions=[{"type": "function", "function": {"name": "read_file",
+                                                                                            "parameters": {}}}],
+                                        retry_policy=RetryPolicy(max_attempts=1))
+    client = OpenAI(api_key="x", base_url="http://model.test/v1", max_retries=0,
+                    http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(provider, "_client", lambda: client)
+    return provider, captured
+
+
+_OK = (200, {"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+_HISTORY = [
+    {"role": "user", "content": "go"},
+    {"role": "assistant", "content": "", "provider_reasoning": {"reasoning_content": "t1"},
+     "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "a"}}]},
+    {"role": "tool", "tool_call_id": "c1", "content": "x"},
+    {"role": "assistant", "content": "runtime note without reasoning"},
+    {"role": "user", "content": "next"},
+]
+
+
+def test_deepseek_v4_gets_reasoning_on_every_assistant_message_when_tools_are_sent(monkeypatch):
+    provider, captured = _capturing_provider(monkeypatch, "deepseek-v4.1-flash", [_OK, _OK])
+    provider.generate(list(_HISTORY))
+    sent = [m for m in captured[0]["messages"] if m["role"] == "assistant"]
+    assert [m.get("reasoning_content") for m in sent] == ["t1", ""]
+    # Without tools DeepSeek ignores reasoning: no filling.
+    provider.generate(list(_HISTORY), include_tools=False)
+    sent = [m for m in captured[1]["messages"] if m["role"] == "assistant"]
+    assert [m.get("reasoning_content") for m in sent] == ["t1", None]
+
+
+def test_a_server_that_rejects_the_field_gets_none_after_one_retry(monkeypatch):
+    rejected = (400, {"error": {"message": "Extra inputs are not permitted, field: 'messages[1].reasoning_content'"}})
+    provider, captured = _capturing_provider(monkeypatch, "some-model", [rejected, _OK, _OK])
+    provider.generate(list(_HISTORY))
+    assert captured[0]["messages"][1]["reasoning_content"] == "t1"
+    assert "reasoning_content" not in captured[1]["messages"][1]  # retried without it
+    provider.generate(list(_HISTORY))
+    assert "reasoning_content" not in captured[2]["messages"][1]  # and remembered
+
+
+def test_a_server_that_requires_the_field_gets_it_filled_after_one_retry(monkeypatch):
+    required = (400, {"error": {"message": "The `reasoning_content` in the thinking mode must be passed back to the API."}})
+    provider, captured = _capturing_provider(monkeypatch, "some-thinking-model", [required, _OK])
+    provider.generate(list(_HISTORY))
+    assert [m.get("reasoning_content") for m in captured[1]["messages"] if m["role"] == "assistant"] == ["t1", ""]
+
+
+def test_unrelated_bad_requests_are_not_retried(monkeypatch):
+    bad = (400, {"error": {"message": "context length exceeded"}})
+    provider, captured = _capturing_provider(monkeypatch, "deepseek-v4.1-flash", [bad])
+    with pytest.raises(ProviderRequestFailed):
+        provider.generate(list(_HISTORY))
+    assert len(captured) == 1

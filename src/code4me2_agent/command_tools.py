@@ -305,6 +305,11 @@ class WorkspaceCommandTools:
         self._max_output_bytes = max(1, int(selected_max_output_bytes))
 
     @property
+    def allowlisted_commands(self) -> frozenset[str]:
+        """The configured command allowlist (read-only; tool descriptions follow it)."""
+        return frozenset(self._allowlisted_commands)
+
+    @property
     def workspace_root(self) -> Path:
         return self._config.workspace_root
 

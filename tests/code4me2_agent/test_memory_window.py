@@ -249,3 +249,47 @@ def test_window_with_oversize_batch_keeps_the_newest_result_intact():
     tool_messages = [m for m in window if m["role"] == "tool"]
     assert [json.loads(m["content"]).get("elided", False) for m in tool_messages] == [True, True, False]
     _assert_groups_intact(window)
+
+
+def _long_turn(units: int, size: int = 3000) -> MemoryWindow:
+    memory = MemoryWindow(strategy="token_window", max_messages=1000, max_tokens=6000)
+    memory.append(_system())
+    memory.append(_user("fix the bug"))
+    for index in range(units):
+        memory.append(_tool_calls(f"c{index}"))
+        memory.append(_tool_result(f"c{index}", size=size))
+    return memory
+
+
+def test_calibration_scales_the_budget_and_is_bounded():
+    memory = _long_turn(1)
+    memory.calibrate(provider_prompt_tokens=1500, estimated_tokens=1000)
+    assert memory.scale == 1.5
+    memory.calibrate(provider_prompt_tokens=500, estimated_tokens=1000)
+    assert memory.scale == 1.0  # the chars/4 estimate stays a floor
+    memory.calibrate(provider_prompt_tokens=10_000, estimated_tokens=1000)
+    assert memory.scale == 3.0
+    memory.calibrate(provider_prompt_tokens=0, estimated_tokens=1000)
+    assert memory.scale == 3.0  # no usage reported: keep the last scale
+
+
+def test_current_turn_is_elided_once_down_to_the_low_water_mark():
+    memory = _long_turn(10)  # ~10 x 760 estimated tokens of tool output in one turn: over 6000
+    trimmed = memory.compact_current_turn()
+    assert trimmed and trimmed["elided_units"] >= 1
+    assert trimmed["estimated_tokens_after"] <= int(trimmed["budget_tokens"] * 0.6)
+    snapshot = memory.snapshot()
+    assert snapshot[1]["content"] == "fix the bug"  # the request is never elided
+    assert "x" * 3000 in snapshot[-1]["content"]  # nor the newest result
+    # Below budget again: nothing changes, so the request prefix stays stable.
+    assert memory.compact_current_turn() is None
+    before = memory.snapshot()
+    memory.append(_tool_calls("next"))
+    memory.append(_tool_result("next", size=100))
+    assert memory.compact_current_turn() is None
+    assert memory.snapshot()[: len(before)] == before
+
+
+def test_a_turn_within_budget_is_not_touched():
+    memory = _long_turn(2, size=200)
+    assert memory.compact_current_turn() is None

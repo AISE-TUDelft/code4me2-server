@@ -197,17 +197,25 @@ class EchoAgentCore:
             },
         )
         duration_ms = round((perf_counter() - started_at) * 1000, 3)
+        run_payload: dict = {"status": adapter_result.run_status}
+        run_metrics: dict = {
+            "duration_ms": duration_ms,
+            "prompt_character_count": len(prompt),
+            "response_character_count": len(final_response),
+        }
+        # Optional model calls (self-review, summary) that failed have no
+        # closing event of their own; the run reports them.
+        side_call_failures = list(getattr(adapter_result, "side_call_failures", ()) or ())
+        if side_call_failures:
+            run_payload["side_call_failures"] = side_call_failures
+            run_metrics["failed_side_calls"] = len(side_call_failures)
         self._telemetry.record(
             event_type="agent.run.completed",
             run_id=run_id,
             request_id=request_id,
             parent_event_id=response_event["event_id"],
-            payload={"status": adapter_result.run_status},
-            metrics={
-                "duration_ms": duration_ms,
-                "prompt_character_count": len(prompt),
-                "response_character_count": len(final_response),
-            },
+            payload=run_payload,
+            metrics=run_metrics,
         )
         return EchoPromptResult(
             run_id=run_id,

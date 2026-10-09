@@ -180,6 +180,10 @@ class OpenAICompatibleProviderConfig:
     # Forwarded as ``max_tokens`` only when set: newer OpenAI models reject it in
     # favour of ``max_completion_tokens`` and the relay hides which upstream is used.
     max_output_tokens: int | None = None
+    # Wall-clock limit for one direct model request; None = only the SDK's read
+    # timeout. DeepSeek keeps queued non-streaming requests alive with blank
+    # lines for up to 30 minutes, which a read timeout never notices.
+    request_deadline_seconds: float | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -396,6 +400,10 @@ class AgentConfig:
     approval_policy: str = "auto"
     store_agent_content: bool = True
     harness: HarnessOptions = field(default_factory=HarnessOptions)
+    # Headless runs (benchmarks, scripts): nobody reads or answers the turn, so
+    # a final message that only announces more work is continued. Never set by
+    # a study profile; IDE (ACP) sessions keep the default (as gemini-cli does).
+    autonomous: bool = False
     managed_mode: bool = False
     managed_request: Callable[[str, str, dict | None], dict] | None = field(
         default=None, repr=False, compare=False
@@ -679,6 +687,11 @@ class AgentConfig:
                     and provider_data["max_output_tokens"] > 0
                     else None
                 ),
+                request_deadline_seconds=(
+                    _positive_float(provider_data["request_deadline_seconds"], default=0.0) or None
+                    if provider_data.get("request_deadline_seconds") is not None
+                    else None
+                ),
             ),
         )
 
@@ -696,6 +709,7 @@ class AgentConfig:
             commands=commands,
             adapter=adapter,
             harness=harness,
+            autonomous=data.get("autonomous") is True,
         )
 
 

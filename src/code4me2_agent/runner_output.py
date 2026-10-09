@@ -86,11 +86,17 @@ def _count(pattern: str, text: str) -> int | None:
 # -------------------------------------------------------------------- pytest
 
 _PYTEST_SUMMARY_RE = re.compile(r"^=+ (.*? in [\d.]+s(?: \([^)]*\))?) =+$", re.MULTILINE)
+# `pytest -q` prints the same summary without the `=` framing.
+_PYTEST_BARE_SUMMARY_RE = re.compile(
+    r"^((?:\d+ (?:subtests )?(?:passed|failed|errors?|skipped|deselected|xfailed|xpassed|warnings?|rerun)(?:, )?)+"
+    r" in [\d.]+s(?: \([^)]*\))?|no tests ran in [\d.]+s(?: \([^)]*\))?)$",
+    re.MULTILINE,
+)
 _PYTEST_SHORT_RE = re.compile(r"^(FAILED|ERROR) (\S+)(?: - (.*))?$", re.MULTILINE)
 
 
 def _pytest(text: str) -> RunnerSummary | None:
-    matches = _PYTEST_SUMMARY_RE.findall(text)
+    matches = _PYTEST_SUMMARY_RE.findall(text) or _PYTEST_BARE_SUMMARY_RE.findall(text)
     short = _PYTEST_SHORT_RE.findall(text)
     if not matches and not short:
         return None
@@ -300,6 +306,7 @@ _RUNNERS = {
 }
 _JS_LAUNCHERS = frozenset({"npm", "npx", "yarn", "pnpm", "bun", "node"})
 _PYTHON_LAUNCHERS = frozenset({"python", "python3", "py", "uv", "poetry", "hatch", "tox"})
+_SHELLS = frozenset({"bash", "sh", "zsh"})
 # Windows launch names (python.exe, gradlew.bat, mvnw.cmd, npm.cmd) match without the suffix.
 _WINDOWS_SUFFIXES = (".exe", ".bat", ".cmd", ".com")
 
@@ -324,6 +331,13 @@ def summarize_test_output(argv: list[str], stdout: str, stderr: str) -> RunnerSu
         parsers = ()  # go build/vet/run print no test summary
     if program == "cargo" and "test" not in argv[1:]:
         parsers = ()
+    if not parsers and program in _SHELLS:
+        # `bash -c "cd pkg && pytest -q"`: the runner is inside the script.
+        script = " ".join(argv[1:])
+        if re.search(r"\b(?:pytest|py\.test)\b", script):
+            parsers = (_pytest,)
+        elif re.search(r"\bunittest\b", script):
+            parsers = (_unittest,)
     if not parsers and program in _JS_LAUNCHERS:
         parsers = (_jest,)
     if not parsers and program == "make":
