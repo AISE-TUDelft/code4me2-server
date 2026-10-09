@@ -45,6 +45,7 @@ from code4me2_agent.tool_errors import (
     ToolError,
     ToolFileNotFoundError,
 )
+from code4me2_agent.tls import USER_AGENT
 
 try:
     import fcntl
@@ -2163,7 +2164,7 @@ class OpenAICompatibleProvider:
         return self._client_instance
 
     def _headers(self) -> dict[str, str]:
-        headers = {"User-Agent": "code4me2-agent/0.1"}
+        headers = {"User-Agent": USER_AGENT}
         api_key = os.getenv(self._api_key_env, "").strip() if self._api_key_env else ""
         if self._kind == "code4me_backend":
             headers.update(self._auth_headers)
