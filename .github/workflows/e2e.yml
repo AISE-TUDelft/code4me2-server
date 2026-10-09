@@ -8,7 +8,8 @@ name: E2E harness
 #   backend  - 17 HTTP workflow steps against the disposable Compose stack
 #   browser  - 37 headless Chromium website checks + persisted read models
 #   plugin   - Kotlin IntelliJ fixture + HTTP workflow
-#   agents   - real Goose/Codex ACP probes (needs a host Goose; not offered here)
+#   agents   - real Goose/Codex ACP probes (only inside `all`, which installs a
+#              pinned Goose; the harness itself never installs agents)
 #   all      - every layer (needs a graphical runner)
 #
 # `test` provisions missing prerequisites itself (e.g. e2e/.venv for the native
@@ -125,6 +126,21 @@ jobs:
           python -m pip install -r code4me2-server/packaging/requirements-runtime.lock \
             -r code4me2-server/packaging/requirements-build.lock
           python -m pip install --no-deps -e ./code4me2-server -e ./code4me2/telemetry-acp-proxy
+      # Participants bring their own Goose, so the harness only discovers one; on
+      # this throwaway runner the agents layer gets the release the harness
+      # targets (Goose 1.51), checked against the digest GitHub publishes for it.
+      - name: Install the pinned Goose for the agents layer
+        if: ${{ inputs.layer == 'all' }}
+        env:
+          GOOSE_URL: https://github.com/aaif-goose/goose/releases/download/v1.51.0/goose-x86_64-unknown-linux-gnu.tar.bz2
+          GOOSE_SHA256: de5bf71c6bf470fbb55276de871bbbd65c844aa066d3b09b1552da83f8e367e2
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/goose.tar.bz2" "$GOOSE_URL"
+          echo "$GOOSE_SHA256  $RUNNER_TEMP/goose.tar.bz2" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/goose"
+          tar -xjf "$RUNNER_TEMP/goose.tar.bz2" -C "$RUNNER_TEMP/goose"
+          "$RUNNER_TEMP/goose/goose" --version
+          echo "CODE4ME_E2E_GOOSE_EXECUTABLE=$RUNNER_TEMP/goose/goose" >> "$GITHUB_ENV"
       - name: Install Playwright for the browser layer
         if: ${{ inputs.layer == 'browser' }}
         run: |
