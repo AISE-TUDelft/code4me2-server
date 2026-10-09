@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 from urllib import request
 from uuid import uuid4
 
-from code4me2_agent.tls import https_context
+from code4me2_agent.tls import USER_AGENT, https_context
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -160,7 +160,7 @@ def upload_event_batch_http(
 ) -> None:
     payload = {"run": run, "events": events}
     payload_bytes = json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
     headers.update(auth_headers)
     http_request = request.Request(
         ingest_url,

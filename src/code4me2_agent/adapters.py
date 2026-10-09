@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import logging
@@ -7,17 +8,20 @@ import os
 import platform
 import random
 import re
+import shlex
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import date
 from email.utils import parsedate_to_datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 from threading import Event, Thread
 from time import perf_counter, sleep, time
 from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence, TypeVar
+from urllib.parse import urlparse
 
-from openai import APIConnectionError, APIStatusError, OpenAI
+import httpx
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 from code4me2_agent import prompting, slash_commands, tool_catalog
 from code4me2_agent.config import HarnessOptions
@@ -45,6 +49,7 @@ from code4me2_agent.tool_errors import (
     ToolError,
     ToolFileNotFoundError,
 )
+from code4me2_agent.tls import USER_AGENT
 
 try:
     import fcntl
@@ -68,6 +73,9 @@ T = TypeVar("T")
 _MAX_TOOL_RESULT_CHARS = 32_000
 # Room for the model's own output when sizing the request window.
 _OUTPUT_HEADROOM_TOKENS = 1024
+# Current-turn compaction elides down to this share of the budget at once.
+_CURRENT_TURN_LOW_WATER = 0.6
+_MAX_TOKEN_SCALE = 3.0
 _BUDGET_NOTICE = (
     "This is the final model call for this turn: tool calls are disabled. Reply with a "
     "user-facing message that summarizes what you did and verified so far, and what "
@@ -89,6 +97,9 @@ class AdapterResult:
     # True when the adapter already streamed the final text to the client.
     response_emitted: bool = False
     usage: dict[str, int] | None = None
+    # Optional model calls (self-review, summary) that failed this turn. They
+    # have no closing event of their own; agent.run.completed reports them.
+    side_call_failures: tuple[dict[str, Any], ...] = ()
 
 
 class AgentAdapter(Protocol):
@@ -120,6 +131,8 @@ class ParsedProviderOutput:
     tool_calls: list[ToolCall]
     thought: str | None = None
     finish_reason: str | None = None
+    # The provider's own reasoning fields, exactly as returned, to send back.
+    reasoning_fields: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -707,7 +720,17 @@ class ToolRegistry:
                     str(definition.get("function", {}).get("name", ""))
                 )
             ]
+        shell = _allowlisted_shell(getattr(self._command_tools, "allowlisted_commands", None))
+        if shell is not None:
+            # "There is no shell" would contradict an allowlisted bash/sh.
+            selected = [_with_shell_description(definition, shell) for definition in selected]
         return selected
+
+    def _is_known(self, name: str) -> bool:
+        """A catalogue tool or a tool of a connected MCP server (allowed or not)."""
+        if name in tool_catalog.tool_names():
+            return True
+        return self._mcp_tools is not None and self._mcp_tools.has_tool(name)
 
     def known_tool_names(self) -> set[str]:
         names: set[str] = set()
@@ -814,6 +837,16 @@ class ToolRegistry:
         arguments = dict(tool_call.arguments)
         metadata = _safe_tool_event_metadata(name, arguments, workspace_root=self._workspace_root)
 
+        if not self._is_known(name):
+            available = sorted(self.known_tool_names())
+            hint = (
+                " Use run_command to run programs."
+                if name.lower() in _SHELL_LIKE_TOOL_NAMES and "run_command" in available
+                else ""
+            )
+            message = f"Unknown tool: {name}. Available tools: {', '.join(available) or 'none'}.{hint}"
+            self._emit_denied(tool_call, arguments, metadata, message=message)
+            raise ToolRegistryError(message, failure_reason="unsupported_tool")
         if not self._is_allowed(name):
             message = f"Tool is disabled by the assigned study policy: {name}"
             self._emit_denied(tool_call, arguments, metadata, message=message)
@@ -972,6 +1005,8 @@ class ToolRegistry:
             self._emit_tool_failed(tool_call, validated, metadata, preview, error=exc)
             raise
         tool_output = asdict(result) if is_dataclass(result) else dict(result)
+        if validated.get("_argument_notes"):
+            tool_output["argument_notes"] = list(validated["_argument_notes"])
         self._note_success(name, validated, tool_output)
         self._emit_tool_completed(tool_call, validated, tool_output, metadata, preview)
         return tool_output
@@ -1668,7 +1703,14 @@ def _arg_int(
     minimum: int | None = None,
     maximum: int | None = None,
     default: int | None = None,
+    adjustments: list[str] | None = None,
 ) -> int | None:
+    """Parse an integer argument.
+
+    With ``adjustments``, an out-of-range value is clamped to the bound and a
+    note is recorded for the tool result (size and paging arguments, where a
+    clamp is always what the model meant); without it, out of range is an error.
+    """
     if not _arg_present(arguments, field_name):
         return default
     value = arguments[field_name]
@@ -1686,6 +1728,12 @@ def _arg_int(
             f"Invalid argument '{field_name}' for {tool}: expected an integer, got {value!r}.",
             field=field_name,
         )
+    if adjustments is not None and minimum is not None and parsed < minimum:
+        adjustments.append(f"{field_name} {parsed} was raised to the minimum {minimum}")
+        return minimum
+    if adjustments is not None and maximum is not None and parsed > maximum:
+        adjustments.append(f"{field_name} {parsed} was lowered to the maximum {maximum}")
+        return maximum
     if (minimum is not None and parsed < minimum) or (maximum is not None and parsed > maximum):
         bounds = []
         if minimum is not None:
@@ -1750,12 +1798,28 @@ def _arg_enum(
     return value
 
 
-def _require_str_list(arguments: dict[str, Any], field_name: str, tool: str) -> list[str]:
+# Characters that would need a shell; such a string is never split into argv.
+_SHELL_SYNTAX = frozenset("|&;<>()$`*?[]{}~!#\n\\")
+
+
+def _require_str_list(
+    arguments: dict[str, Any], field_name: str, tool: str, *, adjustments: list[str] | None = None
+) -> list[str]:
     value = arguments.get(field_name)
     if isinstance(value, str):
+        if adjustments is not None and value.strip() and not (_SHELL_SYNTAX & set(value)):
+            try:
+                split = shlex.split(value)
+            except ValueError:
+                split = []
+            if split:
+                adjustments.append(f"{field_name} was given as one string and split into {split!r}")
+                return split
         raise ToolArgumentError(
             f"Invalid argument '{field_name}' for {tool}: expected a list of strings, got a single "
-            "string. Split the command into separate argv items.",
+            "string. Split the command into separate argv items; there is no shell, so pipes, "
+            "redirection and globs need an allowlisted shell program as argv[0] (for example "
+            '["bash", "-c", "..."]) when one is allowed.',
             field=field_name,
         )
     if not isinstance(value, (list, tuple)) or not value or not all(isinstance(item, str) for item in value):
@@ -1839,17 +1903,68 @@ def _require_plan_entries(arguments: dict[str, Any], tool: str) -> list[PlanEntr
     return entries
 
 
+_SHELL_PROGRAMS = ("bash", "sh", "zsh")
+_SHELL_LIKE_TOOL_NAMES = frozenset({"bash", "sh", "shell", "terminal", "exec", "execute", "execute_command",
+                                     "run_shell", "run_terminal_cmd", "cmd", "powershell"})
+_NO_SHELL_SENTENCE = (
+    "There is no shell: pipes, globs, '&&', 'cd' and redirection are not available; pass "
+    "arguments as separate argv items."
+)
+
+
+def _allowlisted_shell(commands: object) -> str | None:
+    """The first shell on the command allowlist that is installed, else None."""
+    if not isinstance(commands, (set, frozenset, list, tuple)):
+        return None
+    from code4me2_agent.command_tools import available_commands
+
+    available = set(available_commands([str(command) for command in commands]))
+    return next((shell for shell in _SHELL_PROGRAMS if shell in available), None)
+
+
+def _shell_sentence(shell: str) -> str:
+    return (
+        "argv is not passed through a shell; for pipes, globs, '&&', 'cd' or redirection run the "
+        f'allowlisted shell explicitly, e.g. ["{shell}", "-c", "cd src && pytest -q | tail -20"].'
+    )
+
+
+def _with_shell_description(definition: dict[str, Any], shell: str) -> dict[str, Any]:
+    function = definition.get("function") or {}
+    description = function.get("description")
+    if function.get("name") != "run_command" or not isinstance(description, str):
+        return definition
+    if _NO_SHELL_SENTENCE not in description:
+        return definition
+    return {
+        **definition,
+        "function": {**function, "description": description.replace(_NO_SHELL_SENTENCE, _shell_sentence(shell))},
+    }
+
+
 def _validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Return a validated, normalized argument mapping for a catalogue tool.
 
-    Unknown (MCP or unsupported) tools pass through unchanged.
+    Unknown (MCP or unsupported) tools pass through unchanged. Size and paging
+    arguments out of range are clamped, and an argv given as one plain string is
+    split; each adjustment is reported to the model as ``argument_notes``.
     """
+    adjustments: list[str] = []
+    validated = _validate_arguments_strict(name, arguments, adjustments)
+    if adjustments:
+        validated = {**validated, "_argument_notes": adjustments}
+    return validated
+
+
+def _validate_arguments_strict(
+    name: str, arguments: dict[str, Any], adjustments: list[str]
+) -> dict[str, Any]:
     if name == "read_file":
         return {
             "path": _require_str(arguments, "path", name),
-            "offset": _arg_int(arguments, "offset", name, minimum=1)
-            or _arg_int(arguments, "line_start", name, minimum=1),
-            "limit": _arg_int(arguments, "limit", name, minimum=1, maximum=5000)
+            "offset": _arg_int(arguments, "offset", name, minimum=1, adjustments=adjustments)
+            or _arg_int(arguments, "line_start", name, minimum=1, adjustments=adjustments),
+            "limit": _arg_int(arguments, "limit", name, minimum=1, maximum=5000, adjustments=adjustments)
             or _line_end_limit(arguments, name),
         }
     if name == "create_file":
@@ -1916,15 +2031,19 @@ def _validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return {
             "path": _optional_str(arguments, "path", name, ".") or ".",
             "recursive": _arg_bool(arguments, "recursive", name),
-            "max_depth": _arg_int(arguments, "max_depth", name, minimum=1, maximum=20),
-            "max_results": _arg_int(arguments, "max_results", name, minimum=1, maximum=2000, default=500),
+            "max_depth": _arg_int(arguments, "max_depth", name, minimum=1, maximum=20, adjustments=adjustments),
+            "max_results": _arg_int(
+                arguments, "max_results", name, minimum=1, maximum=2000, default=500, adjustments=adjustments
+            ),
             "include_ignored": _arg_bool(arguments, "include_ignored", name),
         }
     if name == "glob_files":
         return {
             "pattern": _require_str(arguments, "pattern", name),
             "path": _optional_str(arguments, "path", name, ".") or ".",
-            "max_results": _arg_int(arguments, "max_results", name, minimum=1, maximum=2000, default=500),
+            "max_results": _arg_int(
+                arguments, "max_results", name, minimum=1, maximum=2000, default=500, adjustments=adjustments
+            ),
             "include_ignored": _arg_bool(arguments, "include_ignored", name),
         }
     if name == "grep_files":
@@ -1933,8 +2052,12 @@ def _validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             "path": _optional_str(arguments, "path", name, ".") or ".",
             "glob": _optional_str(arguments, "glob", name),
             "case_insensitive": _arg_bool(arguments, "case_insensitive", name),
-            "context_lines": _arg_int(arguments, "context_lines", name, minimum=0, maximum=10, default=0),
-            "max_results": _arg_int(arguments, "max_results", name, minimum=1, maximum=1000, default=200),
+            "context_lines": _arg_int(
+                arguments, "context_lines", name, minimum=0, maximum=10, default=0, adjustments=adjustments
+            ),
+            "max_results": _arg_int(
+                arguments, "max_results", name, minimum=1, maximum=1000, default=200, adjustments=adjustments
+            ),
             "output_mode": _arg_enum(
                 arguments, "output_mode", name, ("content", "files_with_matches", "count"), "content"
             ),
@@ -1947,7 +2070,7 @@ def _validate_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         }
     if name == "run_command":
         return {
-            "argv": _require_str_list(arguments, "argv", name),
+            "argv": _require_str_list(arguments, "argv", name, adjustments=adjustments),
             "cwd": _optional_str(arguments, "cwd", name, ".") or ".",
             "timeout_seconds": _arg_number(arguments, "timeout_seconds", name),
         }
@@ -2002,6 +2125,8 @@ class FakeOpenAICompatibleProvider:
         reasoning = _normalize_optional_text(step.get("reasoning"))
         if reasoning is not None:
             output["reasoning"] = reasoning
+        if isinstance(step.get("reasoning_fields"), dict):
+            output["reasoning_fields"] = dict(step["reasoning_fields"])
         raw_usage = step.get("usage")
         usage = _normalize_usage(raw_usage, messages, output)
         return ProviderTurn(
@@ -2031,8 +2156,10 @@ class OpenAICompatibleProvider:
         managed_request: Any | None = None,
         max_output_tokens: int | None = None,
         retry_policy: RetryPolicy | None = None,
+        request_deadline_seconds: float | None = None,
     ) -> None:
         self._kind = kind.strip() or "code4me_backend"
+        self._request_deadline_seconds = request_deadline_seconds
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._api_key_env = api_key_env
@@ -2050,6 +2177,11 @@ class OpenAICompatibleProvider:
         self._max_output_tokens = max_output_tokens
         self._retry_policy = retry_policy or RetryPolicy.from_env()
         self._client_instance: OpenAI | None = None
+        # Reasoning pass-back: echo what the model produced, and fill "" where a
+        # DeepSeek V4 model requires the field. Each adapts at most once when
+        # the server says otherwise (see generate()).
+        self._echo_reasoning = True
+        self._fill_reasoning = _needs_reasoning_on_every_assistant(model)
 
     @property
     def retry_policy(self) -> RetryPolicy:
@@ -2071,6 +2203,11 @@ class OpenAICompatibleProvider:
         if self._tool_definitions and include_tools:
             request_payload["tools"] = list(self._tool_definitions)
             request_payload["tool_choice"] = tool_choice or "auto"
+        _apply_reasoning_policy(
+            request_payload["messages"],
+            echo=self._echo_reasoning,
+            fill=self._fill_reasoning and "tools" in request_payload,
+        )
         if self._temperature is not None:
             request_payload["temperature"] = self._temperature
         if self._max_output_tokens:
@@ -2090,13 +2227,34 @@ class OpenAICompatibleProvider:
                 cancellation_event=cancellation_event,
             )
         else:
-            response_payload = _call_with_retries(
-                lambda: self._sdk_call(request_payload, cancellation_event),
-                policy=self._retry_policy,
-                classify=_classify_sdk_error(self._retry_policy),
-                cancellation_event=cancellation_event,
-                before_attempt=_rate_limit_provider_request_from_env,
-            )
+            def call() -> Any:
+                return _call_with_retries(
+                    lambda: self._sdk_call(request_payload, cancellation_event),
+                    policy=self._retry_policy,
+                    classify=_classify_sdk_error(self._retry_policy),
+                    cancellation_event=cancellation_event,
+                    before_attempt=_rate_limit_provider_request_from_env,
+                )
+
+            try:
+                response_payload = call()
+            except ProviderRequestFailed as exc:
+                # The server said how it treats reasoning on assistant messages:
+                # adapt once for this session and resend the same request.
+                verdict = _reasoning_rejection(exc)
+                if verdict == "rejected" and self._echo_reasoning:
+                    self._echo_reasoning = False
+                elif verdict == "required" and not self._fill_reasoning:
+                    self._fill_reasoning = True
+                else:
+                    raise
+                logging.warning("Model service %s reasoning pass-back; adapting: %s", verdict, exc)
+                _apply_reasoning_policy(
+                    request_payload["messages"],
+                    echo=self._echo_reasoning,
+                    fill=self._fill_reasoning and "tools" in request_payload,
+                )
+                response_payload = call()
         if not isinstance(response_payload, dict):
             raise ProviderRequestFailed("The model service returned a non-object response.")
         normalized_output = _normalize_openai_provider_response(response_payload)
@@ -2137,9 +2295,19 @@ class OpenAICompatibleProvider:
                 finished.set()
 
         Thread(target=worker, daemon=True, name="code4me2-provider").start()
+        deadline = (
+            perf_counter() + self._request_deadline_seconds
+            if self._request_deadline_seconds
+            else None
+        )
         while not finished.wait(0.25):
             if _turn_was_cancelled(cancellation_event):
                 raise ProviderCancelled("Cancelled while waiting for the model response.")
+            if deadline is not None and perf_counter() > deadline:
+                # Retryable like any timeout; the abandoned daemon thread is dropped.
+                raise APITimeoutError(
+                    request=httpx.Request("POST", f"{self._openai_base_url()}/chat/completions")
+                )
         if "error" in outcome:
             raise outcome["error"]
         raw_response = outcome["value"]
@@ -2163,13 +2331,14 @@ class OpenAICompatibleProvider:
         return self._client_instance
 
     def _headers(self) -> dict[str, str]:
-        headers = {"User-Agent": "code4me2-agent/0.1"}
+        headers = {"User-Agent": USER_AGENT}
         api_key = os.getenv(self._api_key_env, "").strip() if self._api_key_env else ""
         if self._kind == "code4me_backend":
             headers.update(self._auth_headers)
         elif self._kind == "openai":
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
+            headers.update(_opencode_session_headers(self._base_url, self._session_id))
         elif self._kind != "managed_backend":
             raise ValueError(f"Unsupported provider kind: {self._kind}")
         return headers
@@ -2181,6 +2350,20 @@ class OpenAICompatibleProvider:
         if not base_url.endswith("/v1"):
             base_url = f"{base_url}/v1"
         return base_url
+
+
+# OpenCode (Zen and Go) rejects a request without ``x-opencode-session``
+# (400 MissingSessionID). Same scheme as the backend relay (agents/provider.py):
+# a one-way hash that stays stable for one agent session.
+_OPENCODE_SESSION_DOMAIN = b"code4me-opencode-session\x00"
+
+
+def _opencode_session_headers(base_url: str, session_id: str) -> dict[str, str]:
+    host = (urlparse(base_url).hostname or "").lower()
+    if not (host == "opencode.ai" or host.endswith(".opencode.ai")):
+        return {}
+    digest = hashlib.sha256(_OPENCODE_SESSION_DOMAIN + (session_id or "").encode("utf-8"))
+    return {"x-opencode-session": f"c4m-{digest.hexdigest()[:32]}"}
 
 
 class _OpenAIClientWithoutSdkAuth(OpenAI):
@@ -2325,10 +2508,67 @@ class MemoryWindow:
         self._max_messages = max(1, max_messages)
         self._max_tokens = max(1, max_tokens)
         self._messages: list[dict[str, Any]] = []
+        # Provider tokens per estimated (chars/4) token, learned from usage.
+        # Code, line numbers and escaped JSON tokenize denser than chars/4.
+        self._scale = 1.0
 
     @property
     def max_tokens(self) -> int:
         return self._max_tokens
+
+    @property
+    def scale(self) -> float:
+        return self._scale
+
+    def calibrate(self, *, provider_prompt_tokens: int, estimated_tokens: int) -> None:
+        """Adopt the provider's own count of the last request.
+
+        Never below 1.0 (the estimate stays a floor) and capped so one odd
+        response cannot collapse the window.
+        """
+        if provider_prompt_tokens > 0 and estimated_tokens > 0:
+            self._scale = min(_MAX_TOKEN_SCALE, max(1.0, provider_prompt_tokens / estimated_tokens))
+
+    def compact_current_turn(
+        self, *, reserve_tokens: int = 0, low_water: float = _CURRENT_TURN_LOW_WATER
+    ) -> dict[str, int] | None:
+        """Elide old tool output of the current turn in one step, in place.
+
+        Trimming just enough on every call moves the cut forward each time and
+        so changes the request prefix on every call, which defeats provider
+        prompt caching. Eliding down to ``low_water`` of the budget once keeps
+        the prefix stable until the turn has grown back to the budget.
+        Returns what was done, or None when the turn still fits.
+        """
+        system, budget, older, protected = self._partition(reserve_tokens)
+        used = sum(_unit_tokens(unit) for unit in protected)
+        # Same trigger as _shrink_protected: earlier turns are window()'s and
+        # summarisation's to drop; only a turn that alone overflows is touched.
+        if used <= budget or len(protected) <= 2:
+            return None
+        target = int(budget * low_water)
+        shrunk = list(protected)
+        elided = 0
+        # Never the user prompt (0) or the newest unit, which the model is acting on.
+        for position in range(1, len(shrunk) - 1):
+            replacement = _elide_unit(shrunk[position])
+            if replacement != shrunk[position]:
+                shrunk[position] = replacement
+                elided += 1
+            if sum(_unit_tokens(unit) for unit in shrunk) <= target:
+                break
+        if not elided:
+            return None
+        rebuilt: list[dict[str, Any]] = [system] if system is not None else []
+        for unit in [*older, *shrunk]:
+            rebuilt.extend(unit)
+        self._messages = rebuilt
+        return {
+            "elided_units": elided,
+            "estimated_tokens_before": used,
+            "estimated_tokens_after": sum(_unit_tokens(unit) for unit in shrunk),
+            "budget_tokens": budget,
+        }
 
     def append(self, message: dict[str, Any]) -> None:
         self._messages.append(dict(message))
@@ -2369,7 +2609,7 @@ class MemoryWindow:
     ) -> tuple[dict[str, Any] | None, int, list[list[dict[str, Any]]], list[list[dict[str, Any]]]]:
         """``(system, budget, older units, protected units of the current turn)``."""
         system, rest = self._split_pinned_system()
-        budget = self._max_tokens - max(0, int(reserve_tokens))
+        budget = int(self._max_tokens / self._scale) - max(0, int(reserve_tokens))
         if system is not None:
             budget -= _estimate_tokens(system)
         units = _split_units(rest)
@@ -2581,12 +2821,19 @@ class _TurnState:
     last_command_step: int = 0
     commands_run: list[str] = field(default_factory=list)
     verify_nudged: bool = False
+    continuation_nudges: int = 0
+    step_at_last_continuation: int = -1
+    pending_continuation_flag: bool = False
     verify_runs: int = 0
     verification_note: str | None = None
     reviewed: bool = False
     compaction_failed: bool = False
     # Changes made through IDE tools (MCP refactorings) have no file diff.
     external_changes: bool = False
+    side_call_failures: list[dict[str, Any]] = field(default_factory=list)
+    # Reasoning fields of the latest model response, attached (once) to the
+    # first stored message that holds that response's output.
+    reasoning_fields: dict[str, Any] | None = None
     # An IDE build/run (MCP) after the last change: enough to skip the verify
     # nudge, never a replacement for the profile's verification command.
     last_ide_run_step: int = 0
@@ -2618,6 +2865,16 @@ _LOOP_NOT_RUN = "Not run: tools are disabled for this turn after repeated identi
 _LOOP_STOPPED_TEXT = (
     "I stopped because the same step kept repeating without progress, so tools were disabled "
     "for the rest of this turn. Send another message with more guidance to continue."
+)
+_MAX_CONTINUATIONS = 2
+_CUT_OFF_NOTE = (
+    "[Runtime check, not a message from the user] Your last message was cut off by the output "
+    "limit. Continue where it stopped: call the tools you need, or finish your final answer."
+)
+_CONTINUE_NOTE = (
+    "[Runtime check, not a message from the user] Your last message announced more work but "
+    "called no tool, so the turn would end here. Continue: call the tools you need, or, if "
+    "you are done, give your final answer."
 )
 _VERIFY_NUDGE = (
     "[Runtime check, not a message from the user] You changed {files} but ran no command since "
@@ -2773,6 +3030,20 @@ class OpenAICompatibleReactAdapter:
                     return self._cancelled(memory, state)
                 if compacted == "failed":
                     state.compaction_failed = True  # do not retry every iteration
+            trimmed = memory.compact_current_turn(reserve_tokens=reserve_tokens)
+            # Reported as integer metrics on this iteration's agent.model.requested
+            # (no event type of its own: the study counts steps as events).
+            request_metrics = (
+                {
+                    "context_elided_units": trimmed["elided_units"],
+                    "context_tokens_before": trimmed["estimated_tokens_before"],
+                    "context_tokens_after": trimmed["estimated_tokens_after"],
+                    "context_budget_tokens": trimmed["budget_tokens"],
+                    "token_scale_milli": int(round(memory.scale * 1000)),
+                }
+                if trimmed
+                else None
+            )
             iteration = state.budget_used + 1
             final_round = iteration >= max_iterations or state.forced_final is not None
             request_messages = memory.window(reserve_tokens=reserve_tokens)
@@ -2820,12 +3091,16 @@ class OpenAICompatibleReactAdapter:
                 payload["reminder"] = True
             if state.forced_final is not None:
                 payload["loop_guard"] = "forced_stop"
+            if state.pending_continuation_flag:
+                payload["continuation_nudge"] = True
+                state.pending_continuation_flag = False
             self._telemetry.record(
                 event_type="agent.model.requested",
                 run_id=run_id,
                 request_id=request_id,
                 parent_event_id=None,
                 payload=payload,
+                metrics=request_metrics,
                 raw_payload={"messages": messages},
             )
             started_at = perf_counter()
@@ -2857,6 +3132,7 @@ class OpenAICompatibleReactAdapter:
                     failure_reason="provider_request_failed",
                     stop_reason="error",
                     text=_provider_error_text(exc),
+                    failure=_model_failure_details(exc, started_at=started_at, purpose="turn"),
                 )
             except Exception as exc:  # noqa: BLE001
                 return self._fail(
@@ -2867,6 +3143,7 @@ class OpenAICompatibleReactAdapter:
                     failure_reason="provider_request_failed",
                     stop_reason="error",
                     text=f"The model request failed: {exc}",
+                    failure=_model_failure_details(exc, started_at=started_at, purpose="turn"),
                 )
             state.budget_used += 1
             self._account_model_call(
@@ -2878,6 +3155,11 @@ class OpenAICompatibleReactAdapter:
                 iteration=iteration,
                 context_budget=memory.max_tokens,
             )
+            if not turn.usage_estimated:
+                memory.calibrate(
+                    provider_prompt_tokens=int(turn.usage.get("prompt_tokens", 0)),
+                    estimated_tokens=payload["approx_token_count"] + reserve_tokens - _OUTPUT_HEADROOM_TOKENS,
+                )
             if _turn_was_cancelled(cancellation_event):
                 return self._cancelled(memory, state)
 
@@ -2892,6 +3174,7 @@ class OpenAICompatibleReactAdapter:
                     stop_reason="error",
                     text=_PARSE_ERROR_TEXT,
                 )
+            state.reasoning_fields = parsed.reasoning_fields
             if parsed.thought:
                 state.thoughts.append(parsed.thought)
                 emit_event(
@@ -2912,7 +3195,9 @@ class OpenAICompatibleReactAdapter:
                 # never-run calls are runtime-only: a reopened chat skips them
                 # (the model's text is part of the final message below).
                 memory.append(
-                    _assistant_tool_call_message(parsed.tool_calls, text=None, runtime="loop_stop")
+                    _with_reasoning(
+                        _assistant_tool_call_message(parsed.tool_calls, text=None, runtime="loop_stop"), state
+                    )
                 )
                 for call in parsed.tool_calls:
                     memory.append(_tool_message(call, _not_run_result(call, _LOOP_NOT_RUN)))
@@ -2931,7 +3216,7 @@ class OpenAICompatibleReactAdapter:
             if parsed.tool_calls:
                 if parsed.text:
                     self._emit_text(parsed.text, run_id=run_id, request_id=request_id, final=False, iteration=iteration)
-                memory.append(_assistant_tool_call_message(parsed.tool_calls, text=parsed.text))
+                memory.append(_with_reasoning(_assistant_tool_call_message(parsed.tool_calls, text=parsed.text), state))
                 state.used_tools = True
                 results = self._execute_batch(
                     parsed.tool_calls,
@@ -2970,6 +3255,36 @@ class OpenAICompatibleReactAdapter:
                     )
                 continue
 
+            cut_off = parsed.finish_reason == "length"
+            if (
+                getattr(self._config, "autonomous", False)
+                and parsed.text
+                and state.used_tools
+                and state.forced_final is None
+                and not final_round
+                and state.continuation_nudges < _MAX_CONTINUATIONS
+                and state.step > state.step_at_last_continuation
+                and max_iterations - state.budget_used >= 2
+                and (cut_off or _announces_more_work(parsed.text))
+            ):
+                # Headless only: "Let me also check…" (or an answer cut off at
+                # the output limit) with no tool call would end the turn
+                # mid-task. At most two nudges, each needing a tool run since
+                # the last one, so the model can always end the turn.
+                state.continuation_nudges += 1
+                state.step_at_last_continuation = state.step
+                state.pending_continuation_flag = True
+                self._continue_with_note(
+                    memory,
+                    parsed.text,
+                    note=_CUT_OFF_NOTE if cut_off else _CONTINUE_NOTE,
+                    kind="continue",
+                    run_id=run_id,
+                    request_id=request_id,
+                    iteration=iteration,
+                    state=state,
+                )
+                continue
             if parsed.text:
                 if state.forced_final is not None:
                     stop_reason = "loop_detected"
@@ -3115,6 +3430,14 @@ class OpenAICompatibleReactAdapter:
             raise
         except Exception as exc:  # noqa: BLE001 - the main loop continues without it
             logger.warning("The %s model call failed: %s", purpose, exc)
+            payload, metrics = _model_failure_details(exc, started_at=started_at, purpose=purpose)
+            state.side_call_failures.append(
+                {
+                    "call_purpose": purpose,
+                    "error_type": payload["error_type"],
+                    **{key: metrics[key] for key in ("status_code", "attempts") if key in metrics},
+                }
+            )
             return None
         self._account_model_call(
             state,
@@ -3240,6 +3563,7 @@ class OpenAICompatibleReactAdapter:
                     run_id=run_id,
                     request_id=request_id,
                     iteration=state.budget_used,
+                    state=state,
                 )
                 return "continue"
         if harness.self_review and not state.reviewed and remaining >= 3:
@@ -3281,6 +3605,7 @@ class OpenAICompatibleReactAdapter:
                     request_id=request_id,
                     iteration=state.budget_used,
                     emit_answer=False,
+                    state=state,
                 )
                 return "continue"
         return "finish"
@@ -3296,9 +3621,12 @@ class OpenAICompatibleReactAdapter:
         request_id: str,
         iteration: int,
         emit_answer: bool = True,
+        state: _TurnState | None = None,
     ) -> None:
         """Keep the model's provisional answer and add a runtime note; the loop continues."""
         provisional: dict[str, Any] = {"role": "assistant", "content": answer}
+        if state is not None:
+            provisional = _with_reasoning(provisional, state)
         if emit_answer:
             self._emit_text(answer, run_id=run_id, request_id=request_id, final=False, iteration=iteration)
         else:
@@ -3383,7 +3711,7 @@ class OpenAICompatibleReactAdapter:
             return "passed" if status == "ok" else "skipped"
         outcome = f"exit code {exit_code}" if status == "ok" else "timed out"
         self._emit_text(answer, run_id=run_id, request_id=request_id, final=False, iteration=state.budget_used)
-        memory.append({"role": "assistant", "content": answer})
+        memory.append(_with_reasoning({"role": "assistant", "content": answer}, state))
         memory.append(_assistant_tool_call_message([call], text=None, runtime="verify"))
         memory.append(_tool_message(call, result))
         memory.append(
@@ -3545,8 +3873,14 @@ class OpenAICompatibleReactAdapter:
             state.last_ide_run_step = state.step
             state.commands_run.append(f"IDE: {tool_call.name.split('__', 2)[-1]}")
         elif tool_call.name == "run_command" and status in {"ok", "error", "timeout"}:
-            state.last_command_step = state.step
             argv = tool_call.arguments.get("argv")
+            if isinstance(argv, str):
+                argv = [argv]
+            # Verify-on-stop: inspection (git status/diff, ls, cat, grep…) or file
+            # shuffling after the last change is not verification; a command that
+            # ran the code is, whatever its exit code (the model saw the output).
+            if status == "ok" and isinstance(argv, list) and _is_verification_command(argv):
+                state.last_command_step = state.step
             if isinstance(argv, list):
                 state.commands_run.append(" ".join(str(item) for item in argv))
 
@@ -3606,7 +3940,7 @@ class OpenAICompatibleReactAdapter:
     ) -> AdapterResult:
         if emit:
             self._emit_text(text, run_id=run_id, request_id=request_id, final=True, iteration=iteration)
-        memory.append({"role": "assistant", "content": text})
+        memory.append(_with_reasoning({"role": "assistant", "content": text}, state))
         return AdapterResult(
             final_response=text,
             stop_reason=stop_reason,
@@ -3614,6 +3948,7 @@ class OpenAICompatibleReactAdapter:
             thoughts=tuple(state.thoughts),
             response_emitted=True,
             usage=state.usage,
+            side_call_failures=tuple(state.side_call_failures),
         )
 
     def _fail(
@@ -3626,8 +3961,16 @@ class OpenAICompatibleReactAdapter:
         failure_reason: str,
         stop_reason: str,
         text: str,
+        failure: tuple[dict[str, Any], dict[str, Any]] | None = None,
     ) -> AdapterResult:
-        self._record_loop_failure(run_id=run_id, request_id=request_id, failure_reason=failure_reason)
+        extra_payload, metrics = failure if failure is not None else (None, None)
+        self._record_loop_failure(
+            run_id=run_id,
+            request_id=request_id,
+            failure_reason=failure_reason,
+            extra_payload=extra_payload,
+            metrics=metrics,
+        )
         self._emit_text(text, run_id=run_id, request_id=request_id, final=True, iteration=state.model_calls)
         memory.append({"role": "assistant", "content": text})
         return AdapterResult(
@@ -3637,6 +3980,7 @@ class OpenAICompatibleReactAdapter:
             thoughts=tuple(state.thoughts),
             response_emitted=True,
             usage=state.usage,
+            side_call_failures=tuple(state.side_call_failures),
         )
 
     def _cancelled(self, memory: MemoryWindow, state: _TurnState) -> AdapterResult:
@@ -3656,6 +4000,7 @@ class OpenAICompatibleReactAdapter:
             thoughts=result.thoughts,
             response_emitted=True,
             usage=state.usage,
+            side_call_failures=tuple(state.side_call_failures),
         )
 
     # -------------------------------------------------------- tool calls
@@ -3857,6 +4202,7 @@ class OpenAICompatibleReactAdapter:
             session_id=self._config.session_id,
             managed_request=self._config.managed_request,
             max_output_tokens=getattr(provider_config, "max_output_tokens", None),
+            request_deadline_seconds=getattr(provider_config, "request_deadline_seconds", None),
         )
 
     def _prompt_profile(self) -> str:
@@ -3928,10 +4274,16 @@ class OpenAICompatibleReactAdapter:
                 if wrappers
                 else ""
             )
+            shell = next((name for name in _SHELL_PROGRAMS if name in commands), None)
+            shell_text = (
+                f"no implicit shell (for pipes, redirects or cd run e.g. "
+                f'["{shell}", "-c", "..."])'
+                if shell
+                else "no shell (no pipes, redirects or cd)"
+            )
             commands_line = (
-                "run_command executes one allowlisted program with an argv list and no shell "
-                "(no pipes, redirects or cd). Allowlisted executables: "
-                f"{', '.join(commands)}. Nothing else can be run.{wrapper_hint}"
+                f"run_command executes one allowlisted program with an argv list and {shell_text}. "
+                f"Allowlisted executables: {', '.join(commands)}. Nothing else can be run.{wrapper_hint}"
             )
         else:
             commands_line = "Commands cannot be run in this session."
@@ -4062,6 +4414,7 @@ class OpenAICompatibleReactAdapter:
             run_status="completed",
             response_emitted=True,
             usage=state.usage,
+            side_call_failures=tuple(state.side_call_failures),
         )
 
     def _status_text(self, memory: MemoryWindow) -> str:
@@ -4235,6 +4588,7 @@ class OpenAICompatibleReactAdapter:
             tool_calls=_normalize_tool_calls(tool_calls_data),
             thought=_normalize_optional_text(raw_output.get("reasoning")),
             finish_reason=turn.finish_reason,
+            reasoning_fields=_reasoning_fields(raw_output.get("reasoning_fields")),
         )
 
     # --------------------------------------------------------- telemetry
@@ -4265,6 +4619,8 @@ class OpenAICompatibleReactAdapter:
         run_id: str,
         request_id: str,
         failure_reason: str,
+        extra_payload: dict[str, Any] | None = None,
+        metrics: dict[str, Any] | None = None,
     ) -> None:
         self._telemetry.record(
             event_type="agent.adapter.loop_failed",
@@ -4275,7 +4631,9 @@ class OpenAICompatibleReactAdapter:
                 "adapter_name": self._config.adapter.name,
                 "max_iterations": self._config.adapter.max_iterations,
                 "failure_reason": failure_reason,
+                **(extra_payload or {}),
             },
+            metrics=metrics,
         )
 
     def _record_tool_failure(
@@ -4630,6 +4988,27 @@ def _stop_reason_from_finish(finish_reason: str | None) -> str:
     if finish_reason == "content_filter":
         return "refusal"
     return "end_turn"
+
+
+def _model_failure_details(
+    exc: BaseException, *, started_at: float, purpose: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """(payload, metrics) describing a failed model call.
+
+    Numbers go into metrics, which the server keeps as structural data even
+    without content consent; ``error_message`` is a content key.
+    """
+    payload: dict[str, Any] = {
+        "call_purpose": purpose,
+        "error_type": type(exc).__name__,
+        "error_message": str(exc)[:500],
+    }
+    metrics: dict[str, Any] = {"duration_ms": round((perf_counter() - started_at) * 1000, 3)}
+    for key in ("status_code", "attempts"):
+        value = getattr(exc, key, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            metrics[key] = value
+    return payload, metrics
 
 
 def _provider_error_text(exc: ProviderRequestFailed) -> str:
@@ -5111,8 +5490,165 @@ def _function_tool(
     return tool_catalog._function_tool(name, description, properties, required)
 
 
+# Reasoning is sent back as one field, ``reasoning_content``: the name DeepSeek,
+# Kimi, GLM and Qwen require and vLLM, SGLang and OpenRouter (as an alias)
+# accept, normalised from ``reasoning`` as the AI SDK's openai-compatible
+# provider does. OpenRouter's structured ``reasoning_details`` is not echoed.
+# Servers that reject the field (Groq, Mistral, TensorRT-LLM) are handled by
+# the provider's one-time fallback; our relay strips it before any upstream.
+_REASONING_FIELD = "reasoning_content"
+
+
+# Programs that inspect or move files but never run the code: after an edit,
+# running only these is not verification (git status/diff was the last command
+# in 44 of 68 benchmark tasks that "verified").
+_NON_VERIFYING_PROGRAMS = frozenset({
+    "git", "ls", "cat", "head", "tail", "grep", "rg", "find", "wc", "echo", "pwd", "which",
+    "type", "file", "stat", "tree", "du", "df", "sort", "uniq", "diff", "cut", "tr", "less",
+    "more", "env", "printenv", "true", "false", "date", "whoami", "id", "uname", "basename",
+    "dirname", "realpath", "readlink", "nl", "sed", "awk", "rm", "mv", "cp", "mkdir", "touch",
+    "chmod", "ln", "cd", "export", "set", "unset",
+})
+_SCRIPT_SEPARATORS = re.compile(r"&&|\|\||[;|\n]")
+
+
+_INSTALL_SUBCOMMANDS = frozenset({"install", "i", "add", "ci", "uninstall", "remove", "sync", "update"})
+
+
+def _is_install_command(program: str, args: list[str]) -> bool:
+    """Package management (pip/uv/npm install…): changes the environment, checks nothing."""
+    if program in {"pip", "pip3", "conda", "mamba", "apt", "apt-get", "brew"}:
+        return True
+    if program in {"python", "python3", "py"} and args[:2] == ["-m", "pip"]:
+        return True
+    if program == "uv":
+        return not args or args[0] != "run"
+    if program in {"npm", "yarn", "pnpm", "bun"}:
+        return bool(args) and args[0] in _INSTALL_SUBCOMMANDS
+    return False
+
+
+def _is_verification_command(argv: list[object]) -> bool:
+    """Whether a command run counts as checking the code (verify-on-stop).
+
+    Shell scripts (``bash -c "cd src && pytest -q"``) count when any segment
+    runs something other than inspection; an unparsable script counts, so the
+    gate never nudges because of our own parsing limits.
+    """
+    if not argv:
+        return False
+    program = PurePath(str(argv[0])).name.lower()
+    if program.endswith((".exe", ".bat", ".cmd")):
+        program = program.rsplit(".", 1)[0]
+    if program in _SHELL_PROGRAMS and len(argv) >= 3 and str(argv[1]).startswith("-") and "c" in str(argv[1]):
+        script = str(argv[2])
+        for segment in _SCRIPT_SEPARATORS.split(script):
+            try:
+                words = shlex.split(segment)
+            except ValueError:
+                return True
+            while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+                words = words[1:]  # VAR=value prefixes
+            if words and _is_verification_command(words):
+                return True
+        return False
+    if _is_install_command(program, [str(arg) for arg in argv[1:]]):
+        return False
+    return program not in _NON_VERIFYING_PROGRAMS
+
+
+_MORE_WORK_START = re.compile(
+    r"^(?:(?:now|next|first|then|also|so|ok(?:ay)?),?\s+)?"
+    r"(?:let me|let's|let us|i'll|i will|i'm going to|i am going to)\b",
+    re.IGNORECASE,
+)
+
+
+def _announces_more_work(text: str) -> bool:
+    """A final message that ends by announcing a next step it did not take.
+
+    Checked on the last sentence only; "Let me know…" closes a turn politely and
+    does not count.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped.endswith(":"):
+        return True
+    last = re.split(r"(?<=[.!?])\s+|\n+", stripped)[-1].strip()
+    if re.search(r"\blet me know\b", last, re.IGNORECASE):
+        return False
+    return bool(_MORE_WORK_START.match(last))
+
+
+def _reasoning_fields(source: object) -> dict[str, Any] | None:
+    """``{"reasoning_content": text}`` from a response message; exact text ("" kept)."""
+    if not isinstance(source, dict):
+        return None
+    for key in (_REASONING_FIELD, "reasoning"):
+        value = source.get(key)
+        if isinstance(value, str):
+            return {_REASONING_FIELD: value}
+    return None
+
+
+def _with_reasoning(message: dict[str, Any], state: "_TurnState") -> dict[str, Any]:
+    """Attach the latest response's reasoning to the message holding its output.
+
+    Consumed once, so runtime messages appended later in the same step never
+    carry it. DeepSeek thinking mode with tools requires it on later requests.
+    """
+    if state.reasoning_fields:
+        message = {**message, "provider_reasoning": dict(state.reasoning_fields)}
+        state.reasoning_fields = None
+    return message
+
+
 def _to_openai_message(message: dict[str, Any]) -> dict[str, Any]:
     role = str(message.get("role", "user"))
+    converted = _to_openai_message_body(message, role)
+    if role == "assistant":
+        converted.update(_reasoning_fields(message.get("provider_reasoning")) or {})
+    return converted
+
+
+# DeepSeek V4 with tools: "the reasoning_content must be fully passed back to the
+# API in all subsequent requests — even for turns where the model did not
+# perform a tool call", else HTTP 400. The AI SDK and opencode fill "" on every
+# assistant message for these model ids; so do we.
+_DEEPSEEK_V4_MODEL = re.compile(r"(?:^|/)deepseek-(?:v4|flash|pro)", re.IGNORECASE)
+
+
+def _needs_reasoning_on_every_assistant(model: str) -> bool:
+    return bool(_DEEPSEEK_V4_MODEL.search(model or ""))
+
+
+def _apply_reasoning_policy(messages: list[dict[str, Any]], *, echo: bool, fill: bool) -> None:
+    """Strip or complete ``reasoning_content`` on outgoing assistant messages, in place."""
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        if not echo:
+            message.pop(_REASONING_FIELD, None)
+        elif fill and not isinstance(message.get(_REASONING_FIELD), str):
+            message[_REASONING_FIELD] = ""
+
+
+def _reasoning_rejection(exc: "ProviderRequestFailed") -> str | None:
+    """How a 400 treats reasoning: ``rejected`` (unknown field) or ``required``."""
+    if exc.status_code != 400:
+        return None
+    text = str(exc).lower()
+    if "reasoning" not in text:
+        return None
+    if "passed back" in text:
+        return "required"
+    if any(word in text for word in ("extra", "not permitted", "unsupported", "unknown", "unrecognized", "not allowed")):
+        return "rejected"
+    return None
+
+
+def _to_openai_message_body(message: dict[str, Any], role: str) -> dict[str, Any]:
     if role == "assistant" and message.get("tool_calls"):
         return {
             "role": "assistant",
@@ -5210,6 +5746,9 @@ def _normalize_openai_provider_response(
     )
     if reasoning is not None:
         normalized["reasoning"] = reasoning
+    reasoning_fields = _reasoning_fields(message)
+    if reasoning_fields:
+        normalized["reasoning_fields"] = reasoning_fields
     if final_answer is not None:
         normalized["final_answer"] = str(final_answer)
     return normalized

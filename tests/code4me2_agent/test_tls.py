@@ -12,7 +12,8 @@ import ssl
 from pathlib import Path
 
 import code4me2_agent
-from code4me2_agent import telemetry, tls
+from code4me2_agent import runtime_auth, telemetry, tls
+from code4me2_agent.adapters import OpenAICompatibleProvider
 
 
 def test_https_context_trusts_bundled_roots_when_the_platform_store_is_empty(monkeypatch):
@@ -70,3 +71,51 @@ def test_telemetry_upload_uses_the_tls_context(monkeypatch):
     )
     assert seen["url"] == "https://backend.example/api/agent/ingest"
     assert seen["context"] is tls.https_context()
+
+
+def test_backend_requests_name_the_agent_instead_of_python_urllib(monkeypatch):
+    # The Cloudflare edge answers urllib's default ``Python-urllib/3.x`` with 403 (error 1010).
+    agents = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(http_request, timeout, context=None):
+        agents.append(http_request.get_header("User-agent"))
+        return _Response()
+
+    monkeypatch.setattr(runtime_auth.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(telemetry.request, "urlopen", fake_urlopen)
+    auth = runtime_auth.AcpBackendAuthorization(
+        backend_url="https://backend.example", grant=None, acp_token="token"
+    )
+    auth._post("/api/acp/session/exchange", {"grant": "grant"})
+    auth._get("/api/acp/agent-config")
+    auth.authorized_json_request("POST", "/api/acp/runs", {})
+    telemetry.upload_event_batch_http(
+        {}, [], {}, ingest_url="https://backend.example/api/agent/ingest", timeout_seconds=1.0
+    )
+    assert tls.USER_AGENT.startswith("code4me2-agent/")
+    assert agents == [tls.USER_AGENT] * 4
+
+
+def test_backend_model_calls_name_the_agent_with_the_same_user_agent():
+    provider = OpenAICompatibleProvider(
+        kind="code4me_backend",
+        base_url="https://backend.example",
+        model="m",
+        api_key_env="",
+        timeout_seconds=5.0,
+        auth_headers={"Authorization": "Bearer token"},
+    )
+
+    assert provider._headers()["User-Agent"] == tls.USER_AGENT

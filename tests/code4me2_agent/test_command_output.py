@@ -243,3 +243,35 @@ def test_summaries_can_be_disabled(tmp_path):
     )
     code = "print('==================== 1 passed in 0.01s ====================')"
     assert tools.run_command([PYTHON.name, "-c", code], timeout_seconds=30).test_summary is None
+
+
+def test_pytest_quiet_summaries_without_framing_are_recognised():
+    # Real `pytest -q` endings from benchmark traces.
+    cases = {
+        "....\n5 passed in 0.68s\n": (5, 0, 0, None),
+        "..s\n3 passed, 1 skipped in 0.10s\n": (3, 0, 0, 1),
+        "FAILED tests/test_a.py::test_x - AssertionError: 1 != 2\n2 failed, 3 passed, 1 deselected in 0.05s\n": (3, 2, 0, None),
+        "E   ImportError\n1 error in 0.30s\n": (0, 0, 1, None),
+        "\nno tests ran in 0.01s\n": (0, 0, 0, None),
+        "4 passed, 2 warnings in 12.34s (0:00:12)\n": (4, 0, 0, None),
+        # pytest 9 subtests: the subtest count is not a test count.
+        "2 failed, 2 subtests passed in 0.01s\n": (0, 2, 0, None),
+        # Collection error: "Interrupted" banner, then the summary.
+        "!!!!!!!! Interrupted: 1 error during collection !!!!!!!!\n1 error in 0.03s\n": (0, 0, 1, None),
+    }
+    for output, (passed, failed, errors, skipped) in cases.items():
+        summary = summarize_test_output(["pytest", "-q"], output, "")
+        assert summary is not None, output
+        assert (summary.passed, summary.failed, summary.errors, summary.skipped) == (passed, failed, errors, skipped), output
+
+
+def test_framed_summary_still_wins_and_prose_lines_do_not_match():
+    framed = "== 1 failed, 2 passed in 0.1s ==\n"
+    assert summarize_test_output(["pytest"], framed, "").summary_line == "1 failed, 2 passed in 0.1s"
+    assert summarize_test_output(["pytest", "-q"], "All 5 passed in time.\n", "") is None
+
+
+def test_runners_inside_shell_scripts_are_recognised():
+    summary = summarize_test_output(["bash", "-c", "cd pkg && pytest -q tests"], "7 passed in 1.00s\n", "")
+    assert summary is not None and summary.passed == 7
+    assert summarize_test_output(["bash", "-c", "git status"], "On branch main\n", "") is None

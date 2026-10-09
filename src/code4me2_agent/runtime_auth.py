@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from urllib import error, request
 from urllib.parse import urlparse
 
-from code4me2_agent.tls import https_context
+from code4me2_agent.tls import USER_AGENT, https_context
 
 if TYPE_CHECKING:
     from code4me2_agent.config import ServerAgentConfig
@@ -347,6 +347,7 @@ class AcpBackendAuthorization:
             headers={
                 "Authorization": f"Bearer {self._acp_token}",
                 "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
             },
             method=method,
         )
@@ -501,7 +502,7 @@ class AcpBackendAuthorization:
         http_request = request.Request(
             f"{self._backend_url}{path}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", **(headers or {})},
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, **(headers or {})},
             method="POST",
         )
         logger.info(
@@ -550,7 +551,7 @@ class AcpBackendAuthorization:
     ) -> dict:
         http_request = request.Request(
             f"{self._backend_url}{path}",
-            headers={"Content-Type": "application/json", **(headers or {})},
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, **(headers or {})},
             method="GET",
         )
         logger.info(

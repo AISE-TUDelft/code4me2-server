@@ -108,8 +108,9 @@ def test_argument_errors_name_the_field_and_emit_failed_card():
     ]
     assert "Invalid arguments" in sink.events[-1].content_text
 
+    # A string that needs a shell is still refused (a plain one is split: see below).
     with pytest.raises(ToolArgumentError) as argv_string:
-        registry.execute(_call("run_command", {"argv": "ls -la"}), run_id="r", request_id="q")
+        registry.execute(_call("run_command", {"argv": "ls -la | head"}), run_id="r", request_id="q")
     assert argv_string.value.field == "argv"
     assert "separate argv items" in str(argv_string.value)
 
@@ -376,3 +377,63 @@ def test_unparseable_raw_arguments_still_get_cards_and_a_field_error():
     with pytest.raises(ToolArgumentError):
         registry.execute(_call("edit_file", {"path": "a.txt", "edits": 7}), run_id="r", request_id="q")
     assert sink.events[-1].phase == "failed"
+
+
+def test_size_arguments_are_clamped_and_plain_argv_strings_split_with_notes():
+    file_tools, command_tools = _mocks()
+    registry = ToolRegistry(file_tools, command_tools, event_sink=RecordingSink())
+
+    out = registry.execute(
+        _call("grep_files", {"pattern": "x", "context_lines": 22, "max_results": 0}),
+        run_id="r", request_id="q",
+    )
+    kwargs = file_tools.grep_files.call_args.kwargs
+    assert (kwargs["context_lines"], kwargs["max_results"]) == (10, 1)
+    assert out["argument_notes"] == [
+        "context_lines 22 was lowered to the maximum 10",
+        "max_results 0 was raised to the minimum 1",
+    ]
+
+    out = registry.execute(_call("run_command", {"argv": "git status --short"}), run_id="r", request_id="q")
+    assert command_tools.run_command.call_args.kwargs["argv"] == ["git", "status", "--short"]
+    assert "split into" in out["argument_notes"][0]
+
+
+
+def _registry_with_commands(commands):
+    file_tools, command_tools = _mocks()
+    command_tools.allowlisted_commands = frozenset(commands)
+    return ToolRegistry(file_tools, command_tools, event_sink=RecordingSink())
+
+
+def _run_command_description(registry):
+    return next(d["function"]["description"] for d in registry.definitions()
+                if d["function"]["name"] == "run_command")
+
+
+def test_run_command_description_follows_the_command_policy(monkeypatch):
+    # Host-independent: treat every allowlisted program as installed (CI runs on Windows too).
+    import code4me2_agent.command_tools as command_tools_module
+
+    monkeypatch.setattr(command_tools_module, "available_commands", lambda commands: list(commands))
+    # Without a shell on the allowlist the original "no shell" wording stays.
+    assert "There is no shell" in _run_command_description(_registry_with_commands(["git", "pytest"]))
+    # With bash allowlisted (and installed), it must not claim there is no shell.
+    described = _run_command_description(_registry_with_commands(["git", "bash"]))
+    assert "There is no shell" not in described
+    assert '["bash", "-c"' in described
+
+
+def test_an_unknown_tool_is_named_as_unknown_not_blamed_on_policy():
+    file_tools, command_tools = _mocks()
+    registry = ToolRegistry(file_tools, command_tools, event_sink=RecordingSink(),
+                            allowed_tools=["read_file", "run_command"])
+    with pytest.raises(ToolRegistryError) as unknown:
+        registry.execute(_call("bash", {"command": "ls"}), run_id="r", request_id="q")
+    assert unknown.value.failure_reason == "unsupported_tool"
+    assert "Unknown tool: bash" in str(unknown.value) and "read_file" in str(unknown.value)
+    assert "Use run_command to run programs." in str(unknown.value)
+    # A real tool outside the policy keeps the policy message.
+    with pytest.raises(ToolRegistryError) as disabled:
+        registry.execute(_call("grep_files", {"pattern": "x"}), run_id="r", request_id="q")
+    assert disabled.value.failure_reason == "tool_not_allowed"
