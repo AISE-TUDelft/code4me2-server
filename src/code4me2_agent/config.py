@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -21,7 +24,9 @@ class UploadConfig:
 
 @dataclass(frozen=True)
 class CommandConfig:
-    allowlisted_commands: list[str] = field(default_factory=list)
+    # Programs run_command refuses (the study's ``commands_denylist``); every
+    # other installed program may run. Empty = nothing blocked.
+    blocked_commands: list[str] = field(default_factory=list)
     # Default per-command timeout; the model may raise it per call up to
     # ``max_timeout_seconds`` (builds and test suites routinely exceed 10 s).
     timeout_seconds: float = 120.0
@@ -221,7 +226,10 @@ class ServerAgentConfig:
     model: str | None = None
     base_url: str | None = None
     api_key_ref: str | None = None
-    commands_allowlist: list[str] | None = None
+    # Programs the agent may not run. The server also sends the legacy
+    # ``commands_allowlist`` for runtimes 0.0.6 and earlier; this runtime
+    # ignores it.
+    commands_denylist: list[str] | None = None
     tools: list[str] | None = None
     max_iterations: int | None = None
     max_context_tokens: int | None = None
@@ -246,7 +254,7 @@ class ServerAgentConfig:
         merged = {**payload, **nested_policy} if isinstance(nested_policy, dict) else payload
         protocol = merged.get("managed_protocol_version", merged.get("version"))
         tools = merged.get("tools")
-        commands = merged.get("commands_allowlist")
+        commands = merged.get("commands_denylist")
         iterations = merged.get("max_iterations")
         context_tokens = merged.get("max_context_tokens")
         temperature = merged.get("temperature")
@@ -260,6 +268,11 @@ class ServerAgentConfig:
             raise ValueError("Managed agent policy selects an unsupported runtime.")
         if merged["transport"] != "managed_backend":
             raise ValueError("Managed agent policy selects an unsafe transport.")
+        if commands is None:
+            raise ValueError(
+                "Managed agent policy has no commands_denylist: the server is older than "
+                "this runtime release."
+            )
         if (
             not isinstance(tools, list)
             or not all(isinstance(tool, str) and tool.strip() for tool in tools)
@@ -343,7 +356,7 @@ class ServerAgentConfig:
             model=_clean_str("model"),
             base_url=_clean_str("base_url"),
             api_key_ref=_clean_str("api_key_ref"),
-            commands_allowlist=_clean_str_list("commands_allowlist"),
+            commands_denylist=_clean_str_list("commands_denylist"),
             tools=_clean_str_list("tools"),
             max_iterations=_clean_positive_int("max_iterations"),
             max_context_tokens=_clean_positive_int("max_context_tokens"),
@@ -363,7 +376,7 @@ class ServerAgentConfig:
                 self.model,
                 self.base_url,
                 self.api_key_ref,
-                self.commands_allowlist,
+                self.commands_denylist,
                 self.tools,
                 self.max_iterations,
                 self.max_context_tokens,
@@ -471,13 +484,8 @@ class AgentConfig:
         )
 
         commands = self.commands
-        if server.commands_allowlist is not None:
-            from code4me2_agent.command_tools import available_commands
-
-            commands = _replace(
-                commands,
-                allowlisted_commands=available_commands(server.commands_allowlist),
-            )
+        if server.commands_denylist is not None:
+            commands = _replace(commands, blocked_commands=list(server.commands_denylist))
         if server.command_timeout_seconds is not None:
             timeout = float(server.command_timeout_seconds)
             commands = _replace(
@@ -563,16 +571,24 @@ class AgentConfig:
         )
 
         commands_data = data.get("commands", data.get("command_tools", {}))
-        raw_allowlist = commands_data.get(
-            "allowlist", commands_data.get("allowlisted_commands", [])
+        raw_denylist = commands_data.get(
+            "denylist", commands_data.get("blocked_commands", [])
         )
-        allowlisted_commands: list[str] = []
-        if isinstance(raw_allowlist, list):
-            allowlisted_commands = [
+        blocked_commands: list[str] = []
+        if isinstance(raw_denylist, list):
+            blocked_commands = [
                 str(command).strip()
-                for command in raw_allowlist
+                for command in raw_denylist
                 if isinstance(command, str) and command.strip()
             ]
+        if "allowlist" in commands_data or "allowlisted_commands" in commands_data:
+            # Files written before the denylist: the runtime now runs any
+            # program except blocked ones, so an allowlist no longer applies.
+            logger.warning(
+                "%s: commands.allowlist is no longer supported and is ignored; list the "
+                "programs the agent may not run under commands.denylist.",
+                path,
+            )
 
         command_timeout_seconds = _positive_float(
             commands_data.get("timeout_seconds", 120.0), default=120.0
@@ -588,7 +604,7 @@ class AgentConfig:
             max_output_bytes = 16384
 
         commands = CommandConfig(
-            allowlisted_commands=allowlisted_commands,
+            blocked_commands=blocked_commands,
             timeout_seconds=command_timeout_seconds,
             max_timeout_seconds=max(command_timeout_seconds, max_command_timeout_seconds),
             max_output_bytes=max_output_bytes,

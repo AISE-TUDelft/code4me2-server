@@ -69,7 +69,7 @@ class Loop:
         *,
         harness: HarnessOptions | None = None,
         max_iterations: int = 10,
-        commands: list[str] | None = None,
+        blocked: list[str] | None = None,
         model: str = "test-model",
         max_tokens: int = 32000,
         tools: list[str] | None = None,
@@ -82,7 +82,7 @@ class Loop:
             trace_path=tmp_path / "trace.jsonl",
             session_id="session-1",
             tools=tools,
-            commands=CommandConfig(allowlisted_commands=list(commands or [])),
+            commands=CommandConfig(blocked_commands=list(blocked or [])),
             adapter=AdapterConfig(
                 name="openai_compatible_react",
                 max_iterations=max_iterations,
@@ -583,7 +583,6 @@ def test_configured_verification_failure_sends_the_model_back(tmp_path):
         harness=HarnessOptions(
             self_review=False, verify_command=(PYTHON, "-c", check), instruction_reminders=False
         ),
-        commands=[PYTHON],
     )
     (loop.workspace / "a.py").write_text("x = 1\n")
 
@@ -605,15 +604,55 @@ def test_without_a_command_the_model_is_nudged_once_to_verify(tmp_path):
         tmp_path,
         [*_edit_script("Done."), {"final_answer": "Done; run pytest to check."}],
         harness=HarnessOptions(self_review=False, instruction_reminders=False),
-        commands=[PYTHON],
     )
     (loop.workspace / "a.py").write_text("x = 1\n")
 
     result = loop.run()
 
     assert "ran no command since your last change" in loop.request_text(3)
+    assert "If a test, build or lint command applies, run it now" in loop.request_text(3)
     assert result.final_response == "Done; run pytest to check."
     assert len(loop.provider.calls) == 4
+
+
+def test_status_says_whether_the_runtime_will_run_the_verify_command(tmp_path):
+    (tmp_path / "blocked").mkdir()
+    (tmp_path / "runnable").mkdir()
+    blocked = Loop(tmp_path / "blocked", [], harness=HarnessOptions(verify_command=("pytest", "-q")), blocked=["PyTest"])
+    status = blocked.run("/status").final_response
+    assert "- Commands: any installed program except PyTest" in status
+    assert "- Verification: the agent is asked to verify after changes (pytest -q cannot run in this session)" in status
+
+    runnable = Loop(tmp_path / "runnable", [], harness=HarnessOptions(verify_command=(PYTHON, "-c", "pass")))
+    assert f"- Verification: the runtime runs {PYTHON} -c pass after changes" in runnable.run("/status").final_response
+
+    (tmp_path / "no-commands").mkdir()
+    no_commands = Loop(
+        tmp_path / "no-commands", [], harness=HarnessOptions(verify_command=(PYTHON, "-c", "pass")),
+        tools=["read_file", "replace_text"],
+    )
+    status = no_commands.run("/status").final_response
+    assert "- Commands: none" in status
+    assert "- Verification: off: commands cannot run in this session" in status
+
+
+def test_a_blocked_verify_command_falls_back_to_the_nudge(tmp_path):
+    """A config row may block the frozen verify command's program: the runtime skips it."""
+    loop = Loop(
+        tmp_path,
+        [*_edit_script("Done."), {"final_answer": "Done; run the check yourself."}],
+        harness=HarnessOptions(
+            self_review=False, verify_command=("bash", "-c", f"{PYTHON} -c 1"), instruction_reminders=False
+        ),
+        blocked=[PYTHON.upper()],
+    )
+    (loop.workspace / "a.py").write_text("x = 1\n")
+
+    result = loop.run()
+
+    assert not [e for e in loop.sink.tool_events if e.tool_call_id.startswith("verify-")]
+    assert "ran no command since your last change" in loop.request_text(3)
+    assert result.final_response == "Done; run the check yourself."
 
 
 def test_only_commands_that_run_the_code_count_as_verification(tmp_path):
@@ -720,7 +759,12 @@ def test_polite_closings_and_tool_less_answers_are_not_continued(tmp_path):
 
 
 def test_no_nudge_when_commands_cannot_run(tmp_path):
-    loop = Loop(tmp_path, _edit_script("Done."), harness=HarnessOptions(self_review=False), commands=[])
+    loop = Loop(
+        tmp_path,
+        _edit_script("Done."),
+        harness=HarnessOptions(self_review=False),
+        tools=["read_file", "replace_text"],
+    )
     (loop.workspace / "a.py").write_text("x = 1\n")
     loop.run()
     assert len(loop.provider.calls) == 3
@@ -839,7 +883,6 @@ def test_running_command_output_streams_into_its_card(tmp_path):
     loop = Loop(
         tmp_path,
         [{"tool_calls": [_tc("c", "run_command", argv=[PYTHON, "-c", code])]}, {"final_answer": "ran"}],
-        commands=[PYTHON],
     )
     loop.run()
     progress = [e for e in loop.sink.tool_events if e.phase == "progress"]

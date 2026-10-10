@@ -68,9 +68,12 @@ class FrozenAgentConfig:
     # (decision D-01); None = not set (older snapshots never carry them). Copied
     # verbatim: the agent-config and run-policy builders validate them and fail
     # closed on a malformed snapshot instead of silently dropping a setting.
-    commands_allowlist: Optional[list[str]] = None
+    commands_denylist: Optional[list[str]] = None
     command_timeout_seconds: Optional[int] = None
     harness_options: Optional[dict[str, Any]] = None
+    # Legacy: the allowlist a snapshot frozen before ``commands_denylist``
+    # carries. It only reaches runtime releases 0.0.6 and earlier.
+    commands_allowlist: Optional[list[str]] = None
 
 
 @dataclass(frozen=True)
@@ -127,9 +130,10 @@ def _frozen_config_from_snapshot(
         release_id=profile_snapshot.get("release_id"),
         funding_owner_user_id=funding_owner_user_id,
         system_prompt=system_prompt if isinstance(system_prompt, str) else None,
-        commands_allowlist=profile_snapshot.get("commands_allowlist"),
+        commands_denylist=profile_snapshot.get("commands_denylist"),
         command_timeout_seconds=profile_snapshot.get("command_timeout_seconds"),
         harness_options=profile_snapshot.get("harness_options"),
+        commands_allowlist=profile_snapshot.get("commands_allowlist"),
     )
 
 

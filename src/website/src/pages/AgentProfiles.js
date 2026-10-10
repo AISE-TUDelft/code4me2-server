@@ -52,13 +52,11 @@ const SYSTEM_PROMPT_MAX_LENGTH = 4000;
 // Built-in runtime command and harness settings (decision D-01). Mirrors the
 // validation in backend agents/tools.py, which the server re-applies.
 const COMMAND_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
-const COMMANDS_ALLOWLIST_MAX = 64;
+const COMMANDS_DENYLIST_MAX = 64;
 const COMMAND_TIMEOUT_MIN = 1;
 const COMMAND_TIMEOUT_MAX = 600;
-// Runtime default per-command timeout and the server fallback allowlist
-// (FALLBACK_COMMANDS_ALLOWLIST in backend/routers/acp/__init__.py).
+// Runtime default per-command timeout.
 const DEFAULT_COMMAND_TIMEOUT = 120;
-const DEFAULT_COMMANDS = "pwd, ls, cat, grep, rg";
 const VERIFY_COMMAND_MAX_ARGS = 32;
 const VERIFY_COMMAND_MAX_ARG_LENGTH = 512;
 // Boolean harness switches; the runtime default of each is on.
@@ -132,7 +130,7 @@ const EMPTY_FORM = {
   temperature: "", // blank = provider default (no override)
   system_prompt: "",
   // Built-in runtime only. Blank / empty = not set (the server default).
-  commands_allowlist: "", // comma- or whitespace-separated command names
+  commands_denylist: "", // comma- or whitespace-separated program names the agent may not run
   command_timeout_seconds: "",
   harness_switches: {}, // explicit switch values only; absent = runtime default
   prompt_profile: "",
@@ -161,6 +159,20 @@ const parseCommandList = (text) =>
     .split(/[\s,]+/)
     .map((item) => item.trim())
     .filter(Boolean);
+
+// How the runtime compares program names: case-insensitive, without a
+// directory, trailing dots/spaces or a Windows launcher suffix
+// (agents/tools.py command_key).
+const commandKey = (name) => {
+  const base = String(name || "")
+    .trim()
+    .split(/[\\/]/)
+    .pop()
+    .toLowerCase()
+    .replace(/[ .]+$/, "");
+  const suffix = [".exe", ".cmd", ".bat", ".com"].find((ending) => base.endsWith(ending) && base.length > ending.length);
+  return suffix ? base.slice(0, -suffix.length).replace(/[ .]+$/, "") : base;
+};
 
 const splitArgv = (text) => String(text || "").trim().split(/\s+/).filter(Boolean);
 
@@ -197,7 +209,7 @@ const harnessFormFields = (options) => {
 
 // Form values of the harness settings when the runtime cannot hold them.
 const CLEARED_HARNESS_FIELDS = {
-  commands_allowlist: "",
+  commands_denylist: "",
   command_timeout_seconds: "",
   harness_switches: {},
   prompt_profile: "",
@@ -207,7 +219,7 @@ const CLEARED_HARNESS_FIELDS = {
 
 const hasHarnessValues = (form) =>
   Boolean(
-    String(form.commands_allowlist).trim() ||
+    String(form.commands_denylist).trim() ||
       String(form.command_timeout_seconds).trim() ||
       Object.keys(harnessOptionsFrom(form)).length,
   );
@@ -463,14 +475,16 @@ const AgentProfiles = ({ user = {} }) => {
   // Client-side mirror of the server's command/harness validation, so an
   // obvious mistake is explained before a 422.
   const validateHarnessFields = () => {
-    const commands = parseCommandList(form.commands_allowlist);
+    const commands = parseCommandList(form.commands_denylist);
     const invalid = commands.find((command) => !COMMAND_NAME_PATTERN.test(command));
     if (invalid) {
       return `"${invalid}" is not a command name. List bare program names (for ./gradlew, list gradlew); no paths, spaces or shell characters.`;
     }
-    if (new Set(commands).size !== commands.length) return "The command allowlist lists a command more than once.";
-    if (commands.length > COMMANDS_ALLOWLIST_MAX) {
-      return `The command allowlist may list at most ${COMMANDS_ALLOWLIST_MAX} commands.`;
+    if (new Set(commands.map((command) => command.toLowerCase())).size !== commands.length) {
+      return "The blocked commands list a command more than once.";
+    }
+    if (commands.length > COMMANDS_DENYLIST_MAX) {
+      return `At most ${COMMANDS_DENYLIST_MAX} commands can be blocked.`;
     }
     if (String(form.command_timeout_seconds).trim() !== "") {
       const timeout = Number(form.command_timeout_seconds);
@@ -486,8 +500,10 @@ const AgentProfiles = ({ user = {} }) => {
       if (!COMMAND_NAME_PATTERN.test(argv[0])) {
         return "The verify command must start with a bare program name.";
       }
-      if (!commands.includes(argv[0])) {
-        return `The verify command runs ${argv[0]}; add it to the command allowlist.`;
+      // The server also refuses a blocked program inside a shell, launcher or
+      // package-manager command (agents/tools.py blocked_command_in).
+      if (commands.map(commandKey).includes(commandKey(argv[0]))) {
+        return `The verify command runs ${argv[0]}, which is a blocked command.`;
       }
     }
     return "";
@@ -703,19 +719,19 @@ const AgentProfiles = ({ user = {} }) => {
     // changed (null when cleared). Goose/Codex never send them, which clears
     // any stored value on the server.
     if (!isByoaRuntime) {
-      const commands = parseCommandList(form.commands_allowlist);
+      const commands = parseCommandList(form.commands_denylist);
       const timeoutText = String(form.command_timeout_seconds).trim();
       const timeout = timeoutText === "" ? null : Number(timeoutText);
       const options = harnessOptionsFrom(form);
       const hasOptions = Object.keys(options).length > 0;
       if (!editingProfileId) {
-        if (commands.length) payload.commands_allowlist = commands;
+        if (commands.length) payload.commands_denylist = commands;
         if (timeout !== null) payload.command_timeout_seconds = timeout;
         if (hasOptions) payload.harness_options = options;
       } else {
         const baselineTimeout = String(formBaseline.command_timeout_seconds).trim();
-        if (JSON.stringify(commands) !== JSON.stringify(parseCommandList(formBaseline.commands_allowlist))) {
-          payload.commands_allowlist = commands.length ? commands : null;
+        if (JSON.stringify(commands) !== JSON.stringify(parseCommandList(formBaseline.commands_denylist))) {
+          payload.commands_denylist = commands.length ? commands : null;
         }
         if (timeoutText !== baselineTimeout) payload.command_timeout_seconds = timeout;
         if (JSON.stringify(options) !== JSON.stringify(harnessOptionsFrom(formBaseline))) {
@@ -756,7 +772,7 @@ const AgentProfiles = ({ user = {} }) => {
     is_active: profile.is_active !== undefined ? Boolean(profile.is_active) : true,
     temperature: profile.temperature === null || profile.temperature === undefined ? "" : profile.temperature,
     system_prompt: profile.system_prompt || "",
-    commands_allowlist: Array.isArray(profile.commands_allowlist) ? profile.commands_allowlist.join(", ") : "",
+    commands_denylist: Array.isArray(profile.commands_denylist) ? profile.commands_denylist.join(", ") : "",
     command_timeout_seconds:
       profile.command_timeout_seconds === null || profile.command_timeout_seconds === undefined
         ? ""
@@ -1443,21 +1459,24 @@ const AgentProfiles = ({ user = {} }) => {
                 <div className="ui-form-grid">
                   <div className="ui-field">
                     <label className="ui-label" htmlFor="profile-commands">
-                      Command allowlist
+                      Blocked commands
                     </label>
                     <input
                       id="profile-commands"
                       className="ui-input ui-mono"
-                      name="commands_allowlist"
-                      value={form.commands_allowlist}
+                      name="commands_denylist"
+                      value={form.commands_denylist}
                       onChange={handleChange}
-                      placeholder={`Server default: ${DEFAULT_COMMANDS}`}
+                      placeholder="None: any installed program can run"
                       disabled={isSaving}
                     />
                     <p className="ui-hint">
-                      Programs run_command may start, separated by commas or spaces (list gradlew to allow ./gradlew).
-                      Blank keeps the server default. A participant's own configuration can only narrow this list; to
-                      forbid commands entirely, leave run_command unselected.
+                      Programs the agent may not run, separated by commas or spaces (e.g. git, curl). Everything else
+                      installed can run; under per-step approval the participant approves each command. A plainly
+                      written name is also refused inside a shell, launcher or package-manager command (bash -c …, env,
+                      npm x), even as a package name, but not when a script or build tool starts it; to forbid all
+                      commands, leave run_command unselected. Runtime 0.0.6 and earlier ignore this list: they only run
+                      pwd, ls, cat, grep and rg, minus any listed here.
                     </p>
                   </div>
                   <div className="ui-field">
@@ -1545,8 +1564,8 @@ const AgentProfiles = ({ user = {} }) => {
                       disabled={isSaving}
                     />
                     <p className="ui-hint">
-                      Run by the runtime before it finishes; split on spaces, and its program must be in the command
-                      allowlist. Blank: the agent is only reminded to verify.
+                      Run by the runtime before it finishes; split on spaces, and its program may not be a blocked
+                      command. Blank: the agent is only reminded to verify.
                     </p>
                   </div>
                 </div>

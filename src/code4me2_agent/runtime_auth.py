@@ -232,9 +232,9 @@ class AcpBackendAuthorization:
     # Backwards-compatible accessors, kept so existing callers and tests that
     # read individual settings keep working.
     @property
-    def server_commands_allowlist(self) -> list[str] | None:
+    def server_commands_denylist(self) -> list[str] | None:
         return (
-            self._server_agent_config.commands_allowlist
+            self._server_agent_config.commands_denylist
             if self._server_agent_config
             else None
         )
@@ -855,6 +855,9 @@ class ManagedBridgeAuthorization(AcpBackendAuthorization):
         try:
             self._server_agent_config = ServerAgentConfig.from_managed_payload(payload)
         except ValueError as exc:
+            # The ACP client only sees "authorization rejected"; keep the reason
+            # (for example a server older than this runtime) in the agent log.
+            logger.warning("Refused the server's managed-agent policy: %s", exc)
             raise AcpAuthorizationFailure(
                 "The Code4Me server returned an invalid managed-agent policy."
             ) from exc

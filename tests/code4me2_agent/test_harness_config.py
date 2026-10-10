@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
@@ -25,7 +26,9 @@ def _managed_payload(**overrides):
         "framework_version": "code4me2-agent",
         "model": "gpt-5.1-codex",
         "tools": ["read_file", "run_command"],
+        # Legacy, for runtimes 0.0.6 and earlier; this runtime ignores it.
         "commands_allowlist": ["pytest"],
+        "commands_denylist": ["git"],
         "max_iterations": 12,
         "max_context_tokens": 64000,
         "approval_policy": "auto",
@@ -81,6 +84,47 @@ def test_policy_without_new_fields_is_unchanged():
     config = ServerAgentConfig.from_managed_payload(_managed_payload())
     assert config.command_timeout_seconds is None
     assert config.harness_options is None
+
+
+def test_managed_policy_requires_the_blocked_command_list():
+    payload = _managed_payload()
+    del payload["commands_denylist"]
+    with pytest.raises(ValueError, match="no commands_denylist: the server is older"):
+        ServerAgentConfig.from_managed_payload(payload)
+    for bad in ("git", ["git", ""], ["git", 3], {"git": True}):
+        with pytest.raises(ValueError, match="invalid executable settings"):
+            ServerAgentConfig.from_managed_payload(_managed_payload(commands_denylist=bad))
+    assert ServerAgentConfig.from_managed_payload(_managed_payload(commands_denylist=[])).commands_denylist == []
+
+
+def test_server_overrides_apply_the_denylist_and_ignore_the_legacy_allowlist(tmp_path):
+    base = AgentConfig(workspace_root=tmp_path, trace_path=tmp_path / "t.jsonl", session_id="s")
+    server = ServerAgentConfig.from_managed_payload(
+        _managed_payload(commands_allowlist=["pytest"], commands_denylist=["git", "curl"])
+    )
+    merged = base.with_server_overrides(server, backend_url="http://backend")
+    assert merged.commands.blocked_commands == ["git", "curl"]
+    assert not hasattr(server, "commands_allowlist")
+    # The non-managed agent-config response: a missing list keeps the local one.
+    local = AgentConfig(
+        workspace_root=tmp_path, trace_path=tmp_path / "t.jsonl", session_id="s"
+    ).with_server_overrides(ServerAgentConfig.from_payload({"commands_allowlist": ["ls"]}))
+    assert local.commands.blocked_commands == []
+
+
+def test_local_config_file_reads_the_denylist_and_ignores_a_legacy_allowlist(tmp_path, caplog, monkeypatch):
+    blocked_file = tmp_path / "blocked.json"
+    blocked_file.write_text('{"commands": {"denylist": ["git", " ", 3, "rm"]}}')
+    assert AgentConfig.from_file(blocked_file).commands.blocked_commands == ["git", "rm"]
+
+    legacy_file = tmp_path / "legacy.json"
+    legacy_file.write_text('{"commands": {"allowlist": ["pwd", "ls"]}}')
+    # An earlier logging.config call may have disabled the logger.
+    monkeypatch.setattr(logging.getLogger("code4me2_agent.config"), "disabled", False)
+    with caplog.at_level(logging.WARNING, logger="code4me2_agent.config"):
+        legacy = AgentConfig.from_file(legacy_file)
+    assert legacy.commands.blocked_commands == []
+    assert "commands.allowlist is no longer supported" in caplog.text
 
 
 def test_server_overrides_apply_timeout_and_harness(tmp_path):

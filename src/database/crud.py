@@ -67,7 +67,7 @@ def _validate_profile_configuration(
     max_steps: Optional[int] = None,
     max_context_tokens: Optional[int] = None,
     system_prompt: Optional[str] = None,
-    commands_allowlist: Optional[list] = None,
+    commands_denylist: Optional[list] = None,
     command_timeout_seconds: Optional[int] = None,
     harness_options: Optional[dict] = None,
 ) -> None:
@@ -78,11 +78,11 @@ def _validate_profile_configuration(
     rejected at create/update time with a typed reason. ``model`` /
     ``temperature`` / ``max_steps`` participate in the BYOA field-coverage
     check and ``max_context_tokens`` / ``system_prompt`` and the built-in
-    runtime's command/harness settings (``commands_allowlist`` /
+    runtime's command/harness settings (``commands_denylist`` /
     ``command_timeout_seconds`` / ``harness_options``) in the BYOA
     unsupported-field check; omitting them would let an ungoverned field
     through until study creation. The command/harness settings are also
-    checked together (a verify command must be allowlisted).
+    checked together (a verify command may not run a blocked program).
     """
     if release_id is None:
         raise ProfileReleaseError(
@@ -104,7 +104,7 @@ def _validate_profile_configuration(
         max_steps=max_steps,
         max_context_tokens=max_context_tokens,
         system_prompt=system_prompt,
-        commands_allowlist=commands_allowlist,
+        commands_denylist=commands_denylist,
         command_timeout_seconds=command_timeout_seconds,
         harness_options=harness_options,
     )
@@ -1223,14 +1223,14 @@ def create_agent_profile(
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
-    commands_allowlist: Optional[list] = None,
+    commands_denylist: Optional[list] = None,
     command_timeout_seconds: Optional[int] = None,
     harness_options: Optional[dict] = None,
 ) -> db_schemas.AgentProfile:
     """Create a researcher-owned profile template.
 
     The provider endpoint/secret live on the referenced ``provider_connection``;
-    a profile never stores a URL or a secret reference. ``commands_allowlist``
+    a profile never stores a URL or a secret reference. ``commands_denylist``
     and ``harness_options`` are stored as canonical JSON text.
     """
     validate_profile_release(db, release_id)
@@ -1246,7 +1246,7 @@ def create_agent_profile(
         max_steps=max_steps,
         max_context_tokens=max_context_tokens,
         system_prompt=system_prompt,
-        commands_allowlist=commands_allowlist,
+        commands_denylist=commands_denylist,
         command_timeout_seconds=command_timeout_seconds,
         harness_options=harness_options,
     )
@@ -1265,7 +1265,7 @@ def create_agent_profile(
         max_context_tokens=max_context_tokens,
         temperature=temperature,
         system_prompt=system_prompt,
-        commands_allowlist_json=_optional_json_text(commands_allowlist),
+        commands_denylist_json=_optional_json_text(commands_denylist),
         command_timeout_seconds=command_timeout_seconds,
         harness_options_json=_optional_json_text(harness_options),
     )
@@ -1312,7 +1312,7 @@ def update_agent_profile(
     max_context_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
-    commands_allowlist: Optional[list] = None,
+    commands_denylist: Optional[list] = None,
     command_timeout_seconds: Optional[int] = None,
     harness_options: Optional[dict] = None,
     update_connection_id: bool = False,
@@ -1320,7 +1320,7 @@ def update_agent_profile(
     update_temperature: bool = False,
     update_max_context_tokens: bool = False,
     update_system_prompt: bool = False,
-    update_commands_allowlist: bool = False,
+    update_commands_denylist: bool = False,
     update_command_timeout_seconds: bool = False,
     update_harness_options: bool = False,
 ) -> Optional[db_schemas.AgentProfile]:
@@ -1329,7 +1329,7 @@ def update_agent_profile(
     ``None`` keeps a field unchanged, except where the matching ``update_*``
     flag is set: then the supplied value is stored as-is, so ``None`` clears the
     optional ``temperature`` / ``max_context_tokens`` / ``system_prompt`` /
-    ``commands_allowlist`` / ``command_timeout_seconds`` / ``harness_options``
+    ``commands_denylist`` / ``command_timeout_seconds`` / ``harness_options``
     overrides (a full-replace PUT). The refreshed digest is then exactly that of
     a profile created with ``NULL`` for the cleared field.
     """
@@ -1359,10 +1359,10 @@ def update_agent_profile(
         if update_system_prompt or system_prompt is not None
         else getattr(profile, "system_prompt", None)
     )
-    effective_commands_allowlist = (
-        commands_allowlist
-        if update_commands_allowlist or commands_allowlist is not None
-        else getattr(profile, "commands_allowlist", None)
+    effective_commands_denylist = (
+        commands_denylist
+        if update_commands_denylist or commands_denylist is not None
+        else getattr(profile, "commands_denylist", None)
     )
     effective_command_timeout_seconds = (
         command_timeout_seconds
@@ -1392,7 +1392,7 @@ def update_agent_profile(
         max_steps=max_steps if max_steps is not None else profile.max_steps,
         max_context_tokens=effective_max_context_tokens,
         system_prompt=effective_system_prompt,
-        commands_allowlist=effective_commands_allowlist,
+        commands_denylist=effective_commands_denylist,
         command_timeout_seconds=effective_command_timeout_seconds,
         harness_options=effective_harness_options,
     )
@@ -1420,8 +1420,8 @@ def update_agent_profile(
         profile.temperature = temperature
     if update_system_prompt or system_prompt is not None:
         profile.system_prompt = system_prompt
-    if update_commands_allowlist or commands_allowlist is not None:
-        profile.commands_allowlist_json = _optional_json_text(commands_allowlist)
+    if update_commands_denylist or commands_denylist is not None:
+        profile.commands_denylist_json = _optional_json_text(commands_denylist)
     if update_command_timeout_seconds or command_timeout_seconds is not None:
         profile.command_timeout_seconds = command_timeout_seconds
     if update_harness_options or harness_options is not None:

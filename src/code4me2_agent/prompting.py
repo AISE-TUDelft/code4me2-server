@@ -198,7 +198,7 @@ def reminder_text(
         if can_edit:
             rules.append("read a file before editing it and keep edits minimal and on-task")
         if can_run:
-            rules.append("verify changes with the relevant allowlisted test, build or lint command")
+            rules.append("verify changes with the relevant test, build or lint command")
     rules.append("paths are workspace-relative")
     rules.append("never repeat a failing call unchanged")
     text = (

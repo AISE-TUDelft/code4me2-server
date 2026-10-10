@@ -2,6 +2,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import json
+import logging
 
 import pytest
 
@@ -15,6 +16,7 @@ from code4me2_agent.config import AgentConfig, MemoryWindowConfig, ServerAgentCo
 from code4me2_agent.echo import EchoAgentCore
 from code4me2_agent.events import ApprovalDecision
 from code4me2_agent.runtime_auth import (
+    AcpAuthorizationFailure,
     AcpBackendAuthorization,
     AcpRuntimeScope,
     AcpSessionExpired,
@@ -237,6 +239,7 @@ def test_managed_policy_parser_rejects_partial_or_direct_provider_config():
         "model": "model",
         "tools": [],
         "commands_allowlist": [],
+        "commands_denylist": [],
         "max_iterations": 3,
         "max_context_tokens": 1000,
         "approval_policy": "auto",
@@ -247,27 +250,62 @@ def test_managed_policy_parser_rejects_partial_or_direct_provider_config():
         ServerAgentConfig.from_managed_payload(policy)
 
 
-def test_system_context_reports_host_and_available_commands(tmp_path):
+def test_a_refused_managed_policy_is_logged_before_the_auth_error(caplog, monkeypatch):
+    """The ACP client only sees "authorization rejected"; the agent log keeps why."""
+    authorization = ManagedBridgeAuthorization()
+    authorization._backend_url = "https://example.test"
+    authorization._acp_token = "token"
+    policy_from_an_older_server = {
+        "version": "1",
+        "transport": "managed_backend",
+        "agent_profile": "arm-a",
+        "framework_version": "code4me2-agent",
+        "model": "model",
+        "tools": ["run_command"],
+        "commands_allowlist": ["pwd"],
+        "max_iterations": 3,
+        "max_context_tokens": 1000,
+        "approval_policy": "per_step",
+        "temperature": None,
+        "store_agent_content": False,
+    }
+    # An earlier logging.config call may have disabled the logger.
+    monkeypatch.setattr(logging.getLogger("code4me2_agent.runtime_auth"), "disabled", False)
+    with patch.object(authorization, "_get", return_value=policy_from_an_older_server), caplog.at_level(
+        logging.WARNING, logger="code4me2_agent.runtime_auth"
+    ):
+        with pytest.raises(AcpAuthorizationFailure, match="invalid managed-agent policy"):
+            authorization.fetch_agent_config()
+    assert "the server is older than this runtime release" in caplog.text
+    assert authorization.server_agent_config is None
+
+
+def test_system_context_reports_host_and_blocked_commands(tmp_path):
     config = AgentConfig(
         workspace_root=tmp_path,
         trace_path=tmp_path / "trace.jsonl",
         session_id="session-1",
     )
-    config = replace(
-        config,
-        commands=replace(config.commands, allowlisted_commands=["git", "missing"]),
-    )
     adapter = object.__new__(OpenAICompatibleReactAdapter)
-    adapter._config = config
+    adapter._config = replace(
+        config,
+        commands=replace(config.commands, blocked_commands=["git", "curl"]),
+    )
 
     with patch("code4me2_agent.adapters.platform.system", return_value="Windows"), patch(
-        "code4me2_agent.command_tools.available_commands", return_value=["git"]
+        "code4me2_agent.command_tools.available_commands", return_value=[]
     ):
         context = adapter._system_context()
+        adapter._config = config
+        open_context = adapter._system_context()
 
     assert "host OS: Windows" in context
-    assert "Allowlisted executables: git" in context
+    assert "run_command runs a program installed on this machine" in context
+    assert "Blocked in this study: git, curl. They are refused, also inside a shell command" in context
     assert "no shell" in context
+    assert "run_command runs a program installed on this machine" in open_context
+    assert "Blocked in this study" not in open_context
+    assert "allowlist" not in context.lower() and "allowlist" not in open_context.lower()
 
 
 def test_managed_telemetry_does_not_write_project_trace(tmp_path):

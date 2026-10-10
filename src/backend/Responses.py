@@ -296,7 +296,13 @@ class AcpAgentConfigGetResponse(BaseResponse):
     )
     commands_allowlist: list[str] = Field(
         default_factory=list,
-        description="Terminal commands the agent may execute.",
+        description="Legacy: the only commands runtime releases 0.0.6 and earlier "
+        "may execute. Newer runtimes ignore it and read commands_denylist.",
+    )
+    commands_denylist: list[str] = Field(
+        default_factory=list,
+        description="Programs the agent may not run; every other installed "
+        "program may run. Empty = nothing blocked.",
     )
     tools: list[str] = Field(
         default_factory=list, description="Tool names the agent may call."

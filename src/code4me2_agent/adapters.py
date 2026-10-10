@@ -586,7 +586,6 @@ _WORKSPACE_MUTATIONS = frozenset(
 _READ_BEFORE_EDIT_TOOLS = frozenset({"write_file", "replace_text", "edit_file"})
 # Built-in tools that never change anything; they may run in parallel.
 _PARALLEL_SAFE_TOOLS = frozenset({"read_file", "list_files", "glob_files", "grep_files", "search_files"})
-_WRAPPER_NAMES = frozenset({"gradlew", "gradlew.bat", "mvnw", "mvnw.cmd"})
 
 
 class ToolRegistry:
@@ -720,9 +719,10 @@ class ToolRegistry:
                     str(definition.get("function", {}).get("name", ""))
                 )
             ]
-        shell = _allowlisted_shell(getattr(self._command_tools, "allowlisted_commands", None))
+        blocked = getattr(self._command_tools, "blocked_commands", None)
+        shell = _usable_shell(blocked) if blocked is not None else None
         if shell is not None:
-            # "There is no shell" would contradict an allowlisted bash/sh.
+            # "There is no shell" would contradict an installed, unblocked bash/sh.
             selected = [_with_shell_description(definition, shell) for definition in selected]
         return selected
 
@@ -1817,9 +1817,9 @@ def _require_str_list(
                 return split
         raise ToolArgumentError(
             f"Invalid argument '{field_name}' for {tool}: expected a list of strings, got a single "
-            "string. Split the command into separate argv items; there is no shell, so pipes, "
-            "redirection and globs need an allowlisted shell program as argv[0] (for example "
-            '["bash", "-c", "..."]) when one is allowed.',
+            "string. Split the command into separate argv items; argv is not passed through a "
+            "shell, so pipes, redirection and globs need a shell program as argv[0] (for example "
+            '["bash", "-c", "..."]).',
             field=field_name,
         )
     if not isinstance(value, (list, tuple)) or not value or not all(isinstance(item, str) for item in value):
@@ -1912,20 +1912,21 @@ _NO_SHELL_SENTENCE = (
 )
 
 
-def _allowlisted_shell(commands: object) -> str | None:
-    """The first shell on the command allowlist that is installed, else None."""
-    if not isinstance(commands, (set, frozenset, list, tuple)):
+def _usable_shell(blocked: object) -> str | None:
+    """The first installed shell the study does not block, else None."""
+    if not isinstance(blocked, (set, frozenset, list, tuple)):
         return None
-    from code4me2_agent.command_tools import available_commands
+    from code4me2_agent.command_tools import available_commands, command_key
 
-    available = set(available_commands([str(command) for command in commands]))
-    return next((shell for shell in _SHELL_PROGRAMS if shell in available), None)
+    keys = {command_key(str(name)) for name in blocked}
+    installed = available_commands([shell for shell in _SHELL_PROGRAMS if shell not in keys])
+    return installed[0] if installed else None
 
 
 def _shell_sentence(shell: str) -> str:
     return (
-        "argv is not passed through a shell; for pipes, globs, '&&', 'cd' or redirection run the "
-        f'allowlisted shell explicitly, e.g. ["{shell}", "-c", "cd src && pytest -q | tail -20"].'
+        "argv is not passed through a shell; for pipes, globs, '&&', 'cd' or redirection run a "
+        f'shell explicitly, e.g. ["{shell}", "-c", "cd src && pytest -q | tail -20"].'
     )
 
 
@@ -2878,9 +2879,8 @@ _CONTINUE_NOTE = (
 )
 _VERIFY_NUDGE = (
     "[Runtime check, not a message from the user] You changed {files} but ran no command since "
-    "your last change. If an allowlisted test, build or lint command applies ({commands}), run "
-    "it now and fix what fails; otherwise give your final answer and name the command the user "
-    "should run."
+    "your last change. If a test, build or lint command applies, run it now and fix what fails; "
+    "otherwise give your final answer and name the command the user should run."
 )
 _VERIFY_FAILED_NOTE = (
     "[Runtime check, not a message from the user] The runtime ran the configured verification "
@@ -3557,7 +3557,6 @@ class OpenAICompatibleReactAdapter:
                     note=_VERIFY_NUDGE.format(
                         files=(", ".join(changed[:5]) + (" and more" if len(changed) > 5 else ""))
                         or "files through IDE tools",
-                        commands=", ".join(self._allowlisted_commands()[:12]) or "none",
                     ),
                     kind="verify",
                     run_id=run_id,
@@ -3639,28 +3638,31 @@ class OpenAICompatibleReactAdapter:
     def _verify_command(self) -> list[str] | None:
         """The profile's verification argv, when this session may actually run it.
 
-        A per-user config row can narrow the frozen allowlist; a command whose
-        program is no longer allowed falls back to asking the model to verify.
+        A per-user config row can block more programs, and the program may not
+        be installed here; either falls back to asking the model to verify.
         """
         command = self._harness.verify_command
         if not command or not self._can_run_commands():
             return None
-        program = Path(command[0]).name
-        if program not in self._allowlisted_commands():
+        from code4me2_agent.command_tools import available_commands, blocked_program
+
+        if blocked_program(command, self._config.commands.blocked_commands) is not None:
+            return None
+        if not available_commands([Path(command[0]).name]):
             return None
         return list(command)
 
     def _can_run_commands(self) -> bool:
         if self._config.approval_policy == "suggestion_only":
             return False
-        if "run_command" not in self._tool_registry.known_tool_names():
-            return False
-        return bool(self._allowlisted_commands())
+        return "run_command" in self._tool_registry.known_tool_names()
 
-    def _allowlisted_commands(self) -> list[str]:
-        from code4me2_agent.command_tools import available_commands
-
-        return available_commands(list(self._config.commands.allowlisted_commands))
+    def _commands_status(self) -> str:
+        """The ``/status`` description of what run_command may start."""
+        if not self._can_run_commands():
+            return "none"
+        blocked = self._config.commands.blocked_commands
+        return "any installed program" + (f" except {', '.join(blocked)}" if blocked else "")
 
     def _run_verification(
         self,
@@ -4239,8 +4241,6 @@ class OpenAICompatibleReactAdapter:
         instructions: prompting.ProjectInstructions | None = None,
         prompt_profile: str | None = None,
     ) -> str:
-        from code4me2_agent.command_tools import available_commands
-
         config = self._config
         if tool_names is None:
             registry = getattr(self, "_tool_registry", None)
@@ -4262,19 +4262,12 @@ class OpenAICompatibleReactAdapter:
         workspace_root = config.workspace_root.as_posix()
         os_name = platform.system()
         today = date.today().isoformat()
-        commands = available_commands(config.commands.allowlisted_commands)
+        blocked = list(config.commands.blocked_commands)
         policy = config.approval_policy
         budget = max(1, int(config.adapter.max_iterations))
 
-        if "run_command" in tool_names and commands:
-            wrappers = [command for command in commands if command in _WRAPPER_NAMES]
-            wrapper_hint = (
-                f" Project build wrappers ({', '.join(wrappers)}) run from the project, e.g. "
-                f'["./{wrappers[0]}", "test"].'
-                if wrappers
-                else ""
-            )
-            shell = next((name for name in _SHELL_PROGRAMS if name in commands), None)
+        if "run_command" in tool_names:
+            shell = _usable_shell(blocked)
             shell_text = (
                 f"no implicit shell (for pipes, redirects or cd run e.g. "
                 f'["{shell}", "-c", "..."])'
@@ -4282,9 +4275,14 @@ class OpenAICompatibleReactAdapter:
                 else "no shell (no pipes, redirects or cd)"
             )
             commands_line = (
-                f"run_command executes one allowlisted program with an argv list and {shell_text}. "
-                f"Allowlisted executables: {', '.join(commands)}. Nothing else can be run.{wrapper_hint}"
+                "run_command runs a program installed on this machine, or a project script by path, "
+                f"with an argv list and {shell_text}."
             )
+            if blocked:
+                commands_line += (
+                    f" Blocked in this study: {', '.join(blocked)}. They are refused, also inside a "
+                    "shell command; do not try to run them another way."
+                )
         else:
             commands_line = "Commands cannot be run in this session."
         if policy == "per_step":
@@ -4457,9 +4455,9 @@ class OpenAICompatibleReactAdapter:
             f"- Step budget: {config.adapter.max_iterations} model calls per message; approval policy: {config.approval_policy}",
             f"- Context: about {used:,} of {memory.max_tokens:,} tokens in use",
             f"- Tools: {', '.join(sorted(self._tool_registry.known_tool_names())) or 'none'}",
-            f"- Commands: {', '.join(self._allowlisted_commands()) or 'none'} "
+            f"- Commands: {self._commands_status()} "
             f"(default timeout {int(config.commands.timeout_seconds)} s)",
-            f"- Verification: {_verification_label(harness)}",
+            f"- Verification: {_verification_label(harness, self._verify_command(), can_run=self._can_run_commands())}",
             f"- Enabled behaviours: {', '.join(switches) or 'none'}",
             f"- Project instructions: {', '.join(name for name, _chars in instructions.files) if instructions else 'none'}",
             f"- Undo checkpoints: {self._session_state.checkpoint_count()}",
@@ -4779,11 +4777,19 @@ def _assistant_tool_call_message(
     return message
 
 
-def _verification_label(harness: HarnessOptions) -> str:
+def _verification_label(harness: HarnessOptions, command: list[str] | None, *, can_run: bool) -> str:
+    """``command``: the verify argv this session will actually run (``_verify_command``)."""
     if not harness.verify_on_stop:
         return "off"
+    if not can_run:
+        return "off: commands cannot run in this session"
+    if command:
+        return f"the runtime runs {' '.join(command)} after changes"
     if harness.verify_command:
-        return f"the runtime runs {' '.join(harness.verify_command)} after changes"
+        return (
+            "the agent is asked to verify after changes "
+            f"({' '.join(harness.verify_command)} cannot run in this session)"
+        )
     return "the agent is asked to verify after changes"
 
 
@@ -5036,7 +5042,7 @@ def _hint_for(tool_name: str, exc: BaseException) -> str:
     if isinstance(exc, FileExistsError) or code == "file_exists":
         return "Use write_file or edit_file for an existing file, or choose a different path."
     if isinstance(exc, PermissionError) or code == "outside_workspace":
-        return "Only paths inside the workspace and allowlisted commands are permitted."
+        return "Stay inside the workspace, and do not run a program the study blocks."
     if code == "not_text_file":
         if tool_name == "write_file":
             return (
@@ -5045,7 +5051,7 @@ def _hint_for(tool_name: str, exc: BaseException) -> str:
             )
         return "This tool only works with UTF-8 text files."
     if code == "command_not_found":
-        return "Use a program from the allowlist that is installed on this machine."
+        return "Use a program that is installed on this machine, or the path of a script in the project."
     if isinstance(exc, (KeyError, TypeError)):
         return f"Required argument missing or of the wrong type: {exc}."
     return "Adjust the arguments or try a different approach."

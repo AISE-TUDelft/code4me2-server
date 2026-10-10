@@ -29,7 +29,7 @@ SUPPORTED_MANAGED_PLATFORMS = {"darwin", "linux", "win32"}
 # (GET /api/acp/agent-config), so hardcoding them here would let a stale local
 # file silently override a study assignment.
 #
-# `max_iterations` and the command allowlist are also server-overridable — the
+# `max_iterations` and the blocked commands are also server-overridable — the
 # values here only apply before the first successful authentication.
 DEFAULT_AGENT_CONFIG: dict[str, object] = {
     "adapter": {
@@ -51,15 +51,11 @@ DEFAULT_AGENT_CONFIG: dict[str, object] = {
         },
     },
     "commands": {
-        # Starting allowlist for local command execution, narrowed further by
-        # the server's agent-config when one is configured. Write-capable
-        # entries are included because the agent's purpose is editing code; the
-        # workspace confinement in file_tools is what bounds the damage.
-        "allowlist": [
-            "pwd", "ls", "grep", "cat", "git", "rg", "echo",
-            "bash", "sh", "mkdir", "rm", "mv", "cp", "chmod",
-            "which", "head", "tail", "sort", "wc", "diff", "find", "make",
-        ],
+        # Programs the agent may not run; any other installed program can run
+        # (each command still needs the user's approval under per-step
+        # approval). The server's agent-config replaces this list once one is
+        # configured.
+        "denylist": [],
     },
     "telemetry": {
         "trace_path": ".code4me/acp-trace.jsonl",
@@ -199,18 +195,16 @@ def _runtime_version() -> str:
 
 
 def _managed_config() -> AgentConfig:
+    # Bootstrap only: no tool is available (allowed_tools is empty) until the
+    # assigned run policy, including its blocked commands, is applied.
     workspace = Path.cwd().resolve()
-    if os.name == "nt":
-        commands = ["cmd", "powershell", "pwsh", "git", "python", "python3"]
-    else:
-        commands = list(DEFAULT_AGENT_CONFIG["commands"]["allowlist"])
     return AgentConfig(
         workspace_root=workspace,
         trace_path=workspace / ".code4me" / "acp-trace.jsonl",
         session_id="managed-bootstrap",
         raw_capture_enabled=False,
         store_agent_content=False,
-        commands=CommandConfig(allowlisted_commands=commands),
+        commands=CommandConfig(),
         adapter=AdapterConfig(
             name="openai_compatible_react",
             max_iterations=1,
@@ -225,12 +219,6 @@ def _managed_config() -> AgentConfig:
 
 
 def _self_check() -> int:
-    from code4me2_agent.command_tools import available_commands
-
-    if os.name == "nt":
-        policy_commands = ["cmd", "powershell", "pwsh", "git", "python", "python3"]
-    else:
-        policy_commands = list(DEFAULT_AGENT_CONFIG["commands"]["allowlist"])
     checks = {
         "runtime_version": _runtime_version(),
         "platform": sys.platform,
@@ -239,8 +227,6 @@ def _self_check() -> int:
         "frozen": bool(getattr(sys, "frozen", False)),
         "os": platform.system(),
         "architecture": platform.machine(),
-        "policy_commands": policy_commands,
-        "available_commands": available_commands(policy_commands),
     }
     try:
         import acp  # noqa: F401

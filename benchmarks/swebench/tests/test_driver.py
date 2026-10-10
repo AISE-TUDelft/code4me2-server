@@ -55,7 +55,7 @@ def test_agent_config_round_trips_through_the_agent_loader(tmp_path):
     assert config.trace_path == Path("/tmp/code4me/out/trace.jsonl").resolve()
     assert config.raw_capture_enabled is True
     assert config.autonomous is True
-    assert "pytest" in config.commands.allowlisted_commands
+    assert config.commands.blocked_commands == []
 
 
 def test_driver_runs_the_agent_and_writes_result_and_trace(tmp_path):
