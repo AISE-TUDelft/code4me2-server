@@ -204,6 +204,7 @@ def _managed_stubs(graph, *, funded_side_effect=None):
         "max_iterations": 3,
         "max_context_tokens": 1000,
         "commands_allowlist": [],
+        "commands_denylist": [],
         "store_agent_content": False,
     }
     with (

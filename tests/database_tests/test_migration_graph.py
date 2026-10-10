@@ -24,9 +24,9 @@ MIGRATION_DIR = PROJECT_ROOT / "src" / "database" / "migration"
 VERSIONS_DIR = MIGRATION_DIR / "versions"
 
 BASE_REVISION = "8a0084080b46"
-HEAD_REVISION = "c5e8f1a2d3b4"
+HEAD_REVISION = "d41e7c9a2b6f"
 # Oldest first. Adding a revision means appending here and moving HEAD_REVISION.
-EXPECTED_CHAIN = [BASE_REVISION, "b7c1d2e3f4a5", HEAD_REVISION]
+EXPECTED_CHAIN = [BASE_REVISION, "b7c1d2e3f4a5", "c5e8f1a2d3b4", HEAD_REVISION]
 
 
 def _load_script_directory() -> ScriptDirectory:

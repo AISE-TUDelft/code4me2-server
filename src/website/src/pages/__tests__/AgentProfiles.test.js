@@ -444,7 +444,7 @@ const HARNESSED = {
   ...PROFILE,
   profile_id: "p-h",
   name: "arm-harness",
-  commands_allowlist: ["pytest", "git"],
+  commands_denylist: ["curl", "git"],
   command_timeout_seconds: 300,
   harness_options: {
     self_review: false,
@@ -474,7 +474,9 @@ test("a new built-in profile pre-fills the recommended 64k context and omits unt
 
   expect(screen.getByLabelText(/Max context tokens/i).value).toBe("64000");
   expect(screen.getByText(/64k or more is recommended for frontier models/)).toBeInTheDocument();
-  expect(screen.getByLabelText("Command allowlist").value).toBe("");
+  expect(screen.getByLabelText("Blocked commands").value).toBe("");
+  expect(screen.getByLabelText("Blocked commands").placeholder).toBe("None: any installed program can run");
+  expect(screen.getByText(/Runtime 0\.0\.6 and earlier ignore this list/)).toBeInTheDocument();
   expect(screen.getByLabelText("Default command timeout (s)").value).toBe("");
   expect(screen.getByRole("group", { name: "Harness options" })).toBeInTheDocument();
   // Every switch shows its runtime default (on).
@@ -487,6 +489,7 @@ test("a new built-in profile pre-fills the recommended 64k context and omits unt
   await waitFor(() => expect(api.createAgentProfile).toHaveBeenCalled());
   const payload = api.createAgentProfile.mock.calls[0][0];
   expect(payload.max_context_tokens).toBe(64000);
+  expect(payload).not.toHaveProperty("commands_denylist");
   expect(payload).not.toHaveProperty("commands_allowlist");
   expect(payload).not.toHaveProperty("command_timeout_seconds");
   expect(payload).not.toHaveProperty("harness_options");
@@ -503,13 +506,13 @@ test("a new profile moved to Codex and back gets the recommended context again",
   expect(await screen.findByText("This runtime exposes no selectable tools.")).toBeInTheDocument();
 });
 
-test("built-in profiles save the command allowlist, timeout and harness options", async () => {
+test("built-in profiles save the blocked commands, timeout and harness options", async () => {
   await renderPage();
   fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
   // An existing profile without a context override is not pre-filled.
   expect(screen.getByLabelText(/Max context tokens/i).value).toBe("");
 
-  fireEvent.change(screen.getByLabelText("Command allowlist"), { target: { value: "pytest, git  gradlew" } });
+  fireEvent.change(screen.getByLabelText("Blocked commands"), { target: { value: "curl, git  rm" } });
   fireEvent.change(screen.getByLabelText("Default command timeout (s)"), { target: { value: "300" } });
   fireEvent.click(screen.getByRole("checkbox", { name: "Self-review" }));
   fireEvent.click(screen.getByRole("checkbox", { name: "Parallel tools" }));
@@ -522,7 +525,8 @@ test("built-in profiles save the command allowlist, timeout and harness options"
   await waitFor(() => expect(api.updateAgentProfile).toHaveBeenCalled());
   const [profileId, payload] = api.updateAgentProfile.mock.calls[0];
   expect(profileId).toBe("p1");
-  expect(payload.commands_allowlist).toEqual(["pytest", "git", "gradlew"]);
+  expect(payload.commands_denylist).toEqual(["curl", "git", "rm"]);
+  expect(payload).not.toHaveProperty("commands_allowlist");
   expect(payload.command_timeout_seconds).toBe(300);
   expect(payload.harness_options).toEqual({
     self_review: false,
@@ -552,7 +556,7 @@ test("an unchanged edit omits the stored harness settings", async () => {
   await screen.findByText("arm-harness");
 
   fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-  expect(screen.getByLabelText("Command allowlist").value).toBe("pytest, git");
+  expect(screen.getByLabelText("Blocked commands").value).toBe("curl, git");
   expect(screen.getByLabelText("Default command timeout (s)").value).toBe("300");
   expect(screen.getByRole("checkbox", { name: "Self-review" })).not.toBeChecked();
   expect(screen.getByRole("checkbox", { name: "Loop guard" })).toBeChecked();
@@ -565,7 +569,7 @@ test("an unchanged edit omits the stored harness settings", async () => {
   await waitFor(() => expect(api.updateAgentProfile).toHaveBeenCalled());
   const payload = api.updateAgentProfile.mock.calls[0][1];
   expect(payload.max_steps).toBe(20);
-  expect(payload).not.toHaveProperty("commands_allowlist");
+  expect(payload).not.toHaveProperty("commands_denylist");
   expect(payload).not.toHaveProperty("command_timeout_seconds");
   expect(payload).not.toHaveProperty("harness_options");
 });
@@ -582,7 +586,7 @@ test("an edit sends only the changed harness settings and null for a cleared one
 
   await waitFor(() => expect(api.updateAgentProfile).toHaveBeenCalled());
   const payload = api.updateAgentProfile.mock.calls[0][1];
-  expect(payload).not.toHaveProperty("commands_allowlist");
+  expect(payload).not.toHaveProperty("commands_denylist");
   expect(payload.command_timeout_seconds).toBeNull();
   expect(payload.harness_options).toEqual({
     self_review: false,
@@ -601,14 +605,14 @@ test("clearing every harness option sends null", async () => {
   await screen.findByText("arm-harness");
 
   fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-  fireEvent.change(screen.getByLabelText("Command allowlist"), { target: { value: "" } });
+  fireEvent.change(screen.getByLabelText("Blocked commands"), { target: { value: "" } });
   // The stored explicit value stays explicit when ticked again.
   fireEvent.click(screen.getByRole("checkbox", { name: "Self-review" }));
   fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
   await waitFor(() => expect(api.updateAgentProfile).toHaveBeenCalled());
   const payload = api.updateAgentProfile.mock.calls[0][1];
-  expect(payload.commands_allowlist).toBeNull();
+  expect(payload.commands_denylist).toBeNull();
   expect(payload.harness_options).toEqual({ self_review: true });
 });
 
@@ -623,7 +627,7 @@ test("clone carries the harness settings into the create payload", async () => {
 
   await waitFor(() => expect(api.createAgentProfile).toHaveBeenCalled());
   const payload = api.createAgentProfile.mock.calls[0][0];
-  expect(payload.commands_allowlist).toEqual(["pytest", "git"]);
+  expect(payload.commands_denylist).toEqual(["curl", "git"]);
   expect(payload.command_timeout_seconds).toBe(300);
   expect(payload.harness_options).toEqual(HARNESSED.harness_options);
 });
@@ -634,7 +638,7 @@ test("Goose and Codex profiles hide the harness settings and never send them", a
   api.getAgentProfiles.mockResolvedValue({
     ok: true,
     // Written before the server refused these settings for BYOA agents.
-    data: [gooseProfile({ profile_id: "g1", name: "goose-stale", commands_allowlist: ["git"], command_timeout_seconds: 30 })],
+    data: [gooseProfile({ profile_id: "g1", name: "goose-stale", commands_denylist: ["git"], command_timeout_seconds: 30 })],
   });
   render(<AgentProfiles user={{ is_admin: true }} />);
   await screen.findByText("goose-stale");
@@ -642,7 +646,7 @@ test("Goose and Codex profiles hide the harness settings and never send them", a
 
   fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
   await waitFor(() => expect(screen.getByLabelText(/Profile name/i).value).toBe("goose-stale"));
-  expect(screen.queryByLabelText("Command allowlist")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Blocked commands")).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Default command timeout (s)")).not.toBeInTheDocument();
   expect(screen.queryByRole("group", { name: "Harness options" })).not.toBeInTheDocument();
   expect(screen.queryByText(/64k or more is recommended/)).not.toBeInTheDocument();
@@ -650,7 +654,7 @@ test("Goose and Codex profiles hide the harness settings and never send them", a
 
   await waitFor(() => expect(api.updateAgentProfile).toHaveBeenCalled());
   const payload = api.updateAgentProfile.mock.calls[0][1];
-  expect(payload).not.toHaveProperty("commands_allowlist");
+  expect(payload).not.toHaveProperty("commands_denylist");
   expect(payload).not.toHaveProperty("command_timeout_seconds");
   expect(payload).not.toHaveProperty("harness_options");
 });
@@ -660,23 +664,29 @@ test("invalid harness input is explained before any request", async () => {
   fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
   const save = () => fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
-  fireEvent.change(screen.getByLabelText("Command allowlist"), { target: { value: "git ./gradlew" } });
+  fireEvent.change(screen.getByLabelText("Blocked commands"), { target: { value: "git ./gradlew" } });
   save();
   expect(await screen.findByText(/"\.\/gradlew" is not a command name/)).toBeInTheDocument();
 
-  fireEvent.change(screen.getByLabelText("Command allowlist"), { target: { value: "git, git" } });
+  fireEvent.change(screen.getByLabelText("Blocked commands"), { target: { value: "git, GIT" } });
   save();
-  expect(await screen.findByText(/lists a command more than once/)).toBeInTheDocument();
+  expect(await screen.findByText(/list a command more than once/)).toBeInTheDocument();
 
-  fireEvent.change(screen.getByLabelText("Command allowlist"), { target: { value: "git" } });
+  fireEvent.change(screen.getByLabelText("Blocked commands"), { target: { value: "git" } });
   fireEvent.change(screen.getByLabelText("Default command timeout (s)"), { target: { value: "601" } });
   save();
   expect(await screen.findByText(/whole number of seconds from 1 to 600/)).toBeInTheDocument();
 
   fireEvent.change(screen.getByLabelText("Default command timeout (s)"), { target: { value: "" } });
+  fireEvent.change(screen.getByLabelText("Blocked commands"), { target: { value: "git, PyTest" } });
   fireEvent.change(screen.getByLabelText("Verify command"), { target: { value: "pytest -q" } });
   save();
-  expect(await screen.findByText(/The verify command runs pytest; add it to the command allowlist/)).toBeInTheDocument();
+  expect(await screen.findByText(/The verify command runs pytest, which is a blocked command/)).toBeInTheDocument();
+
+  // Matched the way the runtime matches: a trailing dot or a .exe suffix changes nothing.
+  fireEvent.change(screen.getByLabelText("Verify command"), { target: { value: "PYTEST.exe. -q" } });
+  save();
+  expect(await screen.findByText(/The verify command runs PYTEST\.exe\., which is a blocked command/)).toBeInTheDocument();
 
   expect(api.updateAgentProfile).not.toHaveBeenCalled();
 });

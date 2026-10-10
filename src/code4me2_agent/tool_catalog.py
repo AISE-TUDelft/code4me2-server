@@ -423,9 +423,10 @@ def tool_definitions() -> list[dict[str, Any]]:
         _function_tool(
             "run_command",
             (
-                "Run one allowlisted program inside the workspace without a shell and return "
-                "exit_code, stdout, stderr, duration_ms and timed_out. argv[0] must be a bare "
-                "command name from the allowlist (not a path). There is no shell: pipes, globs, "
+                "Run one program inside the workspace without a shell and return exit_code, "
+                "stdout, stderr, duration_ms and timed_out. argv[0] is a program installed on this "
+                "machine or the path of a script in the project (resolved against cwd); programs "
+                "the study blocks are refused. There is no shell: pipes, globs, "
                 "'&&', 'cd' and redirection are not available; pass arguments as separate argv "
                 "items. stdin is closed. Output is captured with head and tail truncation "
                 "(output_truncated=true). Set timeout_seconds for long builds or test runs (max 600)."

@@ -22,7 +22,7 @@ Responses API, and the proxy passes them through rather than filtering them
 (see ``agents.normalize.normalize_responses_api_body``).
 
 The module also owns the vocabulary and validation of the built-in runtime's
-command and harness profile fields (decision D-01: ``commands_allowlist``,
+command and harness profile fields (decision D-01: ``commands_denylist``,
 ``command_timeout_seconds``, ``harness_options``), shared by the profile API,
 the profile↔release contract, study freezing and the managed run policy.
 """
@@ -32,9 +32,9 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Optional, Sequence
 
-# Built-in code4me2-agent tools. Each is allowlist-gated inside the runtime
-# itself (paths confined to the workspace, commands checked against the
-# profile's command allowlist).
+# Built-in code4me2-agent tools. Each is enforced inside the runtime itself
+# (paths confined to the workspace, commands checked against the profile's
+# blocked commands).
 CODE4ME2_AGENT_TOOLS: frozenset[str] = frozenset(
     {
         # Reading and discovery
@@ -121,24 +121,31 @@ def tools_for_framework(framework_version: str | None) -> frozenset[str]:
 # ── Built-in runtime command and harness settings (decision D-01) ────────────
 #
 # Optional ``code4me2-agent`` profile fields; a BYOA (goose/codex) release
-# refuses all three. ``None`` always means "not set", which keeps the previous
-# behaviour: the server fallback allowlist (a user's config row may replace
-# it), the runtime's default command timeout and the runtime's harness
-# defaults. Every set value is frozen with the profile into study snapshots and
-# travels in ``GET /api/acp/agent-config`` and the managed run policy.
+# refuses all three. ``None`` always means "not set": no command is blocked (a
+# user's config row may still block some), and the runtime's default command
+# timeout and harness defaults apply. Every set value is frozen with the
+# profile into study snapshots and travels in ``GET /api/acp/agent-config`` and
+# the managed run policy.
+#
+# ``commands_denylist`` replaced ``commands_allowlist``: the agent may run any
+# program except the listed ones (the participant still approves each command
+# under per-step approval). Study snapshots frozen before the change can still
+# carry ``commands_allowlist``; it only reaches runtime releases 0.0.6 and
+# earlier, which predate the denylist (see ``backend/routers/acp``).
 
 #: Profile fields, in the canonical order they join digests and snapshots.
 HARNESS_PROFILE_FIELDS: tuple[str, ...] = (
-    "commands_allowlist",
+    "commands_denylist",
     "command_timeout_seconds",
     "harness_options",
 )
 
-#: A bare command name ``run_command`` may start as argv[0]: no directory
-#: separator, whitespace or shell metacharacter (a wrapper such as
-#: ``./gradlew`` is allowed by listing ``gradlew``). Matched with
-#: ``fullmatch``, so a trailing newline never slips through.
+#: A bare command name, as a denylist entry or a verify command's program: no
+#: directory separator, whitespace or shell metacharacter (listing ``gradlew``
+#: also covers ``./gradlew``). Matched with ``fullmatch``, so a trailing newline
+#: never slips through.
 COMMAND_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}")
+COMMANDS_DENYLIST_MAX_ENTRIES = 64
 COMMANDS_ALLOWLIST_MAX_ENTRIES = 64
 COMMAND_TIMEOUT_SECONDS_MIN = 1
 COMMAND_TIMEOUT_SECONDS_MAX = 600
@@ -188,16 +195,107 @@ def _shown(value: Any) -> str:
 
 
 def is_bare_command_name(value: Any) -> bool:
-    """Whether ``value`` is a command name ``run_command`` may start."""
+    """Whether ``value`` is a bare command name (a program, not a path)."""
     return isinstance(value, str) and COMMAND_NAME_PATTERN.fullmatch(value) is not None
 
 
-def validate_commands_allowlist(value: Any) -> list[str]:
-    """Return a valid ``commands_allowlist`` as a new list, else ``ValueError``.
+# Blocked-command matching. Mirrors ``blocked_program`` in
+# ``code4me2_agent/command_tools.py``, which enforces it in the runtime; keep
+# the two in step.
 
-    At most 64 unique bare command names; the order is kept (it is the order
-    the runtime and the editor show). An empty list is valid: explicitly no
-    commands.
+#: Launcher suffixes ignored when names are compared (``git.exe`` is ``git``).
+_LAUNCHER_SUFFIXES = (".exe", ".cmd", ".bat", ".com")
+#: Shells, launchers and package managers: every word of their arguments is
+#: checked too, so ``bash -c "git push"``, ``env git push`` or ``npm x git`` cannot
+#: start a blocked ``git``. A package manager's subcommands and aliases that run
+#: a program are many (``uv run``, ``npm exec``/``x``/``explore``, ``mise x``), so
+#: all its arguments count: a package named like a blocked program is refused too.
+_COMMAND_RUNNERS = frozenset(
+    {
+        "bash", "sh", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "busybox",
+        "cmd", "powershell", "pwsh", "wsl",
+        "env", "xargs", "sudo", "doas", "nohup", "nice", "ionice", "setsid",
+        "stdbuf", "timeout", "gtimeout", "time", "watch", "command", "exec",
+        "script", "arch", "caffeinate", "chroot", "su", "nix-shell", "npx", "uvx", "bunx",
+        "uv", "poetry", "pipenv", "pdm", "hatch", "rye", "pixi", "conda", "mamba",
+        "micromamba", "pipx", "npm", "pnpm", "yarn", "bun", "bundle", "corepack",
+        "mise", "asdf", "direnv", "pyenv", "rbenv", "nodenv", "nvm", "volta",
+    }
+)
+#: Quotes only group a word (``g''it`` is ``git``); the rest separate words,
+#: including ``@`` before a version (``npx npm@10``, ``corepack pnpm@9``).
+_QUOTES = re.compile(r"[\'\"]")
+_WORD_SEPARATORS = re.compile(r"[\s;&|()<>`{}$=,@]+")
+
+
+def command_key(name: str) -> str:
+    """The comparable program name: last path component, lower-cased, no ``.exe``.
+
+    Trailing dots and spaces are dropped, as Windows drops them (``git.exe.``
+    starts ``git.exe``).
+    """
+    base = re.split(r"[\\/]", name.strip().rstrip("\\/"))[-1].lower().rstrip(" .")
+    for suffix in _LAUNCHER_SUFFIXES:
+        if base.endswith(suffix) and len(base) > len(suffix):
+            return base[: -len(suffix)].rstrip(" .")
+    return base
+
+
+def blocked_command_in(argv: Sequence[str], denylist: Sequence[str]) -> Optional[str]:
+    """The blocked program ``argv`` would start, else ``None``.
+
+    ``argv[0]`` is compared by name (case-insensitive, any directory and
+    launcher suffix ignored). When it is a shell, a launcher or a package
+    manager, every plainly written word of its arguments is compared as well
+    (``npm@10`` counts as ``npm``). Programs started by scripts, interpreters
+    or build tools, and names disguised with escapes, are not visible here.
+    """
+    blocked = {command_key(name) for name in denylist}
+    blocked.discard("")
+    if not argv or not blocked:
+        return None
+    program = command_key(argv[0])
+    if program in blocked:
+        return program
+    if program not in _COMMAND_RUNNERS:
+        return None
+    for argument in argv[1:]:
+        for word in _WORD_SEPARATORS.split(_QUOTES.sub("", argument)):
+            if word and command_key(word) in blocked:
+                return command_key(word)
+    return None
+
+
+def validate_commands_denylist(value: Any) -> list[str]:
+    """Return a valid ``commands_denylist`` as a new list, else ``ValueError``.
+
+    At most 64 bare command names, unique ignoring case; the order is kept (it
+    is the order the runtime and the editor show). An empty list blocks nothing.
+    """
+    if not isinstance(value, list):
+        raise ValueError("commands_denylist must be a list of command names")
+    if len(value) > COMMANDS_DENYLIST_MAX_ENTRIES:
+        raise ValueError(
+            f"commands_denylist may list at most {COMMANDS_DENYLIST_MAX_ENTRIES} commands"
+        )
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not is_bare_command_name(item):
+            raise ValueError(
+                f"commands_denylist[{index}] ({_shown(item)}) must be {_BARE_COMMAND_RULE}"
+            )
+        if item.lower() in seen:
+            raise ValueError(f"commands_denylist lists {item!r} more than once")
+        seen.add(item.lower())
+    return list(value)
+
+
+def validate_commands_allowlist(value: Any) -> list[str]:
+    """Return a valid legacy ``commands_allowlist`` as a new list, else ``ValueError``.
+
+    Only study snapshots frozen before ``commands_denylist`` carry one; it is
+    checked so a malformed frozen value still fails closed. At most 64 unique
+    bare command names; an empty list is valid (explicitly no commands).
     """
     if not isinstance(value, list):
         raise ValueError("commands_allowlist must be a list of command names")
@@ -260,18 +358,16 @@ def validate_verify_command(value: Any) -> list[str]:
 def validate_harness_options(
     value: Any,
     *,
-    commands_allowlist: Optional[Sequence[str]] = None,
-    require_allowlisted_verify: bool = True,
+    commands_denylist: Optional[Sequence[str]] = None,
 ) -> dict[str, Any]:
     """Return a valid ``harness_options`` object as a new dict, else ``ValueError``.
 
     Only the keys in :data:`HARNESS_OPTION_KEYS` are accepted: booleans for the
     switches, one of :data:`HARNESS_PROMPT_PROFILES` for ``prompt_profile`` and
-    ``null`` or an argv for ``verify_command``. With ``require_allowlisted_verify``
-    (the profile contract) the verify command's program must also be listed in
-    the profile's own ``commands_allowlist``; a verify command without a profile
-    allowlist is refused. A run policy snapshot is checked without it, because
-    its allowlist may already be narrowed by the user's config row.
+    ``null`` or an argv for ``verify_command``. Given the profile's
+    ``commands_denylist`` (the profile contract), the verify command must not
+    start a blocked program. A run policy snapshot is checked without it: a
+    user's config row may block more, and the runtime then skips the command.
     """
     if not isinstance(value, Mapping):
         raise ValueError("harness_options must be an object")
@@ -297,17 +393,12 @@ def validate_harness_options(
     verify_command = value.get("verify_command")
     if verify_command is not None:
         validate_verify_command(verify_command)
-        if require_allowlisted_verify:
-            if commands_allowlist is None:
-                raise ValueError(
-                    "harness_options.verify_command needs a profile commands_allowlist "
-                    f"that lists {verify_command[0]!r}"
-                )
-            if verify_command[0] not in commands_allowlist:
-                raise ValueError(
-                    f"harness_options.verify_command runs {verify_command[0]!r}, which "
-                    "is not in the profile's commands_allowlist"
-                )
+        blocked = blocked_command_in(verify_command, commands_denylist or ())
+        if blocked is not None:
+            raise ValueError(
+                f"harness_options.verify_command runs {blocked!r}, which is in the "
+                "profile's commands_denylist"
+            )
     return dict(value)
 
 

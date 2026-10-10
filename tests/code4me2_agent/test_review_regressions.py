@@ -45,7 +45,6 @@ def test_a_later_edit_voids_an_earlier_verification_pass(tmp_path):
         script,
         max_iterations=6,
         harness=HarnessOptions(verify_command=(PYTHON, "-c", check), instruction_reminders=False),
-        commands=[PYTHON],
     )
     (loop.workspace / "a.py").write_text("x = 1\n")
 
@@ -59,7 +58,7 @@ def test_a_later_edit_voids_an_earlier_verification_pass(tmp_path):
 
 
 def test_managed_status_reveals_nothing_about_the_arm(tmp_path):
-    loop = Loop(tmp_path, [], model="openai/gpt-5.1-codex", commands=[PYTHON])
+    loop = Loop(tmp_path, [], model="openai/gpt-5.1-codex", blocked=[PYTHON])
     loop.adapter._config = replace(loop.config, managed_mode=True)
 
     status = loop.run("/status").final_response
@@ -120,7 +119,7 @@ def test_successful_non_test_output_is_not_truncated(tmp_path):
         workspace_root=workspace,
         trace_path=tmp_path / "t.jsonl",
         session_id="s",
-        commands=CommandConfig(allowlisted_commands=["gradlew"]),
+        commands=CommandConfig(),
     )
     tools = WorkspaceCommandTools(config, telemetry=AgentTelemetryRecorder(config, sinks=[]))
 
@@ -158,7 +157,7 @@ def test_batch_wrappers_refuse_cmd_metacharacters(tmp_path):
         workspace_root=workspace,
         trace_path=tmp_path / "t.jsonl",
         session_id="s",
-        commands=CommandConfig(allowlisted_commands=["gradlew.bat"]),
+        commands=CommandConfig(),
     )
     tools = WorkspaceCommandTools(config, telemetry=AgentTelemetryRecorder(config, sinks=[Capture()]))
 
@@ -172,7 +171,6 @@ def test_a_missing_wrapper_is_one_failure_not_a_denial(tmp_path):
     loop = Loop(
         tmp_path,
         [{"tool_calls": [_tc("w", "run_command", argv=["./gradlew", "test"])]}, {"final_answer": "no wrapper"}],
-        commands=["gradlew"],
     )
     loop.run()
     terminal = [
@@ -368,7 +366,7 @@ def test_batch_files_found_on_path_are_guarded_too(tmp_path, monkeypatch):
         workspace_root=workspace,
         trace_path=tmp_path / "t.jsonl",
         session_id="s",
-        commands=CommandConfig(allowlisted_commands=["gradlew.bat", "npm.cmd"]),
+        commands=CommandConfig(),
     )
     tools = WorkspaceCommandTools(config, telemetry=AgentTelemetryRecorder(config, sinks=[]))
     with pytest.raises(PermissionError, match="batch file"):
@@ -549,7 +547,6 @@ def test_an_ide_build_does_not_replace_the_configured_verification(tmp_path):
             {"final_answer": "Built fine."},
         ],
         harness=HarnessOptions(self_review=False, verify_command=(PYTHON, "-c", check)),
-        commands=[PYTHON],
     )
     broker = MagicMock()
     broker.definitions.return_value = [
@@ -578,7 +575,6 @@ def test_ide_only_changes_still_reach_the_stop_gate(tmp_path):
             {"final_answer": "Renamed; run the tests to check."},
         ],
         harness=HarnessOptions(self_review=False, instruction_reminders=False),
-        commands=[PYTHON],
     )
     broker = MagicMock()
     broker.definitions.return_value = [

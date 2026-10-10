@@ -20,7 +20,7 @@ from code4me2_agent.acp_updates import (
 )
 from code4me2_agent.acp_utils import capability_value
 from code4me2_agent.async_bridge import EventLoopAsyncRunner, OperationCancelled
-from code4me2_agent.command_tools import available_commands, build_acp_command_backend
+from code4me2_agent.command_tools import build_acp_command_backend
 from code4me2_agent.echo import EchoAgentCore
 from code4me2_agent.events import (
     ApprovalDecision,
@@ -1003,8 +1003,8 @@ def create_acp_agent(
                         "cwd": session_config.workspace_root.as_posix(),
                         "runtime_os": platform.system(),
                         "runtime_architecture": platform.machine(),
-                        "available_commands": available_commands(
-                            session_config.commands.allowlisted_commands
+                        "blocked_commands": list(
+                            session_config.commands.blocked_commands
                         ),
                         "client_capabilities": _normalize_capabilities(
                             self._client_capabilities
@@ -1228,13 +1228,13 @@ def create_acp_agent(
             provider = new_config.adapter.provider
             logger.info(
                 "Applied server agent config: profile=%s model=%s provider_kind=%s "
-                "base_url=%s max_iterations=%s commands_allowlist=%s.",
+                "base_url=%s max_iterations=%s commands_denylist=%s.",
                 server_config.agent_profile,
                 provider.model,
                 provider.kind,
                 provider.base_url,
                 new_config.adapter.max_iterations,
-                new_config.commands.allowlisted_commands,
+                new_config.commands.blocked_commands,
             )
             if not provider.is_configured:
                 # Loud, because the alternative is a confusing failure deep in
@@ -1249,7 +1249,7 @@ def create_acp_agent(
 
         def _apply_config_to_all_cores(self, new_config: Any) -> None:
             # Rebuild every enforcement point (ToolRegistry allowed_tools /
-            # approval, command allowlist, adapter provider) rather than
+            # approval, blocked commands, adapter provider) rather than
             # mutating _config in place, which would leave already-constructed
             # adapters enforcing stale policy: apply_config refreshes allowed
             # tools plus approval/command/provider state.

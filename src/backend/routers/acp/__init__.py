@@ -44,8 +44,11 @@ from agents import provider as provider_module
 from agents import registry
 from agents.tools import (
     CODE4ME2_AGENT_TOOLS,
+    command_key,
+    is_bare_command_name,
     validate_command_timeout_seconds,
     validate_commands_allowlist,
+    validate_commands_denylist,
     validate_harness_options,
 )
 from App import App
@@ -122,9 +125,15 @@ def _require_funded_task(db, task):
 
 # Fallback runtime config, used only when no agent profile can be resolved for
 # the user (e.g. every profile has been deactivated). Deliberately minimal and
-# read-only-ish: a handful of harmless inspection commands and no write tools,
-# so an unconfigured agent degrades to something safe rather than to something
+# read-only-ish: a handful of harmless inspection tools and no write tools, so
+# an unconfigured agent degrades to something safe rather than to something
 # powerful.
+#
+# Commands: current runtimes read ``commands_denylist`` (the programs the agent
+# may not run) and run anything else. Runtime releases 0.0.6 and earlier only
+# understand ``commands_allowlist`` and refuse a policy without it, so it is
+# still sent, computed as before (a legacy snapshot allowlist, else the user's
+# config-row allowlist, else this list) minus any blocked command.
 FALLBACK_COMMANDS_ALLOWLIST = ["pwd", "ls", "cat", "grep", "rg"]
 FALLBACK_TOOLS = ["read_file", "list_files", "search_files"]
 FALLBACK_MODEL = "qwen2.5-coder:7b"
@@ -547,12 +556,12 @@ def get_acp_agent_config(
 
     1. the user's assigned agent profile (the sticky A/B draw) — this is the
        normal path, and it's what makes the assignment govern the runtime;
-    2. the user's ``config`` row, whose optional ``agent`` section can override
-       the command allowlist (an operational safety setting rather than an
-       experimental condition, so it stays outside the profile). When the
-       profile sets its own ``commands_allowlist`` the config row can only
-       narrow it (intersection, profile order); otherwise it replaces the
-       fallback list;
+    2. the user's ``config`` row, whose optional ``agent`` section can block
+       more commands (``commands_denylist``, added to the profile's list: an
+       operational safety setting rather than an experimental condition, so it
+       stays outside the profile). Its legacy ``commands_allowlist`` still
+       narrows or replaces the allowlist sent to runtimes 0.0.6 and earlier,
+       from which blocked commands are removed;
     3. the conservative fallback constants above.
 
     ``command_timeout_seconds`` and ``harness_options`` are returned only when
@@ -592,9 +601,15 @@ def get_acp_agent_config(
     max_context_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
     profile_allowlist: Optional[list[str]] = None
+    profile_denylist: Optional[list[str]] = None
+    commands_denylist: list[str] = []
     command_timeout_seconds: Optional[int] = None
     harness_options: Optional[dict] = None
     store_agent_content = False
+    # Set when the blocked commands cannot be known (a malformed setting a
+    # legacy caller is served around): run_command is then withheld, because
+    # dropping a denylist would widen what the agent may run.
+    withhold_commands = False
 
     db = app.get_db_session()
     try:
@@ -637,6 +652,7 @@ def get_acp_agent_config(
                 try:
                     (
                         profile_allowlist,
+                        profile_denylist,
                         command_timeout_seconds,
                         harness_options,
                     ) = _profile_harness_settings(profile)
@@ -649,6 +665,14 @@ def get_acp_agent_config(
                         f"[ACP/agent-config] profile {profile.name!r} has invalid "
                         f"command/harness settings — ignoring them"
                     )
+                    # Keep the arm's blocked commands when they are valid on
+                    # their own; otherwise no command may run.
+                    raw_denylist = getattr(profile, "commands_denylist", None)
+                    try:
+                        if raw_denylist is not None:
+                            profile_denylist = validate_commands_denylist(raw_denylist)
+                    except ValueError:
+                        withhold_commands = True
                 logging.info(
                     f"[ACP/agent-config] profile={profile.name!r} "
                     f"runtime={framework_version} model={model} "
@@ -666,9 +690,10 @@ def get_acp_agent_config(
                 study_id=assignment.study_id if assignment is not None else None,
             )
 
-            # The command allowlist is an operational guardrail, so it can be
-            # narrowed per-user via the config row independently of the profile.
+            # Blocked commands are an operational guardrail, so the config row
+            # can add to them per user, independently of the profile.
             config_allowlist: Optional[list[str]] = None
+            config_denylist: Optional[list[str]] = None
             user = crud.get_user_by_id(db, user_uuid) if user_uuid else None
             if user is not None:
                 config_row = crud.get_config_by_id(db, user.config_id)
@@ -679,8 +704,21 @@ def get_acp_agent_config(
                         config_allowlist = [
                             str(c).strip() for c in raw_allowlist if c
                         ]
+                    try:
+                        config_denylist = _config_row_denylist(overrides)
+                    except ValueError:
+                        if managed_protocol_version is not None:
+                            raise
+                        logging.warning(
+                            "[ACP/agent-config] the user's config row has an invalid "
+                            "commands_denylist — withholding run_command"
+                        )
+                        withhold_commands = True
+            commands_denylist = _effective_commands_denylist(
+                profile_denylist, config_denylist
+            )
             commands_allowlist = _effective_commands_allowlist(
-                profile_allowlist, config_allowlist
+                profile_allowlist, config_allowlist, blocked=commands_denylist
             )
     except Exception as error:
         if managed_protocol_version is not None:
@@ -693,8 +731,12 @@ def get_acp_agent_config(
             f"[ACP/agent-config] config resolution failed, using fallbacks — {error}",
             exc_info=True,
         )
+        # The arm's blocked commands may not have been read.
+        withhold_commands = True
     finally:
         db.close()
+    if withhold_commands:
+        tools = [tool for tool in tools if str(tool).strip() != "run_command"]
 
     transport: Optional[str] = None
     if managed_protocol_version is not None:
@@ -740,6 +782,7 @@ def get_acp_agent_config(
             base_url=base_url,
             api_key_ref=api_key_ref,
             commands_allowlist=commands_allowlist,
+            commands_denylist=commands_denylist,
             tools=tools,
             max_iterations=max_iterations,
             max_context_tokens=max_context_tokens,
@@ -767,22 +810,28 @@ class _InvalidHarnessSetting(ValueError):
 
 def _profile_harness_settings(
     profile,
-) -> tuple[Optional[list[str]], Optional[int], Optional[dict]]:
+) -> tuple[Optional[list[str]], Optional[list[str]], Optional[int], Optional[dict]]:
     """The profile's built-in runtime command/harness settings (decision D-01).
 
-    Returns ``(commands_allowlist, command_timeout_seconds, harness_options)``,
-    each ``None`` when unset. Raises :class:`_InvalidHarnessSetting` (a
-    ``ValueError``) when a frozen value is malformed, so callers fail closed
-    instead of dropping an arm's setting. The verify command is checked against
-    the profile's own allowlist, never against the (possibly narrower)
-    effective one.
+    Returns ``(legacy commands_allowlist, commands_denylist,
+    command_timeout_seconds, harness_options)``, each ``None`` when unset (only
+    snapshots frozen before the denylist carry an allowlist). Raises
+    :class:`_InvalidHarnessSetting` (a ``ValueError``) when a frozen value is
+    malformed, so callers fail closed instead of dropping an arm's setting.
+    Only shapes are checked here: whether the verify command runs a blocked
+    program is refused when the profile is saved and frozen, and at run time the
+    runtime skips such a command. A later change to the matching rule must not
+    take a running arm down.
     """
     allowlist = getattr(profile, "commands_allowlist", None)
+    denylist = getattr(profile, "commands_denylist", None)
     timeout = getattr(profile, "command_timeout_seconds", None)
     options = getattr(profile, "harness_options", None)
     try:
         if allowlist is not None:
             allowlist = validate_commands_allowlist(allowlist)
+        if denylist is not None:
+            denylist = validate_commands_denylist(denylist)
     except ValueError as error:
         raise _InvalidHarnessSetting("Assigned command policy is invalid") from error
     try:
@@ -792,29 +841,70 @@ def _profile_harness_settings(
         raise _InvalidHarnessSetting("Assigned profile command timeout is invalid") from error
     try:
         if options is not None:
-            options = validate_harness_options(options, commands_allowlist=allowlist)
+            options = validate_harness_options(options)
     except ValueError as error:
         raise _InvalidHarnessSetting("Assigned profile harness options are invalid") from error
-    return allowlist, timeout, options
+    return allowlist, denylist, timeout, options
 
 
 def _effective_commands_allowlist(
-    profile_allowlist: Optional[list[str]], config_allowlist: Optional[list[str]]
+    profile_allowlist: Optional[list[str]],
+    config_allowlist: Optional[list[str]],
+    *,
+    blocked: list[str],
 ) -> list[str]:
-    """The command allowlist a runtime receives.
+    """The legacy command allowlist runtimes 0.0.6 and earlier receive.
 
-    A profile allowlist is the arm's condition: the user's config row can only
-    narrow it (intersection, profile order kept). Without one the previous
-    behaviour holds: the config row replaces the fallback list.
+    A (legacy snapshot) profile allowlist is the arm's condition: the user's
+    config row can only narrow it (intersection, profile order kept). Without
+    one the config row replaces the fallback list. Blocked commands are removed
+    either way, so an old runtime never runs one.
     """
     if profile_allowlist is None:
         if config_allowlist is not None:
-            return list(config_allowlist)
-        return list(FALLBACK_COMMANDS_ALLOWLIST)
-    if config_allowlist is None:
-        return list(profile_allowlist)
-    permitted = set(config_allowlist)
-    return [command for command in profile_allowlist if command in permitted]
+            allowlist = list(config_allowlist)
+        else:
+            allowlist = list(FALLBACK_COMMANDS_ALLOWLIST)
+    elif config_allowlist is None:
+        allowlist = list(profile_allowlist)
+    else:
+        permitted = set(config_allowlist)
+        allowlist = [command for command in profile_allowlist if command in permitted]
+    blocked_keys = {command_key(command) for command in blocked}
+    return [command for command in allowlist if command_key(command) not in blocked_keys]
+
+
+def _config_row_denylist(overrides: dict) -> Optional[list[str]]:
+    """The extra commands a user's config row blocks; ``ValueError`` when malformed.
+
+    Unlike the legacy allowlist, a malformed list is never ignored: dropping it
+    would widen what the agent may run.
+    """
+    raw = overrides.get("commands_denylist")
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(
+        isinstance(command, str) and is_bare_command_name(command.strip()) for command in raw
+    ):
+        raise ValueError("the config row's commands_denylist must list bare command names")
+    return [command.strip() for command in raw]
+
+
+def _effective_commands_denylist(
+    profile_denylist: Optional[list[str]], config_denylist: Optional[list[str]]
+) -> list[str]:
+    """The blocked commands a runtime receives.
+
+    The profile's list is the arm's condition; the user's config row can only
+    add to it (profile order first, then the row's other names, ignoring case).
+    """
+    blocked = list(profile_denylist or [])
+    seen = {command.lower() for command in blocked}
+    for command in config_denylist or []:
+        if command.lower() not in seen:
+            seen.add(command.lower())
+            blocked.append(command)
+    return blocked
 
 
 def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.UUID] = None) -> dict:
@@ -864,25 +954,34 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
     ):
         raise HTTPException(status_code=503, detail="Assigned profile policy is incomplete")
     try:
-        profile_allowlist, command_timeout_seconds, harness_options = (
+        profile_allowlist, profile_denylist, command_timeout_seconds, harness_options = (
             _profile_harness_settings(profile)
         )
     except _InvalidHarnessSetting as error:
         raise HTTPException(status_code=503, detail=error.detail) from error
 
     config_allowlist: Optional[list[str]] = None
+    config_denylist: Optional[list[str]] = None
     user = crud.get_user_by_id(db, user_id)
     if user is not None:
         config_row = crud.get_config_by_id(db, user.config_id)
         if config_row is not None and config_row.config_data:
-            raw_allowlist = _parse_agent_config_section(config_row.config_data).get(
-                "commands_allowlist"
-            )
+            overrides = _parse_agent_config_section(config_row.config_data)
+            raw_allowlist = overrides.get("commands_allowlist")
             if isinstance(raw_allowlist, list):
                 if not all(isinstance(command, str) and command.strip() for command in raw_allowlist):
                     raise HTTPException(status_code=503, detail="Assigned command policy is invalid")
                 config_allowlist = [command.strip() for command in raw_allowlist]
-    commands_allowlist = _effective_commands_allowlist(profile_allowlist, config_allowlist)
+            try:
+                config_denylist = _config_row_denylist(overrides)
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=503, detail="Assigned command policy is invalid"
+                ) from error
+    commands_denylist = _effective_commands_denylist(profile_denylist, config_denylist)
+    commands_allowlist = _effective_commands_allowlist(
+        profile_allowlist, config_allowlist, blocked=commands_denylist
+    )
 
     policy = {
         "version": MANAGED_PROTOCOL_VERSION,
@@ -895,7 +994,10 @@ def _managed_policy(db, user_id: uuid.UUID, profile, *, study_id: Optional[uuid.
         "temperature": float(temperature) if temperature is not None else None,
         "max_iterations": max_iterations,
         "max_context_tokens": max_context_tokens,
+        # Legacy: only runtimes 0.0.6 and earlier read the allowlist; current
+        # ones run any program except ``commands_denylist``.
         "commands_allowlist": commands_allowlist,
+        "commands_denylist": commands_denylist,
         "store_agent_content": resolve_store_agent_content_for_acp(
             db, str(user_id), study_id=study_id
         ),
@@ -1310,11 +1412,11 @@ async def run_managed_inference(
 def _valid_harness_options_snapshot(options: object) -> bool:
     """Whether a run policy's ``harness_options`` has a valid shape.
 
-    The verify command is not re-checked against the policy's allowlist: that
-    list may already be narrowed by the user's config row.
+    The verify command is not re-checked against the policy's blocked commands:
+    the user's config row may block more, and the runtime then skips it.
     """
     try:
-        validate_harness_options(options, require_allowlisted_verify=False)
+        validate_harness_options(options)
     except ValueError:
         return False
     return True
@@ -1331,6 +1433,7 @@ def _valid_managed_policy_snapshot(policy: object) -> bool:
     # do not set them and in every policy written before they existed.
     command_timeout = policy.get("command_timeout_seconds")
     harness_options = policy.get("harness_options")
+    commands_denylist = policy.get("commands_denylist")
     return bool(
         policy.get("version") == MANAGED_PROTOCOL_VERSION
         and isinstance(policy.get("model"), str)
@@ -1355,6 +1458,16 @@ def _valid_managed_policy_snapshot(policy: object) -> bool:
         and set(tools).issubset(CODE4ME2_AGENT_TOOLS)
         and (command_timeout is None or _valid_command_timeout(command_timeout))
         and (harness_options is None or _valid_harness_options_snapshot(harness_options))
+        and (
+            commands_denylist is None
+            or (
+                isinstance(commands_denylist, list)
+                and all(
+                    isinstance(command, str) and command.strip()
+                    for command in commands_denylist
+                )
+            )
+        )
     )
 
 

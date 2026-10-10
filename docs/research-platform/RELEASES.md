@@ -148,7 +148,8 @@ while the old backend is still running. Existing profiles, their configuration
 digests and frozen studies are unchanged: a prompt only enters a digest when set.
 
 Built-in (`code4me2-agent`) profiles can also set the commands the agent may run
-(`commands_allowlist`), the default command timeout (`command_timeout_seconds`,
+(`commands_allowlist`, since replaced by `commands_denylist`; see "Blocked
+commands replace the command allowlist" below), the default command timeout (`command_timeout_seconds`,
 1–600 s) and the harness behaviour switches (`harness_options`); Goose and Codex
 profiles refuse all three. These columns are part of the consolidated revision
 too, so a database already at that revision needs them before the new backend
@@ -375,3 +376,58 @@ Studies created from this release on freeze an `assignment` block in their
 configuration (`DETERMINISTIC_HASH` salted-hash draw, plus the opt-in manual
 override); existing studies keep the `RANDOM_EQUAL` draw. This needs no schema
 change. See `docs/RESEARCH_ANALYTICS_SCOPE.md`.
+
+## Blocked commands replace the command allowlist
+
+Built-in (`code4me2-agent`) profiles no longer list the programs the agent may
+run. They list the programs it may **not** run (`commands_denylist`, "Blocked
+commands" in the profile editor, at most 64 names); every other program installed
+on the participant's machine can run. Under the per-step approval policy the
+participant still approves each command; under auto-approval nothing asks. An
+empty list blocks nothing.
+
+Alembic revision `d41e7c9a2b6f` (after `c5e8f1a2d3b4`) adds the column, so
+`python src/database/migration/migration_manager.py migrate` applies it (the new
+backend needs it before it starts). By hand:
+
+```sql
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS commands_denylist_json TEXT;
+```
+
+It is nullable and the previous code ignores it, so it is safe to add while the
+old backend is still running. The retired `commands_allowlist_json` column stays
+in the table, unused, so the previous backend can still be rolled back to.
+Profile templates saved with an allowlist show an empty "Blocked commands" field;
+studies frozen earlier keep their snapshot.
+
+The packaged agent enforces the list, so studies need a runtime release built
+from this code (the release after `runtime-v0.0.6`). Releases up to and including
+`runtime-v0.0.6` ignore `commands_denylist` and keep their old behaviour: they
+run only the commands in `commands_allowlist`, which the server still sends,
+computed as before (an allowlist frozen in an older study, else a user's
+config-row allowlist, else `pwd, ls, cat, grep, rg`) minus any blocked command.
+A newer runtime refuses a run policy without `commands_denylist` (its log says
+the server is older than the runtime), so deploy the server first, then import
+the new runtime release and pin profiles to it.
+
+A name matches the program a command starts: case-insensitive, ignoring any
+directory, trailing dots and spaces, and a `.exe`/`.cmd`/`.bat`/`.com` suffix
+(`git` also blocks `/usr/bin/git` and `git.exe`). When the command is a shell
+(for example `bash`, `sh`, `zsh`, `tcsh`, `cmd /c`, `powershell -Command`, `wsl`),
+a launcher (for example `env`, `xargs`, `sudo`, `timeout`, `script`, `npx`) or a
+package manager (for example `uv`, `poetry`, `conda`, `npm`, `pnpm`, `yarn`,
+`mise`), every plainly written word of its arguments is checked too (`@` splits
+words, so neither a version suffix such as `npm@10` nor `git@github.com` hides a
+name), so `bash -c "git push"` and `npm x -c "git push"` are refused. Package managers have
+many ways to run a program, so all their arguments count: installing a package
+named like a blocked program is refused as well. The lists in `agents/tools.py` are not
+exhaustive. A program started by a script, an interpreter (`python -c`), a build
+tool (`make`, `npm run` scripts) or `find -exec`, and a name disguised with
+escapes, is not visible to the check: block those as well if that matters, or
+rely on per-step approval. A verify command may not use a blocked program; this
+is refused when a profile is saved or frozen, while a running study whose verify
+command a config row (or a later rule change) blocks has the runtime skip it. A
+user's config row can add bare names with `{"agent": {"commands_denylist":
+[...]}}`; a malformed one fails closed (a managed run is refused; a legacy caller
+loses `run_command`, as it does whenever the blocked commands cannot be read).
+Its legacy `commands_allowlist` only affects runtimes up to 0.0.6.

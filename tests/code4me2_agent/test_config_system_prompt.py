@@ -36,6 +36,7 @@ def _managed_policy(**overrides):
         "max_iterations": 4,
         "max_context_tokens": 32000,
         "commands_allowlist": ["git"],
+        "commands_denylist": [],
         "store_agent_content": False,
     }
     policy.update(overrides)

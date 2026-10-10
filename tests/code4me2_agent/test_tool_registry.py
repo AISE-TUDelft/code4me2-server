@@ -400,9 +400,9 @@ def test_size_arguments_are_clamped_and_plain_argv_strings_split_with_notes():
 
 
 
-def _registry_with_commands(commands):
+def _registry_with_blocked(blocked):
     file_tools, command_tools = _mocks()
-    command_tools.allowlisted_commands = frozenset(commands)
+    command_tools.blocked_commands = tuple(blocked)
     return ToolRegistry(file_tools, command_tools, event_sink=RecordingSink())
 
 
@@ -412,16 +412,22 @@ def _run_command_description(registry):
 
 
 def test_run_command_description_follows_the_command_policy(monkeypatch):
-    # Host-independent: treat every allowlisted program as installed (CI runs on Windows too).
     import code4me2_agent.command_tools as command_tools_module
 
+    # Host-independent: pretend every shell is installed (CI runs on Windows too).
     monkeypatch.setattr(command_tools_module, "available_commands", lambda commands: list(commands))
-    # Without a shell on the allowlist the original "no shell" wording stays.
-    assert "There is no shell" in _run_command_description(_registry_with_commands(["git", "pytest"]))
-    # With bash allowlisted (and installed), it must not claim there is no shell.
-    described = _run_command_description(_registry_with_commands(["git", "bash"]))
+    # An installed, unblocked shell: it must not claim there is no shell.
+    described = _run_command_description(_registry_with_blocked(["git"]))
     assert "There is no shell" not in described
     assert '["bash", "-c"' in described
+    assert "programs the study blocks are refused" in described
+    # The first shell is blocked: the next one is offered.
+    assert '["sh", "-c"' in _run_command_description(_registry_with_blocked(["BASH"]))
+    # Every shell blocked: the original "no shell" wording stays.
+    assert "There is no shell" in _run_command_description(_registry_with_blocked(["bash", "sh", "zsh"]))
+    # No shell installed at all.
+    monkeypatch.setattr(command_tools_module, "available_commands", lambda commands: [])
+    assert "There is no shell" in _run_command_description(_registry_with_blocked([]))
 
 
 def test_an_unknown_tool_is_named_as_unknown_not_blamed_on_policy():

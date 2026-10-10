@@ -115,7 +115,7 @@ def profile_snapshot(profile: Any) -> dict[str, Any]:
 
     ``system_prompt`` is included only when set, so a profile without one keeps
     the snapshot shape (and digest) it had before the field existed; the same
-    holds for the built-in runtime's ``commands_allowlist`` /
+    holds for the built-in runtime's ``commands_denylist`` /
     ``command_timeout_seconds`` / ``harness_options`` (decision D-01).
     """
     snapshot = {

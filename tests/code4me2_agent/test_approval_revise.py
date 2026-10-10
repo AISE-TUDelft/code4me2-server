@@ -597,6 +597,7 @@ def test_harness_switch_defaults_on_and_parses_strictly(tmp_path):
             "model": "m",
             "tools": ["edit_file"],
             "commands_allowlist": [],
+            "commands_denylist": [],
             "max_iterations": 8,
             "max_context_tokens": 32000,
             "approval_policy": "per_step",

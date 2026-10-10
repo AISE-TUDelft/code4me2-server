@@ -34,7 +34,7 @@ from agents.tools import (
     KNOWN_AGENT_TOOLS,
     tools_for_framework,
     validate_command_timeout_seconds,
-    validate_commands_allowlist,
+    validate_commands_denylist,
     validate_harness_options,
 )
 from App import App
@@ -85,7 +85,9 @@ class AgentProfilePayload(BaseModel):
     ``extra="forbid"`` deliberately rejects the retired fields
     (``base_url``/``api_key_ref``/``distribution_mode``/``agent_package``/
     ``agent_command``): researchers select an authorized ``connection_id`` and a
-    model, never an endpoint or a secret reference.
+    model, never an endpoint or a secret reference. The retired
+    ``commands_allowlist`` is refused the same way: a profile lists the commands
+    the agent may not run (``commands_denylist``).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -111,25 +113,25 @@ class AgentProfilePayload(BaseModel):
         default=None, max_length=SYSTEM_PROMPT_MAX_LENGTH
     )
     # Built-in runtime command and harness settings (decision D-01; managed
-    # runtime only, a BYOA release refuses them). Null = not set: the server
-    # fallback allowlist (a config row may replace it), the runtime's default
-    # timeout and harness defaults. An empty allowlist is a setting (explicitly
-    # no commands); an empty harness_options object carries no switch, so it is
-    # stored as null. Each field's shape is checked here; the cross-field rule
-    # (a verify_command must be allowlisted) runs on the merged profile in the
-    # profile↔release contract. On an update an omitted field keeps the stored
-    # value for the managed runtime and clears it for a BYOA runtime, exactly
-    # like system_prompt.
-    commands_allowlist: Optional[list[str]] = Field(default=None)
+    # runtime only, a BYOA release refuses them). Null = not set: no command is
+    # blocked (a config row may still block some), the runtime's default
+    # timeout and harness defaults. An empty denylist blocks nothing and an
+    # empty harness_options object carries no switch, so both are stored as
+    # null. Each field's shape is checked here; the cross-field rule (a
+    # verify_command may not run a blocked program) runs on the merged profile
+    # in the profile↔release contract. On an update an omitted field keeps the
+    # stored value for the managed runtime and clears it for a BYOA runtime,
+    # exactly like system_prompt.
+    commands_denylist: Optional[list[str]] = Field(default=None)
     command_timeout_seconds: Optional[int] = Field(default=None)
     harness_options: Optional[dict[str, Any]] = Field(default=None)
 
-    @field_validator("commands_allowlist", mode="before")
+    @field_validator("commands_denylist", mode="before")
     @classmethod
-    def check_commands_allowlist(cls, value: Any) -> Optional[list[str]]:
+    def check_commands_denylist(cls, value: Any) -> Optional[list[str]]:
         if value is None:
             return None
-        return validate_commands_allowlist(value)
+        return validate_commands_denylist(value) or None
 
     @field_validator("command_timeout_seconds", mode="before")
     @classmethod
@@ -145,7 +147,7 @@ class AgentProfilePayload(BaseModel):
     def check_harness_options(cls, value: Any) -> Optional[dict[str, Any]]:
         if value is None:
             return None
-        options = validate_harness_options(value, require_allowlisted_verify=False)
+        options = validate_harness_options(value)
         return options or None
 
     @field_validator("system_prompt")
@@ -337,7 +339,7 @@ def _profile_to_dict(db: Any, profile: AgentProfile) -> dict[str, Any]:
         "temperature": profile.temperature,
         "max_context_tokens": profile.max_context_tokens,
         "system_prompt": getattr(profile, "system_prompt", None),
-        "commands_allowlist": getattr(profile, "commands_allowlist", None),
+        "commands_denylist": getattr(profile, "commands_denylist", None),
         "command_timeout_seconds": getattr(profile, "command_timeout_seconds", None),
         "harness_options": getattr(profile, "harness_options", None),
         "configuration_digest": getattr(profile, "configuration_digest", ""),
@@ -458,7 +460,7 @@ def create_agent_profile(
             temperature=payload.temperature,
             max_context_tokens=payload.max_context_tokens,
             system_prompt=payload.system_prompt,
-            commands_allowlist=payload.commands_allowlist,
+            commands_denylist=payload.commands_denylist,
             command_timeout_seconds=payload.command_timeout_seconds,
             harness_options=payload.harness_options,
         )
@@ -549,7 +551,7 @@ def update_agent_profile(
             temperature=payload.temperature,
             max_context_tokens=payload.max_context_tokens,
             system_prompt=payload.system_prompt,
-            commands_allowlist=payload.commands_allowlist,
+            commands_denylist=payload.commands_denylist,
             command_timeout_seconds=payload.command_timeout_seconds,
             harness_options=payload.harness_options,
             connection_id=payload.connection_id,
@@ -568,7 +570,7 @@ def update_agent_profile(
             # website omits them when switching a profile to goose/codex). An
             # explicit null always clears it.
             update_system_prompt=replaces("system_prompt"),
-            update_commands_allowlist=replaces("commands_allowlist"),
+            update_commands_denylist=replaces("commands_denylist"),
             update_command_timeout_seconds=replaces("command_timeout_seconds"),
             update_harness_options=replaces("harness_options"),
         )

@@ -4,15 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-# Programs the agent may launch inside the task container. ``bash``/``sh``
-# are included, so this is not a sandbox: the container is.
-DEFAULT_COMMANDS = (
-    "python", "python3", "pytest", "pip", "git", "bash", "sh",
-    "ls", "cat", "head", "tail", "grep", "find", "sed", "awk", "wc", "sort",
-    "uniq", "diff", "echo", "pwd", "mkdir", "touch", "rm", "mv", "cp", "chmod",
-    "which", "make", "env", "true",
-)
-
 # Every agent tool except ask_user: nobody answers questions in a benchmark.
 DEFAULT_TOOLS = (
     "read_file", "create_file", "write_file", "replace_text", "edit_file",
@@ -54,7 +45,9 @@ class RunSettings:
     max_command_output_bytes: int = 16_384
     # Wall-clock limit for one task; the agent is killed and its diff kept.
     task_timeout_s: float = 3_600.0
-    commands: tuple[str, ...] = DEFAULT_COMMANDS
+    # Programs the agent may not run (its commands denylist). Empty: any program
+    # in the task container can run; the container is the sandbox.
+    blocked_commands: tuple[str, ...] = ()
     tools: tuple[str, ...] = DEFAULT_TOOLS
     # HarnessOptions overrides (empty = the agent's shipped defaults).
     harness_options: dict[str, object] = field(default_factory=dict)
@@ -69,7 +62,7 @@ class RunSettings:
 
     def as_dict(self) -> dict[str, object]:
         data = asdict(self)
-        data["commands"] = list(self.commands)
+        data["blocked_commands"] = list(self.blocked_commands)
         data["tools"] = list(self.tools)
         return data
 
@@ -106,7 +99,7 @@ def agent_config(settings: RunSettings, *, session_id: str) -> dict[str, object]
             },
         },
         "commands": {
-            "allowlist": list(settings.commands),
+            "denylist": list(settings.blocked_commands),
             "timeout_seconds": settings.command_timeout_s,
             "max_timeout_seconds": settings.max_command_timeout_s,
             "max_output_bytes": settings.max_command_output_bytes,

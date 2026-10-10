@@ -34,7 +34,7 @@ from agents.tools import (
     HARNESS_PROFILE_FIELDS,
     tools_for_framework,
     validate_command_timeout_seconds,
-    validate_commands_allowlist,
+    validate_commands_denylist,
     validate_harness_options,
 )
 from research.study.protocol.enums import ReleaseResolutionStatus
@@ -315,10 +315,10 @@ def validate_profile_configuration(
     * for BYOA, ``max_context_tokens`` and ``system_prompt`` must stay unset: no
       binding can forward them to an externally installed agent, so they would
       only be labels; the same holds for the built-in runtime's command and
-      harness settings (``commands_allowlist`` / ``command_timeout_seconds`` /
+      harness settings (``commands_denylist`` / ``command_timeout_seconds`` /
       ``harness_options``, decision D-01);
     * those settings must be valid, and a ``harness_options.verify_command``
-      must run a program the profile's own ``commands_allowlist`` lists.
+      must not run a program the profile's own ``commands_denylist`` blocks.
 
     Raises :class:`ProfileConfigurationError` (a ``ValueError`` whose ``str`` is
     ``"CODE: message"``). Nothing is mutated and no database session is needed.
@@ -401,7 +401,7 @@ def validate_profile_configuration(
                 "agents (goose/codex); leave it empty for a BYOA runtime",
                 "system_prompt",
             )
-        # The built-in runtime's command allowlist, command timeout and
+        # The built-in runtime's blocked commands, command timeout and
         # harness switches (D-01) only reach the managed runtime through its
         # run policy; an external agent enforces its own.
         for field in HARNESS_PROFILE_FIELDS:
@@ -508,15 +508,15 @@ def _validate_harness_settings(profile: Any) -> None:
 
     The profile API validates each field's shape first; this is the merged-state
     check shared by create, update and the study freeze (which also sees rows
-    written around the API), including the verify-command-is-allowlisted rule.
+    written around the API), including the verify-command-is-not-blocked rule.
     """
-    allowlist = getattr(profile, "commands_allowlist", None)
-    if allowlist is not None:
+    denylist = getattr(profile, "commands_denylist", None)
+    if denylist is not None:
         try:
-            validate_commands_allowlist(allowlist)
+            validate_commands_denylist(denylist)
         except ValueError as error:
             raise ProfileConfigurationError(
-                "COMMANDS_ALLOWLIST_INVALID", str(error), "commands_allowlist"
+                "COMMANDS_DENYLIST_INVALID", str(error), "commands_denylist"
             ) from error
     timeout = getattr(profile, "command_timeout_seconds", None)
     if timeout is not None:
@@ -529,7 +529,7 @@ def _validate_harness_settings(profile: Any) -> None:
     options = getattr(profile, "harness_options", None)
     if options is not None:
         try:
-            validate_harness_options(options, commands_allowlist=allowlist)
+            validate_harness_options(options, commands_denylist=denylist)
         except ValueError as error:
             raise ProfileConfigurationError(
                 "HARNESS_OPTIONS_INVALID", str(error), "harness_options"

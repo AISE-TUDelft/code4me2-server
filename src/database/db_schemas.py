@@ -913,8 +913,8 @@ class ProviderModelPrice(Base):
 class AgentProfile(Base):
     """A researcher-owned, editable agent configuration template.
 
-    A profile fixes the runtime, the provider connection/model, the tool
-    allowlist, the release artifact pin and the approval policy. It is a
+    A profile fixes the runtime, the provider connection/model, the selected
+    tools, the release artifact pin and the approval policy. It is a
     researcher-owned template whose configuration digest is refreshed on edit;
     study selections store their own immutable snapshot. ``connection_id`` names an administrator-managed
     :class:`ProviderConnection`; the provider endpoint and secret live there,
@@ -972,12 +972,14 @@ class AgentProfile(Base):
     system_prompt = Column(Text, nullable=True)
     # Built-in runtime command and harness settings (decision D-01; managed
     # runtime only, BYOA refuses them), validated by ``agents.tools``. NULL =
-    # the previous behaviour: the server fallback command allowlist (a user's
-    # config row may replace it), the runtime's default command timeout and the
-    # runtime's harness defaults. Like ``system_prompt`` each joins the
-    # configuration digest and study snapshots only when set. Read the JSON
-    # columns through ``commands_allowlist`` / ``harness_options``.
-    commands_allowlist_json = Column(Text, nullable=True)  # JSON array of bare command names
+    # not set: no command is blocked (a user's config row may still block
+    # some), the runtime's default command timeout and the runtime's harness
+    # defaults. Like ``system_prompt`` each joins the configuration digest and
+    # study snapshots only when set. Read the JSON columns through
+    # ``commands_denylist`` / ``harness_options``. The retired
+    # ``commands_allowlist_json`` column (revision 8a0084080b46) stays in the
+    # table, unmapped, so an older backend can still be rolled back to.
+    commands_denylist_json = Column(Text, nullable=True)  # JSON array of bare command names
     command_timeout_seconds = Column(Integer, nullable=True)  # 1..600 seconds
     harness_options_json = Column(Text, nullable=True)  # JSON object of switches
     configuration_digest = Column(String, nullable=False, server_default="")
@@ -990,9 +992,9 @@ class AgentProfile(Base):
     connection = relationship("ProviderConnection")
 
     @property
-    def commands_allowlist(self):
-        """The decoded ``commands_allowlist_json`` (``None`` when unset)."""
-        return _decode_optional_json_text(self.commands_allowlist_json)
+    def commands_denylist(self):
+        """The decoded ``commands_denylist_json`` (``None`` when unset)."""
+        return _decode_optional_json_text(self.commands_denylist_json)
 
     @property
     def harness_options(self):

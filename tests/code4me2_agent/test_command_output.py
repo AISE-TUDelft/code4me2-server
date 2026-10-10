@@ -23,14 +23,14 @@ PYTHON = Path(sys.executable)
 POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX process semantics")
 
 
-def _tools(tmp_path: Path, *, allowlist: list[str], harness: HarnessOptions | None = None):
+def _tools(tmp_path: Path, *, blocked: list[str] | None = None, harness: HarnessOptions | None = None):
     workspace = (tmp_path / "ws").resolve()
     workspace.mkdir(exist_ok=True)
     config = AgentConfig(
         workspace_root=workspace,
         trace_path=tmp_path / "trace.jsonl",
         session_id="s",
-        commands=CommandConfig(allowlisted_commands=allowlist),
+        commands=CommandConfig(blocked_commands=list(blocked or [])),
         harness=harness or HarnessOptions(),
     )
     events: list[dict] = []
@@ -61,7 +61,7 @@ def test_ansi_colours_and_progress_redraws_are_removed():
 
 
 def test_commands_run_with_hygiene_environment_and_clean_output(tmp_path):
-    tools, _workspace, _ = _tools(tmp_path, allowlist=[PYTHON.name])
+    tools, _workspace, _ = _tools(tmp_path)
     code = (
         "import os, sys\n"
         "print(os.environ['NO_COLOR'], os.environ['TERM'], os.environ['CI'])\n"
@@ -76,8 +76,8 @@ def test_commands_run_with_hygiene_environment_and_clean_output(tmp_path):
 
 
 @POSIX_ONLY
-def test_allowlisted_workspace_wrapper_runs_from_the_project(tmp_path):
-    tools, workspace, events = _tools(tmp_path, allowlist=["gradlew"])
+def test_workspace_wrapper_runs_from_the_project(tmp_path):
+    tools, workspace, events = _tools(tmp_path)
     wrapper = workspace / "gradlew"
     wrapper.write_text(f"#!{PYTHON}\nimport sys\nprint('wrapper', sys.argv[1:])\n")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
@@ -91,14 +91,20 @@ def test_allowlisted_workspace_wrapper_runs_from_the_project(tmp_path):
     assert completed[-1]["payload"]["command"] == "gradlew"
 
 
-def test_wrapper_paths_outside_the_workspace_or_unlisted_names_are_refused(tmp_path):
-    tools, workspace, _ = _tools(tmp_path, allowlist=["gradlew"])
-    with pytest.raises(PermissionError):
+def test_missing_wrappers_are_not_found_and_blocked_ones_are_refused(tmp_path):
+    tools, workspace, _ = _tools(tmp_path)
+    with pytest.raises(CommandNotFoundError):
         tools.run_command(["../gradlew"], timeout_seconds=5)
-    with pytest.raises(PermissionError):
+    with pytest.raises(CommandNotFoundError):
         tools.run_command(["./other-script"], timeout_seconds=5)
     with pytest.raises(CommandNotFoundError):
         tools.run_command(["./gradlew", "test"], timeout_seconds=5)
+
+    blocked, workspace, _ = _tools(tmp_path, blocked=["gradlew"])
+    (workspace / "gradlew.bat").write_text("@echo off\n")
+    for argv in (["./gradlew", "test"], ["gradlew.bat", "test"], ["sh", "-c", "./gradlew test"]):
+        with pytest.raises(PermissionError, match="gradlew is blocked"):
+            blocked.run_command(argv, timeout_seconds=5)
 
 
 def test_available_commands_keeps_wrappers_even_when_not_on_path():
@@ -113,7 +119,7 @@ def test_available_commands_keeps_wrappers_even_when_not_on_path():
 
 @POSIX_ONLY
 def test_running_output_is_streamed_while_the_command_runs(tmp_path):
-    tools, _workspace, _ = _tools(tmp_path, allowlist=[PYTHON.name])
+    tools, _workspace, _ = _tools(tmp_path)
     streamed: list[str] = []
     code = "import time\nfor i in range(4):\n    print('line', i, flush=True)\n    time.sleep(0.6)\n"
 
@@ -218,7 +224,7 @@ def test_unrelated_commands_have_no_summary():
 
 
 def test_passing_runs_keep_only_the_tail_and_report_the_summary(tmp_path):
-    tools, _workspace, events = _tools(tmp_path, allowlist=[PYTHON.name])
+    tools, _workspace, events = _tools(tmp_path)
     code = (
         "for i in range(60):\n    print('noise', i)\n"
         "print('========================= 7 passed in 0.10s =========================')\n"
@@ -239,7 +245,7 @@ def test_passing_runs_keep_only_the_tail_and_report_the_summary(tmp_path):
 
 def test_summaries_can_be_disabled(tmp_path):
     tools, _workspace, _ = _tools(
-        tmp_path, allowlist=[PYTHON.name], harness=HarnessOptions(test_output_summary=False)
+        tmp_path, harness=HarnessOptions(test_output_summary=False)
     )
     code = "print('==================== 1 passed in 0.01s ====================')"
     assert tools.run_command([PYTHON.name, "-c", code], timeout_seconds=30).test_summary is None

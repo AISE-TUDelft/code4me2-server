@@ -484,14 +484,17 @@ def test_per_step_rejection_result_asks_the_model_not_to_retry(tmp_path):
 
 def test_prompt_lists_only_session_tools_and_budget(tmp_path):
     harness = Harness(tmp_path, [{"final_answer": "x"}], tools=["read_file", "run_command"], max_iterations=5)
-    config = replace(harness.config, commands=replace(harness.config.commands, allowlisted_commands=["git"]))
+    config = replace(harness.config, commands=replace(harness.config.commands, blocked_commands=["git"]))
     harness.adapter._config = config
 
     context = harness.adapter._system_context()
 
     assert "Tools available in this session: read_file, run_command." in context
     assert "at most 5 model calls" in context
-    assert "Allowlisted executables: git" in context or "Commands cannot be run" in context
+    assert "run_command runs a program installed on this machine" in context
+    assert "Blocked in this study: git." in context
+    without_commands = harness.adapter._system_context(tool_names=["read_file"])
+    assert "Commands cannot be run in this session." in without_commands
 
 
 def test_preview_denial_is_attributed_to_the_editing_tool_and_counted_once(tmp_path):

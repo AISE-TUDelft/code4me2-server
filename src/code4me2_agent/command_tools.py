@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic, perf_counter
-from typing import IO, TYPE_CHECKING, Any, Callable
+from typing import IO, TYPE_CHECKING, Any, Callable, Iterable, Sequence
 from uuid import uuid4
 
 from code4me2_agent.acp_utils import capability_value
@@ -34,11 +34,75 @@ _STREAM_TAIL_BYTES = 4096
 # Passing test runs keep only their last lines: the summary says what matters.
 _PASSING_TEST_OUTPUT_LINES = 20
 
-# Build wrappers that live in the project rather than on PATH. Allowlisting the
-# name permits running the workspace's own copy (``./gradlew test``).
+# Build wrappers that live in the project rather than on PATH: a bare
+# ``gradlew`` runs the workspace's own copy when none is on PATH.
 WORKSPACE_WRAPPERS = frozenset({"gradlew", "gradlew.bat", "mvnw", "mvnw.cmd"})
 # Characters cmd.exe interprets in a batch file's arguments ("BatBadBut").
 _BATCH_UNSAFE_RE = re.compile(r'[&|<>^%"!\r\n]')
+
+# Blocked-command matching (the study's ``commands_denylist``). Mirrors
+# ``blocked_command_in`` in the backend's ``agents/tools.py``, which validates
+# profiles with the same rule; keep the two in step.
+_LAUNCHER_SUFFIXES = (".exe", ".cmd", ".bat", ".com")
+# Shells, launchers and package managers: every word of their arguments is
+# checked too, so ``bash -c "git push"``, ``env git push`` or ``npm x git`` cannot
+# start a blocked ``git``. A package manager's subcommands and aliases that run
+# a program are many (``uv run``, ``npm exec``/``x``/``explore``, ``mise x``), so
+# all its arguments count: a package named like a blocked program is refused too.
+_COMMAND_RUNNERS = frozenset(
+    {
+        "bash", "sh", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "busybox",
+        "cmd", "powershell", "pwsh", "wsl",
+        "env", "xargs", "sudo", "doas", "nohup", "nice", "ionice", "setsid",
+        "stdbuf", "timeout", "gtimeout", "time", "watch", "command", "exec",
+        "script", "arch", "caffeinate", "chroot", "su", "nix-shell", "npx", "uvx", "bunx",
+        "uv", "poetry", "pipenv", "pdm", "hatch", "rye", "pixi", "conda", "mamba",
+        "micromamba", "pipx", "npm", "pnpm", "yarn", "bun", "bundle", "corepack",
+        "mise", "asdf", "direnv", "pyenv", "rbenv", "nodenv", "nvm", "volta",
+    }
+)
+# Quotes only group a word (``g''it`` is ``git``); the rest separate words,
+# including ``@`` before a version (``npx npm@10``, ``corepack pnpm@9``).
+_QUOTES = re.compile(r"[\'\"]")
+_WORD_SEPARATORS = re.compile(r"[\s;&|()<>`{}$=,@]+")
+
+
+def command_key(name: str) -> str:
+    """The comparable program name: last path component, lower-cased, no ``.exe``.
+
+    Trailing dots and spaces are dropped, as Windows drops them (``git.exe.``
+    starts ``git.exe``).
+    """
+    base = re.split(r"[\\/]", name.strip().rstrip("\\/"))[-1].lower().rstrip(" .")
+    for suffix in _LAUNCHER_SUFFIXES:
+        if base.endswith(suffix) and len(base) > len(suffix):
+            return base[: -len(suffix)].rstrip(" .")
+    return base
+
+
+def blocked_program(argv: Sequence[str], blocked: Iterable[str]) -> str | None:
+    """The blocked program ``argv`` would start, else ``None``.
+
+    ``argv[0]`` is compared by name (case-insensitive, any directory and
+    launcher suffix ignored). When it is a shell, a launcher or a package
+    manager, every plainly written word of its arguments is compared as well
+    (``npm@10`` counts as ``npm``). Programs started by scripts, interpreters
+    or build tools, and names disguised with escapes, are not visible here.
+    """
+    keys = {command_key(name) for name in blocked}
+    keys.discard("")
+    if not argv or not keys:
+        return None
+    program = command_key(argv[0])
+    if program in keys:
+        return program
+    if program not in _COMMAND_RUNNERS:
+        return None
+    for argument in argv[1:]:
+        for word in _WORD_SEPARATORS.split(_QUOTES.sub("", argument)):
+            if word and command_key(word) in keys:
+                return command_key(word)
+    return None
 
 
 @dataclass(frozen=True)
@@ -283,7 +347,7 @@ class WorkspaceCommandTools:
         *,
         acp_backend: object | None = None,
         telemetry: AgentTelemetryRecorder | None = None,
-        allowlisted_commands: set[str] | None = None,
+        blocked_commands: Iterable[str] | None = None,
         timeout_seconds: float | None = None,
         max_timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
@@ -292,7 +356,9 @@ class WorkspaceCommandTools:
         self._acp_backend = acp_backend
         self._telemetry = telemetry or AgentTelemetryRecorder(config)
         command_config = config.commands
-        self._allowlisted_commands = set(allowlisted_commands or command_config.allowlisted_commands)
+        self._blocked_commands = tuple(
+            command_config.blocked_commands if blocked_commands is None else blocked_commands
+        )
         selected_timeout_seconds = command_config.timeout_seconds if timeout_seconds is None else timeout_seconds
         selected_max_timeout_seconds = (
             getattr(command_config, "max_timeout_seconds", 600.0)
@@ -305,9 +371,9 @@ class WorkspaceCommandTools:
         self._max_output_bytes = max(1, int(selected_max_output_bytes))
 
     @property
-    def allowlisted_commands(self) -> frozenset[str]:
-        """The configured command allowlist (read-only; tool descriptions follow it)."""
-        return frozenset(self._allowlisted_commands)
+    def blocked_commands(self) -> tuple[str, ...]:
+        """The programs this session may not run (read-only; tool descriptions follow it)."""
+        return self._blocked_commands
 
     @property
     def workspace_root(self) -> Path:
@@ -337,16 +403,8 @@ class WorkspaceCommandTools:
             request_id=request_id,
             started_at=started_at,
         )
-        command_name = self._command_name_or_record_denial(
-            argv=normalized_argv,
-            cwd=cwd,
-            tool_call_id=tool_call_id,
-            run_id=run_id,
-            request_id=request_id,
-            started_at=started_at,
-        )
-        self._validate_allowlist_or_record_denial(
-            command_name=command_name,
+        command_name = _program_name(normalized_argv[0])
+        self._check_blocked_or_record_denial(
             argv=normalized_argv,
             cwd=cwd,
             tool_call_id=tool_call_id,
@@ -362,14 +420,8 @@ class WorkspaceCommandTools:
             request_id=request_id,
             started_at=started_at,
         )
-        executable = self._workspace_wrapper_or_record_denial(
-            command_name=command_name,
-            argv=normalized_argv,
-            cwd=resolved_cwd,
-            tool_call_id=tool_call_id,
-            run_id=run_id,
-            request_id=request_id,
-            started_at=started_at,
+        executable = self._executable_path(
+            command_name=command_name, argv=normalized_argv, cwd=resolved_cwd
         )
         self._check_batch_arguments_or_record_denial(
             program=executable or shutil.which(command_name) or command_name,
@@ -512,8 +564,8 @@ class WorkspaceCommandTools:
             process = subprocess.Popen(argv, **popen_kwargs)
         except FileNotFoundError:
             raise CommandNotFoundError(
-                f"Command not found on PATH: {argv[0]}. Only allowlisted programs that are "
-                "installed on this machine can run."
+                f"Command not found: {argv[0]}. Run a program that is installed on this "
+                "machine, or give the path of a script in the project."
             ) from None
         except PermissionError as exc:
             raise ToolError(
@@ -577,84 +629,34 @@ class WorkspaceCommandTools:
             return operation
         return None
 
-    def _command_name_or_record_denial(
-        self,
-        *,
-        argv: list[str],
-        cwd: str,
-        tool_call_id: str,
-        run_id: str,
-        request_id: str,
-        started_at: float,
-    ) -> str:
-        command_name = Path(argv[0]).name
-        if command_name != argv[0] and not (
-            command_name in WORKSPACE_WRAPPERS and _is_relative_path(argv[0])
-        ):
-            self._record_denial(
-                tool_call_id=tool_call_id,
-                run_id=run_id,
-                request_id=request_id,
-                started_at=started_at,
-                argv=argv,
-                cwd=cwd,
-                denial_reason="command_path_not_allowed",
-            )
-            raise PermissionError("Command argv[0] must be an allowlisted command name, not a path.")
-        return command_name
+    def _executable_path(self, *, command_name: str, argv: list[str], cwd: Path) -> str | None:
+        """Absolute path of the program when argv[0] names a file, else None (PATH lookup).
 
-    def _workspace_wrapper_or_record_denial(
-        self,
-        *,
-        command_name: str,
-        argv: list[str],
-        cwd: Path,
-        tool_call_id: str,
-        run_id: str,
-        request_id: str,
-        started_at: float,
-    ) -> str | None:
-        """Absolute path of a project build wrapper (``./gradlew``), else None.
-
-        Only allowlisted wrapper names qualify, and the file must resolve inside
-        the workspace. A bare ``gradlew`` that is not on PATH is looked up in the
-        working directory and then the workspace root.
+        A path (``./gradlew``, ``scripts/test.sh``, ``/usr/bin/git``) is resolved
+        against the working directory without following symlinks (a virtualenv's
+        ``python`` must keep its own path). A bare project build wrapper
+        (``gradlew``) that is not on PATH is looked up in the working directory
+        and then the workspace root.
         """
-        if command_name not in WORKSPACE_WRAPPERS:
+        program = argv[0]
+        if "/" in program or "\\" in program:
+            candidate = Path(program)
+            if not candidate.is_absolute():
+                candidate = cwd / candidate
+            if candidate.is_file():
+                return os.path.abspath(candidate)
+            # Not a policy decision: the adapter records this as a failed call.
+            raise CommandNotFoundError(
+                f"{program} was not found; a relative path is resolved against cwd "
+                f"({self._relative_path(cwd)})."
+            )
+        if command_name not in WORKSPACE_WRAPPERS or shutil.which(command_name):
             return None
-        if argv[0] == command_name and shutil.which(command_name):
-            return None
-        workspace_root = self._config.workspace_root.resolve()
-        if _is_relative_path(argv[0]):
-            candidates = [cwd / argv[0]]
-        else:
-            candidates = [cwd / command_name, workspace_root / command_name]
-        for candidate in candidates:
-            try:
-                resolved = candidate.resolve()
-            except OSError:
-                continue
-            if resolved != workspace_root and workspace_root not in resolved.parents:
-                if _is_relative_path(argv[0]):
-                    self._record_denial(
-                        tool_call_id=tool_call_id,
-                        run_id=run_id,
-                        request_id=request_id,
-                        started_at=started_at,
-                        argv=argv,
-                        cwd=self._relative_path(cwd),
-                        denial_reason="outside_workspace_root",
-                    )
-                    raise PermissionError(
-                        f"{argv[0]} is outside the workspace; only the project's own build "
-                        "wrapper can run."
-                    )
-                continue
-            if resolved.is_file():
-                return str(resolved)
-        # Not a policy decision: the adapter records this as a failed call.
+        for candidate in (cwd / command_name, self._config.workspace_root / command_name):
+            if candidate.is_file():
+                return os.path.abspath(candidate)
         raise CommandNotFoundError(
-            f"{argv[0]} was not found in the workspace. Build wrappers run from the project, "
+            f"{program} was not found in the workspace. Build wrappers run from the project, "
             f'e.g. ["./{command_name}", ...] with cwd set to the directory that contains it.'
         )
 
@@ -674,11 +676,13 @@ class WorkspaceCommandTools:
 
         Windows runs ``.bat``/``.cmd`` files through cmd.exe, which re-parses
         the command line ("BatBadBut"): ``&``, ``|``, ``%`` and quotes in an
-        argument would run other commands outside the allowlist. This applies
-        to a project wrapper and to a batch file found on PATH alike.
+        argument would run other commands, unseen by the blocked-command check.
+        This applies to a project wrapper and to a batch file found on PATH alike.
         """
+        # Windows drops trailing dots and spaces: ``npm.cmd.`` is ``npm.cmd``.
         is_batch = any(
-            Path(name).suffix.lower() in (".bat", ".cmd") for name in (program, command_name)
+            Path(name.rstrip(" .")).suffix.lower() in (".bat", ".cmd")
+            for name in (program, command_name)
         )
         if not is_batch or not any(_BATCH_UNSAFE_RE.search(argument) for argument in argv[1:]):
             return
@@ -758,10 +762,9 @@ class WorkspaceCommandTools:
 
         return normalized
 
-    def _validate_allowlist_or_record_denial(
+    def _check_blocked_or_record_denial(
         self,
         *,
-        command_name: str,
         argv: list[str],
         cwd: str,
         tool_call_id: str,
@@ -769,7 +772,8 @@ class WorkspaceCommandTools:
         request_id: str,
         started_at: float,
     ) -> None:
-        if command_name in self._allowlisted_commands:
+        blocked = blocked_program(argv, self._blocked_commands)
+        if blocked is None:
             return
         self._record_denial(
             tool_call_id=tool_call_id,
@@ -778,11 +782,13 @@ class WorkspaceCommandTools:
             started_at=started_at,
             argv=argv,
             cwd=cwd,
-            denial_reason="command_not_allowlisted",
+            denial_reason="command_blocked",
         )
-        allowed = ", ".join(sorted(self._allowlisted_commands)) or "none"
+        via = "" if command_key(argv[0]) == blocked else f" (through {_program_name(argv[0])})"
         raise PermissionError(
-            f"Command is not in the configured allowlist: {command_name}. Allowed: {allowed}."
+            f"{blocked} is blocked in this study and cannot run{via}. Blocked programs: "
+            f"{', '.join(self._blocked_commands)}. Do not try to run it another way; "
+            "use a different approach or tell the user."
         )
 
     def _resolve_cwd_or_record_denial(
@@ -1006,8 +1012,13 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
             pass
 
 
+def _program_name(program: str) -> str:
+    """The program a command starts: argv[0] without its directory."""
+    return re.split(r"[\\/]", program.rstrip("\\/"))[-1] or program
+
+
 def available_commands(commands: list[str]) -> list[str]:
-    """Return policy commands which can actually launch on this machine.
+    """Return the commands that can actually launch on this machine.
 
     Project build wrappers (``gradlew``, ``mvnw``) are kept: they live in the
     workspace, not on PATH, and are resolved per call.
@@ -1017,12 +1028,6 @@ def available_commands(commands: list[str]) -> list[str]:
         for command in commands
         if command in WORKSPACE_WRAPPERS or shutil.which(command)
     ]
-
-
-def _is_relative_path(value: str) -> bool:
-    if "/" not in value and "\\" not in value:
-        return False
-    return not Path(value).is_absolute() and not value.startswith("~")
 
 
 def _deliver_stream(

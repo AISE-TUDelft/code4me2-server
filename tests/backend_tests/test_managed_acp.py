@@ -315,7 +315,7 @@ def test_resolve_task_connection_returns_the_active_connection_without_a_grant()
 
 
 
-def test_managed_policy_applies_the_assigned_command_allowlist():
+def test_managed_policy_applies_the_assigned_command_lists():
     user_id = uuid.uuid4()
     profile = SimpleNamespace(
         framework_version="code4me2-agent",
@@ -326,10 +326,11 @@ def test_managed_policy_applies_the_assigned_command_allowlist():
         max_steps=3,
         max_context_tokens=1000,
         temperature=0.2,
+        commands_denylist=["curl"],
     )
     user = SimpleNamespace(config_id=uuid.uuid4())
     config = SimpleNamespace(
-        config_data='{"agent":{"commands_allowlist":["git", "rg"]}}'
+        config_data='{"agent":{"commands_allowlist":["git", "rg"],"commands_denylist":["rm"]}}'
     )
 
     with patch("backend.routers.acp.crud.get_user_by_id", return_value=user), patch(
@@ -339,6 +340,9 @@ def test_managed_policy_applies_the_assigned_command_allowlist():
     ):
         policy = _managed_policy(MagicMock(), user_id, profile)
 
+    # Current runtimes: the profile's blocked commands plus the row's.
+    assert policy["commands_denylist"] == ["curl", "rm"]
+    # Runtimes 0.0.6 and earlier: the row's allowlist replaces the fallback.
     assert policy["commands_allowlist"] == ["git", "rg"]
 
 
