@@ -2158,9 +2158,12 @@ class OpenAICompatibleProvider:
         max_output_tokens: int | None = None,
         retry_policy: RetryPolicy | None = None,
         request_deadline_seconds: float | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         self._kind = kind.strip() or "code4me_backend"
         self._request_deadline_seconds = request_deadline_seconds
+        # Only direct calls take extra fields; the backend relays forward a fixed shape.
+        self._extra_body = dict(extra_body or {}) if self._kind == "openai" else {}
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._api_key_env = api_key_env
@@ -2213,6 +2216,9 @@ class OpenAICompatibleProvider:
             request_payload["temperature"] = self._temperature
         if self._max_output_tokens:
             request_payload["max_tokens"] = int(self._max_output_tokens)
+        # As sent on the wire (and so as recorded in telemetry): top-level fields.
+        for key, value in self._extra_body.items():
+            request_payload.setdefault(key, value)
 
         if self._kind == "managed_backend":
             if not callable(self._managed_request):
@@ -2282,6 +2288,11 @@ class OpenAICompatibleProvider:
             f"{self._openai_base_url()}/chat/completions",
             self._model,
         )
+        # The SDK refuses unknown keyword arguments; extra fields go in extra_body.
+        arguments = dict(request_payload)
+        extra = {key: arguments.pop(key) for key in self._extra_body if key in arguments}
+        if extra:
+            arguments["extra_body"] = extra
         # A daemon thread (not an executor) so an abandoned request after a
         # cancel can never delay interpreter exit when stdin closes.
         outcome: dict[str, Any] = {}
@@ -2289,7 +2300,7 @@ class OpenAICompatibleProvider:
 
         def worker() -> None:
             try:
-                outcome["value"] = client.chat.completions.with_raw_response.create(**request_payload)
+                outcome["value"] = client.chat.completions.with_raw_response.create(**arguments)
             except BaseException as exc:  # noqa: BLE001
                 outcome["error"] = exc
             finally:
@@ -4205,6 +4216,7 @@ class OpenAICompatibleReactAdapter:
             managed_request=self._config.managed_request,
             max_output_tokens=getattr(provider_config, "max_output_tokens", None),
             request_deadline_seconds=getattr(provider_config, "request_deadline_seconds", None),
+            extra_body=getattr(provider_config, "extra_body", None),
         )
 
     def _prompt_profile(self) -> str:

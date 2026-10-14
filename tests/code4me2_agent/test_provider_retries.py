@@ -501,3 +501,58 @@ def test_unrelated_bad_requests_are_not_retried(monkeypatch):
     with pytest.raises(ProviderRequestFailed):
         provider.generate(list(_HISTORY))
     assert len(captured) == 1
+
+
+def test_extra_body_fields_go_on_the_wire_only_for_direct_calls(monkeypatch):
+    import json as _json
+
+    from openai import OpenAI
+
+    captured = []
+
+    def handler(request):
+        captured.append(_json.loads(request.content))
+        return httpx.Response(200, json={
+            "provider": "DeepSeek",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4, "cost": 0.0000123},
+        })
+
+    routing = {"provider": {"only": ["deepseek"], "allow_fallbacks": False}}
+    provider = OpenAICompatibleProvider(kind="openai", base_url="http://model.test", model="m",
+                                        api_key_env="", timeout_seconds=5.0, tool_definitions=[],
+                                        extra_body=routing)
+    client = OpenAI(api_key="x", base_url="http://model.test/v1", max_retries=0,
+                    http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(provider, "_client", lambda: client)
+
+    turn = provider.generate([{"role": "user", "content": "hi"}])
+
+    assert captured[0]["provider"] == routing["provider"]  # top level of the JSON body
+    assert captured[0]["model"] == "m"
+    assert turn.request_payload["provider"] == routing["provider"]  # recorded as sent
+    assert turn.raw_response["provider"] == "DeepSeek"  # which upstream answered
+    assert turn.raw_response["usage"]["cost"] == 0.0000123  # what it was billed
+    relayed = OpenAICompatibleProvider(kind="code4me_backend", base_url="http://backend.test", model="m",
+                                       api_key_env="", timeout_seconds=5.0, extra_body=routing)
+    assert relayed._extra_body == {}  # relays forward a fixed request shape
+
+
+def test_extra_body_is_validated_and_dropped_for_server_assigned_providers(tmp_path):
+    import json as _json
+
+    from code4me2_agent.config import AgentConfig, ServerAgentConfig
+
+    def load(extra):
+        path = tmp_path / "agent.json"
+        path.write_text(_json.dumps({"adapter": {"provider": {"kind": "openai", "extra_body": extra}}}))
+        return AgentConfig.from_file(path)
+
+    routing = {"provider": {"only": ["deepseek"]}, "reasoning": {"enabled": True}}
+    assert load(routing).adapter.provider.extra_body == routing
+    assert load(None).adapter.provider.extra_body == {}
+    for bad in ({"model": "other"}, ["provider"], {"messages": []}):
+        with pytest.raises(ValueError):
+            load(bad)
+    governed = load(routing).with_server_overrides(ServerAgentConfig(base_url="https://llm.test/v1", model="x"))
+    assert governed.adapter.provider.extra_body == {}

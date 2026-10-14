@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -189,6 +189,10 @@ class OpenAICompatibleProviderConfig:
     # timeout. DeepSeek keeps queued non-streaming requests alive with blank
     # lines for up to 30 minutes, which a read timeout never notices.
     request_deadline_seconds: float | None = None
+    # Extra top-level fields for every direct (``openai``) request body, such as
+    # OpenRouter's ``provider`` routing that pins one upstream. Local config
+    # only: a server-assigned provider never carries them.
+    extra_body: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_configured(self) -> bool:
@@ -437,7 +441,8 @@ class AgentConfig:
         """
         from dataclasses import replace as _replace
 
-        provider = self.adapter.provider
+        # A server-governed session sends only what the profile defines.
+        provider = _replace(self.adapter.provider, extra_body={})
 
         if self.managed_mode and backend_url:
             provider = _replace(
@@ -708,6 +713,7 @@ class AgentConfig:
                     if provider_data.get("request_deadline_seconds") is not None
                     else None
                 ),
+                extra_body=_extra_body(provider_data.get("extra_body")),
             ),
         )
 
@@ -737,3 +743,26 @@ def _positive_float(value: object, *, default: float) -> float:
     except (TypeError, ValueError):
         pass
     return default
+
+
+# Fields the agent itself owns in a request body; extra_body may not replace them.
+_RESERVED_REQUEST_FIELDS = frozenset({
+    "model", "messages", "tools", "tool_choice", "temperature", "max_tokens",
+    "max_completion_tokens", "stream", "stream_options", "n",
+})
+
+
+def _extra_body(value: object) -> dict[str, Any]:
+    """Validated ``provider.extra_body``. Invalid input is an error, not ignored:
+    dropping, say, an upstream pin would silently change which model answers."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(isinstance(key, str) and key for key in value):
+        raise ValueError("provider.extra_body must be a JSON object with string keys")
+    reserved = sorted(_RESERVED_REQUEST_FIELDS.intersection(value))
+    if reserved:
+        raise ValueError(f"provider.extra_body may not set {', '.join(reserved)}")
+    try:
+        return json.loads(json.dumps(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"provider.extra_body must be JSON: {exc}") from exc
