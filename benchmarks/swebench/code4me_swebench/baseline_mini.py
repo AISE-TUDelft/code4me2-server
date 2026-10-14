@@ -16,6 +16,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import yaml
 
@@ -34,6 +35,8 @@ MODEL_CLASS_DIR = ROOT / "mini_baseline"
 PROVIDER_FAILURES = frozenset({
     "RateLimitError", "APIConnectionError", "ServiceUnavailableError",
     "InternalServerError", "Timeout", "APIError", "BadGatewayError",
+    # The service refusing to serve: bad/exhausted key, no model or upstream.
+    "AuthenticationError", "PermissionDeniedError", "NotFoundError",
 })
 
 
@@ -56,6 +59,8 @@ def overlay_config(settings: RunSettings) -> dict:
                 "api_base": settings.base_url,
                 "extra_headers": {"User-Agent": f"code4me-research-baseline/mini-swe-agent-{MINI_VERSION}"},
                 **({"temperature": settings.temperature} if settings.temperature is not None else {}),
+                # The same extra request fields as our agent (e.g. OpenRouter's upstream pin).
+                **({"extra_body": dict(settings.extra_body)} if settings.extra_body else {}),
             },
         },
         "environment": {
@@ -67,6 +72,14 @@ def overlay_config(settings: RunSettings) -> dict:
     }
 
 
+def model_class_args(settings: RunSettings) -> list[str]:
+    """OpenCode needs a per-conversation session header; other endpoints get stock litellm."""
+    host = (urlparse(settings.base_url).hostname or "").lower()
+    if host == "opencode.ai" or host.endswith(".opencode.ai"):
+        return ["--model-class", "opencode_model.OpenCodeModel"]
+    return []
+
+
 def _trajectory_summary(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -75,6 +88,7 @@ def _trajectory_summary(path: Path) -> dict:
     stats = info.get("model_stats") or {}
     messages = data.get("messages") or []
     tokens = {"prompt_tokens": 0, "completion_tokens": 0, "cached_prompt_tokens": 0}
+    cost, cost_calls = 0.0, 0
     for message in messages:
         response = (message.get("extra") or {}).get("response")
         usage = response.get("usage") if isinstance(response, dict) else None
@@ -85,11 +99,15 @@ def _trajectory_summary(path: Path) -> dict:
         tokens["completion_tokens"] += int(usage.get("completion_tokens") or 0)
         tokens["cached_prompt_tokens"] += max(
             int(usage.get("prompt_cache_hit_tokens") or 0), int(details.get("cached_tokens") or 0))
+        if isinstance(usage.get("cost"), (int, float)) and not isinstance(usage.get("cost"), bool):
+            cost, cost_calls = cost + float(usage["cost"]), cost_calls + 1
     return {
         "exit_status": info.get("exit_status"),
         "model_calls": stats.get("api_calls"),
         "messages": len(messages),
         **tokens,
+        # Provider-reported spend (OpenRouter returns it in usage); None if never reported.
+        "cost_usd": round(cost, 6) if cost_calls else None,
         "mini_swe_agent_version": info.get("mini_version"),
     }
 
@@ -129,7 +147,7 @@ def run_baseline(rows: list[dict], *, run_dir: Path, run_name: str, settings: Ru
                  "--filter", pattern, "-w", str(workers), "-o", str(mini_dir),
                  "-c", "swebench.yaml", "-c", str(overlay),
                  "-m", f"openai/{settings.model}",
-                 "--model-class", "opencode_model.OpenCodeModel",
+                 *model_class_args(settings),
                  "--environment-class", "docker",
                  # Only pending tasks are in the filter; earlier outage attempts
                  # are still in preds.json and must be redone.

@@ -85,3 +85,15 @@ def test_requeue_finalizes_a_mislabelled_rejection_for_grading(tmp_path):
     assert runner.requeue_outages(run) == []
     assert json.loads((directory / "prediction.json").read_text())["model_patch"].startswith("diff --git")
     assert not (directory / "infra_error.json").exists()
+
+
+def test_an_exhausted_or_refused_key_is_an_outage_not_a_failed_task(tmp_path):
+    # An OpenRouter key at its credit cap answers 402 (or 403) to every call; a
+    # pinned upstream that is unavailable gives 404. None of it is the agent's doing.
+    for index, status in enumerate((401, 402, 403, 404)):
+        refused = _task(tmp_path, f"k__k-{index}", result={"run_status": "failed", "stop_reason": "error"},
+                        events=[{"event_type": "agent.adapter.loop_failed",
+                                 "payload": {"failure_reason": "provider_request_failed",
+                                             "error_type": "ProviderRequestFailed"},
+                                 "metrics": {"status_code": status, "attempts": 1}}])
+        assert runner.provider_outage(refused)["status_code"] == status

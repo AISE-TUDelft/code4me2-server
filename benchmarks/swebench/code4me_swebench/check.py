@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from code4me_swebench.telemetry import read_events
+from code4me_swebench.settings import pinned_upstreams
+from code4me_swebench.telemetry import read_events, upstream
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,7 +28,13 @@ def _time(event: dict) -> datetime:
     return datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
 
 
-def check_trace(trace_path: Path, *, secret: str | None = None) -> list[str]:
+def _upstream_key(name: str) -> str:
+    # "deepseek" (slug) ~ "DeepSeek" (response); "deepinfra/fp8" ~ "DeepInfra".
+    return re.sub(r"[^a-z0-9]", "", name.split("/")[0].lower())
+
+
+def check_trace(trace_path: Path, *, secret: str | None = None,
+                upstreams: list[str] | None = None) -> list[str]:
     """Problems found in one trace (empty = consistent)."""
     if not trace_path.exists():
         return ["trace.jsonl missing"]
@@ -93,6 +101,17 @@ def check_trace(trace_path: Path, *, secret: str | None = None) -> list[str]:
             mismatched += 1
     if mismatched:
         problems.append(f"{mismatched} model calls whose token metrics differ from provider usage")
+
+    # A pinned upstream (OpenRouter): every call must name one of the pinned hosts.
+    if upstreams:
+        allowed = {_upstream_key(slug) for slug in upstreams}
+        served = Counter(upstream(e) for e in events if e["event_type"] == "agent.model.completed")
+        foreign = {name: n for name, n in served.items() if name and _upstream_key(name) not in allowed}
+        unnamed = served.get(None, 0)
+        if foreign:
+            problems.append(f"model calls served by unpinned upstreams: {foreign}")
+        if unnamed:
+            problems.append(f"{unnamed} model calls without the serving upstream in the response")
     return problems
 
 
@@ -107,7 +126,8 @@ def check_run(run_dir: Path, *, secret_env: str | None = None) -> dict:
         if not (directory / "prediction.json").exists():
             results[instance_id] = ["not run"]
             continue
-        problems = check_trace(directory / "trace.jsonl", secret=secret or None)
+        problems = check_trace(directory / "trace.jsonl", secret=secret or None,
+                               upstreams=pinned_upstreams(manifest.get("settings", {}).get("extra_body") or {}))
         result_file = directory / "result.json"
         if not result_file.exists() or json.loads(result_file.read_text()).get("status") != "completed":
             problems.append("driver did not complete (result.json)")

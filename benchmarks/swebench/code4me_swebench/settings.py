@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING
+from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 # Every agent tool except ask_user: nobody answers questions in a benchmark.
 DEFAULT_TOOLS = (
@@ -33,18 +38,24 @@ class RunSettings:
     # Hard wall-clock limit per model request (retried like a timeout); the read
     # timeout alone never fires while DeepSeek sends keep-alive blank lines.
     request_deadline_s: float = 300.0
-    # Model calls per task ("step budget"); summarisation calls do not count.
-    max_iterations: int = 100
+    # The defaults below follow the SWE-rebench leaderboard's protocol (read from
+    # swe-rebench.com and its published trajectories on 2026-10-14), so results
+    # compare with its numbers for the same model and task window.
+    # Model calls per task; summarisation calls do not count. The leaderboard has
+    # had no step cap since Feb 2026 (its runs reached 492 steps): 500 is a cap
+    # that should practically never bind.
+    max_iterations: int = 500
     # Conversation tokens kept per model request (the agent calibrates its
-    # chars/4 estimate against the provider's counts). DeepSeek V4 Flash takes
-    # 1M; 400k leaves trimming for genuine outliers: mini-swe-agent's largest
-    # request on SWE-rebench was 156k. The agent's study default is unchanged.
-    context_tokens: int = 400_000
-    command_timeout_s: float = 120.0
-    max_command_timeout_s: float = 600.0
+    # chars/4 estimate against the provider's counts). The leaderboard caps the
+    # context at 128k; past that its scaffold fails the task, ours compacts.
+    context_tokens: int = 128_000
+    # The leaderboard's fixed per-command timeout.
+    command_timeout_s: float = 300.0
+    max_command_timeout_s: float = 300.0
     max_command_output_bytes: int = 16_384
-    # Wall-clock limit for one task; the agent is killed and its diff kept.
-    task_timeout_s: float = 3_600.0
+    # Wall-clock limit for one task; the agent is killed and its diff kept. A
+    # guard against hangs, not a budget (the leaderboard's longest run: 2.7 h).
+    task_timeout_s: float = 14_400.0
     # Programs the agent may not run (its commands denylist). Empty: any program
     # in the task container can run; the container is the sandbox.
     blocked_commands: tuple[str, ...] = ()
@@ -55,6 +66,9 @@ class RunSettings:
     # Task containers reach the model API host and nothing else (no GitHub,
     # PyPI, git remotes): agents otherwise look up the upstream fix.
     network: str = "model-api-only"
+    # Extra top-level request fields for the model API, sent by our agent and by
+    # the mini-swe-agent baseline alike: e.g. OpenRouter's upstream pin.
+    extra_body: dict[str, object] = field(default_factory=dict)
 
     @property
     def model_name_or_path(self) -> str:
@@ -64,6 +78,8 @@ class RunSettings:
         data = asdict(self)
         data["blocked_commands"] = list(self.blocked_commands)
         data["tools"] = list(self.tools)
+        if not self.extra_body:
+            del data["extra_body"]  # manifests of runs without it stay unchanged
         return data
 
 
@@ -81,6 +97,8 @@ def agent_config(settings: RunSettings, *, session_id: str) -> dict[str, object]
         provider["temperature"] = settings.temperature
     if settings.max_output_tokens is not None:
         provider["max_output_tokens"] = settings.max_output_tokens
+    if settings.extra_body:
+        provider["extra_body"] = dict(settings.extra_body)
     return {
         "workspace_root": WORKSPACE,
         "session_id": session_id,
@@ -110,3 +128,29 @@ def agent_config(settings: RunSettings, *, session_id: str) -> dict[str, object]
             "raw_capture_enabled": True,
         },
     }
+
+
+OPENROUTER_HOST = "openrouter.ai"
+
+
+def is_openrouter(base_url: str) -> bool:
+    host = (urlparse(base_url).hostname or "").lower()
+    return host == OPENROUTER_HOST or host.endswith("." + OPENROUTER_HOST)
+
+
+def openrouter_routing(upstreams: Sequence[str]) -> dict[str, object]:
+    """OpenRouter fields that pin the upstream: each request is served by one of
+    ``upstreams`` or fails, never by another host or quantisation of the model."""
+    return {"provider": {"only": list(upstreams), "allow_fallbacks": False, "require_parameters": True}}
+
+
+def pinned_upstreams(extra_body: Mapping[str, object]) -> list[str]:
+    """The upstreams an OpenRouter routing block restricts requests to ([] = any)."""
+    provider = extra_body.get("provider") if extra_body else None
+    if not isinstance(provider, dict):
+        return []
+    if provider.get("only"):
+        return [str(slug) for slug in provider["only"]]
+    if provider.get("order") and provider.get("allow_fallbacks") is False:
+        return [str(slug) for slug in provider["order"]]
+    return []

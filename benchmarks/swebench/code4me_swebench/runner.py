@@ -19,7 +19,7 @@ import re
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -44,8 +44,12 @@ DRIVER = Path(__file__).resolve().parent / "driver.py"
 _predictions_lock = threading.Lock()
 MAX_CONSECUTIVE_OUTAGES = 3
 # Model-service failures that say nothing about the agent (rate limit, overload,
-# outage). Anything else, such as 400 for a malformed request, is the agent's.
+# outage), and the service refusing to serve at all: a bad or exhausted key
+# (401/402/403, e.g. an OpenRouter key at its credit cap) or no model or pinned
+# upstream to serve it (404). Anything else, such as 400 for a malformed request,
+# is the agent's.
 RETRYABLE_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
+REFUSED_STATUSES = frozenset({401, 402, 403, 404})
 
 
 @dataclass(frozen=True)
@@ -73,7 +77,7 @@ def _write_json(path: Path, data: object) -> None:
 
 def prepare_run(run_dir: Path, *, rows: list[dict], settings: RunSettings,
                 runtime: Runtime, subset: str, dataset_name: str, split: str,
-                grader: str) -> None:
+                grader: str, dataset_revision: str | None = None) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = run_dir / "manifest.json"
     ids = [row["instance_id"] for row in rows]
@@ -93,6 +97,7 @@ def prepare_run(run_dir: Path, *, rows: list[dict], settings: RunSettings,
         "subset": subset,
         "dataset": dataset_name,
         "split": split,
+        **({"dataset_revision": dataset_revision} if dataset_revision else {}),
         "grader": grader,
         "instance_ids": ids,
         "settings": settings.as_dict(),
@@ -271,7 +276,7 @@ def provider_outage(instance_dir: Path) -> dict | None:
                 and (event.get("payload") or {}).get("failure_reason") == "provider_request_failed"]
     last = failures[-1] if failures else {}
     status = (last.get("metrics") or {}).get("status_code")
-    if status is not None and status not in RETRYABLE_STATUSES:
+    if status is not None and status not in RETRYABLE_STATUSES | REFUSED_STATUSES:
         # e.g. 400: the provider rejected what the agent sent. That is the
         # agent's failure and is graded like any other result.
         return None
@@ -300,40 +305,65 @@ def _instance_record(instance_dir: Path, instance_id: str, *, skipped: bool = Fa
 
 def run_all(rows: list[dict], *, run_dir: Path, run_name: str, settings: RunSettings,
             runtime: Runtime, options: RunOptions, workers: int) -> list[dict]:
+    return run_repeated(rows, runs=[(run_dir, run_name)], settings=settings, runtime=runtime,
+                        options=options, workers=workers)
+
+
+def run_repeated(rows: list[dict], *, runs: list[tuple[Path, str]], settings: RunSettings,
+                 runtime: Runtime, options: RunOptions, workers: int) -> list[dict]:
+    """Run every task once per run directory (independent repeats, as the SWE-rebench
+    leaderboard's 5 runs), task by task: a task's image is pulled once for all of
+    its attempts and removed after the last one."""
     if not os.environ.get(settings.api_key_env):
         raise SystemExit(f"set {settings.api_key_env} to the provider API key first")
     if settings.network != "model-api-only":
         raise SystemExit(f"unsupported network policy {settings.network!r}")
     allowed = sandbox.ensure(settings.base_url)
     logger.info("Sandbox: task containers on %s, egress only to %s:443", sandbox.NETWORK, allowed)
+    attempt_options = replace(options, remove_images=False)
+    lock = threading.Lock()
+    stop = threading.Event()
+    state = {"consecutive_outages": 0, "done": 0}
+    total = len(rows) * len(runs)
     records: list[dict] = []
 
-    def one(row: dict) -> dict:
+    def attempt(row: dict, run_dir: Path, run_name: str) -> dict:
         try:
             return run_instance(row, run_dir=run_dir, run_name=run_name,
-                                settings=settings, runtime=runtime, options=options)
+                                settings=settings, runtime=runtime, options=attempt_options)
         except Exception as exc:  # noqa: BLE001 - one broken task must not stop the run
             logger.exception("%s failed", row["instance_id"])
             return {"instance_id": row["instance_id"], "agent_status": "harness_error",
                     "error": f"{type(exc).__name__}: {exc}"}
 
-    consecutive_outages = 0
+    def one(row: dict) -> None:
+        try:
+            for run_dir, run_name in runs:
+                if stop.is_set():
+                    return
+                record = {**attempt(row, run_dir, run_name), "run": run_name}
+                with lock:
+                    records.append(record)
+                    state["done"] += 1
+                    logger.info("[%d/%d] %s %s agent=%s eval=%s", state["done"], total, run_name,
+                                record["instance_id"], record.get("agent_status"), record.get("eval_status"))
+                    outage = record.get("agent_status") == "infra_error"
+                    state["consecutive_outages"] = state["consecutive_outages"] + 1 if outage else 0
+                    if state["consecutive_outages"] >= MAX_CONSECUTIVE_OUTAGES and not stop.is_set():
+                        # A rate limit, outage or spent key would fail every remaining attempt.
+                        stop.set()
+                        logger.error("Stopping: %d attempts in a row failed on the model service (%s). "
+                                     "Re-run the same command later; finished attempts are kept.",
+                                     state["consecutive_outages"],
+                                     record.get("status_code") or record.get("error_type"))
+        finally:
+            if options.remove_images:
+                docker_cli.remove_image(row["image"])
+
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = {pool.submit(one, row): row["instance_id"] for row in rows}
-        for done, future in enumerate(as_completed(futures), start=1):
-            record = future.result()
-            records.append(record)
-            logger.info("[%d/%d] %s agent=%s eval=%s", done, len(rows), record["instance_id"],
-                        record.get("agent_status"), record.get("eval_status"))
-            consecutive_outages = consecutive_outages + 1 if record.get("agent_status") == "infra_error" else 0
-            if consecutive_outages >= MAX_CONSECUTIVE_OUTAGES:
-                # A rate limit or outage would fail every remaining task the same way.
-                for pending in futures:
-                    pending.cancel()
-                logger.error("Stopping: %d tasks in a row failed on the model service (%s). "
-                             "Re-run the same command later; finished tasks are kept.",
-                             consecutive_outages, record.get("status_code") or record.get("error_type"))
-                break
+        futures = [pool.submit(one, row) for row in rows]
+        for future in as_completed(futures):
+            future.result()
     return records
 
 

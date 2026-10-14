@@ -5,17 +5,17 @@ from __future__ import annotations
 import csv
 import json
 import math
-from statistics import median
-from typing import TYPE_CHECKING
+from collections import Counter
+from pathlib import Path
+from statistics import mean, median, stdev
 
-if TYPE_CHECKING:
-    from pathlib import Path
+REFERENCES = Path(__file__).resolve().parents[1] / "references.json"
 
 COLUMNS = (
     "instance_id", "resolved", "eval_status", "agent_status", "run_status", "stop_reason",
     "model_calls", "prompt_tokens", "cached_prompt_tokens", "completion_tokens",
     "tool_calls", "tool_failures", "test_runs", "files_edited", "patch_lines",
-    "agent_wall_s",
+    "agent_wall_s", "cost_usd",
 )
 
 
@@ -67,6 +67,7 @@ def instance_rows(run_dir: Path) -> list[dict]:
             "patch_lines": sum(1 for line in patch.splitlines()
                                if line[:1] in "+-" and line[:3] not in ("+++", "---")),
             "agent_wall_s": host.get("agent_wall_s"),
+            "cost_usd": tel.get("cost_usd"),
         })
     return rows
 
@@ -108,6 +109,8 @@ def build_report(run_dir: Path) -> dict:
         "completion_tokens": stat("completion_tokens"),
         "tool_calls": stat("tool_calls"),
         "agent_wall_s": stat("agent_wall_s"),
+        # Provider-reported spend; total 0 when the provider reports none.
+        "cost_usd": stat("cost_usd"),
         "runtime": manifest.get("runtime"),
         "settings": manifest.get("settings"),
     }
@@ -157,3 +160,84 @@ def compare_runs(run_a: Path, run_b: Path) -> dict:
         "model_calls_a": total(rows_a, "model_calls"),
         "model_calls_b": total(rows_b, "model_calls"),
     }
+
+
+def _window_stats(per_run: list[list[dict]], task_ids: list[str]) -> dict:
+    """The SWE-rebench leaderboard's metrics over repeated runs of the same tasks:
+    resolved rate = mean of the per-run rates (every task in the denominator; an
+    unrun or ungraded task is unresolved); SEM = sample standard deviation of
+    those rates / sqrt(runs); pass@n = tasks resolved in at least one run;
+    tokens/problem = mean over task-runs of input (cached included) + output;
+    cached share = mean over task-runs of cached / input."""
+    wanted = set(task_ids)
+    rates, solved_any = [], set()
+    task_runs = []
+    for rows in per_run:
+        mine = [row for row in rows if row["instance_id"] in wanted]
+        task_runs.extend(mine)
+        resolved = {row["instance_id"] for row in mine if row["resolved"]}
+        solved_any |= resolved
+        rates.append(100.0 * len(resolved) / len(wanted))
+    runs = len(rates)
+    used = [row for row in task_runs if (row["prompt_tokens"] or 0) > 0]
+    costs = [row["cost_usd"] for row in task_runs if isinstance(row.get("cost_usd"), (int, float))]
+    return {
+        "tasks": len(wanted),
+        "runs": runs,
+        "resolved_rate": round(mean(rates), 2),
+        "sem": round(stdev(rates) / math.sqrt(runs), 2) if runs > 1 else None,
+        "per_run_rates": [round(rate, 2) for rate in rates],
+        f"pass_at_{runs}": round(100.0 * len(solved_any) / len(wanted), 2),
+        "tokens_per_problem": round(mean((row["prompt_tokens"] or 0) + (row["completion_tokens"] or 0)
+                                         for row in task_runs)) if task_runs else None,
+        "cached_share": round(100.0 * mean((row["cached_prompt_tokens"] or 0) / row["prompt_tokens"]
+                                           for row in used), 2) if used else None,
+        # Billed by the provider (OpenRouter's usage.cost); None when it reports none.
+        "cost_per_problem": round(mean(costs), 4) if costs and len(costs) == len(task_runs) else None,
+        "model_calls_per_problem": round(mean(row["model_calls"] or 0 for row in task_runs), 1) if task_runs else None,
+        "agent_status": dict(sorted(Counter(row["agent_status"] for row in task_runs).items())),
+    }
+
+
+def aggregate_runs(run_dirs: list[Path], *, windows: list[tuple[str, str]] = (),
+                   reference: str | None = None) -> dict:
+    """Leaderboard-style results for repeated runs of one task set, overall and per
+    time window [start, end) by task creation date, optionally next to a published
+    reference (``references.json``)."""
+    manifests = [_load(run_dir / "manifest.json") for run_dir in run_dirs]
+    ids = manifests[0].get("instance_ids", [])
+    for run_dir, manifest in zip(run_dirs, manifests):
+        if manifest.get("instance_ids") != ids or manifest.get("settings") != manifests[0].get("settings"):
+            raise SystemExit(f"{run_dir.name} has other tasks or settings than {run_dirs[0].name}")
+    per_run = [instance_rows(run_dir) for run_dir in run_dirs]
+    created = {row["instance_id"]: str(row.get("created_at"))[:10]
+               for row in json.loads((run_dirs[0] / "dataset.json").read_text())}
+    span = (min(created[i] for i in ids), max(created[i] for i in ids)) if ids else (None, None)
+    result = {
+        "runs": [run_dir.name for run_dir in run_dirs],
+        "dataset": manifests[0].get("dataset"), "split": manifests[0].get("split"),
+        "dataset_revision": manifests[0].get("dataset_revision"),
+        "model": manifests[0].get("settings", {}).get("model"),
+        "created": span,
+        "overall": _window_stats(per_run, ids),
+        "windows": {},
+    }
+    for start, end in windows:
+        window_ids = [i for i in ids if start <= created[i] < end]
+        if window_ids:
+            result["windows"][f"{start}..{end}"] = _window_stats(per_run, window_ids)
+    if reference:
+        refs = json.loads(REFERENCES.read_text())["references"]
+        if reference not in refs:
+            raise SystemExit(f"unknown reference {reference!r}; known: {', '.join(sorted(refs))}")
+        result["reference"] = {"name": reference, **{k: v for k, v in refs[reference].items() if k != "windows"}}
+        for key, ref in refs[reference]["windows"].items():
+            ours = result["windows"].get(key)
+            # Only the same task set is comparable (an incomplete window is not).
+            if not ours or ours["tasks"] != ref["tasks"]:
+                continue
+            diff = ours["resolved_rate"] - ref["resolved_rate"]
+            spread = math.sqrt((ours["sem"] or 0.0) ** 2 + ref["sem"] ** 2)
+            ours["reference"] = {**ref, "difference": round(diff, 2),
+                                 "z": round(diff / spread, 2) if spread else None}
+    return result

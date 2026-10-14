@@ -12,13 +12,29 @@ from pathlib import Path
 
 DATASET = "SWE-bench/SWE-bench_Verified"
 REBENCH_DATASET = "nebius/SWE-rebench-leaderboard"
+# The dataset revision whose split 2026_03 is exactly the leaderboard window
+# 2026-03-01 -> 2026-05-15 (110 tasks; checked 2026-10-14). Pinned so a later
+# fix to the dataset cannot silently change the task set between runs.
+REBENCH_REVISION = "34d5a58864acf91613740a09ec5d205228dcfa39"
 SUBSETS_DIR = Path(__file__).resolve().parents[1] / "subsets"
 
 
-def load_rows(dataset: str = DATASET, split: str = "test") -> list[dict]:
+def default_revision(dataset: str) -> str | None:
+    return REBENCH_REVISION if dataset == REBENCH_DATASET else None
+
+
+def load_rows(dataset: str = DATASET, split: str = "test", revision: str | None = None) -> list[dict]:
     from datasets import load_dataset
 
-    return [normalize_row(dict(row)) for row in load_dataset(dataset, split=split)]
+    rows = load_dataset(dataset, split=split, revision=revision or default_revision(dataset))
+    return [normalize_row(dict(row)) for row in rows]
+
+
+def in_window(rows: list[dict], start: str, end: str) -> list[str]:
+    """Ids created in [start, end) (YYYY-MM-DD), oldest first: a leaderboard time
+    window. SWE-rebench windows are half-month aligned and end-exclusive."""
+    chosen = [row for row in rows if start <= str(row.get("created_at"))[:10] < end]
+    return [row["instance_id"] for row in sorted(chosen, key=lambda r: (str(r.get("created_at")), r["instance_id"]))]
 
 
 def normalize_row(row: dict) -> dict:

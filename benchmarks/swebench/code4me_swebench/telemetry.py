@@ -25,9 +25,25 @@ def read_events(trace_path: Path) -> list[dict]:
     return events
 
 
+def _response(event: dict) -> dict:
+    response = (event.get("raw_payload") or {}).get("response")
+    return response if isinstance(response, dict) else {}
+
+
+def upstream(event: dict) -> str | None:
+    """The host that served a model call, when the API names it (OpenRouter's ``provider``)."""
+    name = _response(event).get("provider")
+    return name if isinstance(name, str) and name else None
+
+
+def _cost(event: dict) -> float | None:
+    usage = _response(event).get("usage")
+    cost = usage.get("cost") if isinstance(usage, dict) else None
+    return float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+
+
 def _cached_prompt_tokens(event: dict) -> int:
-    response = ((event.get("raw_payload") or {}).get("response") or {})
-    usage = response.get("usage") if isinstance(response, dict) else None
+    usage = _response(event).get("usage")
     if not isinstance(usage, dict):
         return 0
     # OpenCode routes to upstreams that report the cache in either or both of
@@ -61,8 +77,12 @@ def summarize(trace_path: Path) -> dict:
         "model_failures": 0,
         "failed_side_calls": 0,
         "context_compactions": 0,
+        # Provider-reported spend (OpenRouter returns it in usage); None if never reported.
+        "cost_usd": None,
+        "upstreams": {},
     }
     purposes: Counter = Counter()
+    upstreams: Counter = Counter()
     tools: Counter = Counter()
     commands: Counter = Counter()
     edited: set[str] = set()
@@ -78,6 +98,10 @@ def summarize(trace_path: Path) -> dict:
             summary["usage_estimated_calls"] += bool(payload.get("usage_estimated"))
             summary["model_time_s"] += float(metrics.get("duration_ms") or 0) / 1000
             purposes[payload.get("call_purpose") or "unknown"] += 1
+            if upstream(event):
+                upstreams[upstream(event)] += 1
+            if _cost(event) is not None:
+                summary["cost_usd"] = round((summary["cost_usd"] or 0.0) + _cost(event), 6)
         elif kind in {"agent.tool.completed", "agent.tool.failed", "agent.tool.denied"}:
             name = payload.get("tool_name") or "unknown"
             tools[name] += 1
@@ -88,7 +112,8 @@ def summarize(trace_path: Path) -> dict:
             argv = payload.get("argv")
             if name == "run_command" and isinstance(argv, list) and argv:
                 commands[str(argv[0])] += 1
-            if payload.get("test_summary"):
+            # The agent flattens a parsed runner summary into test_framework/tests_*.
+            if payload.get("test_framework"):
                 summary["test_runs"] += 1
             path = payload.get("path")
             if name in EDIT_TOOLS and kind == "agent.tool.completed" and isinstance(path, str):
@@ -106,6 +131,7 @@ def summarize(trace_path: Path) -> dict:
             summary["duration_s"] = round(float(duration_ms) / 1000, 3) if duration_ms else None
     summary["model_time_s"] = round(summary["model_time_s"], 3)
     summary["call_purposes"] = dict(purposes.most_common())
+    summary["upstreams"] = dict(upstreams.most_common())
     summary["tool_calls"] = dict(tools.most_common())
     summary["commands"] = dict(commands.most_common())
     summary["files_edited"] = sorted(edited)
