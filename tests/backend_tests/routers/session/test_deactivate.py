@@ -56,6 +56,7 @@ class TestDeactivateSession:
         response = client.put("/api/session/deactivate")
 
         assert response.status_code == 200
+        assert not response.history
         assert response.json() == DeactivateSessionPostResponse()
 
     def test_deactivate_session_invalid_auth_token(self, client):

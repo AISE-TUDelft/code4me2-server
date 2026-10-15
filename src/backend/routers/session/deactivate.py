@@ -23,7 +23,7 @@ router = APIRouter()
 
 
 @router.put(
-    "/",
+    "",
     response_model=None,
     responses={
         "200": {"model": DeactivateSessionPostResponse},
