@@ -36,6 +36,12 @@ class ResponseUser(Queries.CreateUser):
         default=None, description="Last authentication token used by the user"
     )
     is_admin: bool = Field(False, description="Whether the user is an admin")
+    # Administrator-enabled researcher account (P3): the single researcher
+    # authority. Exposed so the website can gate researcher surfaces without a
+    # per-study role lookup.
+    can_research: bool = Field(
+        False, description="Whether an admin enabled this account for research"
+    )
 
     @field_validator("preference", mode="before")
     @classmethod

@@ -144,34 +144,3 @@
 .switch-button:hover {
   text-decoration: underline;
 }
-
-.oauth-section {
-  margin-top: 30px;
-  text-align: center;
-  border-top: 1px solid var(--border-color);
-  padding-top: 20px;
-}
-
-.oauth-section p {
-  margin-bottom: 15px;
-  color: var(--text-secondary);
-}
-
-.oauth-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 10px 20px;
-  background-color: var(--card-background);
-  color: var(--text-color);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  font-size: 16px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color 0.3s;
-}
-
-.oauth-button:hover {
-  background-color: var(--hover-color);
-}

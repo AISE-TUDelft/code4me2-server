@@ -20,6 +20,7 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from database import crud
+from privacy import collection
 from response_models import (
     ChatCompletionErrorItem,
     ChatCompletionItem,
@@ -29,6 +30,11 @@ from response_models import (
     ChatMessageRole,
 )
 from utils import create_uuid, extract_secrets, redact_secrets
+
+
+def _wire_confidence(value):
+    """A number for the plugin's generated client; NULL is stored, not sent."""
+    return float(value) if value is not None else 0.0
 
 router = APIRouter()
 
@@ -66,7 +72,15 @@ def request_chat_completion(
     We don't want to be generating a completion based on the old state of the chat.
     """
     overall_start = time.perf_counter()
-    logging.info(f"Chat completion request: {chat_completion_request.dict()}")
+    logging.info(
+        "Chat completion request: chat_id=%s models=%s messages=%d "
+        "prefix_chars=%d suffix_chars=%d",
+        chat_completion_request.chat_id,
+        chat_completion_request.model_ids,
+        len(chat_completion_request.messages),
+        len(chat_completion_request.context.prefix or ""),
+        len(chat_completion_request.context.suffix or ""),
+    )
 
     db_auth = app.get_db_session()
     redis_manager = app.get_redis_manager()
@@ -98,6 +112,10 @@ def request_chat_completion(
             return JsonResponseWithStatus(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
+
+        # An account that opted out of data collection still gets its answer,
+        # but nothing about the request is stored, whatever its store_* flags say.
+        collect = collection.is_collection_allowed(db_auth, uuid.UUID(str(user_id)))
 
         t1 = time.perf_counter()
         logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
@@ -189,7 +207,7 @@ def request_chat_completion(
 
             # Invoke the chat model with messages
             # ensure that the chat_completion_model is of type ChatCompletionModel
-            if not isinstance(chat_completion_model, completion.ChatCompletionModel):
+            if not isinstance(chat_completion_model, completion.CLASSIC_CHAT_MODEL_TYPES):
                 return ChatCompletionErrorItem(
                     model_name=str(model.model_name),
                     message="Model is not a ChatCompletionModel",
@@ -221,17 +239,25 @@ def request_chat_completion(
                     messages_copy.append((role, enhanced_content))
                 else:
                     messages_copy.append((role, content))
-            logging.info(f"The messages considered by the chat:\n{messages_copy}")
+            logging.info(f"The chat model receives {len(messages_copy)} messages")
             # Temporarily replace the messages for this model's invocation
             original_messages = chat_completion_request.messages
             chat_completion_request.messages = messages_copy
 
-            completion_result = chat_completion_model.invoke(
-                chat_completion_request.to_langchain_messages()
-            )
-
-            # Restore the original messages
-            chat_completion_request.messages = original_messages
+            # A provider outage costs this model's item, not the whole request.
+            try:
+                completion_result = chat_completion_model.invoke(
+                    chat_completion_request.to_langchain_messages()
+                )
+            except Exception as error:
+                logging.warning(
+                    f"Chat model {model_id} ({model.model_name}) failed: {error}",
+                    exc_info=True,
+                )
+                return ChatCompletionErrorItem(model_name=str(model.model_name))
+            finally:
+                # Restore the original messages
+                chat_completion_request.messages = original_messages
 
             local_t3 = time.perf_counter()
 
@@ -257,7 +283,7 @@ def request_chat_completion(
                     generation_time=completion_result["generation_time"],
                     shown_at=[datetime.now().isoformat()],
                     was_accepted=False,
-                    confidence=completion_result.get("confidence", 0.0),
+                    confidence=completion_result.get("confidence"),
                     logprobs=completion_result.get("logprobs", []),
                 ).dict(),
                 created_query_id_provided,
@@ -269,7 +295,9 @@ def request_chat_completion(
                 model_name=str(model.model_name),
                 completion=completion_result["completion"],
                 generation_time=completion_result["generation_time"],
-                confidence=completion_result.get("confidence", 0.0),
+                # The plugin client reads a number; the stored value stays
+                # NULL for provider models so analytics leave it out.
+                confidence=_wire_confidence(completion_result.get("confidence")),
                 was_accepted=False,
             )
 
@@ -371,13 +399,19 @@ def request_chat_completion(
             )
         )
 
-        # Chain tasks
-        chain(
-            group(*pre_query_tasks) if pre_query_tasks else None,
-            add_chat_task,
-            add_chat_query_task,
-            group(*add_generation_tasks),
-        ).apply_async(queue="db")
+        # Chain tasks. Any stage may be absent (all store_* flags off, or
+        # every model errored): chain only the present stages, since
+        # chain(None, ...) raises TypeError and would 500 a request whose
+        # telemetry/query rows are still worth persisting.
+        chain_steps = []
+        if pre_query_tasks:
+            chain_steps.append(group(*pre_query_tasks))
+        chain_steps.append(add_chat_task)
+        chain_steps.append(add_chat_query_task)
+        if add_generation_tasks:
+            chain_steps.append(group(*add_generation_tasks))
+        if collect:
+            chain(*chain_steps).apply_async(queue="db")
 
         t5 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t5 - t4) * 1000:.2f}ms")

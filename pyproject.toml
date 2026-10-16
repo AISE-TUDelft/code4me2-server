@@ -1,3 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code4me2-agent"
+version = "0.1.0"
+description = "Code4Me ACP agent runtime"
+requires-python = ">=3.10"
+dependencies = [
+    # Pre-1.0 SDK: allow bugfix releases in the 0.12 series. Compatibility is
+    # covered by the ACP runtime tests; minor bumps need a re-run, not a migration.
+    "agent-client-protocol~=0.12.1",
+    # ACP requires agents to support client-supplied stdio MCP servers.
+    "mcp==2.2.0",
+    # mcp>=3.0.0 would otherwise pull sse-starlette>=3.0.3, which requires
+    # starlette>=0.49.1 and conflicts with the backend's fastapi~=0.115.0
+    # (starlette<0.47). 3.0.0 is the last release without that hard floor.
+    "sse-starlette>=3.0.0,<3.0.3",
+    "openai>=1.0,<2",
+    # Trust roots for the agent's own HTTPS calls; the packaged runtime has no
+    # usable platform CA store on macOS (code4me2_agent.tls).
+    "certifi",
+]
+
+[project.scripts]
+code4me2-agent = "code4me2_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["code4me2_agent*"]
+
 [tool.ruff]
 line-length = 99
 

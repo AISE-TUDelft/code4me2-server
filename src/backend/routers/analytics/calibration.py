@@ -144,6 +144,8 @@ def get_reliability_diagram(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error generating reliability diagram: {str(e)}")
@@ -190,39 +192,51 @@ def get_brier_score(
         
         group_col = group_columns[group_by]
         
-        query = f"""
-        SELECT 
-            {group_col} as group_name,
-            mn.model_id,
-            COUNT(*) as sample_size,
-            -- Brier score: average of (probability - outcome)^2
-            AVG(POWER(hg.confidence - CASE WHEN hg.was_accepted THEN 1.0 ELSE 0.0 END, 2)) as brier_score,
-            -- Decompose Brier score
-            AVG(CASE WHEN hg.was_accepted THEN 1.0 ELSE 0.0 END) as base_rate,
-            AVG(hg.confidence) as avg_confidence,
-            -- Reliability component: variance of confidence - accuracy per bin (simplified)
-            AVG(POWER(hg.confidence - AVG(CASE WHEN hg.was_accepted THEN 1.0 ELSE 0.0 END) OVER (), 2)) as reliability_component,
-            -- Resolution component: variance of bin accuracies (simplified) 
-            VARIANCE(CASE WHEN hg.was_accepted THEN 1.0 ELSE 0.0 END) as resolution_component
-        FROM had_generation hg
-        JOIN meta_query mq ON hg.meta_query_id = mq.meta_query_id
-        JOIN model_name mn ON hg.model_id = mn.model_id
-        JOIN "user" u ON mq.user_id = u.user_id
-        JOIN config c ON u.config_id = c.config_id
-        LEFT JOIN contextual_telemetry ct ON mq.contextual_telemetry_id = ct.contextual_telemetry_id
-        LEFT JOIN programming_language pl ON ct.language_id = pl.language_id
-        WHERE mq.timestamp BETWEEN :start_time AND :end_time
-          AND hg.confidence IS NOT NULL
-        """
-        
+        filters = ""
         if query_params.get("user_id"):
-            query += " AND mq.user_id = :user_id"
+            filters += " AND mq.user_id = :user_id"
         if model_id:
-            query += " AND hg.model_id = :model_id"
+            filters += " AND hg.model_id = :model_id"
             query_params["model_id"] = model_id
-            
-        query += f"""
-        GROUP BY {group_col}, mn.model_id
+
+        # PostgreSQL rejects a window function nested inside an aggregate
+        # (the previous AVG(... AVG(...) OVER () ...) form always failed with a
+        # 500), so the overall base rate is computed once in a CTE instead.
+        query = f"""
+        WITH scored AS (
+            SELECT
+                {group_col} AS group_name,
+                mn.model_id AS model_id,
+                hg.confidence AS confidence,
+                CASE WHEN hg.was_accepted THEN 1.0 ELSE 0.0 END AS outcome
+            FROM had_generation hg
+            JOIN meta_query mq ON hg.meta_query_id = mq.meta_query_id
+            JOIN model_name mn ON hg.model_id = mn.model_id
+            JOIN "user" u ON mq.user_id = u.user_id
+            JOIN config c ON u.config_id = c.config_id
+            LEFT JOIN contextual_telemetry ct ON mq.contextual_telemetry_id = ct.contextual_telemetry_id
+            LEFT JOIN programming_language pl ON ct.language_id = pl.language_id
+            WHERE mq.timestamp BETWEEN :start_time AND :end_time
+              AND hg.confidence IS NOT NULL{filters}
+        ),
+        overall AS (
+            SELECT AVG(outcome) AS base FROM scored
+        )
+        SELECT
+            scored.group_name AS group_name,
+            scored.model_id AS model_id,
+            COUNT(*) AS sample_size,
+            -- Brier score: average of (probability - outcome)^2
+            AVG(POWER(scored.confidence - scored.outcome, 2)) AS brier_score,
+            -- Decompose Brier score
+            AVG(scored.outcome) AS base_rate,
+            AVG(scored.confidence) AS avg_confidence,
+            -- Reliability component: spread of confidence around the overall base rate (simplified)
+            AVG(POWER(scored.confidence - overall.base, 2)) AS reliability_component,
+            -- Resolution component: variance of outcomes (simplified)
+            VARIANCE(scored.outcome) AS resolution_component
+        FROM scored CROSS JOIN overall
+        GROUP BY scored.group_name, scored.model_id
         ORDER BY brier_score ASC
         """
         
@@ -261,6 +275,8 @@ def get_brier_score(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error calculating Brier score: {str(e)}")
@@ -385,6 +401,8 @@ def get_confidence_distribution(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving confidence distribution: {str(e)}")
@@ -485,6 +503,8 @@ def get_calibration_summary(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving calibration summary: {str(e)}")

@@ -133,6 +133,7 @@ class App:
             email_verification_token_expires_in_seconds=config.email_verification_token_expires_in_seconds,
             reset_password_token_expires_in_seconds=config.reset_password_token_expires_in_seconds,
             token_hook_activation_in_seconds=config.token_hook_activation_in_seconds,
+            password=config.redis_password,
         )
 
         # if os env doesn't have variable CELERY_WORKER=TRUE run the following
@@ -162,8 +163,9 @@ class App:
         # Initialize completion models for AI functionality
         self.__completion_models = CompletionModels(config=config)
 
-        # Preload models if configured to do so for faster response times
-        if config.preload_models:
+        # Preload models if configured to do so for faster response times; switched-off
+        # classic models are never loaded
+        if config.preload_models and config.classic_models_enabled:
             logging.log(logging.INFO, "Preloading llm models...")
 
             db = self.get_db_session()
@@ -317,10 +319,10 @@ class App:
             This method performs cleanup in the reverse order of initialization
             to ensure dependencies are properly handled.
         """
-        # Clean up Redis manager with a database session for final operations
-        self.__redis_manager.cleanup(db_session=self.__db_session_factory())
-
-        # Close Redis connection to stop background threads gracefully
+        # Only close: logins and sessions live in Redis and outlive this process.
+        # Flushing them here signed every user out on each restart, and with
+        # several workers sharing one Redis, whenever any one worker stopped.
+        # Sessions still end, and persist, through their expiry hooks.
         self.__redis_manager.close()
 
         # Clean up Celery broker connections

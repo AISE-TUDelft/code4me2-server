@@ -1,0 +1,316 @@
+"""Telemetry ingestion API (Issue 09).
+
+Mounted under ``/api/research/telemetry``. Batch submission is authenticated
+solely by the scoped session capability carried in the request body — a normal
+account/session cookie is never accepted in its place. Receipt inspection is
+admin/researcher-only.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import uuid  # noqa: TC003 - FastAPI evaluates route annotations at runtime
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import SQLAlchemyError
+
+from App import App
+from backend.Responses import JsonResponseWithStatus
+from database.db_schemas import ResearchStudyStatus, Study as StudyRow
+from privacy import collection
+from research.participants.enums import EnrollmentStatus
+from backend.routers.analytics.auth_utils import (
+    AuthenticatedUser,
+    get_current_user,
+    require_admin,
+)
+from backend.routers.research import bootstrap as bootstrap_router
+from backend.routers.research.bootstrap import BOOTSTRAP_SIGNING_SECRET
+from research.analysis.operations import store as operations_store
+from research.participants import identity as identity_store
+from research.runtime.bootstrap.capability import verify_capability
+from research.runtime.bootstrap.models import (
+    CapabilityVerification,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
+    SessionCapability,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
+)
+from research.runtime.sessions import store as session_store
+from research.telemetry.ingestion.agent_tasks import ensure_agent_tasks_for_ack
+from research.telemetry.ingestion.models import (
+    TelemetryBatchAckV1,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
+    TelemetryBatchRequestV1,  # noqa: TC001 - FastAPI evaluates route annotations at runtime
+)
+from research.telemetry.ingestion.service import ingest_batch
+from research.telemetry.privacy import PrivacyPolicy
+from research.telemetry.ingestion.store import SqlAlchemyIngestionStore, get_receipt_by_id
+
+router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+AUDIENCE = "research-runtime"
+SCOPE_WRITE = "telemetry:write"
+
+# Events of an already ENDED session are still stored while they occurred no
+# later than this many seconds after the server closed it (C-02): the last poll
+# window, the closing events and an offline tail of an idle-expired session.
+LATE_EVENT_GRACE_SECONDS = int(os.environ.get("TELEMETRY_LATE_EVENT_GRACE_SECONDS", "900"))
+
+
+def _signing_secret() -> str:
+    """The signing secret at request time.
+
+    Delegates to the bootstrap router's resolver so the signer and every
+    verifier agree (an installed test signer wins there too); this module's
+    import-time copy is only a patch target of last resort.
+    """
+    return bootstrap_router.signing_secret() or BOOTSTRAP_SIGNING_SECRET or ""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _log_ack(ack: TelemetryBatchAckV1) -> None:
+    """Emit exactly one compact line per batch so stalled uploads are visible.
+
+    Records only ids, counts and the distinct reason codes — never event
+    payloads — so a wedged spool (`docker logs backend`) is diagnosable.
+    """
+    rejected_reasons = sorted(
+        {event.reason.value for event in ack.rejected if event.reason is not None}
+    )
+    retryable_reasons = sorted(
+        {event.reason.value for event in ack.retryable if event.reason is not None}
+    )
+    log = logger.warning if (ack.rejected or ack.retryable) else logger.info
+    log(
+        "telemetry batch %s ack: accepted=%d duplicate=%d rejected=%d retryable=%d "
+        "rejected_reasons=%s retryable_reasons=%s",
+        ack.batch_id,
+        len(ack.accepted),
+        len(ack.duplicate),
+        len(ack.rejected),
+        len(ack.retryable),
+        rejected_reasons or "-",
+        retryable_reasons or "-",
+    )
+
+
+def _verify_session_capability(
+    capability: SessionCapability,
+    *,
+    now: datetime,
+    current_revocation_epoch: int,
+    expected_enrollment_id: Optional[uuid.UUID] = None,
+    expected_research_session_id: Optional[uuid.UUID] = None,
+    expected_study_id: Optional[uuid.UUID] = None,
+) -> CapabilityVerification:
+    """Verify the batch capability against the subject resolved from its events."""
+    return verify_capability(
+        capability,
+        _signing_secret(),
+        expected_audience=AUDIENCE,
+        expected_scope=[SCOPE_WRITE],
+        now=now,
+        current_revocation_epoch=current_revocation_epoch,
+        expected_enrollment_id=expected_enrollment_id,
+        expected_research_session_id=expected_research_session_id,
+        expected_study_id=expected_study_id,
+    )
+
+
+def _verify_receipt_capability(
+    capability: SessionCapability,
+    *,
+    now: datetime,
+    current_revocation_epoch: Optional[int],
+    expected_enrollment_id: Optional[uuid.UUID] = None,
+    expected_research_session_id: Optional[uuid.UUID] = None,
+    expected_study_id: Optional[uuid.UUID] = None,
+) -> CapabilityVerification:
+    """Verify a capability for an *already committed* receipt (ISSUE-08).
+
+    Re-reading an immutable ACK is not new data collection, so expiry and the
+    live revocation epoch must not block a producer from confirming a batch the
+    server already accepted. The signature, audience, scope and subject binding
+    are still mandatory: knowing a ``batch_id`` is never sufficient.
+    """
+    return verify_capability(
+        capability,
+        _signing_secret(),
+        expected_audience=AUDIENCE,
+        expected_scope=[SCOPE_WRITE],
+        now=capability.issued_at,
+        current_revocation_epoch=None,
+        expected_enrollment_id=expected_enrollment_id,
+        expected_research_session_id=expected_research_session_id,
+        expected_study_id=expected_study_id,
+    )
+
+
+def _ingestion_kill_switch_check(db, payload: TelemetryBatchRequestV1):
+    """DB-backed kill-switch predicate scoped to the batch's active subject.
+
+    The batch is anchored by its first in-scope event (matching the ingestion
+    service's anchor rule), so the check blocks exactly the study/revision/
+    enrollment the accepted events would be attributed to.
+    """
+    for event in payload.events:
+        if (
+            event.enrollment_id is None
+            or event.research_session_id is None
+        ):
+            continue
+        session_row = session_store.get_session(db, event.research_session_id)
+        if session_row is None:
+            continue
+        enrollment_row = identity_store.get_enrollment(db, event.enrollment_id)
+        if enrollment_row is None:
+            continue
+        study_id = session_row.study_id
+        return operations_store.db_kill_switch_check(
+            db,
+            study_id=study_id,
+            enrollment_id=event.enrollment_id,
+        )
+
+    def _never_engaged() -> bool:
+        return False
+
+    return _never_engaged
+
+
+def _enrollment_resolver(db):
+    def resolve(enrollment_id: uuid.UUID):
+        # Lock the enrollment row so concurrent batches for the same subject
+        # serialize inside the ingestion transaction.
+        row = identity_store.get_enrollment(db, enrollment_id, for_update=True)
+        if row is None:
+            return None
+        enrollment = identity_store.row_to_enrollment(row)
+        study = db.get(StudyRow, row.study_id)
+        # A stopped study refuses an active enrollment's events. Only this answer
+        # says so: the stored status is the stop cascade's to write, and the
+        # ingestion commit must never turn a revoked or completed one into it.
+        if (
+            getattr(study, "research_status", None) == ResearchStudyStatus.STUDY_STOPPED.value
+            and enrollment.status == EnrollmentStatus.ACTIVE
+        ):
+            enrollment = enrollment.model_copy(update={"status": EnrollmentStatus.STUDY_STOPPED})
+        return enrollment
+
+    return resolve
+
+
+def _session_resolver(db):
+    def resolve(research_session_id: uuid.UUID):
+        row = session_store.get_session(db, research_session_id, for_update=True)
+        return session_store.row_to_session(row) if row is not None else None
+
+    return resolve
+
+
+def _privacy_policy_resolver(db):
+    def resolve(enrollment):
+        study = db.get(StudyRow, enrollment.study_id)
+        if study is None:
+            raise HTTPException(status_code=409, detail="Study policy is unavailable")
+        config = study.research_config_json or {}
+        return PrivacyPolicy.from_study_policy(
+            config.get("telemetry_policy") or {},
+            consent_active=(
+                enrollment.status == EnrollmentStatus.ACTIVE
+                and enrollment.consent_accepted_at is not None
+            ),
+        )
+
+    return resolve
+
+
+@router.post("/batches", summary="Submit a canonical telemetry batch")
+def submit_telemetry_batch(
+    payload: TelemetryBatchRequestV1,
+    app: App = Depends(App.get_instance),
+):
+    """Ingest a batch authenticated by its scoped session capability."""
+    if not payload.events:
+        # No subject to authorize and no fact to store: refuse at the boundary
+        # with a typed reason and never create a durable receipt (ISSUE-08).
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "EMPTY_BATCH",
+                "message": "a telemetry batch must contain at least one event",
+            },
+        )
+    db = app.get_db_session()
+    try:
+        store = SqlAlchemyIngestionStore(db)
+        ack = ingest_batch(
+            payload,
+            capability_verifier=_verify_session_capability,
+            receipt_capability_verifier=_verify_receipt_capability,
+            enrollment_resolver=_enrollment_resolver(db),
+            session_resolver=_session_resolver(db),
+            store=store,
+            now=_now(),
+            kill_switch_check=_ingestion_kill_switch_check(db, payload),
+            privacy_policy_resolver=_privacy_policy_resolver(db),
+            late_event_grace_seconds=LATE_EVENT_GRACE_SECONDS,
+        )
+        _log_ack(ack)
+        # ACP-proxied runs carry an agent_run_id but no task: materialize the
+        # linkable agent_task the dashboards join on. This is idempotent and
+        # never changes the ack or the accepted facts.
+        ensure_agent_tasks_for_ack(
+            db,
+            payload,
+            ack,
+            before_create=lambda account_id: collection.lock_account(db, account_id),
+        )
+        return JsonResponseWithStatus(
+            status_code=200, content=ack.model_dump(mode="json")
+        )
+    except SQLAlchemyError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=503, detail="telemetry store is unavailable"
+        ) from error
+    finally:
+        db.close()
+
+
+@router.get("/receipts/{receipt_id}", summary="Fetch an immutable batch receipt")
+def get_batch_receipt(
+    receipt_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    app: App = Depends(App.get_instance),
+):
+    """Admin/researcher view of a stored batch receipt."""
+    require_admin(current_user)
+    db = app.get_db_session()
+    try:
+        receipt = get_receipt_by_id(db, receipt_id)
+        if receipt is None:
+            raise HTTPException(status_code=404, detail="Batch receipt not found")
+        return JsonResponseWithStatus(
+            status_code=200,
+            content={
+                "receipt": receipt.ack.model_dump(mode="json"),
+                "enrollment_id": (
+                    str(receipt.enrollment_id)
+                    if receipt.enrollment_id is not None
+                    else None
+                ),
+                "research_session_id": (
+                    str(receipt.research_session_id)
+                    if receipt.research_session_id is not None
+                    else None
+                ),
+            },
+        )
+    finally:
+        db.close()

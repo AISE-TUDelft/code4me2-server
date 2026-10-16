@@ -105,6 +105,11 @@ class TestGetUserFromAuthToken:
         # Replace password field with its value for equality check
         response_result["user"]["password"] = fake_user.password.get_secret_value()
 
+        # A1: the authenticated user payload exposes the researcher flag so the
+        # website can gate researcher surfaces without a role lookup.
+        assert "can_research" in response_result["user"]
+        assert isinstance(response_result["user"]["can_research"], bool)
+
         assert response_result == GetUserGetResponse(
             user=fake_user,
             config=config_data.config_data,

@@ -1,9 +1,10 @@
 from abc import ABC
+from typing import Any, Optional
 from uuid import UUID
 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_serializer
 
 from response_models import (
     ResponseCompletionResponseData,
@@ -66,10 +67,6 @@ class UserAlreadyExistsWithThisEmail(ErrorResponse):
     message: str = Field(default="User already exists with this email!")
 
 
-class InvalidOrExpiredJWTToken(ErrorResponse):
-    message: str = Field(default="Invalid or expired token!")
-
-
 class CreateUserError(ErrorResponse):
     message: str = Field(default="Server failed to create a new user!")
 
@@ -84,10 +81,6 @@ class AuthenticateUserNormalPostResponse(AuthenticateUserPostResponse):
     message: str = Field(
         default="User authenticated successfully via email and password."
     )
-
-
-class AuthenticateUserOAuthPostResponse(AuthenticateUserPostResponse):
-    message: str = Field(default="User authenticated successfully via OAuth.")
 
 
 class InvalidEmailOrPassword(ErrorResponse):
@@ -109,6 +102,12 @@ class DeleteUserDeleteResponse(BaseResponse):
 
 class DeleteUserError(ErrorResponse):
     message: str = Field(default="Server failed to delete the user!")
+
+
+class DeleteUserBlockedError(ErrorResponse):
+    message: str = Field(
+        default="This account owns research studies or agent profiles, so it cannot delete itself."
+    )
 
 
 class InvalidOrExpiredSessionToken(ErrorResponse):
@@ -236,6 +235,145 @@ class ProjectNotFoundError(ErrorResponse):
     )
 
 
+# /api/acp — grant handoff for a locally launched agent process
+class PrepareAcpGrantPostResponse(BaseResponse):
+    message: str = Field(default="ACP agent session prepared successfully.")
+    grant: str = Field(..., description="One-time ACP launch grant.")
+    workspace: str = Field(..., description="Authorized canonical workspace.")
+    expires_in_seconds: int = Field(default=300, description="Grant lifetime.")
+    launch_id: Optional[str] = Field(default=None, description="Managed launch identity.")
+    path_format: Optional[str] = Field(default=None, description="Client path syntax.")
+    managed_protocol_version: Optional[str] = Field(
+        default=None, description="Negotiated managed-agent protocol."
+    )
+
+
+class ExchangeAcpGrantPostResponse(BaseResponse):
+    message: str = Field(default="ACP grant exchanged successfully.")
+    acp_token: str = Field(..., description="ACP process authorization token.")
+    project_id: str = Field(..., description="Authorized project id.")
+    workspace: str = Field(..., description="Authorized canonical workspace.")
+    expires_in_seconds: int = Field(default=3600, description="ACP session lifetime.")
+
+
+class ValidateAcpSessionPostResponse(BaseResponse):
+    message: str = Field(default="ACP authorization validated successfully.")
+    project_id: str = Field(..., description="Authorized project id.")
+    workspace: str = Field(..., description="Authorized canonical workspace.")
+    expires_in_seconds: int = Field(
+        default=3600, description="Renewed ACP session lifetime."
+    )
+
+
+class AcpAgentConfigGetResponse(BaseResponse):
+    """Runtime configuration handed to a locally launched agent process.
+
+    This is how the assigned A/B profile reaches the built-in runtime: rather
+    than the agent reading a local config file, the backend tells it which
+    model, provider endpoint, tools and step budget to use — so a study
+    assignment actually takes effect.
+
+    ``api_key_ref`` is the *name* of an environment variable, never a key
+    value: the agent runs on the developer's machine and resolves the
+    credential from its own environment, so no secret transits this endpoint.
+    """
+
+    message: str = Field(default="ACP agent configuration retrieved successfully.")
+    agent_profile: Optional[str] = Field(
+        default=None, description="Assigned agent profile name."
+    )
+    framework_version: Optional[str] = Field(
+        default=None, description="Agent runtime this profile targets."
+    )
+    model: str = Field(description="Model the agent should use for completions.")
+    base_url: Optional[str] = Field(
+        default=None,
+        description="OpenAI-compatible provider base URL. Null = agent default.",
+    )
+    api_key_ref: Optional[str] = Field(
+        default=None,
+        description="Name of the environment variable holding the provider API key.",
+    )
+    commands_allowlist: list[str] = Field(
+        default_factory=list,
+        description="Legacy: the only commands runtime releases 0.0.6 and earlier "
+        "may execute. Newer runtimes ignore it and read commands_denylist.",
+    )
+    commands_denylist: list[str] = Field(
+        default_factory=list,
+        description="Programs the agent may not run; every other installed "
+        "program may run. Empty = nothing blocked.",
+    )
+    tools: list[str] = Field(
+        default_factory=list, description="Tool names the agent may call."
+    )
+    max_iterations: int = Field(
+        default=8, description="Maximum tool-calling iterations.", ge=1
+    )
+    max_context_tokens: Optional[int] = Field(
+        default=None, description="Per-turn context window; null = model maximum."
+    )
+    approval_policy: Optional[str] = Field(
+        default=None, description="How tool calls should be confirmed."
+    )
+    temperature: Optional[float] = Field(
+        default=None, description="Sampling temperature; null = provider default."
+    )
+    system_prompt: Optional[str] = Field(
+        default=None,
+        description="Researcher-authored system prompt frozen with the assigned "
+        "profile; null = none (the runtime keeps its built-in prompt).",
+    )
+    command_timeout_seconds: Optional[int] = Field(
+        default=None,
+        description="Default per-command timeout in seconds frozen with the "
+        "assigned profile. Present only when the profile sets it; absent = the "
+        "runtime default.",
+    )
+    harness_options: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Harness behaviour switches frozen with the assigned profile. "
+        "Present only when the profile sets them; absent = runtime defaults.",
+    )
+    store_agent_content: bool = Field(
+        default=True,
+        description="Whether the server will persist content for this user. "
+        "Advisory only — the server enforces this regardless of what the agent "
+        "sends, so the agent may use it to avoid transmitting content "
+        "needlessly but cannot use it to enable capture.",
+    )
+    transport: Optional[str] = Field(
+        default=None, description="Managed inference transport selected by the server."
+    )
+    managed_protocol_version: Optional[str] = Field(
+        default=None, description="Negotiated managed-agent protocol."
+    )
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_harness_settings(self, handler):
+        # A config whose profile sets neither harness field serializes exactly
+        # as it did before the fields existed (decision D-01).
+        data = handler(self)
+        if isinstance(data, dict):
+            for key in _OPTIONAL_HARNESS_CONFIG_KEYS:
+                if data.get(key) is None:
+                    data.pop(key, None)
+        return data
+
+
+#: ``AcpAgentConfigGetResponse`` keys omitted (not null) when unset.
+_OPTIONAL_HARNESS_CONFIG_KEYS = ("command_timeout_seconds", "harness_options")
+
+
+class PersistentAuthTokenPostResponse(BaseResponse):
+    message: str = Field(default="Persistent auth token created successfully.")
+    auth_token: str = Field(..., description="Auth token without Redis expiration.")
+
+
+class AcpAuthorizationError(ErrorResponse):
+    message: str = Field(default="ACP authorization is invalid or expired.")
+
+
 # /api/session/deactivate
 class DeactivateSessionPostResponse(BaseResponse):
     message: str = Field(default="Session deactivated successfully.")
@@ -273,6 +411,12 @@ class NoAccessToGetQueryError(ErrorResponse):
 
 class TooManyRequests(ErrorResponse):
     message: str = Field(default="Too many requests. Please try again later.")
+
+
+class ClassicModelsDisabled(ErrorResponse):
+    message: str = Field(
+        default="Classic completion and chat models are disabled on this server."
+    )
 
 
 # /api/chat/delete

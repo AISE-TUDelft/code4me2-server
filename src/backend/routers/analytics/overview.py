@@ -249,6 +249,8 @@ def get_dashboard_overview(
             content=dashboard_data
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving dashboard overview: {str(e)}")
@@ -362,6 +364,8 @@ def get_activity_timeline(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving activity timeline: {str(e)}")
@@ -499,6 +503,8 @@ def get_user_engagement_summary(
             }
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         db_session.rollback()
         raise HTTPException(status_code=500, detail=f"Error retrieving user engagement: {str(e)}")

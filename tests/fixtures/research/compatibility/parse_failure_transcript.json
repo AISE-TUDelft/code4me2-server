@@ -1,0 +1,25 @@
+{
+  "fixture_version": "1",
+  "fixture_name": "parse_failure_transcript",
+  "capture_channel": "plugin_public_api",
+  "protocol_version": "1",
+  "parse_error": "agent process exited with code 137 before sending the initialize response",
+  "initialize_request": {
+    "jsonrpc": "2.0",
+    "id": "init-1",
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "1",
+      "clientCapabilities": {
+        "fs": {
+          "readTextFile": true
+        }
+      }
+    }
+  },
+  "operations": [],
+  "diagnostics": {
+    "api_key": "sk-CANARY000000000000000000000000",
+    "note": "synthetic canary value; redaction must remove it"
+  }
+}

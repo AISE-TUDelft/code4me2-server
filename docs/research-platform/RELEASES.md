@@ -1,0 +1,433 @@
+# Tested release import
+
+> From scratch setup: [`FROM_SCRATCH_SETUP.md`](FROM_SCRATCH_SETUP.md).
+
+The producer owns the test results. The server verifies archive bytes and makes
+passing releases usable immediately. No host approval, conformance receipt, or
+“Mark tested” action is needed. `DISABLED` permanently prevents a release from
+being selected for a new bootstrap; reimport cannot enable it. Existing running
+sessions are not terminated by this endpoint (use the runtime kill switch).
+
+## Local native build
+
+Install the existing locked build/runtime/test dependencies as described in
+`packaging/README.md`, then run **from the server repository** (the module lives
+in `code4me2-server/src/research`, so `PYTHONPATH=src` only resolves there):
+
+```bash
+cd code4me2-server
+
+PYTHONPATH=src python -m research.study.agents.participant_release native \
+  --version 1.2.3 --platform macos-arm64 \
+  --server-commit "$(git rev-parse HEAD)" --output dist/release-1.2.3
+```
+
+This stamps the version, runs the runtime tests, builds with PyInstaller, archives
+it, extracts that archive, and checks the extracted executable's version,
+`--self-check` and ACP `initialize` response. It writes the ZIP and one
+`native-macos-arm64.json`, and prints that manifest JSON on stdout. A failed
+check produces no output release directory. Use a new output directory/version;
+`--skip-build` is for an already built/signed native bundle, and still tests the
+archived executable — with `--skip-build` the `--version` **must equal the
+version already embedded in that bundle** (run without it to stamp a new
+version), otherwise the producer refuses with "packaged executable version does
+not match the release". Local release coverage is explicitly one native platform.
+The version stamp updates `src/code4me2_agent/_build_version.py`.
+
+`arm64` is canonical; `aarch64` is accepted at input boundaries. The producer
+requires a matching native host. Build artifacts do not imply IntelliJ UI,
+permission enforcement, inference, or tool-call end-to-end acceptance.
+
+## GitHub release
+
+Run `.github/workflows/build-managed-runtime.yml` manually with a version and
+`publishRelease=true`. Four native jobs build and test the binaries; with the
+opt-in `sign=true` they are code-signed first and the macOS archive notarized
+(see `packaging/README.md` for why participants do not need it). The publishing
+job calls the same module's `merge` command, validates every ZIP, requires all
+four platforms, and publishes only the combined JSON plus ZIPs, each artifact with
+its exact `download_url`, under `runtime-v<version>`. Existing tags/releases
+cannot be overwritten.
+
+## Admin import
+
+Dashboard → Agent Catalogue accepts a JSON file (or pasted JSON) plus exactly
+its declared ZIPs. Alternatively select “Import from release URLs”, enter a
+manifest URL and one archive URL per line. Both paths perform the same checks.
+
+- `POST /api/research/agents/releases/import`: multipart `manifest` JSON text,
+  repeated `archives` file fields.
+- `POST /api/research/agents/releases/import-url`: JSON `manifest_url` and
+  `archive_urls` string array.
+- `POST /api/research/agents/releases/{release_id}/disable`: terminal disable.
+
+HTTPS download hosts default to `github.com`, `release-assets.githubusercontent.com`
+and `objects.githubusercontent.com`. Operators can explicitly configure trusted
+hosts with `RESEARCH_RELEASE_HOSTS`; every redirect is checked. Manifest downloads
+are limited to 1 MiB; `RESEARCH_IMPORT_MAX_ARCHIVE_BYTES` and
+`RESEARCH_IMPORT_MAX_TOTAL_BYTES` control archive/import limits. Downloads are
+streamed to temporary files and removed after validation. Imported archives are
+not a download CDN: participant distribution is still the published plugin/agent.
+
+The archive declaration is:
+
+```json
+{
+  "runtime_id": "code4me-agent",
+  "version": "1.2.3",
+  "platform": "macos",
+  "architecture": "arm64",
+  "archive": "code4me-agent-macos-arm64.zip",
+  "sha256": "<64 hex characters>",
+  "size": 12345,
+  "executable": "code4me2-agent",
+  "tests": {
+    "self_check": "PASS",
+    "acp_initialize": "PASS",
+    "ran_at": "2026-09-21T12:00:00Z"
+  }
+}
+```
+
+Each declared archive needs its own passing results. Missing/extra/duplicate
+archives, digest/size mismatches, missing or failed tests reject the import.
+Every managed and BYOA row is written in one database transaction. Identical
+imports are idempotent. The canonical manifest digest pins release identity;
+archive SHA-256 pins distributed bytes. No extracted-file inventory is stored.
+
+Admin import is the trust boundary for the producer's result declaration. Hashing
+bytes detects tampering; it does not independently prove tests were executed or
+prove all IDE behavior. Only import output from the controlled producer/CI.
+
+## BYOA and plugin boundary
+
+The optional `agents` array carries external `framework`, explicit `version`,
+`agent_command`, optional `agent_command_args`/`byoa_config`, `adapter`, and
+`tests` (an array of the results above plus `os`/`arch`). External agents require
+their own results; managed-runtime results never qualify Goose or Codex. Server
+import never runs an uploaded command. The manifest digest binds these identities.
+
+The plugin is the IDE integration; the proxy observes/transports ACP; the agent
+executes tasks. The plugin ships no managed agent: it installs the study's pinned
+archive from its verified cache or the release's `download_url` (import accepts,
+and the plugin downloads, only `download_url`s of `AISE-TUDelft/code4me2-server`
+release assets); BYOA agents are installed separately. The existing signed bootstrap still pins release/version/adapter and
+command/package identity. Local executable identity enforcement belongs to the
+plugin and is not demonstrated by server tests.
+
+The plugin's recipe CLI (`scripts/participant-release.py`) is local tooling for
+ZIPs with a bundled agent recipe; participant ZIPs bundle no agent and come from
+the plugin workflow (see `code4me2/docs/PARTICIPANT_RELEASE.md`). It registers
+nothing on a server; register releases through the website import. Plugin ZIP publication, native host permission/tool behavior and all
+four CI jobs require their own verification. Server protocol restrictions on
+participant-ready runtimes are unchanged.
+
+## Existing data
+
+This repository uses a consolidated fresh schema. The obsolete
+`approved_hosts_json` column is removed from that schema and ORM. An existing
+physical column may remain inert until the normal schema replacement process;
+this change does not reset the application database. Historical releases without
+platform results remain unqualified; import a newly tested manifest rather than
+converting old manual approvals into passing tests. Legacy aggregate test verdicts
+also stay unqualified. Existing `DISABLED`, `BLOCKED`, and `RETIRED` states remain
+terminal on reads.
+
+Agent profiles now store an optional `system_prompt` (packaged releases only). The
+column is part of the consolidated revision, so a fresh database gets it, but a
+database that is already at that revision does not: every profile query fails
+with an undefined-column error until you add it. Before deploying to an existing
+database, run:
+
+```sql
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS system_prompt TEXT;
+```
+
+The column is nullable and the previous code ignores it, so it is safe to add
+while the old backend is still running. Existing profiles, their configuration
+digests and frozen studies are unchanged: a prompt only enters a digest when set.
+
+Built-in (`code4me2-agent`) profiles can also set the commands the agent may run
+(`commands_allowlist`, since replaced by `commands_denylist`; see "Blocked
+commands replace the command allowlist" below), the default command timeout (`command_timeout_seconds`,
+1–600 s) and the harness behaviour switches (`harness_options`); Goose and Codex
+profiles refuse all three. These columns are part of the consolidated revision
+too, so a database already at that revision needs them before the new backend
+starts:
+
+```sql
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS commands_allowlist_json TEXT;
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS command_timeout_seconds INTEGER;
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS harness_options_json TEXT;
+```
+
+The columns are nullable and the previous code ignores them, so they are safe to
+add while the old backend is still running. NULL keeps the previous behaviour
+(the server fallback allowlist, which a user's config row may replace, and the
+runtime defaults). A value joins the configuration digest, the study snapshot,
+`GET /api/acp/agent-config` and the managed run policy only when set, so existing
+profiles, digests, frozen studies and run policies are unchanged. When a profile
+sets `commands_allowlist`, a user's config-row allowlist can only narrow it.
+
+## Emitter-sequence uniqueness dropped (production-readiness C-01)
+
+Alembic revision `b7c1d2e3f4a5` (after `8a0084080b46`) drops the unique
+constraint `uq_research_event_session_emitter_sequence` on `research_event` and
+replaces it with the plain index `idx_research_event_session_emitter_sequence`.
+An emitter whose counter restarts inside a live session (an IDE restart, a
+re-launched proxy) reused `(session, emitter, sequence)` and the constraint made
+ingestion reject, and the client delete, the later facts. Identity is
+`event_id` + digest; overlaps are surfaced as `EVENT_SEQUENCE_GAP` coverage
+diagnostics.
+
+`migration_manager.py migrate` applies it. For a database not tracked by
+Alembic, run the equivalent by hand:
+
+```sql
+ALTER TABLE public.research_event DROP CONSTRAINT IF EXISTS uq_research_event_session_emitter_sequence;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_research_event_session_emitter_sequence
+    ON public.research_event (research_session_id, emitter_id, emitter_sequence);
+```
+
+The `DROP CONSTRAINT` takes a brief exclusive lock; `CONCURRENTLY` keeps event
+inserts flowing while the index builds (the Alembic revision builds it inside
+its transaction, which blocks inserts for the few seconds a study-sized table
+needs). Plan either for a quiet moment. The same
+release also stores the tail of an ended session (events up to
+`TELEMETRY_LATE_EVENT_GRACE_SECONDS`, default 900 s, after `closed_at`, under
+the enrollment's next session capability) and closes an idle-expired context
+session at bootstrap/session create instead of reusing it; neither needs a
+schema change.
+
+## Participant inference budgets (shared provider key)
+
+Goose and built-in (`code4me2-agent`) study arms now spend from the study's
+server-held provider key through a metered relay, and every enrollment carries
+a USD budget. The consolidated revision creates the tables and columns below, so
+a fresh database gets them; a database that is already at that revision does
+not. Before deploying to an existing database, run:
+
+```sql
+CREATE TABLE IF NOT EXISTS public.provider_model_price (
+    connection_id UUID NOT NULL REFERENCES public.provider_connection(connection_id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    input_usd_per_million NUMERIC(14,6) NOT NULL CHECK (input_usd_per_million >= 0),
+    output_usd_per_million NUMERIC(14,6) NOT NULL CHECK (output_usd_per_million >= 0),
+    cached_input_usd_per_million NUMERIC(14,6) NULL CHECK (cached_input_usd_per_million IS NULL OR cached_input_usd_per_million >= 0),
+    updated_at TIMESTAMPTZ NOT NULL,
+    updated_by TEXT NULL,
+    PRIMARY KEY (connection_id, model)
+);
+CREATE INDEX IF NOT EXISTS idx_provider_model_price_connection ON public.provider_model_price (connection_id);
+
+ALTER TABLE public.study
+    ADD COLUMN IF NOT EXISTS inference_budget_default_micro_usd BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS inference_budget_warning_fraction NUMERIC(4,3) NOT NULL DEFAULT 0.800,
+    ADD COLUMN IF NOT EXISTS inference_budget_updated_at TIMESTAMPTZ NULL,
+    ADD COLUMN IF NOT EXISTS inference_budget_updated_by TEXT NULL;
+
+CREATE TABLE IF NOT EXISTS public.enrollment_inference_balance (
+    enrollment_id UUID PRIMARY KEY REFERENCES public.research_enrollment(enrollment_id) ON DELETE CASCADE,
+    study_id UUID NOT NULL REFERENCES public.study(study_id) ON DELETE CASCADE,
+    unit TEXT NOT NULL DEFAULT 'micro_usd',
+    limit_micro_usd BIGINT NOT NULL CHECK (limit_micro_usd >= 0),
+    settled_micro_usd BIGINT NOT NULL DEFAULT 0 CHECK (settled_micro_usd >= 0),
+    reserved_micro_usd BIGINT NOT NULL DEFAULT 0 CHECK (reserved_micro_usd >= 0),
+    settled_prompt_tokens BIGINT NOT NULL DEFAULT 0,
+    settled_completion_tokens BIGINT NOT NULL DEFAULT 0,
+    call_count INTEGER NOT NULL DEFAULT 0,
+    refused_count INTEGER NOT NULL DEFAULT 0,
+    last_call_at TIMESTAMPTZ NULL,
+    limit_source TEXT NOT NULL DEFAULT 'STUDY_DEFAULT',
+    exhausted_at TIMESTAMPTZ NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_enrollment_inference_balance_study_id ON public.enrollment_inference_balance (study_id);
+
+CREATE TABLE IF NOT EXISTS public.inference_reservation (
+    reservation_id UUID PRIMARY KEY,
+    enrollment_id UUID NOT NULL REFERENCES public.enrollment_inference_balance(enrollment_id) ON DELETE CASCADE,
+    study_id UUID NOT NULL,
+    connection_id UUID NULL REFERENCES public.provider_connection(connection_id) ON DELETE SET NULL,
+    model TEXT NOT NULL,
+    entry_point TEXT NOT NULL,
+    request_id TEXT NOT NULL UNIQUE,
+    research_session_id UUID NULL,
+    state TEXT NOT NULL CHECK (state IN ('RESERVED', 'SETTLED', 'FORFEITED', 'VOIDED', 'EXPIRED')),
+    hold_micro_usd BIGINT NOT NULL CHECK (hold_micro_usd >= 0),
+    estimated_prompt_tokens INTEGER NOT NULL,
+    output_cap_tokens INTEGER NOT NULL,
+    charged_micro_usd BIGINT NULL CHECK (charged_micro_usd IS NULL OR charged_micro_usd >= 0),
+    prompt_tokens INTEGER NULL,
+    completion_tokens INTEGER NULL,
+    cached_prompt_tokens INTEGER NULL,
+    usage_source TEXT NULL,
+    resolution_reason TEXT NULL,
+    upstream_status INTEGER NULL,
+    finish_reason TEXT NULL,
+    reserved_at TIMESTAMPTZ NOT NULL,
+    deadline_at TIMESTAMPTZ NOT NULL,
+    resolved_at TIMESTAMPTZ NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inference_reservation_enrollment_state ON public.inference_reservation (enrollment_id, state);
+CREATE INDEX IF NOT EXISTS idx_inference_reservation_open_deadline ON public.inference_reservation (deadline_at) WHERE state = 'RESERVED';
+CREATE INDEX IF NOT EXISTS idx_inference_reservation_study_reserved_at ON public.inference_reservation (study_id, reserved_at);
+
+CREATE TABLE IF NOT EXISTS public.inference_budget_adjustment (
+    adjustment_id UUID PRIMARY KEY,
+    enrollment_id UUID NOT NULL REFERENCES public.enrollment_inference_balance(enrollment_id) ON DELETE CASCADE,
+    study_id UUID NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('TOP_UP', 'SET_LIMIT', 'APPLY_DEFAULT', 'BACKFILL')),
+    delta_micro_usd BIGINT NOT NULL,
+    limit_before_micro_usd BIGINT NOT NULL,
+    limit_after_micro_usd BIGINT NOT NULL,
+    in_flight_micro_usd BIGINT NOT NULL DEFAULT 0,
+    reason TEXT NULL,
+    actor TEXT NULL,
+    idempotency_key TEXT NULL,
+    request_digest TEXT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (study_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_inference_budget_adjustment_enrollment ON public.inference_budget_adjustment (enrollment_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_inference_budget_adjustment_study ON public.inference_budget_adjustment (study_id, occurred_at);
+
+-- Give every existing enrollment a balance row at its study's default.
+INSERT INTO public.enrollment_inference_balance (enrollment_id, study_id, limit_micro_usd, limit_source, created_at, updated_at)
+SELECT e.enrollment_id, e.study_id, s.inference_budget_default_micro_usd, 'BACKFILL', now(), now()
+FROM public.research_enrollment e
+JOIN public.study s ON s.study_id = e.study_id
+ON CONFLICT (enrollment_id) DO NOTHING;
+```
+
+This is fail-closed on purpose. A study's default budget is 0 until a
+researcher sets it (study Settings → Participant budgets, then "Apply new
+default" for the participants already enrolled), and a model without a price
+row on its provider connection refuses every call with `503 price_missing`.
+Until both are configured, Goose and built-in arms receive `402 quota_exhausted`
+or `503 price_missing` and spend nothing. Codex arms are unaffected: they sign in
+with ChatGPT and are not metered.
+
+## Self-service privacy controls (GDPR)
+
+Every account can now opt out of data collection and erase what Code4Me
+collected about it, from the website ("Privacy & data") or the plugin
+(`GET /api/user/privacy`, `PUT /api/user/privacy/collection`,
+`POST /api/user/privacy/erase`). The opt-out is stored in a new account column
+that only these endpoints write:
+
+```sql
+ALTER TABLE public."user" ADD COLUMN IF NOT EXISTS data_collection_opted_out_at TIMESTAMPTZ NULL;
+```
+
+The column is part of the consolidated revision, so a fresh database gets it; a
+database already at that revision needs the statement above before the new
+backend starts, or every account query fails with an undefined-column error. It
+is nullable and the previous code ignores it, so it is safe to add while the old
+backend is still running.
+
+Erasing an account deletes its context and telemetry rows, and each delete
+checks `meta_query` for references. `init.sql` now indexes those foreign keys; an
+existing database should add the indexes (without them an erase scans
+`meta_query` once per deleted row, which takes minutes on a large table):
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_meta_query_context_id ON public.meta_query (context_id) WHERE context_id IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_meta_query_contextual_telemetry_id ON public.meta_query (contextual_telemetry_id) WHERE contextual_telemetry_id IS NOT NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_meta_query_behavioral_telemetry_id ON public.meta_query (behavioral_telemetry_id) WHERE behavioral_telemetry_id IS NOT NULL;
+```
+
+A concurrent build that fails leaves an invalid index under that name, which a
+re-run then skips. Check with
+`SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;` and drop and
+re-create any of the three it lists.
+
+While an account is opted out the server stores nothing about its completion,
+chat and feedback requests, denies agent content and agent memory, never flushes
+its project context, and refuses study joins; opting out withdraws an active
+enrollment (new status `WITHDRAWN`). Erasing deletes the account's classic, agent and
+research data in one transaction and leaves one content-free deletion-ledger
+record per erased enrollment. `DELETE /api/user/delete` now always erases the
+data (`delete_data` is ignored), revokes the account's tokens, and refuses with
+`409` an account that owns research studies or agent profiles.
+
+## Study consent versions and assignment policy
+
+Studies can carry their own consent document and tick-box statements, and each
+enrollment records which consent view it accepted (`consent_digest`) together with
+that view and the participant's answers (`consent_snapshot_json`). Alembic
+revision `c5e8f1a2d3b4` (after `b7c1d2e3f4a5`) adds the two columns, so the
+deployment step `python src/database/migration/migration_manager.py migrate`
+applies it (the new backend needs the columns before it starts). It is
+idempotent; run by hand it is:
+
+```sql
+ALTER TABLE public.research_enrollment
+    ADD COLUMN IF NOT EXISTS consent_digest VARCHAR NULL,
+    ADD COLUMN IF NOT EXISTS consent_snapshot_json JSONB NULL;
+```
+
+Both are nullable and the previous code ignores them, so they are safe to add
+while the old backend is still running. Enrollments created earlier keep null
+values: their consent version was never recorded.
+
+Studies created from this release on freeze an `assignment` block in their
+configuration (`DETERMINISTIC_HASH` salted-hash draw, plus the opt-in manual
+override); existing studies keep the `RANDOM_EQUAL` draw. This needs no schema
+change. See `docs/RESEARCH_ANALYTICS_SCOPE.md`.
+
+## Blocked commands replace the command allowlist
+
+Built-in (`code4me2-agent`) profiles no longer list the programs the agent may
+run. They list the programs it may **not** run (`commands_denylist`, "Blocked
+commands" in the profile editor, at most 64 names); every other program installed
+on the participant's machine can run. Under the per-step approval policy the
+participant still approves each command; under auto-approval nothing asks. An
+empty list blocks nothing.
+
+Alembic revision `d41e7c9a2b6f` (after `c5e8f1a2d3b4`) adds the column, so
+`python src/database/migration/migration_manager.py migrate` applies it (the new
+backend needs it before it starts). By hand:
+
+```sql
+ALTER TABLE public.agent_profile ADD COLUMN IF NOT EXISTS commands_denylist_json TEXT;
+```
+
+It is nullable and the previous code ignores it, so it is safe to add while the
+old backend is still running. The retired `commands_allowlist_json` column stays
+in the table, unused, so the previous backend can still be rolled back to.
+Profile templates saved with an allowlist show an empty "Blocked commands" field;
+studies frozen earlier keep their snapshot.
+
+The packaged agent enforces the list, so studies need a runtime release built
+from this code (the release after `runtime-v0.0.6`). Releases up to and including
+`runtime-v0.0.6` ignore `commands_denylist` and keep their old behaviour: they
+run only the commands in `commands_allowlist`, which the server still sends,
+computed as before (an allowlist frozen in an older study, else a user's
+config-row allowlist, else `pwd, ls, cat, grep, rg`) minus any blocked command.
+A newer runtime refuses a run policy without `commands_denylist` (its log says
+the server is older than the runtime), so deploy the server first, then import
+the new runtime release and pin profiles to it.
+
+A name matches the program a command starts: case-insensitive, ignoring any
+directory, trailing dots and spaces, and a `.exe`/`.cmd`/`.bat`/`.com` suffix
+(`git` also blocks `/usr/bin/git` and `git.exe`). When the command is a shell
+(for example `bash`, `sh`, `zsh`, `tcsh`, `cmd /c`, `powershell -Command`, `wsl`),
+a launcher (for example `env`, `xargs`, `sudo`, `timeout`, `script`, `npx`) or a
+package manager (for example `uv`, `poetry`, `conda`, `npm`, `pnpm`, `yarn`,
+`mise`), every plainly written word of its arguments is checked too (`@` splits
+words, so neither a version suffix such as `npm@10` nor `git@github.com` hides a
+name), so `bash -c "git push"` and `npm x -c "git push"` are refused. Package managers have
+many ways to run a program, so all their arguments count: installing a package
+named like a blocked program is refused as well. The lists in `agents/tools.py` are not
+exhaustive. A program started by a script, an interpreter (`python -c`), a build
+tool (`make`, `npm run` scripts) or `find -exec`, and a name disguised with
+escapes, is not visible to the check: block those as well if that matters, or
+rely on per-step approval. A verify command may not use a blocked program; this
+is refused when a profile is saved or frozen, while a running study whose verify
+command a config row (or a later rule change) blocks has the runtime skip it. A
+user's config row can add bare names with `{"agent": {"commands_denylist":
+[...]}}`; a malformed one fails closed (a managed run is refused; a legacy caller
+loses `run_command`, as it does whenever the blocked commands cannot be read).
+Its legacy `commands_allowlist` only affects runtimes up to 0.0.6.

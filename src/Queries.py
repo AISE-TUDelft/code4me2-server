@@ -11,11 +11,6 @@ from backend.utils import Fakable, SerializableBaseModel
 from database.db_schemas import DEFAULT_USER_PREFERENCE
 
 
-class Provider(Enum):
-    no_provider = "no_provider"
-    google = "google"
-
-
 class ContextChangeType(Enum):
     update = "update"
     insert = "insert"
@@ -65,13 +60,6 @@ class CreateUser(QueryBase):
                 "one lowercase letter, and one digit."
             )
         return v
-
-
-class CreateUserOauth(CreateUser):
-    token: str = Field(..., description="JWT token for authentication")
-    provider: Provider = Field(
-        ..., description="OAuth provider (Google, Microsoft, etc.)"
-    )
 
 
 class UpdateUser(QueryBase):
@@ -139,11 +127,6 @@ class AuthenticateUserEmailPassword(QueryBase):
         Normalize email to lowercase.
         """
         return v.strip().lower()
-
-
-class AuthenticateUserOAuth(QueryBase):
-    provider: Provider = Field(..., description="OAuth provider")
-    token: str = Field(..., description="OAuth token in JWT format")
 
 
 class CreateConfig(QueryBase):
@@ -317,7 +300,9 @@ class CreateGeneration(QueryBase):
     generation_time: int = Field(..., description="Generation time (ms)", ge=0)
     shown_at: List[str] = Field(..., description="Timestamps when shown")
     was_accepted: bool = Field(..., description="Whether accepted by user")
-    confidence: float = Field(..., description="Confidence score")
+    confidence: Optional[float] = Field(
+        None, description="Confidence score; null when the model reports none"
+    )
     logprobs: List[float] = Field(..., description="Token log probabilities")
 
 
@@ -382,6 +367,41 @@ class CreateUserProject(QueryBase):
 
 class ActivateProject(QueryBase):
     project_id: UUID = Field(..., description="Project id to activate")
+
+
+class PrepareAcpGrant(QueryBase):
+    """Plugin request for a one-time launch grant for a local agent process.
+
+    Both fields are *bound into* the grant, so the agent that redeems it can
+    only ever act on this project and inside this workspace directory.
+    """
+
+    project_id: UUID = Field(
+        ..., description="Activated project id for the ACP process"
+    )
+    workspace: str = Field(
+        ..., description="Canonical project workspace", min_length=1, max_length=4096
+    )
+    launch_id: Optional[str] = Field(
+        default=None,
+        description="Stable identity for one managed runtime launch.",
+        min_length=1,
+        max_length=200,
+    )
+    path_format: Optional[str] = Field(
+        default=None,
+        description="Client workspace syntax: posix or windows.",
+        pattern="^(posix|windows)$",
+    )
+    managed_protocol_version: Optional[str] = Field(
+        default=None,
+        description="Managed-agent protocol requested by the plugin.",
+        pattern="^1$",
+    )
+
+
+class ExchangeAcpGrant(QueryBase):
+    grant: str = Field(..., description="One-time ACP launch grant", min_length=1)
 
 
 class CreateSession(QueryBase):

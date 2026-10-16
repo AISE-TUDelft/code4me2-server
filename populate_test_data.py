@@ -5,11 +5,10 @@ Database Test Data Populator for Code4Me Analytics Platform
 This script populates the database with realistic test data to demonstrate
 the analytics and visualization features including:
 - Users (admins and regular users)
-- Multiple configurations for A/B testing  
+- Multiple configurations for testing
 - Realistic usage patterns over time
 - Model performance with varying acceptance rates
 - Programming language distribution
-- Studies and configuration assignments
 - Telemetry data
 
 Run this script to generate test data for the analytics dashboard.
@@ -106,7 +105,7 @@ MODEL_CONFIGS = [
     }
 ]
 
-# Different configurations for A/B testing
+# Different completion configurations for the analytics dashboards
 CONFIGS_FOR_TESTING = [
     {
         "name": "Default Configuration",
@@ -160,8 +159,7 @@ class DatabasePopulator:
             'trigger_types': [],
             'plugin_versions': [],
             'projects': [],
-            'sessions': [],
-            'studies': []
+            'sessions': []
         }
 
     def connect(self):
@@ -192,8 +190,6 @@ class DatabasePopulator:
             'chat_query',
             'completion_query',
             'meta_query',
-            'config_assignment_history',
-            'study',
             'session_projects',
             'session',
             'project_users',
@@ -730,77 +726,6 @@ class DatabasePopulator:
         """Generate ground truth data"""
         return f"// Correct implementation for {language_name}\n" + self._generate_code_completion(language_name)
 
-    def create_studies(self):
-        """Create test studies for A/B testing"""
-        print("🔬 Creating test studies...")
-        
-        # Create a few studies to demonstrate the feature
-        studies_to_create = [
-            {
-                "name": "Model Performance Comparison",
-                "description": "Testing different model selection strategies",
-                "config_ids": [1, 2, 3],  # Use first 3 configs
-                "is_active": True,
-                "days_ago_started": 7
-            },
-            {
-                "name": "Response Time Optimization", 
-                "description": "Comparing fast vs quality-optimized responses",
-                "config_ids": [2, 3],  # Fast vs High Quality
-                "is_active": False,
-                "days_ago_started": 20,
-                "days_ago_ended": 10
-            }
-        ]
-        
-        for study_info in studies_to_create:
-            study_id = str(uuid.uuid4())
-            admin_user = random.choice([u for u in self.created_data['users'] if u['is_admin']])
-            
-            starts_at = datetime.now() - timedelta(days=study_info['days_ago_started'])
-            ends_at = None
-            if 'days_ago_ended' in study_info:
-                ends_at = datetime.now() - timedelta(days=study_info['days_ago_ended'])
-            
-            # Use first config as default
-            default_config_id = self.created_data['configs'][0]['config_id']
-            
-            self.cursor.execute('''
-                INSERT INTO study (study_id, name, description, created_by, starts_at, 
-                                 ends_at, is_active, default_config_id, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ''', (
-                study_id, study_info['name'], study_info['description'],
-                admin_user['user_id'], starts_at, ends_at, study_info['is_active'],
-                default_config_id, starts_at
-            ))
-            
-            # Assign users to configs for this study
-            study_configs = [c for c in self.created_data['configs'] 
-                           if c['config_id'] in study_info['config_ids']]
-            
-            for user in self.created_data['users']:
-                if not user['is_admin']:  # Only assign regular users to studies
-                    assigned_config = random.choice(study_configs) if study_configs else random.choice(self.created_data['configs'])
-                    self.cursor.execute('''
-                        INSERT INTO config_assignment_history 
-                        (user_id, study_id, assigned_config_id, assigned_at)
-                        VALUES (%s, %s, %s, %s)
-                    ''', (
-                        user['user_id'], study_id, assigned_config['config_id'], starts_at
-                    ))
-            
-            self.created_data['studies'].append({
-                'study_id': study_id,
-                'name': study_info['name'],
-                'is_active': study_info['is_active']
-            })
-            
-            print(f"  Created study: {study_info['name']}")
-
-        print(f"✅ Created {len(studies_to_create)} studies")
-        self.conn.commit()
-
     def print_summary(self):
         """Print summary of created data"""
         print("\n🎉 Test Data Population Complete!")
@@ -811,7 +736,6 @@ class DatabasePopulator:
         print(f"  • Projects: {len(self.created_data['projects'])}")
         print(f"  • Sessions: {len(self.created_data['sessions'])}")
         print(f"  • Queries: {NUM_QUERIES}")
-        print(f"  • Studies: {len(self.created_data['studies'])}")
         print(f"  • Models: {len(self.created_data['models'])}")
         print(f"  • Languages: {len(self.created_data['languages'])}")
         
@@ -819,17 +743,11 @@ class DatabasePopulator:
         for user in self.created_data['users']:
             if user['is_admin']:
                 print(f"  • {user['email']} (Config ID: {user['config_id']})")
-        
-        print(f"\n🔬 Active Studies:")
-        for study in self.created_data['studies']:
-            if study['is_active']:
-                print(f"  • {study['name']}")
 
         print(f"\n🌐 You can now:")
         print(f"  • Login with any admin user to see all analytics")
         print(f"  • Login with regular users to see personal analytics") 
         print(f"  • Test the dashboard time windows and filters")
-        print(f"  • View A/B test results in admin panel")
         print(f"  • Explore model performance comparisons")
 
 
@@ -854,7 +772,6 @@ def main():
         populator.create_projects()
         populator.create_sessions()
         populator.create_telemetry_and_queries()
-        populator.create_studies()
         
         # Print summary
         populator.print_summary()

@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
+// The shared UI kit loads before any page stylesheet so pages layer on top.
+import "./styles/ui.css";
 import App from "./App";
 import reportWebVitals from "./reportWebVitals";
 

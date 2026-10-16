@@ -1,0 +1,254 @@
+/* Administrator views (Accounts, Provider connections, Agent catalogue).
+   Generic controls come from styles/ui.css; this file only adds the
+   page-specific pieces and keeps the older admin-* classes on the tokens. */
+
+.admin-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ---- Accounts ---------------------------------------------------- */
+
+.admin-accounts-card .ui-card-body {
+  gap: 16px;
+}
+
+.admin-accounts-table td {
+  vertical-align: top;
+}
+
+.account-identity {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-width: 220px;
+}
+
+.account-avatar {
+  align-items: center;
+  background-color: var(--surface-sunken);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.account-email {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.account-studies {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  min-width: 180px;
+  padding: 0;
+}
+
+.account-studies li {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shell .account-study-link {
+  color: var(--primary-color);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.shell .account-study-link:hover {
+  text-decoration: underline;
+}
+
+.account-access-admin {
+  align-items: center;
+  color: var(--text-secondary);
+  display: inline-flex;
+  font-size: 12.5px;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* ---- Provider connections ------------------------------------------ */
+
+.connection-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+}
+
+.connection-card .ui-card-body {
+  gap: 12px;
+}
+
+.connection-card.is-inactive {
+  opacity: 0.8;
+}
+
+.connection-card-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.connection-meta {
+  display: grid;
+  gap: 8px 12px;
+  grid-template-columns: 110px minmax(0, 1fr);
+  margin: 0;
+}
+
+.connection-meta dt {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.connection-meta dd {
+  color: var(--text-color);
+  font-size: 13px;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.connection-form-footer {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+/* ---- Older admin-* classes (Agent catalogue), kept on the tokens ----- */
+
+.admin-section {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+}
+
+.admin-section h3 {
+  color: var(--text-color);
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0;
+}
+
+.admin-table code {
+  overflow-wrap: anywhere;
+}
+
+.admin-toggle {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.admin-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-status-badge {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 11.5px;
+  font-weight: 650;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+
+.admin-status-badge.ready {
+  background-color: var(--success-soft);
+  color: var(--success-color);
+}
+
+.admin-status-badge.not-ready {
+  background-color: var(--warning-soft);
+  color: var(--warning-color);
+}
+
+.admin-status-badge.not-built {
+  background-color: var(--danger-soft);
+  color: var(--error-color);
+}
+
+.admin-status-badge.declared {
+  background-color: var(--info-soft);
+  color: var(--info-color);
+}
+
+.admin-form-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.admin-form-grid label {
+  color: var(--text-color);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 6px;
+}
+
+.admin-form-grid input:not([type="checkbox"]):not([type="radio"]),
+.admin-form-grid textarea,
+.admin-section input[type="file"],
+.admin-section textarea {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-color);
+  font: inherit;
+  padding: 8px 10px;
+}
+
+.admin-form-grid .admin-span {
+  grid-column: 1 / -1;
+}
+
+.admin-hint {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  margin: 0;
+}
+
+/* ---- Provider connections: model prices --------------------------------- */
+
+.price-table th[scope="row"] {
+  font-weight: 500;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.price-table .ui-money {
+  max-width: 150px;
+}
+
+.ui-chip.is-unpriced {
+  border-color: color-mix(in srgb, var(--warning-color) 40%, transparent);
+}

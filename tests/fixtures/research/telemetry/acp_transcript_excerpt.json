@@ -1,0 +1,93 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": 1,
+      "clientCapabilities": {},
+      "api_key": "sk-CANARY-ACP-0000000001"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-synthetic-1",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call-synthetic-1",
+        "title": "Read file",
+        "kind": "read",
+        "status": "pending",
+        "rawInput": {
+          "path": "/Users/synthetic/project/main.py",
+          "api_key": "sk-CANARY-ACP-0000000002"
+        },
+        "content": [
+          { "type": "text", "text": "CANARY-ACP-CONTENT-BODY" }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-synthetic-1",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-synthetic-1",
+        "status": "completed",
+        "content": [
+          { "type": "text", "text": "CANARY-ACP-TOOL-OUTPUT" }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "sess-synthetic-1",
+      "toolCall": { "toolCallId": "call-synthetic-2" },
+      "options": [
+        { "optionId": "allow", "name": "Allow", "kind": "allow_once" }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-synthetic-1",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "messageId": "msg-synthetic-1",
+        "content": { "type": "text", "text": "CANARY-ACP-PROMPT-TEXT" }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+      "sessionId": "sess-synthetic-1",
+      "update": {
+        "sessionUpdate": "agent_thought_chunk",
+        "messageId": "msg-synthetic-1",
+        "content": { "type": "text", "text": "CANARY-ACP-REASONING" }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "vendor/unknownThing",
+    "params": {
+      "secret": "ghp_CANARYACP0000000003",
+      "count": 3
+    }
+  }
+]

@@ -1,0 +1,53 @@
+{
+  "schema_version": "2",
+  "manifest_digest": "sha256:54c4d05cecffcc7549f65376e0bdee83352e0224943617156cdf9cfe7114424d",
+  "release_id": "rel-codex-v1",
+  "agent_id": "codex",
+  "adapter_ref": {
+    "adapter_id": "code4me-acp",
+    "version": "1.0.0",
+    "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "supported_release_ranges": []
+  },
+  "components": [
+    {
+      "name": "runtime",
+      "os": "macos",
+      "arch": "arm64",
+      "relative_path": "bin/codex-acp",
+      "sha256": "sha256:d1240b3deed1bbc8d8ac02e09963fa761e16b4ba9485cdaee5f66181d7aca746",
+      "size": 31,
+      "executable": true,
+      "license": null
+    },
+    {
+      "name": "runtime:LICENSE",
+      "os": "macos",
+      "arch": "arm64",
+      "relative_path": "LICENSE",
+      "sha256": "sha256:267f7a2e19dfa9df99af774520985a0e521925293ea5b7e767ab06969d06bf91",
+      "size": 12,
+      "executable": false,
+      "license": null
+    }
+  ],
+  "supported_platforms": [
+    {
+      "os": "macos",
+      "arch": "arm64"
+    }
+  ],
+  "args_template": {
+    "macos-arm64": [
+      "--acp",
+      "serve"
+    ]
+  },
+  "licenses": [],
+  "compatibility": {
+    "min_protocol_version": null,
+    "max_protocol_version": null
+  },
+  "self_check": null,
+  "signature": null
+}

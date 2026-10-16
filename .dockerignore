@@ -3,6 +3,7 @@
 venv/
 **/__pycache__/
 *.pyc
+*.egg-info/
 
 # Git
 .git
@@ -13,20 +14,38 @@ node_modules
 src/website/node_modules
 
 # Local caches and data
+.env
+**/.env
 .cache
 .hypothesis
 .coverage
 secrets
 
-# Project data directories
+# Project data directories (and database dumps written by the backup service)
+backups/
 Data
 .data
 
 data/
 
+# Build and test outputs. The e2e harness runs on the host; e2e/runs alone
+# used to add ~4 GB to every image.
+build/
+dist/
+e2e/runs/
+e2e/.cache/
+e2e/.venv/
+e2e/.browser-venv/
+**/.pytest_cache
+**/.ruff_cache
+
 # Docker files
 Dockerfile*
 docker-compose*.yml
+
+# Development-only scripts (e.g. the guarded research-study seeder) must never
+# be baked into the server image.
+scripts/dev/
 
 # OS
 .DS_Store

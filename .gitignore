@@ -1,10 +1,31 @@
 .DS_Store
-node_modules
-.venv
-.idea
-secrets
+.env
+.env.*
+!.env.example
+node_modules/
+.venv/
+*.egg-info/
+.idea/
+secrets/
 **/__pycache__/
-.hypothesis
-.cache
-data
+.hypothesis/
+.cache/
+data/
+backups/
 .coverage
+
+# Native/PyInstaller and package build output
+build/
+dist/
+*.py[cod]
+
+# Test, lint, type-check and coverage caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+*.md
+# Design and operations documents are part of the repository (review E-05):
+# a `git clean` must never be able to delete them.
+!README.md
+!docs/**/*.md

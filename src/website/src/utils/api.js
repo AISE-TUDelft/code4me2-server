@@ -75,11 +75,11 @@ export const hashPassword = (password) => {
 /**
  * Make an API request to create a new user
  *
- * @param {Object} userData - User data including name, email, password, and optional googleCredential
+ * @param {Object} userData - User data including name, email, and password
  * @returns {Promise} - Promise that resolves with the API response
  */
 export const createUser = async (userData) => {
-  const { name, email, password, googleCredential } = userData;
+  const { name, email, password } = userData;
   try {
     // Prepare the request body
     const requestBody = {
@@ -88,12 +88,6 @@ export const createUser = async (userData) => {
       password,
       config_id: 1, // Default config ID - you may want to make this configurable
     };
-
-    // If we have a Google credential, include it in the request
-    if (googleCredential) {
-      requestBody.token = googleCredential;
-      requestBody.provider = "google";
-    }
 
     const response = await fetch(
       `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/user/create/`,
@@ -172,56 +166,6 @@ export const authenticateUser = async (credentials) => {
     }
   } catch (error) {
     console.error("Authentication error:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Authenticate a user with OAuth
- *
- * @param {Object} oauthData - OAuth data (provider, token)
- * @returns {Promise} - Promise that resolves with the API response
- */
-export const authenticateWithOAuth = async (oauthData) => {
-  const { provider, token } = oauthData;
-
-  try {
-    console.log(`Authenticating user with ${provider} OAuth`);
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/user/authenticate/`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include", // Include cookies for auth token
-        body: JSON.stringify({ token: token, provider: provider }),
-      },
-    );
-    const responseBody = await parseResponseSafe(response);
-
-    if (!response.ok) {
-      const errMsg = (responseBody && (responseBody["message"] || responseBody["detail"])) || `${response.status}: ${response.statusText}`;
-      return {
-        ok: false,
-        error: errMsg,
-      };
-    } else {
-      if (!responseBody || typeof responseBody !== "object") {
-        return { ok: false, error: "Empty or invalid server response." };
-      }
-      return {
-        ok: true,
-        message: responseBody["message"],
-        user: responseBody["user"],
-        config: responseBody["config"],
-      };
-    }
-  } catch (error) {
-    console.error(`${provider} OAuth authentication error:`, error);
     return {
       ok: false,
       error: "An unexpected error occurred. Please try again.",
@@ -347,7 +291,7 @@ export const resendVerificationEmail = async () => {
     } else {
       return {
         ok: true,
-        message: responseBody["message"] || "Verification email sent successfully",
+        message: responseBody["message"] || "Verification email request queued",
       };
     }
   } catch (error) {
@@ -618,6 +562,33 @@ export const getModelComparison = async (params = {}) => {
   }
 };
 
+const getAgentAnalytics = async (path, fallbackError) => {
+  try {
+    const response = await fetch(
+      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/agents/${path}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      },
+    );
+    const body = await response.json();
+    if (!response.ok) {
+      return { ok: false, error: body["detail"] || `${response.status}: ${response.statusText}` };
+    }
+    return { ok: true, data: body };
+  } catch (error) {
+    console.error("Error fetching agent analytics:", error);
+    return { ok: false, error: fallbackError };
+  }
+};
+
+export const getAgentOverview = (params = {}) =>
+  getAgentAnalytics(`overview?${new URLSearchParams(params)}`, "An unexpected error occurred. Please try again.");
+
+export const getAgentRunDetail = (taskId) =>
+  getAgentAnalytics(`runs/${encodeURIComponent(taskId)}`, "Failed to load agent run detail");
+
 /**
  * Get user engagement data
  *
@@ -651,249 +622,6 @@ export const getUserEngagement = async (timeWindow = "30d") => {
     }
   } catch (error) {
     console.error("Error fetching user engagement:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-// ===== ADMIN-ONLY STUDY MANAGEMENT FUNCTIONS =====
-
-/**
- * Get list of studies
- *
- * @param {boolean} includeInactive - Include inactive studies
- * @returns {Promise} - Promise that resolves with studies list
- */
-export const getStudies = async (includeInactive = false) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/list?include_inactive=${includeInactive}`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error fetching studies:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Create a new study
- *
- * @param {Object} studyData - Study data
- * @returns {Promise} - Promise that resolves with creation result
- */
-export const createStudy = async (studyData) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/create`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify(studyData),
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error creating study:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Activate a study
- *
- * @param {string} studyId - Study ID
- * @returns {Promise} - Promise that resolves with activation result
- */
-export const activateStudy = async (studyId) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/activate`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error activating study:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Get study evaluation results
- *
- * @param {string} studyId - Study ID
- * @returns {Promise} - Promise that resolves with evaluation data
- */
-export const getStudyEvaluation = async (studyId) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/evaluation`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error fetching study evaluation:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Get study details (assignments and metadata)
- *
- * @param {string} studyId - Study ID
- * @returns {Promise}
- */
-export const getStudyDetails = async (studyId) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/details`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error fetching study details:", error);
-    return {
-      ok: false,
-      error: "An unexpected error occurred. Please try again.",
-    };
-  }
-};
-
-/**
- * Deactivate a study
- *
- * @param {string} studyId - Study ID
- * @returns {Promise}
- */
-export const deactivateStudy = async (studyId) => {
-  try {
-    const response = await fetch(
-      `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/analytics/studies/${studyId}/deactivate`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-      },
-    );
-    const responseBody = await response.json();
-
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: responseBody["detail"] || `${response.status}: ${response.statusText}`,
-      };
-    } else {
-      return {
-        ok: true,
-        data: responseBody,
-      };
-    }
-  } catch (error) {
-    console.error("Error deactivating study:", error);
     return {
       ok: false,
       error: "An unexpected error occurred. Please try again.",
@@ -1238,3 +966,992 @@ export const validateHuggingFaceModel = async (name) => {
     return { ok: false, error: "Validation failed" };
   }
 };
+
+// ── Agent subsystem ─────────────────────────────────────────────────────────
+//
+// Backs the Agent Profiles page (define experiment arms). The endpoints are
+// researcher/admin-only server-side.
+// Assignments are owned by enrollment/study membership; there is no manual
+// assignment authoring endpoint (ISSUE-16).
+
+const AGENT_BASE = () =>
+  `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/agent`;
+
+// Shared request helper. The hand-rolled fetch blocks above predate it; new
+// agent endpoints funnel through here so error handling stays consistent.
+//
+// Error bodies are normalized so no raw object/array ever reaches JSX:
+//   * FastAPI's default 422 `detail` array (`{type,loc,msg,input}`) becomes
+//     `errors: [{field, message, code}]` (loc joined with "."), with a readable
+//     summary string;
+//   * a custom `detail` object `{code, field, message}` becomes one entry;
+//   * a plain `detail`/`message` string is used as-is.
+// The same helpers back `researchRequest`, so there is one pattern, not two.
+const normalizeErrorEntries = (payload) => {
+  if (!payload || typeof payload !== "object") return [];
+  const detail = payload.detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => {
+      if (typeof item === "string") return { field: "", message: item, code: "" };
+      const loc = Array.isArray(item.loc) ? item.loc.join(".") : "";
+      return {
+        field: item.field || loc || "",
+        message: item.msg || item.message || "",
+        code: item.code || item.type || "",
+        severity: item.severity,
+      };
+    });
+  }
+  if (Array.isArray(payload.errors)) return payload.errors;
+  if (detail && typeof detail === "object") {
+    return [
+      {
+        field: detail.field || "",
+        message: detail.message || detail.msg || detail.reason || "",
+        code: detail.code || "",
+        severity: detail.severity,
+      },
+    ];
+  }
+  return [];
+};
+
+const normalizeRequestError = (payload, response) => {
+  const detail = payload ? payload.detail : undefined;
+  const errors = normalizeErrorEntries(payload);
+  const detailObject =
+    detail && typeof detail === "object" && !Array.isArray(detail) ? detail : null;
+  const typedCode =
+    (detailObject && detailObject.code) ||
+    (payload && payload.code) ||
+    errors.find((entry) => entry && entry.code)?.code ||
+    "";
+  const detailMessage =
+    (typeof detail === "string" && detail) ||
+    (detailObject &&
+      (detailObject.message || detailObject.code || detailObject.reason)) ||
+    (payload && payload.message) ||
+    "";
+  // A typed validation failure must never surface as
+  // "422 Unprocessable Entity": summarize the field errors instead.
+  const error =
+    detailMessage ||
+    (errors.length
+      ? summarizeValidationErrors(errors)
+      : `${response.status}: ${response.statusText}`);
+  return { code: typedCode, error, errors, status: response.status };
+};
+
+const agentRequest = async (path, { method = "GET", body, label } = {}) => {
+  try {
+    const response = await fetch(`${AGENT_BASE()}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    // 204 has no body to parse.
+    const payload =
+      response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, ...normalizeRequestError(payload, response) };
+    }
+    return { ok: true, data: payload, status: response.status };
+  } catch (e) {
+    console.error(`Error ${label || path}:`, e);
+    return {
+      ok: false,
+      error: `Failed to ${label || "complete request"}`,
+      status: null,
+      errors: [],
+    };
+  }
+};
+
+export const getAgentProfiles = async () => {
+  const result = await agentRequest("/profiles", { label: "load agent profiles" });
+  return result.ok ? { ok: true, data: result.data.profiles || [] } : result;
+};
+
+export const createAgentProfile = async (profile) =>
+  agentRequest("/profiles", {
+    method: "POST",
+    body: profile,
+    label: "create agent profile",
+  });
+
+export const updateAgentProfile = async (profileId, profile) =>
+  agentRequest(`/profiles/${profileId}`, {
+    method: "PUT",
+    body: profile,
+    label: "update agent profile",
+  });
+
+export const deleteAgentProfile = async (profileId) =>
+  agentRequest(`/profiles/${profileId}`, {
+    method: "DELETE",
+    label: "delete agent profile",
+  });
+
+// Tool names selectable for a profile. Pass a frameworkVersion to narrow the
+// list to the runtime the profile targets.
+export const getAgentAvailableTools = async (frameworkVersion) => {
+  const query = frameworkVersion
+    ? `?framework_version=${encodeURIComponent(frameworkVersion)}`
+    : "";
+  const result = await agentRequest(`/available-tools${query}`, {
+    label: "load available agent tools",
+  });
+  return result.ok
+    ? {
+        ok: true,
+        data: {
+          tools: result.data.tools || [],
+          frameworks: result.data.frameworks || [],
+        },
+      }
+    : result;
+};
+
+// ── Research control plane ──────────────────────────────────────────────────
+//
+// Backs the researcher-facing lifecycle pages (ResearchStudies,
+// ResearchStudyEditor and ResearchJoin). The backend mounts these under
+// /api/research and every endpoint is admin/authorized-researcher only, so they
+// reuse the existing cookie-based session like the analytics/admin helpers.
+//
+// Validation failures from the protocol service are 422 responses whose
+// `detail` is a *list* of {code, field, message, severity} entries. Those are
+// preserved on `errors` so the UI can render field-level messages instead of
+// collapsing them into one opaque string.
+
+const RESEARCH_BASE = () =>
+  `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/research`;
+
+const summarizeValidationErrors = (errors) =>
+  errors
+    .slice(0, 3)
+    .map((error) => {
+      if (typeof error === "string") return error;
+      return `${error.field || error.code || "protocol"}: ${error.message || ""}`.trim();
+    })
+    .join("; ");
+
+export const researchRequest = async (
+  path,
+  { method = "GET", body, label } = {},
+) => {
+  try {
+    const response = await fetch(`${RESEARCH_BASE()}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    // 204 has no body to parse.
+    const payload =
+      response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, ...normalizeRequestError(payload, response) };
+    }
+    return { ok: true, data: payload, status: response.status };
+  } catch (e) {
+    console.error(`Error ${label || path}:`, e);
+    return {
+      ok: false,
+      error: `Failed to ${label || "complete request"}`,
+      status: null,
+      errors: [],
+    };
+  }
+};
+
+/**
+ * Multipart POST. The browser sets the multipart boundary itself, so no
+ * Content-Type header is set here; the same error normalisation as
+ * ``researchRequest`` is applied.
+ */
+export const researchUpload = async (path, formData, { label } = {}) => {
+  try {
+    const response = await fetch(`${RESEARCH_BASE()}${path}`, {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+    });
+    // 204 has no body to parse.
+    const payload =
+      response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, ...normalizeRequestError(payload, response) };
+    }
+    return { ok: true, data: payload, status: response.status };
+  } catch (e) {
+    console.error(`Error ${label || path}:`, e);
+    return {
+      ok: false,
+      error: `Failed to ${label || "complete request"}`,
+      status: null,
+      errors: [],
+    };
+  }
+};
+
+/**
+ * List study identities.
+ *
+ * NOTE: the research API exposes a study index plus per-study lookups; no
+ * draft/revision endpoints exist. The call is made optimistically and a
+ * 404/405 is reported as `missing` so the UI can fall back to a study-id
+ * entry instead of failing hard.
+ */
+/**
+ * Create a study identity.
+ *
+ * The server generates the UUID (and grants the caller OWNER so they can
+ * author it immediately), which removes the "paste a UUID" step from the UI.
+ * The identity starts as a DRAFT study with a study-owned join code.
+ */
+export const createResearchStudy = async ({
+  name,
+  description,
+  startsAt,
+  endsAt,
+  telemetryPolicy,
+  sessionPolicy,
+  profileIds,
+  defaultBudgetUsd,
+  budgetWarningFraction,
+  allowManualAssignment,
+  consent,
+} = {}) =>
+  researchRequest("/studies", {
+    method: "POST",
+    body: {
+      name,
+      description: description ?? null,
+      starts_at: startsAt || null,
+      ends_at: endsAt || null,
+      telemetry_policy: telemetryPolicy || {},
+      session_policy: sessionPolicy || {},
+      profile_ids: profileIds || [],
+      // Default participant budget (decimal USD string). Required by the
+      // server when a selected profile is metered; ignored for Codex-only.
+      default_budget_usd: defaultBudgetUsd ? String(defaultBudgetUsd) : null,
+      ...(typeof budgetWarningFraction === "number"
+        ? { budget_warning_fraction: budgetWarningFraction }
+        : {}),
+      // Arms are drawn by salted hash; this lets the owner change one by hand
+      // before first use (disclosed in the consent notice).
+      allow_manual_assignment: !!allowManualAssignment,
+      // A custom consent form ({document, statements}); omitted, the stock
+      // notice applies.
+      ...(consent ? { consent } : {}),
+    },
+    label: "create research study",
+  });
+
+export const listResearchStudies = async () => {
+  const result = await researchRequest("/studies", {
+    label: "load research studies",
+  });
+  if (result.ok) {
+    const data = result.data || {};
+    return { ok: true, data: data.studies || data || [] };
+  }
+  if (result.status === 403) {
+    return {
+      ok: false,
+      forbidden: true,
+      error:
+        "Your account is not enabled for research. Ask an administrator to enable researcher access.",
+    };
+  }
+  if (result.status === 404 || result.status === 405) {
+    return {
+      ok: false,
+      missing: true,
+      error: "The study-listing endpoint is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+export const getResearchStudy = async (studyId) => {
+  const result = await researchRequest(
+    `/studies/${encodeURIComponent(studyId)}`,
+    { label: "load research study" },
+  );
+  return result.ok ? { ok: true, data: result.data.study || result.data } : result;
+};
+
+export const updateResearchStudyMetadata = async (studyId, metadata) =>
+  researchRequest(`/studies/${encodeURIComponent(studyId)}/metadata`, {
+    method: "PATCH",
+    body: metadata,
+    label: "update study metadata",
+  });
+
+export const stopResearchStudy = async (studyId, actor) =>
+  researchRequest(`/studies/${encodeURIComponent(studyId)}/stop`, {
+    method: "POST",
+    body: { actor: actor ?? null },
+    label: "stop research study",
+  });
+
+// Clone a stopped study. Supplying profile ids completes the clone through the
+// same validated profile freeze as create, so the clone is joinable; omitting
+// them leaves an explicitly non-runnable draft (ISSUE-12). A default budget
+// (decimal USD string) overrides the copied one; omitted, the source's is kept.
+export const cloneResearchStudy = async (studyId, { profileIds, defaultBudgetUsd } = {}) => {
+  const body = {
+    ...(Array.isArray(profileIds) && profileIds.length > 0 ? { profile_ids: profileIds } : {}),
+    ...(defaultBudgetUsd ? { default_budget_usd: String(defaultBudgetUsd) } : {}),
+  };
+  return researchRequest(`/studies/${encodeURIComponent(studyId)}/clone`, {
+    method: "POST",
+    ...(Object.keys(body).length > 0 ? { body } : {}),
+    label: "clone research study",
+  });
+};
+
+// Set a participant's arm by hand (studies created with manual assignment
+// allowed, before the participant's first use). Typed 409/422 codes come back
+// as `code`: MANUAL_ASSIGNMENT_DISABLED, ASSIGNMENT_IN_USE, PROFILE_NOT_IN_STUDY…
+export const changeEnrollmentAssignment = async (studyId, enrollmentId, profileId) =>
+  researchRequest(
+    `/studies/${encodeURIComponent(studyId)}/enrollments/${encodeURIComponent(enrollmentId)}/assignment`,
+    {
+      method: "PUT",
+      body: { profile_id: profileId },
+      label: "change participant arm",
+    },
+  );
+
+export const revokeResearchEnrollment = async (studyId, enrollmentId, actor) =>
+  researchRequest(
+    `/studies/${encodeURIComponent(studyId)}/enrollments/${encodeURIComponent(enrollmentId)}/revoke`,
+    {
+      method: "POST",
+      body: { actor: actor ?? null },
+      label: "revoke research enrollment",
+    },
+  );
+
+export const engageResearchKillSwitch = async (studyId, reason) =>
+  researchRequest("/operations/kill-switch", {
+    method: "POST",
+    body: { scope_kind: "STUDY", scope_id: studyId, reason },
+    label: "engage study kill switch",
+  });
+
+export const releaseResearchKillSwitch = async (switchId) =>
+  researchRequest(`/operations/kill-switch/${encodeURIComponent(switchId)}/release`, {
+    method: "POST",
+    label: "release study kill switch",
+  });
+
+const RESEARCH_ENDPOINT_MISSING = (status) => status === 404 || status === 405;
+
+export const getResearchStudyJoinCode = async (studyId) => {
+  const result = await researchRequest(
+    `/studies/${encodeURIComponent(studyId)}`,
+    { label: "load study join code" },
+  );
+  if (result.ok) {
+    const data = result.data.study || result.data || {};
+    return {
+      ok: true,
+      join_code: data.join_code || "",
+      status: data.research_status || "",
+      study: data,
+    };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    return {
+      ok: false,
+      missing: true,
+      error: "The study join-code endpoint is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+// Resolve a participant join code without redeeming it so the participant can
+// review the study and consent text before joining.
+export const resolveResearchJoinCode = async (joinCode) => {
+  const result = await researchRequest(
+    `/join/${encodeURIComponent(joinCode)}`,
+    { label: "resolve study join code" },
+  );
+  if (result.ok) {
+    const data = result.data || {};
+    const study = data.study || {};
+    const consent = data.consent || {};
+    return {
+      ok: true,
+      data: {
+        joinCode: data.join_code || joinCode,
+        study: {
+          studyId: study.study_id || "",
+          name: study.name || "",
+          description: study.description || "",
+          researchStatus: study.research_status || study.researchStatus || "",
+          joinability: study.joinability || study.joinability_status || "",
+          status: study.status || "",
+        },
+        policyText: consent.text || consent.consent_text || data.consent_text || "",
+        consentText: consent.text || consent.consent_text || data.consent_text || "",
+        // The full consent view (document, platform notice, statements) and
+        // its version digest, sent back on join.
+        consent: {
+          custom: consent.custom === true,
+          document: consent.document || null,
+          notice: consent.notice || consent.text || "",
+          statements: Array.isArray(consent.statements) ? consent.statements : [],
+          digest: consent.digest || "",
+        },
+      },
+    };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    return {
+      ok: false,
+      missing: true,
+      error:
+        "That join code could not be found, or the join service is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+// Redeem a participant join code for the signed-in account. Idempotent
+// server-side: re-running reuses the existing enrollment. `consent` carries
+// the reviewed version digest and the ticked statements ({digest, statements}).
+export const redeemResearchJoinCode = async (joinCode, acceptConsent, consent) => {
+  const result = await researchRequest("/join", {
+    method: "POST",
+    body: {
+      join_code: joinCode,
+      accept_consent: !!acceptConsent,
+      ...(consent && consent.digest ? { consent_digest: consent.digest } : {}),
+      ...(consent && consent.statements ? { consent_statements: consent.statements } : {}),
+    },
+    label: "redeem study join code",
+  });
+  if (result.ok) {
+    const data = result.data || {};
+    return {
+      ok: true,
+      data: {
+        enrollment_id: data.enrollment_id || "",
+        study_id: data.study_id || "",
+        assignment_id: data.assignment_id || "",
+        agent_profile_id: data.agent_profile_id || "",
+        status: data.status || "",
+        created: data.created,
+        reused: data.reused,
+        ...(data.handoff && typeof data.handoff === "object" ? { handoff: data.handoff } : {}),
+      },
+    };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    // Same ambiguity as resolve: unknown/expired code or an unmounted service.
+    return {
+      ok: false,
+      missing: true,
+      error:
+        "That join code could not be redeemed, or the join service is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+// The signed-in account's own enrollment projections (study-local, no account
+// data). Used by the join page to avoid re-asking for the policy when an active
+// enrollment already exists for the code's study.
+export const getMyResearchEnrollments = async () => {
+  const result = await researchRequest("/participants/me", {
+    label: "load my research enrollments",
+  });
+  if (result.ok) {
+    const data = result.data || {};
+    return { ok: true, data: data.enrollments || [] };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    return {
+      ok: false,
+      missing: true,
+      error:
+        "Your enrollment status is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+// Study-owner-scoped participant coverage (ISSUE-13): study-local participant
+// codes, frozen assignments and session/event counts only; no personal
+// timelines. The endpoint is owner/admin-only, so a 403 is reported as
+// `forbidden` for the UI to show a permission notice.
+export const getStudyParticipantCoverage = async (studyId) => {
+  const result = await researchRequest(
+    `/operations/participants/coverage?study_id=${encodeURIComponent(studyId)}`,
+    { label: "load study participant coverage" },
+  );
+  if (result.ok) {
+    const data = result.data || {};
+    return {
+      ok: true,
+      data: {
+        ...data,
+        participants: Array.isArray(data.participants) ? data.participants : [],
+      },
+    };
+  }
+  if (result.status === 403) {
+    return {
+      ok: false,
+      forbidden: true,
+      code: result.code || "FORBIDDEN",
+      status: 403,
+      error:
+        "Only the study owner or an administrator can view study participant coverage.",
+    };
+  }
+  if (RESEARCH_ENDPOINT_MISSING(result.status)) {
+    return {
+      ok: false,
+      missing: true,
+      error: "Study participant coverage is not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+// Study analytics (owner/admin only). Study-scoped participant codes and
+// metadata-only telemetry aggregates; never content or account identity.
+const studyAnalyticsRequest = async (studyId, path, label) => {
+  const result = await researchRequest(
+    `/studies/${encodeURIComponent(studyId)}/analytics${path}`,
+    { label },
+  );
+  if (result.ok) return { ok: true, data: result.data || {} };
+  if (result.status === 403) {
+    return {
+      ok: false,
+      forbidden: true,
+      status: 403,
+      code: result.code || "FORBIDDEN_STUDY",
+      error: "Only the study owner or an administrator can view study analytics.",
+    };
+  }
+  if (result.status === 405) {
+    return {
+      ok: false,
+      missing: true,
+      error: "Study analytics are not available on this server yet.",
+    };
+  }
+  return result;
+};
+
+export const getStudyParticipants = (studyId) =>
+  studyAnalyticsRequest(studyId, "/participants", "load study participants");
+
+export const getStudyParticipantDashboard = (studyId, enrollmentId) =>
+  studyAnalyticsRequest(
+    studyId,
+    `/participants/${encodeURIComponent(enrollmentId)}`,
+    "load participant dashboard",
+  );
+
+// `arms` (profile ids) and `participants` (enrollment ids) narrow the summary;
+// both repeat as query parameters and combine with AND.
+// One participant chat as turns of prompts, reasoning, messages and tool
+// calls (study owner/admin; stored content only where the study captured it).
+// Pages by turns: pass the previous page's `next_cursor` to continue.
+export const getStudyChatTrace = (studyId, enrollmentId, chatId, { cursor, limit } = {}) => {
+  const params = new URLSearchParams({ chat_id: chatId });
+  if (cursor) params.set("cursor", cursor);
+  if (limit) params.set("limit", String(limit));
+  return researchRequest(
+    `/studies/${encodeURIComponent(studyId)}/enrollments/${encodeURIComponent(enrollmentId)}/trace?${params.toString()}`,
+    { label: "load chat trace" },
+  );
+};
+
+// Raw data export (study owner/admin): a ZIP of CSV/JSONL files with a
+// manifest. Resolves {ok, blob, filename} or the typed error of the request
+// (UNKNOWN_DATASET, CONTENT_NOT_CAPTURED, CONTENT_REQUIRES_JSONL, ...).
+export const downloadStudyExport = async (
+  studyId,
+  { datasets = [], format = "csv", arms = [], participants = [], start, end, eventCategories = [], includeContent = false } = {},
+) => {
+  const params = new URLSearchParams({ format });
+  datasets.forEach((dataset) => params.append("datasets", dataset));
+  arms.forEach((arm) => params.append("arm", arm));
+  participants.forEach((participant) => params.append("participant", participant));
+  eventCategories.forEach((category) => params.append("event_categories", category));
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  if (includeContent) params.set("include_content", "true");
+  try {
+    const response = await fetch(
+      `${RESEARCH_BASE()}/studies/${encodeURIComponent(studyId)}/export?${params.toString()}`,
+      { credentials: "include" },
+    );
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      return { ok: false, ...normalizeRequestError(payload, response) };
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="([^"]+)"/);
+    return { ok: true, blob: await response.blob(), filename: match ? match[1] : "study-export.zip" };
+  } catch (e) {
+    console.error("Error exporting study data:", e);
+    return { ok: false, error: "Failed to export the study data", status: null, errors: [] };
+  }
+};
+
+export const getStudyAnalyticsSummary = (studyId, { start, end, arms = [], participants = [] } = {}) => {
+  const params = new URLSearchParams();
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  arms.forEach((arm) => params.append("arm", arm));
+  participants.forEach((participant) => params.append("participant", participant));
+  const query = params.toString() ? `?${params.toString()}` : "";
+  return studyAnalyticsRequest(studyId, `/summary${query}`, "load study analytics");
+};
+
+// The researcher-readable release catalogue (ISSUE-11): registered releases
+// independent of existing profiles, so a fresh install can author its first
+// profile. Read-only and non-secret; importing and qualifying releases remains
+// admin-only under /agents/releases.
+export const getReleaseCatalogue = async () => {
+  const result = await researchRequest("/agents/release-catalogue", {
+    label: "load release catalogue",
+  });
+  return result.ok ? { ok: true, data: result.data.releases || [] } : result;
+};
+
+// Derived, read-only distribution views. A profile IS a distribution; every
+// entry carries the resolved `release_id`/`release_version`, the server-derived
+// `verified` flag and the release's `supported_platforms`. Readable by any
+// authenticated user and exposes no secret, so a researcher can pick exactly one
+// distribution without ever seeing a release id or digest as an input.
+export const getAgentDistributions = async () => {
+  const result = await researchRequest("/agents/distributions", {
+    label: "load agent distributions",
+  });
+  return result.ok
+    ? { ok: true, data: result.data.distributions || [] }
+    : result;
+};
+
+export const getAgentDistribution = async (distributionId) => {
+  const result = await researchRequest(
+    `/agents/distributions/${encodeURIComponent(distributionId)}`,
+    { label: "load agent distribution" },
+  );
+  return result.ok ? { ok: true, data: result.data.distribution } : result;
+};
+
+// Provider connections the caller may select for a profile. Administrators see
+// every connection (including endpoint/secret_ref); researchers see only the
+// connections granted to them. The response never includes a secret value.
+export const getProviderConnections = async () => {
+  const result = await researchRequest("/provider-connections", {
+    label: "load provider connections",
+  });
+  return result.ok
+    ? { ok: true, data: result.data.connections || [] }
+    : result;
+};
+
+// One registered release with its full digest-pinned artifact and adapter
+// metadata. The list endpoint returns a compact summary, so the release picker
+// resolves the selected release to auto-fill version/digest/adapter_version.
+export const getAgentRelease = async (releaseId) => {
+  const result = await researchRequest(
+    `/agents/releases/${encodeURIComponent(releaseId)}`,
+    { label: "load agent release" },
+  );
+  return result.ok
+    ? { ok: true, release: result.data.release, model: result.data.model }
+    : result;
+};
+
+export const getResearchPackages = async (releaseId) => {
+  const query = releaseId
+    ? `?release_id=${encodeURIComponent(releaseId)}`
+    : "";
+  const result = await researchRequest(`/packages${query}`, {
+    label: "load runtime packages",
+  });
+  return result.ok ? { ok: true, data: result.data.packages || [] } : result;
+};
+
+// ── Administrator panel ─────────────────────────────────────────────────────
+//
+// Backs the admin-only Dashboard views (AdminResearchers, AdminConnections and
+// AdminAgents). Every endpoint is administrator-only server-side. All calls go
+// through `researchRequest`, so a typed 422 is normalized into `errors` and
+// never reaches JSX as a raw FastAPI detail array.
+
+// Every account (not only enabled researchers), newest first. The route keeps
+// its historical `/researchers` name but returns the full account list.
+// Server-side filters: `q` (email/name substring), `role`
+// (all|admin|researcher|participant), `enrollment` (any|enrolled|not_enrolled)
+// and `studyId`. Rows carry their study enrollments (study name/status only).
+export const listAccounts = async ({
+  limit = 100,
+  offset = 0,
+  q = "",
+  role = "",
+  enrollment = "",
+  studyId = "",
+} = {}) => {
+  const params = new URLSearchParams();
+  if (limit) params.set("limit", String(limit));
+  if (offset) params.set("offset", String(offset));
+  if (q && q.trim()) params.set("q", q.trim());
+  if (role && role !== "all") params.set("role", role);
+  if (enrollment && enrollment !== "any") params.set("enrollment", enrollment);
+  if (studyId) params.set("study_id", studyId);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const result = await researchRequest(`/researchers${query}`, {
+    label: "load accounts",
+  });
+  if (!result.ok) return result;
+  const rows = result.data.researchers || [];
+  return {
+    ok: true,
+    data: rows,
+    // null when the server predates paging (no total): callers must not
+    // present a page length as a population count.
+    total: typeof result.data.total === "number" ? result.data.total : null,
+    limit: result.data.limit ?? limit,
+    offset: result.data.offset ?? offset,
+    status: result.status,
+  };
+};
+
+// Toggle the single can_research flag. The server re-checks admin, so a 403 is
+// surfaced as a normal error rather than swallowed.
+export const setResearcherEnabled = async (userId, canResearch) =>
+  researchRequest(`/researchers/${encodeURIComponent(userId)}`, {
+    method: "PUT",
+    body: { can_research: !!canResearch },
+    label: "update researcher access",
+  });
+
+export const createProviderConnection = async (connection) =>
+  researchRequest("/provider-connections", {
+    method: "POST",
+    body: connection,
+    label: "create provider connection",
+  });
+
+export const updateProviderConnection = async (connectionId, connection) =>
+  researchRequest(
+    `/provider-connections/${encodeURIComponent(connectionId)}`,
+    {
+      method: "PUT",
+      body: connection,
+      label: "update provider connection",
+    },
+  );
+
+export const deleteProviderConnection = async (connectionId) =>
+  researchRequest(
+    `/provider-connections/${encodeURIComponent(connectionId)}`,
+    { method: "DELETE", label: "delete provider connection" },
+  );
+
+// Registered releases (admin view). The list is compact, so the release detail
+// endpoint supplies the digest-pinned artifacts and adapter identity.
+export const listRegisteredReleases = async (agentId) => {
+  const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  const result = await researchRequest(`/agents/releases${query}`, {
+    label: "load registered releases",
+  });
+  return result.ok
+    ? { ok: true, data: result.data.releases || [], status: result.status }
+    : result;
+};
+
+export const getRegisteredRelease = async (releaseId) => {
+  const result = await researchRequest(
+    `/agents/releases/${encodeURIComponent(releaseId)}`,
+    { label: "load registered release" },
+  );
+  return result.ok
+    ? { ok: true, release: result.data.release, model: result.data.model }
+    : result;
+};
+
+// Import a build runtime manifest together with the exact archive bytes it
+// declares. The server recomputes every digest and size; a missing, duplicate,
+// unexpected or mismatching upload rejects the whole import. There is no
+// digest-trusting path.
+export const importAgentRelease = async ({ manifest, archives } = {}) => {
+  const form = new FormData();
+  form.append(
+    "manifest",
+    typeof manifest === "string" ? manifest : JSON.stringify(manifest ?? {}),
+  );
+  (archives || []).forEach((file) => {
+    if (file) form.append("archives", file, file.name);
+  });
+  return researchUpload("/agents/releases/import", form, {
+    label: "import agent release",
+  });
+};
+
+export const importAgentReleaseUrl = async ({ manifest_url, archive_urls }) =>
+  researchRequest("/agents/releases/import-url", {
+    method: "POST", body: { manifest_url, archive_urls }, label: "import release URLs",
+  });
+
+export const disableAgentRelease = async (releaseId) =>
+  researchRequest(`/agents/releases/${encodeURIComponent(releaseId)}/disable`, {
+    method: "POST", label: "disable release",
+  });
+
+// ── Participant budgets (shared provider key) ───────────────────────────────
+//
+// Owner/admin surfaces under /studies/{id}/budget and
+// /studies/{id}/enrollments/{eid}/budget. Money is integer micro-USD in
+// responses and a decimal USD string ("12.50") in requests; the helpers pass
+// both through untouched (utils/format.js does the string arithmetic), so no
+// float ever touches an amount on the way to the server.
+
+const studyBudgetPath = (studyId) => `/studies/${encodeURIComponent(studyId)}/budget`;
+
+const enrollmentBudgetPath = (studyId, enrollmentId) =>
+  `/studies/${encodeURIComponent(studyId)}/enrollments/${encodeURIComponent(enrollmentId)}/budget`;
+
+const pageQuery = ({ limit, cursor } = {}) => {
+  const params = new URLSearchParams();
+  if (limit) params.set("limit", String(limit));
+  if (cursor) params.set("cursor", cursor);
+  const query = params.toString();
+  return query ? `?${query}` : "";
+};
+
+export const getStudyBudget = (studyId) =>
+  researchRequest(studyBudgetPath(studyId), { label: "load study budget" });
+
+// Only the fields given are sent; the server leaves an omitted field unchanged.
+export const updateStudyBudget = (studyId, { defaultBudgetUsd, warningFraction } = {}) =>
+  researchRequest(studyBudgetPath(studyId), {
+    method: "PATCH",
+    body: {
+      ...(defaultBudgetUsd !== undefined && defaultBudgetUsd !== null
+        ? { default_budget_usd: String(defaultBudgetUsd) }
+        : {}),
+      ...(typeof warningFraction === "number" ? { warning_fraction: warningFraction } : {}),
+    },
+    label: "update study budget",
+  });
+
+export const applyStudyDefaultBudget = (studyId, { reason, idempotencyKey } = {}) =>
+  researchRequest(`${studyBudgetPath(studyId)}/apply-default`, {
+    method: "POST",
+    body: { reason, idempotency_key: idempotencyKey },
+    label: "apply the default budget",
+  });
+
+export const getEnrollmentBudget = (studyId, enrollmentId) =>
+  researchRequest(enrollmentBudgetPath(studyId, enrollmentId), {
+    label: "load participant budget",
+  });
+
+// kind: "TOP_UP" (adds amountUsd) or "SET_LIMIT" (replaces the limit). A
+// reused idempotency key replays the original adjustment (200, replayed).
+export const adjustEnrollmentBudget = (
+  studyId,
+  enrollmentId,
+  { kind, amountUsd, reason, idempotencyKey } = {},
+) =>
+  researchRequest(`${enrollmentBudgetPath(studyId, enrollmentId)}/adjustments`, {
+    method: "POST",
+    body: { kind, amount_usd: String(amountUsd), reason, idempotency_key: idempotencyKey },
+    label: "adjust participant budget",
+  });
+
+export const getEnrollmentBudgetLedger = (studyId, enrollmentId, page) =>
+  researchRequest(`${enrollmentBudgetPath(studyId, enrollmentId)}/ledger${pageQuery(page)}`, {
+    label: "load participant budget ledger",
+  });
+
+export const getEnrollmentBudgetAdjustments = (studyId, enrollmentId, page) =>
+  researchRequest(
+    `${enrollmentBudgetPath(studyId, enrollmentId)}/adjustments${pageQuery(page)}`,
+    { label: "load participant budget adjustments" },
+  );
+
+// ── Account privacy (self-service) ──────────────────────────────────────────
+//
+// Backs the "Privacy & data" page. Every endpoint acts on the signed-in
+// account only (auth cookie). The privacy endpoints answer typed
+// `{detail: {code, message}}` errors; the account-deletion endpoint keeps its
+// older `{message}` body (a 409 says why deletion is refused). Both go through
+// `normalizeRequestError`, so `error` is always a readable string.
+
+const USER_BASE = () =>
+  `${process.env.REACT_APP_BACKEND_HOST}:${process.env.REACT_APP_BACKEND_PORT}/api/user`;
+
+const userRequest = async (path, { method = "GET", body, label } = {}) => {
+  try {
+    const response = await fetch(`${USER_BASE()}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    // 204 has no body to parse.
+    const payload =
+      response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return { ok: false, ...normalizeRequestError(payload, response) };
+    }
+    return { ok: true, data: payload, status: response.status };
+  } catch (e) {
+    console.error(`Error ${label || path}:`, e);
+    return {
+      ok: false,
+      code: "",
+      error: `Failed to ${label || "complete request"}`,
+      status: null,
+      errors: [],
+    };
+  }
+};
+
+// `data` is the account's PrivacyStatus: data_collection, active_study,
+// stored_data (row counts) and account_deletion.
+export const getPrivacyStatus = () =>
+  userRequest("/privacy", { label: "load your privacy settings" });
+
+// Opting out also withdraws an active study enrollment; opting back in does
+// not re-enroll. `data` is the fresh PrivacyStatus.
+export const setDataCollection = (enabled) =>
+  userRequest("/privacy/collection", {
+    method: "PUT",
+    body: { enabled: !!enabled },
+    label: "change data collection",
+  });
+
+// Opt-out and erasure in one server transaction; the account stays usable.
+// `data` is `{erased: {<stored_data key>: count}, status: PrivacyStatus}`.
+export const eraseMyData = () =>
+  userRequest("/privacy/erase", { method: "POST", label: "erase your data" });
+
+// The endpoint the IDE plugin also uses. The server now always erases the
+// account's data and ignores `delete_data`; it is still sent so that an older
+// server wipes the data too. A success clears the auth cookies.
+export const deleteMyAccount = () =>
+  userRequest("/delete?delete_data=true", {
+    method: "DELETE",
+    label: "delete your account",
+  });

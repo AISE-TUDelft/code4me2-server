@@ -365,3 +365,10 @@
   max-height: 420px;
   line-height: 1.35;
 }
+/* Editor header action row (mode toggle, errors, save). */
+.editor-header .actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}

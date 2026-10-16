@@ -1,0 +1,801 @@
+from __future__ import annotations
+
+import asyncio
+import sys
+from importlib.metadata import version
+from pathlib import Path
+from types import SimpleNamespace
+from tempfile import TemporaryDirectory
+from threading import Event
+from typing import Any
+from unittest import TestCase
+
+from acp.agent.router import build_agent_router
+from acp.exceptions import RequestError
+from acp.schema import TextContentBlock
+
+from code4me2_agent.adapters import (
+    FakeOpenAICompatibleProvider,
+    OpenAICompatibleReactAdapter,
+    ToolCall,
+    ToolRegistry,
+    ToolRegistryError,
+)
+from code4me2_agent.acp_runtime import AcpSessionEventSink, create_acp_agent
+from code4me2_agent.acp_updates import AcpUpdateBuilder
+from code4me2_agent.config import (
+    AdapterConfig,
+    AgentConfig,
+    FakeProviderConfig,
+    ServerAgentConfig,
+)
+from code4me2_agent.echo import EchoPromptResult
+from code4me2_agent.events import ApprovalDecision, ToolCallEvent
+from code4me2_agent.runtime_auth import AcpRuntimeScope
+from code4me2_agent.telemetry import AgentTelemetryRecorder
+
+
+class _FakeAuthorization:
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace.resolve()
+        self.is_authenticated = True
+        self.server_agent_config = None
+        self.backend_url = None
+
+    def authenticate(self) -> AcpRuntimeScope:
+        return AcpRuntimeScope(project_id="project-1", workspace=str(self.workspace))
+
+    def validate(self) -> AcpRuntimeScope:
+        return self.authenticate()
+
+    def telemetry_headers(self) -> dict[str, str]:
+        return {}
+
+    def authorized_json_request(
+        self,
+        method: str,
+        path: str,
+        payload: object,
+    ) -> dict[str, object]:
+        if method == "GET":
+            return {"messages": []}
+        return {}
+
+
+class _FakeClient:
+    """Records session updates; ``updates`` holds the per-turn stream.
+
+    The session-level ``available_commands_update`` (sent once after a session
+    is created) is kept apart in ``command_updates`` so turn assertions stay
+    exact.
+    """
+
+    def __init__(self) -> None:
+        self.updates: list[dict[str, Any]] = []
+        self.command_updates: list[dict[str, Any]] = []
+
+    async def session_update(
+        self,
+        *,
+        session_id: str,
+        update: object,
+        **kwargs: Any,
+    ) -> None:
+        entry = {"session_id": session_id, "update": update, "metadata": kwargs}
+        if getattr(update, "session_update", None) == "available_commands_update":
+            self.command_updates.append(entry)
+            return
+        self.updates.append(entry)
+
+
+class AcpRuntimeCompatibilityTest(TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name).resolve()
+        self.client = _FakeClient()
+        self.authorization = _FakeAuthorization(self.workspace)
+        self.agent = create_acp_agent(
+            AgentConfig(
+                workspace_root=self.workspace,
+                trace_path=self.workspace / "agent-events.jsonl",
+                session_id="bootstrap",
+            ),
+            authorization=self.authorization,
+        )
+        self.agent.on_connect(self.client)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_latest_sdk_models_and_stable_capabilities(self) -> None:
+        async def scenario() -> None:
+            response = await self.agent.initialize(
+                protocol_version=99,
+                client_capabilities=None,
+            )
+
+            self.assertEqual("0.12.1", version("agent-client-protocol"))
+            self.assertEqual(1, response.protocol_version)
+            # session/load replays the persisted conversation (harness run 2026-09-26).
+            self.assertTrue(response.agent_capabilities.load_session)
+            self.assertTrue(response.agent_capabilities.prompt_capabilities.embedded_context)
+            self.assertTrue(response.agent_capabilities.mcp_capabilities.http)
+            self.assertTrue(response.agent_capabilities.mcp_capabilities.sse)
+            self.assertIsNotNone(response.agent_capabilities.session_capabilities.resume)
+            self.assertIsNotNone(response.agent_capabilities.session_capabilities.close)
+            self.assertEqual("AuthMethodAgent", type(response.auth_methods[0]).__name__)
+            # The pinned SDK must keep exposing the update helpers the runtime relies on.
+            from acp import (  # noqa: F401
+                plan_entry,
+                update_agent_message_text,
+                update_plan,
+                update_tool_call,
+            )
+            plan = AcpUpdateBuilder().agent_plan([{"content": "step", "status": "pending"}])
+            self.assertEqual("plan", plan.session_update)
+
+        asyncio.run(scenario())
+
+    def test_permission_request_offers_supported_scopes_and_a_summary(self) -> None:
+        permission = AcpUpdateBuilder().permission_request(
+            session_id="session-1",
+            tool_call_id="tool-1",
+            title="Write file",
+            kind="edit",
+            summary="Write file: README.md",
+            raw_input={"path": "README.md"},
+            session_option_name="Allow edits for session",
+        )
+
+        self.assertEqual(
+            ["allow_once", "allow_session", "reject_once"],
+            [option.option_id for option in permission.options],
+        )
+        self.assertEqual({"path": "README.md"}, permission.tool_call.raw_input)
+        self.assertEqual("Allow edits for session", permission.options[1].name)
+
+    def test_permission_response_keeps_selected_scope(self) -> None:
+        class Connection:
+            async def request_permission(self, **_kwargs):
+                return None
+
+        class Runner:
+            calls = 0
+
+            def run(self, awaitable):
+                self.calls += 1
+                awaitable.close()
+                return {"outcome": {"outcome": "selected", "optionId": "allow_session"}}
+
+        runner = Runner()
+        sink = AcpSessionEventSink(
+            conn=Connection(),
+            session_id="session-1",
+            updates=AcpUpdateBuilder(),
+            telemetry=object(),
+            async_runner=runner,
+        )
+
+        decision = sink.request_approval(
+            SimpleNamespace(name="write_file", tool_call_id="tool-1"),
+            {"path": "README.md", "content": "private"},
+        )
+
+        self.assertTrue(decision.accepted)
+        self.assertEqual("session", decision.scope)
+
+        cached = sink.request_approval(
+            SimpleNamespace(name="write_file", tool_call_id="tool-2"),
+            {"path": "other.md", "content": "private"},
+        )
+        self.assertTrue(cached.accepted)
+        # Answered by the session approval: no one is asked again.
+        self.assertEqual("session_cached", cached.scope)
+        self.assertEqual(1, runner.calls)
+
+    def test_permission_reuses_the_native_edit_diff(self) -> None:
+        class Connection(_FakeClient):
+            async def request_permission(self, **kwargs):
+                self.permission = kwargs
+                return {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+
+        class Runner:
+            def run(self, awaitable):
+                return asyncio.run(awaitable)
+
+        connection = Connection()
+        sink = AcpSessionEventSink(
+            conn=connection,
+            session_id="session-1",
+            updates=AcpUpdateBuilder(),
+            telemetry=object(),
+            async_runner=Runner(),
+        )
+        sink.tool_call(
+            ToolCallEvent(
+                phase="started",
+                tool_call_id="tool-1",
+                tool_name="write_file",
+                run_id="run-1",
+                request_id="request-1",
+                title="Update README.md",
+                kind="edit",
+                status="pending",
+                path="README.md",
+                diff_old_text="before",
+                diff_new_text="after",
+            )
+        )
+
+        self.assertTrue(
+            sink.request_approval(
+                SimpleNamespace(name="write_file", tool_call_id="tool-1"),
+                {"path": "README.md", "content": "after"},
+            ).accepted
+        )
+        diff = connection.permission["tool_call"].content[0]
+        self.assertEqual("diff", diff.type)
+        self.assertEqual("README.md", diff.path)
+        self.assertEqual("before", diff.old_text)
+        self.assertEqual("after", diff.new_text)
+
+    def test_server_tool_allowlist_hides_and_rejects_write_tools(self) -> None:
+        config = AgentConfig(
+            workspace_root=self.workspace,
+            trace_path=self.workspace / "agent-events.jsonl",
+            session_id="bootstrap",
+        ).with_server_overrides(ServerAgentConfig(tools=["read_file"]))
+        registry = ToolRegistry(
+            file_tools=object(),
+            command_tools=object(),
+            allowed_tools=config.tools,
+        )
+
+        self.assertEqual(
+            ["read_file"],
+            [tool["function"]["name"] for tool in registry.definitions()],
+        )
+        with self.assertRaises(ToolRegistryError) as raised:
+            registry.execute(
+                ToolCall(
+                    tool_call_id="write-denied",
+                    name="write_file",
+                    arguments={"path": "deneme.txt", "content": "hey"},
+                ),
+                run_id="run-1",
+                request_id="request-1",
+            )
+        self.assertEqual("tool_not_allowed", raised.exception.failure_reason)
+
+    def test_denied_tool_call_continues_with_a_tool_result(self) -> None:
+        config = AgentConfig(
+            workspace_root=self.workspace,
+            trace_path=self.workspace / "agent-events.jsonl",
+            session_id="bootstrap",
+            tools=["read_file"],
+            adapter=AdapterConfig(
+                name="openai_compatible_react",
+                fake_provider=FakeProviderConfig(
+                    enabled=True,
+                    script=[
+                        {
+                            "tool_calls": [
+                                {
+                                    "id": "write-denied",
+                                    "name": "write_file",
+                                    "arguments": {
+                                        "path": "deneme.txt",
+                                        "content": "hi",
+                                    },
+                                }
+                            ]
+                        },
+                        {"final_answer": "I only have read access in this profile."},
+                    ],
+                ),
+            ),
+        )
+        adapter = OpenAICompatibleReactAdapter(
+            config,
+            telemetry=AgentTelemetryRecorder(config),
+            tool_registry=ToolRegistry(
+                file_tools=object(),
+                command_tools=object(),
+                allowed_tools=config.tools,
+            ),
+        )
+
+        result = adapter.handle_prompt(
+            prompt="Write hi in deneme.txt",
+            run_id="run-1",
+            request_id="request-1",
+            message_id=None,
+        )
+
+        self.assertEqual("completed", result.run_status)
+        self.assertEqual("I only have read access in this profile.", result.final_response)
+
+    def test_rejected_approval_is_explicit_in_the_model_tool_result(self) -> None:
+        class RejectingSink:
+            def request_approval(self, *_args):
+                return ApprovalDecision("rejected")
+
+            def tool_call(self, _event):
+                return None
+
+        class RecordingProvider(FakeOpenAICompatibleProvider):
+            def __init__(self):
+                super().__init__(
+                    [
+                        {
+                            "tool_calls": [
+                                {
+                                    "id": "create-rejected",
+                                    "name": "create_file",
+                                    "arguments": {"path": "deneme.txt", "content": "hi"},
+                                }
+                            ]
+                        },
+                        {"final_answer": "No change was made."},
+                    ]
+                )
+                self.messages: list[list[dict[str, Any]]] = []
+
+            def generate(self, messages, **kwargs):
+                self.messages.append(messages)
+                return super().generate(messages, **kwargs)
+
+        config = AgentConfig(
+            workspace_root=self.workspace,
+            trace_path=self.workspace / "agent-events.jsonl",
+            session_id="bootstrap",
+            tools=["create_file"],
+            approval_policy="per_step",
+        )
+        provider = RecordingProvider()
+        adapter = OpenAICompatibleReactAdapter(
+            config,
+            telemetry=AgentTelemetryRecorder(config),
+            tool_registry=ToolRegistry(
+                file_tools=object(),
+                command_tools=object(),
+                event_sink=RejectingSink(),
+                allowed_tools=config.tools,
+                approval_policy="per_step",
+            ),
+        )
+        adapter._provider = lambda: provider
+
+        result = adapter.handle_prompt(
+            prompt="Create deneme.txt",
+            run_id="run-1",
+            request_id="request-1",
+            message_id=None,
+        )
+
+        tool_result = provider.messages[1][-1]
+        self.assertEqual("tool", tool_result["role"])
+        self.assertIn('"reason": "user_rejected"', tool_result["content"])
+        self.assertIn("Do not retry", tool_result["content"])
+        self.assertEqual("No change was made.", result.final_response)
+
+    def test_unsupported_routes_are_method_not_found_even_with_sdk_workaround(self) -> None:
+        async def scenario() -> None:
+            router = build_agent_router(self.agent, use_unstable_protocol=True)
+
+            for method, params in (
+                ("session/list", {}),
+                ("session/set_model", {"sessionId": "missing", "modelId": "other"}),
+                ("session/mode", {"sessionId": "missing", "modeId": "other"}),
+                (
+                    "session/fork",
+                    {
+                        "cwd": str(self.workspace),
+                        "sessionId": "missing",
+                        "mcpServers": [],
+                    },
+                ),
+            ):
+                with self.subTest(method=method):
+                    with self.assertRaises(RequestError) as raised:
+                        await router(method, params, False)
+                    self.assertEqual(-32601, raised.exception.code)
+
+        asyncio.run(scenario())
+
+    def test_nonempty_unsupported_session_inputs_are_rejected(self) -> None:
+        async def scenario() -> None:
+            await self.agent.initialize(protocol_version=1, client_capabilities=None)
+
+            with self.assertRaises(RequestError) as mcp_error:
+                await self.agent.new_session(
+                    cwd=str(self.workspace),
+                    mcp_servers=[{"name": "tools", "command": "tools-server"}],
+                )
+            self.assertEqual("mcp_servers_not_supported", mcp_error.exception.data["reason"])
+
+            with self.assertRaises(RequestError) as roots_error:
+                await self.agent.new_session(
+                    cwd=str(self.workspace),
+                    additional_directories=[str(self.workspace / "other")],
+                )
+            self.assertEqual(
+                "additional_directories_not_supported",
+                roots_error.exception.data["reason"],
+            )
+
+        asyncio.run(scenario())
+
+    def test_wellformed_but_unstartable_mcp_server_degrades_gracefully(self) -> None:
+        async def scenario() -> None:
+            await self.agent.initialize(protocol_version=1, client_capabilities=None)
+            new_session = await self.agent.new_session(
+                cwd=str(self.workspace),
+                mcp_servers=[
+                    {
+                        "name": "missing",
+                        "command": "/nonexistent-mcp-binary-xyz",
+                        "args": [],
+                        "env": [],
+                    }
+                ],
+            )
+            session = self.agent._sessions[new_session.session_id]
+            self.assertIsNone(session.mcp_tools)
+
+        asyncio.run(scenario())
+
+    def test_working_stdio_mcp_server_attaches_tools(self) -> None:
+        async def scenario() -> None:
+            await self.agent.initialize(protocol_version=1, client_capabilities=None)
+            toy_path = str(Path(__file__).with_name("mcp_toy_server.py"))
+            new_session = await self.agent.new_session(
+                cwd=str(self.workspace),
+                mcp_servers=[
+                    {
+                        "name": "toy",
+                        "command": sys.executable,
+                        "args": [toy_path],
+                        "env": [],
+                    }
+                ],
+            )
+            session = self.agent._sessions[new_session.session_id]
+            try:
+                self.assertIsNotNone(session.mcp_tools)
+                names = [d["function"]["name"] for d in session.mcp_tools.definitions()]
+                self.assertIn("mcp__toy__toy_add", names)
+                result = session.mcp_tools.execute(
+                    "mcp__toy__toy_add", {"a": 1, "b": 2}
+                )
+                self.assertEqual("completed", result["status"])
+            finally:
+                await self.agent.close_session(session_id=new_session.session_id)
+
+        asyncio.run(scenario())
+
+    def test_active_prompt_cancellation_is_cooperative_and_returns_cancelled(self) -> None:
+        async def scenario() -> None:
+            await self.agent.initialize(protocol_version=1, client_capabilities=None)
+            new_session = await self.agent.new_session(cwd=str(self.workspace))
+            session = self.agent._sessions[new_session.session_id]
+            prompt_started = Event()
+
+            def blocking_prompt(
+                prompt: str,
+                request_id: str | None = None,
+                message_id: str | None = None,
+                run_id: str | None = None,
+                cancellation_event: Event | None = None,
+            ) -> EchoPromptResult:
+                prompt_started.set()
+                if cancellation_event is None or not cancellation_event.wait(timeout=2):
+                    raise AssertionError("Cancellation was not propagated to the active turn")
+                return EchoPromptResult(
+                    run_id=run_id or "cancelled-run",
+                    final_response="",
+                    stop_reason="cancelled",
+                    run_status="cancelled",
+                )
+
+            session.core.handle_prompt = blocking_prompt
+            prompt_task = asyncio.create_task(
+                self.agent.prompt(
+                    prompt=[TextContentBlock(type="text", text="wait")],
+                    session_id=new_session.session_id,
+                )
+            )
+            started = await asyncio.to_thread(prompt_started.wait, 1)
+            self.assertTrue(started)
+
+            await self.agent.cancel(session_id=new_session.session_id)
+            response = await asyncio.wait_for(prompt_task, timeout=2)
+
+            self.assertEqual("cancelled", response.stop_reason)
+            self.assertEqual([], self.client.updates)
+            self.assertIsNone(session.active_prompt_task)
+            self.assertFalse(session.cancel_event.is_set())
+
+        asyncio.run(scenario())
+
+    def test_prompt_message_has_stable_message_id_and_close_releases_session(self) -> None:
+        async def scenario() -> None:
+            await self.agent.initialize(protocol_version=1, client_capabilities=None)
+            new_session = await self.agent.new_session(cwd=str(self.workspace))
+
+            response = await self.agent.prompt(
+                prompt=[TextContentBlock(type="text", text="hello")],
+                session_id=new_session.session_id,
+            )
+
+            self.assertEqual("end_turn", response.stop_reason)
+            self.assertEqual(1, len(self.client.updates))
+            update = self.client.updates[0]["update"]
+            self.assertIsNotNone(update.message_id)
+
+            await self.agent.close_session(session_id=new_session.session_id)
+            self.assertNotIn(new_session.session_id, self.agent._sessions)
+
+        asyncio.run(scenario())
+
+
+class AcpRuntimeStreamingTest(TestCase):
+    """Behaviour added by the agent upgrade: progress text, plans, usage, cancel."""
+
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name).resolve()
+        self.client = _FakeClient()
+        self.authorization = _FakeAuthorization(self.workspace)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _agent(self, script: list[dict[str, Any]], *, tools: list[str] | None = None):
+        agent = create_acp_agent(
+            AgentConfig(
+                workspace_root=self.workspace,
+                trace_path=self.workspace / "agent-events.jsonl",
+                session_id="bootstrap",
+                tools=tools,
+                adapter=AdapterConfig(
+                    name="openai_compatible_react",
+                    fake_provider=FakeProviderConfig(enabled=True, script=script),
+                ),
+            ),
+            authorization=self.authorization,
+        )
+        agent.on_connect(self.client)
+        return agent
+
+    def _sink(self, connection=None):
+        class Runner:
+            def run(self, awaitable, **_kwargs):
+                return asyncio.run(awaitable)
+
+        return AcpSessionEventSink(
+            conn=connection or self.client,
+            session_id="session-1",
+            updates=AcpUpdateBuilder(),
+            telemetry=object(),
+            async_runner=Runner(),
+        )
+
+    def test_sink_emits_progress_text_plan_and_usage_updates(self) -> None:
+        from code4me2_agent.events import AssistantTextEvent, PlanEntrySpec, PlanEvent, UsageEvent
+
+        sink = self._sink()
+        sink.assistant_text(
+            AssistantTextEvent(
+                run_id="run-1", request_id="req-1", message_id="req-1", text="Looking…", final=False, iteration=1
+            )
+        )
+        sink.plan(
+            PlanEvent(
+                run_id="run-1",
+                request_id="req-1",
+                tool_call_id="c1",
+                entries=(PlanEntrySpec("read", "completed", "high"), PlanEntrySpec("edit", "in_progress")),
+            )
+        )
+        sink.usage(
+            UsageEvent(
+                run_id="run-1",
+                request_id="req-1",
+                iteration=1,
+                model="m",
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                turn_total_tokens=120,
+                context_budget_tokens=32000,
+            )
+        )
+
+        kinds = [entry["update"].session_update for entry in self.client.updates]
+        self.assertEqual(["agent_message_chunk", "plan", "usage_update"], kinds)
+        text_update = self.client.updates[0]["update"]
+        self.assertEqual("req-1", text_update.message_id)
+        self.assertEqual("progress", text_update.field_meta["code4me2"]["phase"])
+        plan_update = self.client.updates[1]["update"]
+        self.assertEqual(["completed", "in_progress"], [entry.status for entry in plan_update.entries])
+        usage_update = self.client.updates[2]["update"]
+        self.assertEqual((120, 32000), (usage_update.used, usage_update.size))
+
+    def test_tool_call_start_carries_multiple_absolute_locations(self) -> None:
+        sink = self._sink()
+        sink.tool_call(
+            ToolCallEvent(
+                phase="started",
+                tool_call_id="tool-1",
+                tool_name="move_file",
+                run_id="run-1",
+                request_id="request-1",
+                title="Move a.txt → b/a.txt",
+                kind="move",
+                status="in_progress",
+                path="/ws/a.txt",
+                locations=("/ws/a.txt", "/ws/b/a.txt"),
+            )
+        )
+
+        update = self.client.updates[0]["update"]
+        self.assertEqual(["/ws/a.txt", "/ws/b/a.txt"], [location.path for location in update.locations])
+        self.assertEqual("move", update.kind)
+
+    def test_react_prompt_streams_progress_tool_cards_and_final_text(self) -> None:
+        (self.workspace / "a.txt").write_text("hello\n")
+        agent = self._agent(
+            [
+                {
+                    "final_answer": "Reading a.txt first.",
+                    "tool_calls": [{"id": "c1", "name": "read_file", "arguments": {"path": "a.txt"}}],
+                },
+                {"final_answer": "It says hello."},
+            ],
+            tools=["read_file"],
+        )
+
+        async def scenario() -> None:
+            await agent.initialize(protocol_version=1, client_capabilities=None)
+            new_session = await agent.new_session(cwd=str(self.workspace))
+            response = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="what does a.txt say?")],
+                session_id=new_session.session_id,
+            )
+
+            kinds = [entry["update"].session_update for entry in self.client.updates]
+            self.assertEqual(
+                ["agent_message_chunk", "tool_call", "tool_call_update", "agent_message_chunk"], kinds
+            )
+            first, last = self.client.updates[0]["update"], self.client.updates[-1]["update"]
+            self.assertEqual("progress", first.field_meta["code4me2"]["phase"])
+            self.assertEqual("final", last.field_meta["code4me2"]["phase"])
+            self.assertEqual(first.message_id, last.message_id)
+            card = self.client.updates[1]["update"]
+            self.assertEqual("read", card.kind)
+            self.assertTrue(card.locations[0].path.startswith(str(self.workspace)))
+            self.assertEqual("end_turn", response.stop_reason)
+            self.assertEqual("completed", response.field_meta["code4me2"]["outcome"])
+            self.assertIsNone(response.usage)
+
+        asyncio.run(scenario())
+
+    def test_provider_failure_surfaces_error_message_and_end_turn(self) -> None:
+        agent = self._agent([], tools=["read_file"])
+
+        async def scenario() -> None:
+            await agent.initialize(protocol_version=1, client_capabilities=None)
+            new_session = await agent.new_session(cwd=str(self.workspace))
+            response = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="hello")],
+                session_id=new_session.session_id,
+            )
+
+            self.assertEqual(1, len(self.client.updates))
+            update = self.client.updates[0]["update"]
+            self.assertEqual("agent_message_chunk", update.session_update)
+            self.assertIn("fake provider", update.content.text)
+            self.assertEqual("end_turn", response.stop_reason)
+            self.assertEqual("failed", response.field_meta["code4me2"]["outcome"])
+            self.assertEqual("provider_exhausted", response.field_meta["code4me2"]["adapterStopReason"])
+
+        asyncio.run(scenario())
+
+    def test_permission_wait_is_interrupted_by_cancel(self) -> None:
+        import threading
+        import time
+
+        from code4me2_agent.async_bridge import EventLoopAsyncRunner
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        try:
+
+            class Connection:
+                async def request_permission(self, **_kwargs):
+                    await asyncio.Event().wait()
+
+            cancel = Event()
+            sink = AcpSessionEventSink(
+                conn=Connection(),
+                session_id="session-1",
+                updates=AcpUpdateBuilder(),
+                telemetry=object(),
+                async_runner=EventLoopAsyncRunner(loop),
+                cancel_event=cancel,
+            )
+            threading.Timer(0.3, cancel.set).start()
+            started = time.monotonic()
+
+            decision = sink.request_approval(
+                SimpleNamespace(name="write_file", tool_call_id="tool-1"),
+                {"path": "README.md", "content": "x"},
+            )
+
+            self.assertEqual("cancelled", decision.decision)
+            self.assertLess(time.monotonic() - started, 3.0)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+
+    def test_approval_summary_and_raw_input_for_new_tools(self) -> None:
+        from code4me2_agent.acp_runtime import _approval_raw_input, _approval_summary
+
+        self.assertEqual(
+            "Move file: a.txt → b/a.txt",
+            _approval_summary("move_file", {"source_path": "a.txt", "destination_path": "b/a.txt"}),
+        )
+        self.assertEqual(
+            "Edit file: x.py (3 edits)",
+            _approval_summary("edit_file", {"path": "x.py", "edits": [{}, {}, {}]}),
+        )
+        self.assertEqual("Delete file: a.txt", _approval_summary("delete_file", {"path": "a.txt"}))
+        self.assertEqual(
+            "Run command: pytest -q (timeout 300s)",
+            _approval_summary("run_command", {"argv": ["pytest", "-q"], "timeout_seconds": 300}),
+        )
+        self.assertEqual(
+            {"source_path": "a.txt", "destination_path": "b/a.txt", "overwrite": False},
+            _approval_raw_input("move_file", {"source_path": "a.txt", "destination_path": "b/a.txt"}),
+        )
+        self.assertEqual({"path": "x.py", "edit_count": 2}, _approval_raw_input("edit_file", {"path": "x.py", "edits": [{}, {}]}))
+        self.assertEqual(
+            {"argv": ["pytest"], "cwd": ".", "timeout_seconds": 30},
+            _approval_raw_input("run_command", {"argv": ["pytest"], "timeout_seconds": 30}),
+        )
+
+    def test_session_edit_approval_covers_delete_and_move_but_not_commands(self) -> None:
+        class Connection:
+            async def request_permission(self, **_kwargs):
+                return None
+
+        class Runner:
+            calls = 0
+
+            def run(self, awaitable, **_kwargs):
+                self.calls += 1
+                awaitable.close()
+                return {"outcome": {"outcome": "selected", "optionId": "allow_session"}}
+
+        runner = Runner()
+        sink = AcpSessionEventSink(
+            conn=Connection(),
+            session_id="session-1",
+            updates=AcpUpdateBuilder(),
+            telemetry=object(),
+            async_runner=runner,
+        )
+
+        self.assertTrue(sink.request_approval(SimpleNamespace(name="delete_file", tool_call_id="t1"), {"path": "a"}).accepted)
+        self.assertTrue(
+            sink.request_approval(
+                SimpleNamespace(name="move_file", tool_call_id="t2"),
+                {"source_path": "a", "destination_path": "b"},
+            ).accepted
+        )
+        self.assertEqual(1, runner.calls)
+        self.assertTrue(sink.request_approval(SimpleNamespace(name="run_command", tool_call_id="t3"), {"argv": ["ls"]}).accepted)
+        self.assertEqual(2, runner.calls)

@@ -19,8 +19,12 @@ project_root = os.path.dirname(
 src_dir = os.path.join(project_root, "src")
 sys.path.insert(0, src_dir)
 
-# Import database models
+# Import every model namespace that declares tables. ``db_schemas`` owns the
+# operational (Code4Me) tables and ``research_schemas`` owns the research tables;
+# both attach to the same ``Base`` from ``database.db``, so importing both is
+# what makes autogenerate/``alembic check`` see the research tables at all.
 try:
+    from database import research_schemas as _research_schemas  # noqa: F401
     from database.db_schemas import Base
 
     target_metadata = Base.metadata
@@ -67,6 +71,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
         compare_server_default=True,
+        include_schemas=True,
     )
 
     with context.begin_transaction():
@@ -82,6 +87,7 @@ def run_migrations_online() -> None:
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"options": "-csearch_path=code4me_migration"},
     )
 
     with connectable.connect() as connection:
@@ -90,6 +96,8 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             compare_type=True,
             compare_server_default=True,
+            include_schemas=True,
+            version_table_schema="public",
         )
 
         with context.begin_transaction():

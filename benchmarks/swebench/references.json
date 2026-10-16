@@ -1,0 +1,179 @@
+{
+  "about": "Published SWE-rebench leaderboard results (swe-rebench.com) for comparison with our runs on the same task windows. Read from the site's page data on 2026-10-14 (site last built 2026-07-28). Resolved rate and pass@5 are percentages over 5 runs of the leaderboard's own scaffold; cost uses the leaderboard's unpublished price table. Window keys are [start, end) by task creation date.",
+  "references": {
+    "deepseek-v4-flash-high": {
+      "label": "DeepSeek-V4 Flash [high] (tools)",
+      "model_release": "2026-04-24",
+      "source": "https://swe-rebench.com/",
+      "retrieved": "2026-10-14",
+      "windows": {
+        "2026-03-01..2026-04-01": {
+          "tasks": 46,
+          "resolved_rate": 36.09,
+          "sem": 1.63,
+          "pass_at_5": 56.5,
+          "cost_per_problem": 0.071,
+          "tokens_per_problem": 3060000,
+          "cached_share": 95.1,
+          "contamination_flag": true
+        },
+        "2026-03-01..2026-05-15": {
+          "tasks": 110,
+          "resolved_rate": 38.36,
+          "sem": 0.97,
+          "pass_at_5": 57.3,
+          "cost_per_problem": 0.069,
+          "tokens_per_problem": 3000000,
+          "cached_share": 95.5,
+          "contamination_flag": true
+        },
+        "2026-04-01..2026-05-15": {
+          "tasks": 64,
+          "resolved_rate": 40.0,
+          "sem": 2.13,
+          "pass_at_5": 57.8,
+          "cost_per_problem": 0.068,
+          "tokens_per_problem": 2950000,
+          "cached_share": 95.8,
+          "contamination_flag": true
+        },
+        "2026-04-15..2026-05-15": {
+          "tasks": 39,
+          "resolved_rate": 37.95,
+          "sem": 2.49,
+          "pass_at_5": 59.0,
+          "cost_per_problem": 0.073,
+          "tokens_per_problem": 3180000,
+          "cached_share": 95.8,
+          "contamination_flag": true
+        },
+        "2026-05-01..2026-05-15": {
+          "tasks": 21,
+          "resolved_rate": 40.0,
+          "sem": 2.43,
+          "pass_at_5": 47.6,
+          "cost_per_problem": 0.086,
+          "tokens_per_problem": 3790000,
+          "cached_share": 96.3,
+          "contamination_flag": false
+        }
+      }
+    },
+    "deepseek-v4-pro-high": {
+      "label": "DeepSeek-V4 Pro [high] (tools)",
+      "model_release": "2026-04-24",
+      "source": "https://swe-rebench.com/",
+      "retrieved": "2026-10-14",
+      "windows": {
+        "2026-03-01..2026-04-01": {
+          "tasks": 46,
+          "resolved_rate": 46.72,
+          "sem": 1.46,
+          "pass_at_5": 65.2,
+          "cost_per_problem": 0.192,
+          "tokens_per_problem": 2240000,
+          "cached_share": 79.6,
+          "contamination_flag": true
+        },
+        "2026-03-01..2026-05-15": {
+          "tasks": 110,
+          "resolved_rate": 42.7,
+          "sem": 1.29,
+          "pass_at_5": 61.8,
+          "cost_per_problem": 0.217,
+          "tokens_per_problem": 2250000,
+          "cached_share": 76.9,
+          "contamination_flag": true
+        },
+        "2026-04-01..2026-05-15": {
+          "tasks": 64,
+          "resolved_rate": 39.81,
+          "sem": 2.43,
+          "pass_at_5": 59.4,
+          "cost_per_problem": 0.235,
+          "tokens_per_problem": 2250000,
+          "cached_share": 75.0,
+          "contamination_flag": true
+        },
+        "2026-04-15..2026-05-15": {
+          "tasks": 39,
+          "resolved_rate": 37.62,
+          "sem": 2.21,
+          "pass_at_5": 59.0,
+          "cost_per_problem": 0.23,
+          "tokens_per_problem": 2370000,
+          "cached_share": 76.7,
+          "contamination_flag": true
+        },
+        "2026-05-01..2026-05-15": {
+          "tasks": 21,
+          "resolved_rate": 36.19,
+          "sem": 1.17,
+          "pass_at_5": 52.4,
+          "cost_per_problem": 0.248,
+          "tokens_per_problem": 2690000,
+          "cached_share": 76.8,
+          "contamination_flag": false
+        }
+      }
+    },
+    "mimo-v2.5-pro": {
+      "label": "MiMo V2.5 Pro (tools)",
+      "model_release": "2026-03-22",
+      "source": "https://swe-rebench.com/",
+      "retrieved": "2026-10-14",
+      "windows": {
+        "2026-03-01..2026-04-01": {
+          "tasks": 46,
+          "resolved_rate": 43.91,
+          "sem": 1.06,
+          "pass_at_5": 65.2,
+          "cost_per_problem": 0.132,
+          "tokens_per_problem": 2600000,
+          "cached_share": 88.1,
+          "contamination_flag": true
+        },
+        "2026-03-01..2026-05-15": {
+          "tasks": 110,
+          "resolved_rate": 42.36,
+          "sem": 0.84,
+          "pass_at_5": 61.8,
+          "cost_per_problem": 0.125,
+          "tokens_per_problem": 2590000,
+          "cached_share": 88.6,
+          "contamination_flag": true
+        },
+        "2026-04-01..2026-05-15": {
+          "tasks": 64,
+          "resolved_rate": 41.25,
+          "sem": 1.06,
+          "pass_at_5": 59.4,
+          "cost_per_problem": 0.119,
+          "tokens_per_problem": 2580000,
+          "cached_share": 88.9,
+          "contamination_flag": false
+        },
+        "2026-04-15..2026-05-15": {
+          "tasks": 39,
+          "resolved_rate": 39.49,
+          "sem": 1.31,
+          "pass_at_5": 59.0,
+          "cost_per_problem": 0.118,
+          "tokens_per_problem": 2520000,
+          "cached_share": 88.9,
+          "contamination_flag": false
+        },
+        "2026-05-01..2026-05-15": {
+          "tasks": 21,
+          "resolved_rate": 39.05,
+          "sem": 2.78,
+          "pass_at_5": 61.9,
+          "cost_per_problem": 0.119,
+          "tokens_per_problem": 2670000,
+          "cached_share": 90.0,
+          "contamination_flag": false
+        }
+      }
+    }
+  }
+}

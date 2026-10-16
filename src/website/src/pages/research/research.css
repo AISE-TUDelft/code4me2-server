@@ -1,0 +1,492 @@
+/* Research surfaces (studies, participant "My studies", study editor).
+   Generic controls live in styles/ui.css; this file styles the research
+   building blocks on top of the same tokens. */
+
+.research-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+.research-header {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.research-header h2 {
+  color: var(--text-color);
+  font-size: 22px;
+  margin: 0;
+}
+
+.research-header p {
+  color: var(--text-secondary);
+  line-height: 1.55;
+  margin: 6px 0 0;
+  max-width: 760px;
+}
+
+.research-card {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  min-width: 0;
+}
+
+/* Standalone research cards (e.g. the study editor form) get inner padding;
+   cards built from ui-card sections manage their own. */
+form.research-card:not(.ui-card),
+div.research-card:not(.ui-card) {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+}
+
+.research-card-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.research-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.research-empty {
+  color: var(--text-secondary);
+  padding: 12px 0;
+  text-align: center;
+}
+
+/* ---- Policy + profile selection (create/clone form) ------------------ */
+
+.research-policy-classes {
+  background-color: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.research-advanced {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.research-advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 2px 0;
+  width: fit-content;
+}
+
+.research-advanced summary:hover {
+  color: var(--text-color);
+}
+
+.research-advanced[open] summary {
+  margin-bottom: 8px;
+}
+
+.research-advanced textarea {
+  font-size: 12.5px;
+  min-height: 64px;
+}
+
+/* ---- Enrollment handoff (join success) ------------------------------- */
+
+.research-handoff {
+  align-items: flex-start;
+  background-color: var(--success-soft);
+  border: 1px solid color-mix(in srgb, var(--success-color) 28%, transparent);
+  border-radius: var(--radius-lg);
+  color: var(--success-color);
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.research-handoff p {
+  color: var(--text-color);
+  font-weight: 650;
+  margin: 0;
+}
+
+.research-handoff span {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* ---- Participant "My studies" ---------------------------------------- */
+
+.participant-current .ui-card-title .ui-row {
+  gap: 10px;
+}
+
+.participant-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.participant-dl {
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+}
+
+.participant-dl code {
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.participant-collect {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.participant-collect li {
+  align-items: flex-start;
+  color: var(--text-color);
+  display: flex;
+  font-size: 13.5px;
+  gap: 8px;
+}
+
+.participant-collect li > .ui-icon {
+  color: var(--success-color);
+  margin-top: 3px;
+}
+
+.participant-collect li span {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.participant-steps {
+  counter-reset: none;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.participant-steps li {
+  align-items: flex-start;
+  background-color: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.participant-steps strong {
+  color: var(--text-color);
+  display: block;
+  font-size: 13.5px;
+}
+
+.participant-steps p {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 3px 0 0;
+}
+
+.participant-step-number {
+  align-items: center;
+  background-color: var(--primary-soft);
+  border-radius: 50%;
+  color: var(--primary-color);
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 750;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+
+.participant-join-code {
+  font-family: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.06em;
+  max-width: 320px;
+  text-transform: uppercase;
+}
+
+.participant-join-code::placeholder {
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.participant-review {
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 16px;
+}
+
+.participant-review-head h3 {
+  color: var(--text-color);
+  font-size: 17px;
+  margin: 0;
+}
+
+.participant-review-head p {
+  color: var(--text-secondary);
+  margin: 6px 0 0;
+}
+
+.participant-consent {
+  background-color: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-color);
+  font-size: 13.5px;
+  line-height: 1.6;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+}
+
+.participant-consent p {
+  margin: 0;
+}
+
+/* Consent documents and the platform notice are plain text shown as typed. */
+.consent-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.consent-review {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.consent-document,
+.consent-notice {
+  background-color: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-color);
+  font-size: 13.5px;
+  line-height: 1.6;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+
+.consent-notice .ui-section-title {
+  margin: 0 0 6px;
+}
+
+.consent-statements {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.consent-answers {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.consent-answers li {
+  align-items: flex-start;
+  display: flex;
+  gap: 6px;
+}
+
+.consent-answers small {
+  color: var(--text-secondary);
+}
+
+.consent-statement-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.participant-history {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.participant-history li {
+  align-items: center;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 10px 0;
+}
+
+.participant-history li:last-child {
+  border-bottom: none;
+}
+
+/* ---- Participant dashboard (study drawer) ---------------------------- */
+
+.participant-timeline {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  max-height: 460px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.participant-timeline li {
+  align-items: baseline;
+  border-bottom: 1px solid var(--border-color);
+  display: grid;
+  font-size: 13px;
+  gap: 10px;
+  grid-template-columns: 10px 150px minmax(120px, 190px) minmax(0, 1fr);
+  padding: 7px 2px;
+}
+
+.participant-timeline li:last-child {
+  border-bottom: none;
+}
+
+.timeline-dot {
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  transform: translateY(-1px);
+  width: 8px;
+}
+
+.timeline-dot.tone-danger {
+  background-color: var(--status-critical);
+}
+
+.timeline-dot.tone-warning {
+  background-color: var(--status-warning);
+}
+
+.timeline-dot.tone-violet {
+  background-color: var(--violet-color);
+}
+
+.timeline-dot.tone-info {
+  background-color: var(--info-color);
+}
+
+.timeline-dot.tone-primary {
+  background-color: var(--primary-color);
+}
+
+.timeline-dot.tone-neutral {
+  background-color: var(--viz-muted);
+}
+
+.timeline-time {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.timeline-label {
+  color: var(--text-color);
+  font-weight: 600;
+}
+
+.timeline-detail {
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .participant-timeline li {
+    grid-template-columns: 10px minmax(0, 1fr);
+  }
+
+  .timeline-time,
+  .timeline-detail {
+    grid-column: 2;
+  }
+}
+
+/* ---- Chat trace (owner view of one participant chat) ----------------------- */
+
+.chat-trace .trace-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trace-block-head,
+.chat-trace .trace-row {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trace-offset {
+  margin-left: auto;
+}
+
+.trace-text {
+  background-color: var(--surface-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.55;
+  max-height: 360px;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+}
+
+.trace-diff {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.trace-tool {
+  border-left: 3px solid var(--border-color);
+  padding-left: 10px;
+}
+
+.trace-revision {
+  margin-top: 4px;
+}

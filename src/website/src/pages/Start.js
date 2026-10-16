@@ -6,7 +6,6 @@ import "./Start.css";
 const Start = ({ isAuthenticated }) => {
   return (
     <div className="start-container">
-      <div className="bg-decor" aria-hidden="true"></div>
       <header className="start-header glass">
         <div className="brand">
           <img src="/logo512.png" alt="Code4me2 logo" className="brand-logo" />
@@ -31,11 +30,14 @@ const Start = ({ isAuthenticated }) => {
         <section className="hero">
           <span className="kicker">Open research platform</span>
           <h2>
-            Modern AI-powered code completion for real developer workflows
+            Every model call, tool use and decision, recorded
           </h2>
           <p>
-            Code4me2 combines an analytics-enabled backend with IDE integrations to
-            explore, evaluate, and improve AI code completion in real projects.
+            Code4me2 exists so researchers can study AI-assisted programming
+            for real. Developers work in JetBrains IDEs with agents that ask
+            permission before acting; researchers get the whole interaction as
+            event-level telemetry that is consented, privacy-filtered and comparable
+            across every participant.
           </p>
           {!isAuthenticated && (
             <div className="cta">
@@ -46,6 +48,25 @@ const Start = ({ isAuthenticated }) => {
         </section>
 
         <div className="info-grid">
+          <section className="about card">
+            <h3>Why research with Code4Me</h3>
+            <ul>
+              <li>Every participant runs the same pinned agent setup under the same policies, so runs stay comparable</li>
+              <li>Enrollment is consent-governed, with join codes and withdrawal that erases data</li>
+              <li>Studies, profiles, providers, and dashboards live in one place, on infrastructure you host yourself</li>
+            </ul>
+          </section>
+
+          <section className="about card">
+            <h3>Telemetry researchers get</h3>
+            <ul>
+              <li>Model calls with token usage, latency, and finish reasons</li>
+              <li>Tool use with permission decisions: what ran and what was allowed or denied</li>
+              <li>Acceptance feedback and ground-truth code for completions</li>
+              <li>IDE activity and editor context, linked into reconstructible timelines</li>
+            </ul>
+          </section>
+
           <section className="links card">
             <h3>Resources</h3>
             <ul>
@@ -66,24 +87,21 @@ const Start = ({ isAuthenticated }) => {
               </li>
               <li>
                 <a href="https://plugins.jetbrains.com/vendor/code4me-team" target="_blank" rel="noreferrer">
-                  JetBrains Marketplace — Code4me Team
+                  JetBrains Marketplace: Code4me Team
                 </a>
               </li>
             </ul>
           </section>
 
-          <section className="about card">
-            <h3>What you can do</h3>
-            <ul>
-              <li>Authenticate with email/password or Google</li>
-              <li>Explore analytics dashboards for usage and model performance</li>
-              <li>Participate in studies and A/B experiments</li>
-              <li>Integrate with the JetBrains plugin to collect telemetry</li>
-            </ul>
+          <section className="card">
+            <h3>Demo video</h3>
+            <div className="demo-slot" aria-hidden="true">
+              <span>Video walkthrough coming soon</span>
+            </div>
           </section>
         </div>
         <section className="features-island card">
-          <h3>Platform features</h3>
+          <h3>What we provide</h3>
           <div className="features-grid">
             <div className="feature">
               <div className="feat-icon" aria-hidden="true">
@@ -92,8 +110,8 @@ const Start = ({ isAuthenticated }) => {
                 </svg>
               </div>
               <div className="feat-content">
-                <h4>Real-time AI completions</h4>
-                <p>Low-latency, context-aware code suggestions with streaming delivery.</p>
+                <h4>Labeled acceptance data</h4>
+                <p>Accepted completions stored alongside ground-truth edits, attributed per participant.</p>
               </div>
             </div>
 
@@ -104,8 +122,8 @@ const Start = ({ isAuthenticated }) => {
                 </svg>
               </div>
               <div className="feat-content">
-                <h4>JetBrains IDE integration</h4>
-                <p>Plugin for JetBrains IDEs with telemetry and study controls.</p>
+                <h4>Full execution traces</h4>
+                <p>Model calls, tool use and permission decisions with trace, span and parent linkage.</p>
               </div>
             </div>
 
@@ -118,8 +136,8 @@ const Start = ({ isAuthenticated }) => {
                 </svg>
               </div>
               <div className="feat-content">
-                <h4>Advanced analytics</h4>
-                <p>Usage metrics, performance insights, and acceptance trends.</p>
+                <h4>Analytics</h4>
+                <p>Usage, model comparison, agent timelines and ground truth, aggregated per study.</p>
               </div>
             </div>
 
@@ -130,8 +148,8 @@ const Start = ({ isAuthenticated }) => {
                 </svg>
               </div>
               <div className="feat-content">
-                <h4>A/B experiments</h4>
-                <p>Run controlled studies and compare configurations scientifically.</p>
+                <h4>Controlled cohorts</h4>
+                <p>Join codes with frozen profiles and policies, so cohorts stay comparable.</p>
               </div>
             </div>
 
@@ -142,8 +160,8 @@ const Start = ({ isAuthenticated }) => {
                 </svg>
               </div>
               <div className="feat-content">
-                <h4>Privacy-first</h4>
-                <p>Robust session management, secret detection, and data controls.</p>
+                <h4>Privacy controls</h4>
+                <p>Secret redaction, consent gates and data erasure on withdrawal.</p>
               </div>
             </div>
 
@@ -154,8 +172,8 @@ const Start = ({ isAuthenticated }) => {
                 </svg>
               </div>
               <div className="feat-content">
-                <h4>Admin & study tools</h4>
-                <p>Manage users, datasets, and experiments from a unified dashboard.</p>
+                <h4>Self-hosted infrastructure</h4>
+                <p>Backend, providers and keys under your control. Study data remains on your machines.</p>
               </div>
             </div>
           </div>
@@ -163,7 +181,7 @@ const Start = ({ isAuthenticated }) => {
       </main>
 
       <footer className="start-footer glass">
-        <small>© {new Date().getFullYear()} Code4me2 — AISE, TU Delft</small>
+        <small>© {new Date().getFullYear()} Code4me2, AISE, TU Delft</small>
       </footer>
     </div>
   );

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import "./Chart.css";
 
 /**
@@ -58,14 +58,17 @@ const Chart = ({
     return String(xVal);
   };
 
-  const formatXForAxis = (xVal) => {
-    if (xLabelFormatter) return xLabelFormatter(xVal);
-    if (inferredTime) {
-      const d = typeof xVal === "number" ? new Date(xVal) : new Date(String(xVal));
-      return d.toLocaleDateString();
-    }
-    return String(xVal);
-  };
+  const formatXForAxis = useCallback(
+    (xVal) => {
+      if (xLabelFormatter) return xLabelFormatter(xVal);
+      if (inferredTime) {
+        const d = typeof xVal === "number" ? new Date(xVal) : new Date(String(xVal));
+        return d.toLocaleDateString();
+      }
+      return String(xVal);
+    },
+    [xLabelFormatter, inferredTime],
+  );
 
   // Responsive label management
   const truncate = (s, max) => {
@@ -124,14 +127,15 @@ const Chart = ({
     const perLabelPx = (width - 16) / Math.max(1, labelsShown);
     const maxChars = Math.max(4, Math.floor(perLabelPx / charWidth) - 1);
     setMaxCharsPerLabel(Math.min(24, maxChars));
-  }, [containerWidth, data, xKey, xLabelFormatter, inferredTime]);
+  }, [containerWidth, data, xKey, xLabelFormatter, inferredTime, formatXForAxis]);
 
-  // Show placeholder while loading or when no data
+  // Callers render their own loading state; an empty series here means the
+  // period simply has no data (not that it is still loading).
   if (!data || data.length === 0) {
     return (
       <div className="chart-container">
         <h3>{title}</h3>
-        <div className="chart-loading">Loading data...</div>
+        <div className="chart-loading">No data for this period.</div>
       </div>
     );
   }

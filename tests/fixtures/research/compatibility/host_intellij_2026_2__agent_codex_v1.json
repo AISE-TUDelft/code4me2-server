@@ -1,0 +1,192 @@
+{
+  "fixture_version": "1",
+  "fixture_name": "host_intellij_2026_2__agent_codex_v1",
+  "capture_channel": "plugin_public_api",
+  "protocol_version": "1",
+  "initialize_request": {
+    "jsonrpc": "2.0",
+    "id": "init-1",
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "1",
+      "clientCapabilities": {
+        "fs": {
+          "readTextFile": true,
+          "writeTextFile": true
+        },
+        "terminal": true
+      }
+    }
+  },
+  "initialize_response": {
+    "jsonrpc": "2.0",
+    "id": "init-1",
+    "result": {
+      "protocolVersion": "1",
+      "agentCapabilities": {
+        "loadSession": true,
+        "promptCapabilities": {
+          "image": false,
+          "audio": false,
+          "embeddedContext": true
+        },
+        "sessionCapabilities": {
+          "close": true
+        }
+      }
+    }
+  },
+  "operations": [
+    {
+      "capability": "INITIALIZE",
+      "state": "SUPPORTED",
+      "fidelity": "EXACT",
+      "enforcement_owner": "HOST",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:01Z",
+      "evidence": {
+        "method": "initialize",
+        "id": "init-1",
+        "protocolVersion": "1"
+      }
+    },
+    {
+      "capability": "TOOL_LIFECYCLE",
+      "state": "SUPPORTED",
+      "fidelity": "EXACT",
+      "enforcement_owner": "HOST",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:03Z",
+      "evidence": {
+        "method": "session/update",
+        "toolCallId": "tool-1",
+        "status": "completed"
+      }
+    },
+    {
+      "capability": "TOOL_UPDATES",
+      "state": "SUPPORTED",
+      "fidelity": "EXACT",
+      "enforcement_owner": "HOST",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:04Z",
+      "evidence": {
+        "method": "session/update",
+        "toolCallId": "tool-1",
+        "update": "tool_call_update",
+        "status": "in_progress"
+      }
+    },
+    {
+      "capability": "PERMISSION_REQUEST",
+      "state": "SUPPORTED",
+      "fidelity": "EXACT",
+      "enforcement_owner": "HOST",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:05Z",
+      "evidence": {
+        "method": "session/request_permission",
+        "id": "perm-1",
+        "options": ["allow_once", "allow_always", "reject_once"]
+      }
+    },
+    {
+      "capability": "EDIT_PROPOSAL",
+      "state": "SUPPORTED",
+      "fidelity": "NORMALIZED",
+      "enforcement_owner": "HOST",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:06Z",
+      "evidence": {
+        "method": "session/update",
+        "kind": "edit_proposal",
+        "path": "src/example.py"
+      }
+    },
+    {
+      "capability": "DIFF",
+      "state": "SUPPORTED",
+      "fidelity": "NORMALIZED",
+      "enforcement_owner": "HOST",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:07Z",
+      "evidence": {
+        "method": "session/update",
+        "kind": "diff",
+        "path": "src/example.py"
+      }
+    },
+    {
+      "capability": "CANCELLATION",
+      "state": "SUPPORTED",
+      "fidelity": "EXACT",
+      "enforcement_owner": "HOST",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:08Z",
+      "evidence": {
+        "method": "session/cancel",
+        "id": "cancel-1"
+      }
+    },
+    {
+      "capability": "SESSION_CLOSE",
+      "state": "SUPPORTED",
+      "fidelity": "EXACT",
+      "enforcement_owner": "HOST",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:09Z",
+      "evidence": {
+        "method": "session/close",
+        "id": "close-1"
+      }
+    },
+    {
+      "capability": "SESSION_LOAD",
+      "state": "SUPPORTED",
+      "fidelity": "NORMALIZED",
+      "enforcement_owner": "AGENT",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:10Z",
+      "evidence": {
+        "method": "session/load",
+        "id": "load-1"
+      }
+    },
+    {
+      "capability": "PLANS",
+      "state": "SUPPORTED",
+      "fidelity": "NORMALIZED",
+      "enforcement_owner": "AGENT",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:11Z",
+      "evidence": {
+        "method": "session/update",
+        "kind": "plan",
+        "entries": 3
+      }
+    },
+    {
+      "capability": "USAGE",
+      "state": "SUPPORTED",
+      "fidelity": "NORMALIZED",
+      "enforcement_owner": "AGENT",
+      "limitations": [],
+      "observed_at": "2026-08-01T10:00:12Z",
+      "evidence": {
+        "method": "session/update",
+        "kind": "usage_update",
+        "used": 512,
+        "size": 200000
+      }
+    }
+  ],
+  "diagnostics": {
+    "api_key": "sk-CANARY000000000000000000000000",
+    "authorization": "Bearer CANARY-BEARER-TOKEN-0001",
+    "note": "synthetic canary values that MUST be redacted before persistence",
+    "nested": {
+      "client_secret": "CANARY-CLIENT-SECRET",
+      "keep_me": "this value is not a secret"
+    }
+  }
+}

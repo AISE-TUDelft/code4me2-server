@@ -1,0 +1,70 @@
+{
+  "schema_version": "1",
+  "snapshot_id": "22222222-2222-4222-8222-222222222222",
+  "release_id": "rel-codex-1.2.3",
+  "agent_id": "codex-acp",
+  "adapter_id": "acp-adapter",
+  "adapter_version": "0.4.0",
+  "environment": {
+    "environment_id": "env-synthetic-intellij",
+    "host_kind": "IntelliJ IDEA",
+    "os": "macOS",
+    "arch": "aarch64",
+    "ide_build": "IU-262.0000.00",
+    "plugin_version": "0.0.0-fixture"
+  },
+  "protocol_version": "1",
+  "declared": {
+    "INITIALIZE": {
+      "state": "DECLARED",
+      "value": true,
+      "fidelity": "EXACT",
+      "source": "initialize",
+      "limitations": [],
+      "observed_at": null
+    },
+    "USAGE": {
+      "state": "DECLARED",
+      "value": null,
+      "fidelity": "INFERRED",
+      "source": "initialize",
+      "limitations": [
+        "declared by manifest; no usage event observed in this run"
+      ],
+      "observed_at": null
+    },
+    "PLANS": {
+      "state": "DECLARED",
+      "value": true,
+      "fidelity": "NORMALIZED",
+      "source": "initialize",
+      "limitations": [],
+      "observed_at": null
+    }
+  },
+  "observed": {
+    "INITIALIZE": {
+      "state": "OBSERVED",
+      "value": true,
+      "fidelity": "EXACT",
+      "source": "proxy",
+      "limitations": [],
+      "observed_at": "2026-09-15T00:00:01Z"
+    },
+    "USAGE": {
+      "state": "UNAVAILABLE",
+      "value": null,
+      "fidelity": "INFERRED",
+      "source": "proxy",
+      "limitations": [
+        "no usage event observed; token count is unknown, not zero"
+      ],
+      "observed_at": "2026-09-15T00:00:02Z"
+    }
+  },
+  "evidence_refs": [
+    "fixture://research/agents/snapshot-synthetic/transcript.redacted.json"
+  ],
+  "captured_at": "2026-09-15T00:00:03Z",
+  "failure": null
+}

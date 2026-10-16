@@ -170,7 +170,7 @@ def __parse_chat_history(db_session, chat_history_data):
                         model_name=model_name,
                         completion=generation.completion,
                         generation_time=generation.generation_time,
-                        confidence=generation.confidence,
+                        confidence=generation.confidence if generation.confidence is not None else 0.0,
                         was_accepted=generation.was_accepted,
                     )
                 )

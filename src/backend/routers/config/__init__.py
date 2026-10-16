@@ -39,6 +39,9 @@ def _maybe_parse_json(s: str) -> Any:
         return s
 
 
+# Both spellings are served directly: the website normalizes ``/api/config/`` to
+# ``/api/config`` and a redirect between them fails CORS preflight cross-origin.
+@router.get("", include_in_schema=False)
 @router.get("/", summary="List all configs")
 def list_configs(
     current_user: AuthenticatedUser = Depends(require_admin),
@@ -54,6 +57,61 @@ def list_configs(
         return JsonResponseWithStatus(status_code=200, content={"configs": items})
     finally:
         db.close()
+
+
+# Static paths are declared before the `/{config_id}` routes: routes match in
+# declaration order, so `/languages` and `/models` would otherwise be parsed
+# as a config id and rejected with 422.
+@router.get("/languages", summary="List supported programming languages")
+def list_languages(
+    current_user: AuthenticatedUser = Depends(require_admin),
+    app: App = Depends(App.get_instance),
+):
+    db = app.get_db_session()
+    try:
+        langs = crud.get_all_programming_languages(db)
+        items = [{"language_id": int(l.language_id), "language_name": l.language_name} for l in langs]
+        # Also provide as a mapping name -> id for convenience
+        mapping = {l["language_name"]: l["language_id"] for l in items}
+        return JsonResponseWithStatus(status_code=200, content={"languages": items, "mapping": mapping})
+    finally:
+        db.close()
+
+
+@router.get("/models", summary="List available models in database")
+def list_models(
+    current_user: AuthenticatedUser = Depends(require_admin),
+    app: App = Depends(App.get_instance),
+):
+    db = app.get_db_session()
+    try:
+        models = crud.get_all_model_names(db)
+        items = [{"model_id": int(m.model_id), "model_name": m.model_name} for m in models]
+        return JsonResponseWithStatus(status_code=200, content={"models": items})
+    finally:
+        db.close()
+
+
+@router.get("/models/validate", summary="Validate a Hugging Face model name")
+def validate_hf_model(
+    name: str = Query(..., description="Hugging Face repo id, e.g. org/model"),
+    current_user: AuthenticatedUser = Depends(require_admin),
+):
+    if not name or "/" not in name:
+        # HF models are generally in org/model format; allow single segment too but warn
+        candidate = name.strip()
+    else:
+        candidate = name.strip()
+
+    # Use httpx to check if the page exists
+    url = f"https://huggingface.co/{candidate}"
+    try:
+        resp = httpx.get(url, follow_redirects=True, timeout=5.0)
+        exists = resp.status_code == 200
+        return JsonResponseWithStatus(status_code=200, content={"name": candidate, "exists": exists, "status_code": resp.status_code})
+    except Exception as e:
+        # If network error, return a soft failure so UI can warn but not block
+        return JsonResponseWithStatus(status_code=200, content={"name": candidate, "exists": False, "error": str(e)})
 
 
 @router.get("/{config_id}", summary="Get a config by id")
@@ -75,6 +133,7 @@ def get_config(
         db.close()
 
 
+@router.post("", include_in_schema=False)
 @router.post("/", summary="Create a new config")
 def create_config(
     payload: ConfigCreate,
@@ -126,59 +185,10 @@ def delete_config(
         if not ok:
             raise HTTPException(status_code=404, detail="Config not found")
         return JsonResponseWithStatus(status_code=200, content={"deleted": True, "config_id": int(config_id)})
+    except HTTPException:
+        # A missing config is a 404, not a server error.
+        raise
     except Exception as e:
         return JsonResponseWithStatus(status_code=500, content={"error": str(e)})
     finally:
         db.close()
-
-
-@router.get("/languages", summary="List supported programming languages")
-def list_languages(
-    current_user: AuthenticatedUser = Depends(require_admin),
-    app: App = Depends(App.get_instance),
-):
-    db = app.get_db_session()
-    try:
-        langs = crud.get_all_programming_languages(db)
-        items = [{"language_id": int(l.language_id), "language_name": l.language_name} for l in langs]
-        # Also provide as a mapping name -> id for convenience
-        mapping = {l["language_name"]: l["language_id"] for l in items}
-        return JsonResponseWithStatus(status_code=200, content={"languages": items, "mapping": mapping})
-    finally:
-        db.close()
-
-
-@router.get("/models", summary="List available models in database")
-def list_models(
-    current_user: AuthenticatedUser = Depends(require_admin),
-    app: App = Depends(App.get_instance),
-):
-    db = app.get_db_session()
-    try:
-        models = crud.get_all_model_names(db)
-        items = [{"model_id": int(m.model_id), "model_name": m.model_name} for m in models]
-        return JsonResponseWithStatus(status_code=200, content={"models": items})
-    finally:
-        db.close()
-
-
-@router.get("/models/validate", summary="Validate a Hugging Face model name")
-def validate_hf_model(
-    name: str = Query(..., description="Hugging Face repo id, e.g. org/model"),
-    current_user: AuthenticatedUser = Depends(require_admin),
-):
-    if not name or "/" not in name:
-        # HF models are generally in org/model format; allow single segment too but warn
-        candidate = name.strip()
-    else:
-        candidate = name.strip()
-
-    # Use httpx to check if the page exists
-    url = f"https://huggingface.co/{candidate}"
-    try:
-        resp = httpx.get(url, follow_redirects=True, timeout=5.0)
-        exists = resp.status_code == 200
-        return JsonResponseWithStatus(status_code=200, content={"name": candidate, "exists": exists, "status_code": resp.status_code})
-    except Exception as e:
-        # If network error, return a soft failure so UI can warn but not block
-        return JsonResponseWithStatus(status_code=200, content={"name": candidate, "exists": False, "error": str(e)})

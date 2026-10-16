@@ -14,6 +14,9 @@ pytest-mock~=3.10.0
 pytest-postgresql~=6.0.0
 pytest-env~=1.1.0
 hypothesis~=6.70.0
+# Used by tests/backend_tests/research/test_telemetry.py to validate the emitted
+# telemetry JSON Schema (Draft 2020-12) directly.
+jsonschema~=4.26.0
 
 # -----------------------
 # Core Backend
@@ -28,7 +31,7 @@ detect_secrets~=1.5.0
 starlette~=0.46.0
 celery~=5.5.0
 httpx~=0.25.0
-pydantic~=2.11.3
+pydantic>=2.11,<3
 pydantic_settings~=2.9.1
 polyfactory~=2.21.0
 fastapi-limiter~=0.1.6
@@ -41,7 +44,9 @@ python-multipart~=0.0.20
 # Database
 # -----------------------
 SQLAlchemy~=2.0.30
-psycopg_binary~=3.2.1
+# Install psycopg and its binary implementation as one version-locked extra.
+# Separate requirements allow pip to select incompatible minor versions.
+psycopg[binary]~=3.2.1
 psycopg2-binary~=2.9.9
 
 alembic>=1.13.1
@@ -53,7 +58,6 @@ numpy>=1.26.2
 # -----------------------
 # Auth & Security
 # -----------------------
-google-auth~=2.22.0
 
 # -----------------------
 # LLMs & AI
@@ -63,7 +67,7 @@ langchain-community~=0.3.24
 langchain-huggingface~=0.2.0
 transformers~=4.50.0
 accelerate~=1.7.0
-torch~=2.7.0           # Uncomment if using PyTorch
+torch>=2.7,<3          # required by sentence-transformers (CPU/MPS wheels)
 # vllm~=0.5.0            # Uncomment if using vLLM
 huggingface_hub[cli]
 
@@ -71,3 +75,9 @@ huggingface_hub[cli]
 # Utilities
 # -----------------------
 requests~=2.32.3
+
+# -----------------------
+# Research exports (Issue 12)
+# -----------------------
+# Canonical research export artifact writer/reader. The export service degrades
+# to CSV/JSONL with a typed EXPORT_WRITER_UNAVAILABLE when this is absent.

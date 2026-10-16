@@ -1,0 +1,205 @@
+name: E2E harness
+
+# The harness lives in code4me2-server/e2e but drives both repositories, so this
+# workflow checks the plugin out as a sibling and points the harness at the
+# workspace with CODE4ME_E2E_WORKSPACE.
+#
+# Layers:
+#   backend  - 17 HTTP workflow steps against the disposable Compose stack
+#   browser  - 37 headless Chromium website checks + persisted read models
+#   plugin   - Kotlin IntelliJ fixture + HTTP workflow
+#   agents   - real Goose/Codex ACP probes (only inside `all`, which installs a
+#              pinned Goose; the harness itself never installs agents)
+#   all      - every layer (needs a graphical runner)
+#
+# `test` provisions missing prerequisites itself (e.g. e2e/.venv for the native
+# agent build); the explicit image/Playwright steps below just keep CI fast and
+# its Playwright interpreter explicit.
+#
+# The full IDE layer runs under Xvfb on a Linux runner. Pin the plugin ref for
+# that manual gate so its result identifies the exact pair of source commits.
+
+on:
+  workflow_dispatch:
+    inputs:
+      layer:
+        description: Harness layer to run
+        type: choice
+        options:
+          - backend
+          - browser
+          - plugin
+          - all
+        default: backend
+      pluginRef:
+        description: Exact plugin commit SHA to test (required for plugin/all)
+        required: false
+  # The harness unit tests run whenever the harness or the backend it drives
+  # changes; the `layer` job limits the Docker stack to the integration
+  # branches, pull requests and manual runs.
+  push:
+    paths:
+      - e2e/**
+      - .github/workflows/e2e.yml
+      - src/**
+      - "!src/website/**"
+      - Dockerfile.cpu
+      - requirements.txt
+      - packaging/**
+      - pyproject.toml
+      - alembic.ini
+  pull_request:
+    paths:
+      - e2e/**
+      - .github/workflows/e2e.yml
+      - src/**
+      - "!src/website/**"
+      - Dockerfile.cpu
+      - requirements.txt
+      - packaging/**
+      - pyproject.toml
+      - alembic.ini
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  harness-tests:
+    name: Harness unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: code4me2-server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Harness regression tests (no Docker or IDE)
+        working-directory: code4me2-server/e2e
+        run: python -m unittest discover -s tests -v
+
+  layer:
+    name: ${{ inputs.layer || 'backend' }} layer
+    # Feature-branch pushes stop at the unit tests; dispatch the workflow (or
+    # open a pull request) to run the stack there.
+    if: github.event_name != 'push' || github.ref_name == 'test_draft' || github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    needs: harness-tests
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: code4me2-server
+      - name: Require an explicit plugin revision for IDE and fixture tests
+        if: ${{ inputs.layer == 'all' || inputs.layer == 'plugin' }}
+        env:
+          PLUGIN_REF: ${{ inputs.pluginRef }}
+        run: '[[ "$PLUGIN_REF" =~ ^[0-9a-fA-F]{40}$ ]]'
+      - name: Check out the plugin as a workspace sibling
+        uses: actions/checkout@v4
+        with:
+          repository: AISE-TUDelft/code4me2
+          ref: ${{ inputs.pluginRef }}
+          path: code4me2
+          # Public repositories work with the default token; private ones need a
+          # PLUGIN_CHECKOUT_TOKEN repository secret.
+          token: ${{ secrets.PLUGIN_CHECKOUT_TOKEN != '' && secrets.PLUGIN_CHECKOUT_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-java@v4
+        if: ${{ inputs.layer == 'all' || inputs.layer == 'plugin' }}
+        with:
+          distribution: temurin
+          java-version: "25"
+      - uses: actions/setup-node@v4
+        if: ${{ inputs.layer == 'browser' }}
+        with:
+          node-version: "22"
+      - name: Build the disposable backend image
+        run: docker build -f code4me2-server/Dockerfile.cpu -t code4me2-server-backend:latest code4me2-server
+      - name: Install native and graphical test dependencies
+        if: ${{ inputs.layer == 'all' || inputs.layer == 'plugin' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          python -m pip install -r code4me2-server/packaging/requirements-runtime.lock \
+            -r code4me2-server/packaging/requirements-build.lock
+          python -m pip install --no-deps -e ./code4me2-server -e ./code4me2/telemetry-acp-proxy
+      # Participants bring their own Goose, so the harness only discovers one; on
+      # this throwaway runner the agents layer gets the release the harness
+      # targets (Goose 1.51), checked against the digest GitHub publishes for it.
+      - name: Install the pinned Goose for the agents layer
+        if: ${{ inputs.layer == 'all' }}
+        env:
+          GOOSE_URL: https://github.com/aaif-goose/goose/releases/download/v1.51.0/goose-x86_64-unknown-linux-gnu.tar.bz2
+          GOOSE_SHA256: de5bf71c6bf470fbb55276de871bbbd65c844aa066d3b09b1552da83f8e367e2
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/goose.tar.bz2" "$GOOSE_URL"
+          echo "$GOOSE_SHA256  $RUNNER_TEMP/goose.tar.bz2" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/goose"
+          tar -xjf "$RUNNER_TEMP/goose.tar.bz2" -C "$RUNNER_TEMP/goose"
+          "$RUNNER_TEMP/goose/goose" --version
+          echo "CODE4ME_E2E_GOOSE_EXECUTABLE=$RUNNER_TEMP/goose/goose" >> "$GITHUB_ENV"
+      - name: Install Playwright for the browser layer
+        if: ${{ inputs.layer == 'browser' }}
+        run: |
+          python -m venv "$RUNNER_TEMP/browser-venv"
+          "$RUNNER_TEMP/browser-venv/bin/python" -m pip install --quiet playwright
+          "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install --with-deps chromium
+      - name: Run the harness layer
+        working-directory: code4me2-server/e2e
+        env:
+          CODE4ME_E2E_WORKSPACE: ${{ github.workspace }}
+          CODE4ME_E2E_BROWSER_PYTHON: ${{ inputs.layer == 'browser' && format('{0}/browser-venv/bin/python', runner.temp) || '' }}
+          E2E_LAYER: ${{ inputs.layer || 'backend' }}
+        # The runner's Linux Docker engine maps host.docker.internal to the
+        # bridge gateway, so the backend reaches the stub provider only when it
+        # listens on all interfaces.
+        run: |
+          if [ "$E2E_LAYER" = all ] || [ "$E2E_LAYER" = plugin ]; then
+            CODE4ME_E2E_PYTHON="$(command -v python)"
+            export CODE4ME_E2E_PYTHON
+            xvfb-run -a python -m code4me_e2e test --layer "$E2E_LAYER" --set stack.stub_host=0.0.0.0 --json
+          else
+            python -m code4me_e2e test --layer "$E2E_LAYER" --set stack.stub_host=0.0.0.0 --json
+          fi
+      - name: Record successful full E2E revision pair
+        if: ${{ inputs.layer == 'all' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          reports = list(Path("code4me2-server/e2e/runs").glob("*/report.json"))
+          if len(reports) != 1:
+              raise SystemExit(f"expected one E2E report, found {len(reports)}")
+          report = json.loads(reports[0].read_text())
+          if not report.get("steps") or report.get("failed_step") or report.get("blocked_by") or any(
+              step.get("status") != "PASS" for step in report["steps"]
+          ):
+              raise SystemExit("full E2E report is incomplete or failed")
+          plugin_commit = subprocess.check_output(
+              ["git", "-C", "code4me2", "rev-parse", "HEAD"], text=True
+          ).strip()
+          Path("e2e-evidence.json").write_text(json.dumps({
+              "layer": "all",
+              "server_commit": os.environ["GITHUB_SHA"],
+              "plugin_commit": plugin_commit,
+          }) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.layer == 'all' }}
+        with:
+          name: code4me-e2e-evidence
+          path: e2e-evidence.json
+          if-no-files-found: error
+      - name: Upload E2E report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code4me-e2e-report
+          path: code4me2-server/e2e/runs/*/report.json
+          if-no-files-found: warn

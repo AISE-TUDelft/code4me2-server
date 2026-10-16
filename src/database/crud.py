@@ -1,9 +1,11 @@
 import json
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from typing import List, Optional, Tuple, Type, Union
 
-from sqlalchemy import func, text
+from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 import Queries as Queries
@@ -11,12 +13,113 @@ from database import db_schemas
 from database.db_schemas import DEFAULT_USER_PREFERENCE
 from database.embedding_service import encode_text
 from utils import hash_password, verify_password
+from research.canonical import canonical_hash, canonical_json
+from database.research_schemas import (
+    AgentRelease,
+    ResearchEnrollment,
+    ResearchParticipant,
+)
+from agents.tools import set_harness_profile_fields
+from research.study.agents.distributions import validate_profile_configuration
+from research.study.agents.enums import QualificationStatus
+from research.study.agents.registry import SELECTABLE_STATUSES
+from research.study.agents.store import row_to_release
+
+
+class ProfileReleaseError(ValueError):
+    """Raised when a profile pins a missing or non-selectable release."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def validate_profile_release(session: Session, release_id: Optional[str]) -> None:
+    """Validate a supplied profile release without changing registry rows."""
+    if release_id is None:
+        return
+    release = session.get(AgentRelease, release_id)
+    if release is None:
+        raise ProfileReleaseError(
+            "RELEASE_UNRESOLVED", f"release {release_id!r} is not registered"
+        )
+    status = str(release.status or "").upper()
+    if status in {QualificationStatus.RETIRED.value, QualificationStatus.BLOCKED.value}:
+        raise ProfileReleaseError(
+            "RELEASE_WITHDRAWN", f"release {release_id!r} is withdrawn"
+        )
+    if status not in {item.value for item in SELECTABLE_STATUSES}:
+        raise ProfileReleaseError(
+            "RELEASE_NOT_QUALIFIED", f"release {release_id!r} is not qualified"
+        )
+
+
+def _validate_profile_configuration(
+    db: Session,
+    *,
+    name: str,
+    framework_version: str,
+    release_id: Optional[str],
+    tools_json: str,
+    approval_policy: str,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    max_steps: Optional[int] = None,
+    max_context_tokens: Optional[int] = None,
+    system_prompt: Optional[str] = None,
+    commands_denylist: Optional[list] = None,
+    command_timeout_seconds: Optional[int] = None,
+    harness_options: Optional[dict] = None,
+) -> None:
+    """Enforce the shared profile↔release executable contract (ISSUE-03/17).
+
+    The candidate fields are validated together against the rehydrated release
+    and its stored conformance evidence, so a profile that cannot execute is
+    rejected at create/update time with a typed reason. ``model`` /
+    ``temperature`` / ``max_steps`` participate in the BYOA field-coverage
+    check and ``max_context_tokens`` / ``system_prompt`` and the built-in
+    runtime's command/harness settings (``commands_denylist`` /
+    ``command_timeout_seconds`` / ``harness_options``) in the BYOA
+    unsupported-field check; omitting them would let an ungoverned field
+    through until study creation. The command/harness settings are also
+    checked together (a verify command may not run a blocked program).
+    """
+    if release_id is None:
+        raise ProfileReleaseError(
+            "RELEASE_UNRESOLVED", "a profile must pin a registered release"
+        )
+    row = db.get(AgentRelease, release_id)
+    if row is None:
+        raise ProfileReleaseError(
+            "RELEASE_UNRESOLVED", f"release {release_id!r} is not registered"
+        )
+    candidate = SimpleNamespace(
+        name=name,
+        framework_version=framework_version,
+        release_id=release_id,
+        tools_json=tools_json,
+        approval_policy=approval_policy,
+        model=model,
+        temperature=temperature,
+        max_steps=max_steps,
+        max_context_tokens=max_context_tokens,
+        system_prompt=system_prompt,
+        commands_denylist=commands_denylist,
+        command_timeout_seconds=command_timeout_seconds,
+        harness_options=harness_options,
+    )
+    validate_profile_configuration(
+        candidate, row_to_release(row), release_json=row.release_json
+    )
+
+
+def _optional_json_text(value) -> Optional[str]:
+    """Canonical JSON text for an optional JSON profile column (``None`` stays NULL)."""
+    return None if value is None else canonical_json(value)
 
 
 # User
-def create_user(
-    db: Session, user: Union[Queries.CreateUser, Queries.CreateUserOauth]
-) -> db_schemas.User:
+def create_user(db: Session, user: Queries.CreateUser) -> db_schemas.User:
     # Create user object
     db_user = db_schemas.User(
         user_id=uuid.uuid4(),
@@ -27,7 +130,6 @@ def create_user(
         # configure default preference and config upon creation
         config_id=user.config_id,
         preference=json.dumps(DEFAULT_USER_PREFERENCE),
-        is_oauth_signup=isinstance(user, Queries.CreateUserOauth),
         verified=False,
     )
 
@@ -83,88 +185,16 @@ def update_user(
 
 
 def delete_user_by_id(db: Session, user_id: uuid.UUID) -> bool:
+    """Delete only the account row.
+
+    Not for user-initiated deletion: it leaves collected data behind and cascades
+    into studies the account owns. Use ``privacy.erasure.delete_account``.
+    """
     result = (
         db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
     )
     db.commit()
     return result > 0
-
-
-def delete_user_full_wipe_out(db: Session, user_id: uuid.UUID):
-    meta_queries = (
-        db.query(db_schemas.MetaQuery)
-        .filter(db_schemas.MetaQuery.user_id == user_id)
-        .all()
-    )
-    db.query(db_schemas.MetaQuery).filter(
-        db_schemas.MetaQuery.user_id == user_id
-    ).delete()
-    project_users = (
-        db.query(db_schemas.ProjectUser)
-        .filter(db_schemas.ProjectUser.user_id == user_id)
-        .all()
-    )
-    # TODO: Is not fully tested yet because in current settings the frontend doesn't support multi user project edit
-    for project_user in project_users:
-        project_context_should_be_deleted = True
-        project_should_be_deleted = True
-        common_project_users = (
-            db.query(db_schemas.ProjectUser)
-            .filter(db_schemas.ProjectUser.project_id == project_user.project_id)
-            .all()
-        )
-        # Check if there exists another user working on this project don't delete this project as a whole
-        if len(common_project_users) > 1:
-            project_should_be_deleted = False
-        # Check if there exists a user who has agreed to store context on the same project keep the context
-        for common_project_user in common_project_users:
-            common_user = (
-                db.query(db_schemas.User)
-                .filter(db_schemas.User.user_id == common_project_user.user_id)
-                .first()
-            )
-            if common_user and json.loads(common_user.preference).get(
-                "store_context", False
-            ):
-                project_context_should_be_deleted = False
-                break
-        if project_should_be_deleted:
-            db.query(db_schemas.Project).filter(
-                db_schemas.Project.project_id == project_user.project_id
-            ).delete()
-        elif project_context_should_be_deleted:
-            db.query(db_schemas.Project).filter(
-                db_schemas.Project.project_id == project_user.project_id
-            ).update({"multi_file_contexts": "{}", "multi_file_context_changes": "{}"})
-
-    db.query(db_schemas.ProjectUser).filter(
-        db_schemas.ProjectUser.user_id == user_id
-    ).delete()
-    db.query(db_schemas.Context).filter(
-        db_schemas.Context.context_id.in_(
-            list(map(lambda x: x.context_id, meta_queries))
-        )
-    ).delete()
-    db.query(db_schemas.BehavioralTelemetry).filter(
-        db_schemas.BehavioralTelemetry.behavioral_telemetry_id.in_(
-            list(map(lambda x: x.behavioral_telemetry_id, meta_queries))
-        )
-    ).delete()
-    db.query(db_schemas.ContextualTelemetry).filter(
-        db_schemas.ContextualTelemetry.contextual_telemetry_id.in_(
-            list(map(lambda x: x.contextual_telemetry_id, meta_queries))
-        )
-    ).delete()
-
-    db.query(db_schemas.Session).filter(db_schemas.Session.user_id == user_id).delete()
-    db.query(db_schemas.Chat).filter(db_schemas.Chat.user_id == user_id).delete()
-    db.query(db_schemas.HadGeneration).filter(
-        db_schemas.HadGeneration.meta_query_id.in_(
-            list(map(lambda x: x.meta_query_id, meta_queries))
-        )
-    ).delete()
-    db.query(db_schemas.User).filter(db_schemas.User.user_id == user_id).delete()
-    db.commit()
 
 
 # Context Operations
@@ -229,27 +259,6 @@ def create_behavioral_telemetry(
     return db_telemetry
 
 
-def get_contextual_telemetry_by_id(
-    db: Session, telemetry_id: uuid.UUID
-) -> Optional[db_schemas.ContextualTelemetry]:
-    return (
-        db.query(db_schemas.ContextualTelemetry)
-        .filter(db_schemas.ContextualTelemetry.contextual_telemetry_id == telemetry_id)
-        .first()
-    )
-
-
-def get_behavioral_telemetry_by_id(
-    db: Session, telemetry_id: uuid.UUID
-) -> Optional[db_schemas.BehavioralTelemetry]:
-    return (
-        db.query(db_schemas.BehavioralTelemetry)
-        .filter(db_schemas.BehavioralTelemetry.behavioral_telemetry_id == telemetry_id)
-        .first()
-    )
-
-
-# MetaQuery operations
 def create_completion_query(
     db: Session, query: Queries.CreateCompletionQuery, id: str = ""
 ) -> db_schemas.CompletionQuery:
@@ -336,26 +345,6 @@ def get_meta_query_by_id(
     )
 
 
-def get_completion_query_by_id(
-    db: Session, meta_query_id: uuid.UUID
-) -> Optional[db_schemas.CompletionQuery]:
-    return (
-        db.query(db_schemas.CompletionQuery)
-        .filter(db_schemas.CompletionQuery.meta_query_id == meta_query_id)
-        .first()
-    )
-
-
-def get_chat_query_by_id(
-    db: Session, meta_query_id: uuid.UUID
-) -> Optional[db_schemas.ChatQuery]:
-    return (
-        db.query(db_schemas.ChatQuery)
-        .filter(db_schemas.ChatQuery.meta_query_id == meta_query_id)
-        .first()
-    )
-
-
 def get_chat_queries_for_chat(
     db: Session, chat_id: uuid.UUID
 ) -> list[db_schemas.ChatQuery]:
@@ -403,16 +392,6 @@ def create_generation(
     db.commit()
     # db.refresh(db_generation)
     return db_generation
-
-
-def get_generations_by_meta_query(
-    db: Session, meta_query_id: uuid.UUID
-) -> list[db_schemas.HadGeneration]:
-    return (
-        db.query(db_schemas.HadGeneration)
-        .filter(db_schemas.HadGeneration.meta_query_id == meta_query_id)
-        .all()
-    )
 
 
 # def update_generation_acceptance(
@@ -904,7 +883,24 @@ def delete_session_cascade(db: Session, session_id: uuid.UUID) -> bool:
 def create_ground_truth(
     db: Session, ground_truth: Queries.CreateGroundTruth
 ) -> db_schemas.GroundTruth:
-    """Create a ground truth record"""
+    """Create a ground truth record.
+
+    Idempotent for retried feedback submissions: an identical
+    (completion_query_id, ground_truth) snapshot is stored only once, so a
+    retried POST never double-saves the same collected telemetry. Distinct
+    snapshots (e.g. the 15/45/90s captures) are still stored as separate rows.
+    """
+    existing = (
+        db.query(db_schemas.GroundTruth)
+        .filter(
+            db_schemas.GroundTruth.completion_query_id
+            == ground_truth.completion_query_id,
+            db_schemas.GroundTruth.ground_truth == ground_truth.ground_truth,
+        )
+        .first()
+    )
+    if existing is not None:
+        return existing
     db_ground_truth = db_schemas.GroundTruth(
         completion_query_id=ground_truth.completion_query_id,
         truth_timestamp=datetime.now(),
@@ -914,16 +910,6 @@ def create_ground_truth(
     db.commit()
     db.refresh(db_ground_truth)
     return db_ground_truth
-
-
-def get_ground_truths_for_completion(
-    db: Session, completion_query_id: uuid.UUID
-) -> list[db_schemas.GroundTruth]:
-    return (
-        db.query(db_schemas.GroundTruth)
-        .filter(db_schemas.GroundTruth.completion_query_id == completion_query_id)
-        .all()
-    )
 
 
 def get_all_programming_languages(db: Session) -> list[db_schemas.ProgrammingLanguage]:
@@ -1124,37 +1110,6 @@ def search_similar_documentation(
         return []
 
 
-def regenerate_embeddings(db: Session, language: Optional[str] = None) -> int:
-    """
-    Regenerate embeddings for all documentation entries.
-    Useful when changing embedding models or fixing corrupted embeddings.
-
-    Args:
-        language: Optional language filter to regenerate only specific language docs
-
-    Returns:
-        Number of embeddings regenerated
-    """
-    query = db.query(db_schemas.Documentation)
-
-    if language:
-        query = query.filter(db_schemas.Documentation.language == language)
-
-    docs = query.all()
-
-    updated_count = 0
-    for doc in docs:
-        try:
-            new_embedding = encode_text(doc.content)
-            doc.embedding = new_embedding
-            updated_count += 1
-        except Exception as e:
-            print(f"Failed to regenerate embedding for doc {doc.documentation_id}: {e}")
-
-    db.commit()
-    return updated_count
-
-
 def get_documentation_stats(db: Session) -> dict:
     """Get statistics about documentation entries."""
     total_docs = db.query(db_schemas.Documentation).count()
@@ -1183,3 +1138,1136 @@ def get_documentation_stats(db: Session) -> dict:
         ),
         "languages": dict(language_stats),
     }
+
+
+# ── Agent CRUD ────────────────────────────────────────────────────────────────
+#
+# Content parameters (task_description, first_system_message, last_user_message,
+# response_text, tool_arguments, tool_result, payload_json, diff_text,
+# edit_delta_json) are optional and default to None. Callers are responsible for
+# passing None unless the user's store_agent_content preference resolves True —
+# see backend.routers.agent.consent.resolve_store_agent_content. These helpers
+# deliberately do not re-check consent, so there is exactly one place where that
+# decision is made.
+
+
+class ProfileLockedError(PermissionError):
+    """Raised when an active research study owns a profile selection."""
+
+
+def _agent_profile_configuration(profile: db_schemas.AgentProfile) -> dict:
+    configuration = {
+        "profile_id": str(profile.profile_id),
+        "name": profile.name,
+        "model": profile.model,
+        "framework_version": profile.framework_version,
+        "connection_id": str(profile.connection_id) if profile.connection_id else None,
+        "release_id": profile.release_id,
+        "tools_json": profile.tools_json,
+        "approval_policy": profile.approval_policy,
+        "max_steps": profile.max_steps,
+        "temperature": profile.temperature,
+        "max_context_tokens": profile.max_context_tokens,
+        "is_active": profile.is_active,
+    }
+    # Only a set prompt joins the digest input, so every profile without one
+    # keeps the byte-identical configuration digest it had before the column.
+    system_prompt = getattr(profile, "system_prompt", None)
+    if system_prompt is not None:
+        configuration["system_prompt"] = system_prompt
+    # Likewise the built-in runtime's command/harness settings (D-01): only set
+    # values join, so a profile without them keeps its digest.
+    configuration.update(set_harness_profile_fields(profile))
+    return configuration
+
+
+def _refresh_agent_profile_digest(profile: db_schemas.AgentProfile) -> None:
+    profile.configuration_digest = canonical_hash(_agent_profile_configuration(profile))
+
+
+def _assert_agent_profile_editable(db: Session, profile_id: uuid.UUID) -> None:
+    from database.research_schemas import StudyAgentProfile
+
+    linked_active = (
+        db.query(StudyAgentProfile.study_id)
+        .join(
+            db_schemas.Study,
+            StudyAgentProfile.study_id == db_schemas.Study.study_id,
+        )
+        .filter(
+            StudyAgentProfile.profile_id == profile_id,
+            db_schemas.Study.is_research.is_(True),
+            db_schemas.Study.research_status == "ACTIVE",
+        )
+        .first()
+    )
+    if linked_active is not None:
+        raise ProfileLockedError(
+            "profile is locked while linked research study is ACTIVE"
+        )
+
+
+def create_agent_profile(
+    db: Session,
+    *,
+    owner_user_id: uuid.UUID,
+    name: str,
+    model: str,
+    tools_json: str,
+    approval_policy: str,
+    max_steps: int,
+    framework_version: str = "code4me2-agent",
+    connection_id: Optional[uuid.UUID] = None,
+    release_id: Optional[str] = None,
+    is_active: bool = True,
+    max_context_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
+    commands_denylist: Optional[list] = None,
+    command_timeout_seconds: Optional[int] = None,
+    harness_options: Optional[dict] = None,
+) -> db_schemas.AgentProfile:
+    """Create a researcher-owned profile template.
+
+    The provider endpoint/secret live on the referenced ``provider_connection``;
+    a profile never stores a URL or a secret reference. ``commands_denylist``
+    and ``harness_options`` are stored as canonical JSON text.
+    """
+    validate_profile_release(db, release_id)
+    _validate_profile_configuration(
+        db,
+        name=name,
+        framework_version=framework_version,
+        release_id=release_id,
+        tools_json=tools_json,
+        approval_policy=approval_policy,
+        model=model,
+        temperature=temperature,
+        max_steps=max_steps,
+        max_context_tokens=max_context_tokens,
+        system_prompt=system_prompt,
+        commands_denylist=commands_denylist,
+        command_timeout_seconds=command_timeout_seconds,
+        harness_options=harness_options,
+    )
+    profile = db_schemas.AgentProfile(
+        profile_id=uuid.uuid4(),
+        owner_user_id=owner_user_id,
+        name=name,
+        model=model,
+        framework_version=framework_version,
+        connection_id=connection_id,
+        release_id=release_id,
+        tools_json=tools_json,
+        approval_policy=approval_policy,
+        max_steps=max_steps,
+        is_active=is_active,
+        max_context_tokens=max_context_tokens,
+        temperature=temperature,
+        system_prompt=system_prompt,
+        commands_denylist_json=_optional_json_text(commands_denylist),
+        command_timeout_seconds=command_timeout_seconds,
+        harness_options_json=_optional_json_text(harness_options),
+    )
+    _refresh_agent_profile_digest(profile)
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def get_agent_profile_by_id(
+    db: Session, profile_id: uuid.UUID
+) -> Optional[db_schemas.AgentProfile]:
+    return (
+        db.query(db_schemas.AgentProfile)
+        .filter(db_schemas.AgentProfile.profile_id == profile_id)
+        .first()
+    )
+
+
+def list_agent_profiles(
+    db: Session, owner_user_id: Optional[uuid.UUID] = None
+) -> List[db_schemas.AgentProfile]:
+    """List profiles; ``owner_user_id`` scopes to one researcher (admin = all)."""
+    query = db.query(db_schemas.AgentProfile)
+    if owner_user_id is not None:
+        query = query.filter(db_schemas.AgentProfile.owner_user_id == owner_user_id)
+    return query.order_by(db_schemas.AgentProfile.name).all()
+
+
+def update_agent_profile(
+    db: Session,
+    profile_id: uuid.UUID,
+    *,
+    name: Optional[str] = None,
+    model: Optional[str] = None,
+    tools_json: Optional[str] = None,
+    approval_policy: Optional[str] = None,
+    max_steps: Optional[int] = None,
+    framework_version: Optional[str] = None,
+    connection_id: Optional[uuid.UUID] = None,
+    release_id: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    max_context_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
+    commands_denylist: Optional[list] = None,
+    command_timeout_seconds: Optional[int] = None,
+    harness_options: Optional[dict] = None,
+    update_connection_id: bool = False,
+    update_release_id: bool = False,
+    update_temperature: bool = False,
+    update_max_context_tokens: bool = False,
+    update_system_prompt: bool = False,
+    update_commands_denylist: bool = False,
+    update_command_timeout_seconds: bool = False,
+    update_harness_options: bool = False,
+) -> Optional[db_schemas.AgentProfile]:
+    """Update a profile template in place (caller performs ownership checks).
+
+    ``None`` keeps a field unchanged, except where the matching ``update_*``
+    flag is set: then the supplied value is stored as-is, so ``None`` clears the
+    optional ``temperature`` / ``max_context_tokens`` / ``system_prompt`` /
+    ``commands_denylist`` / ``command_timeout_seconds`` / ``harness_options``
+    overrides (a full-replace PUT). The refreshed digest is then exactly that of
+    a profile created with ``NULL`` for the cleared field.
+    """
+    profile = (
+        db.query(db_schemas.AgentProfile)
+        .filter(db_schemas.AgentProfile.profile_id == profile_id)
+        .with_for_update()
+        .first()
+    )
+    if profile is None:
+        return None
+    _assert_agent_profile_editable(db, profile_id)
+    if update_release_id:
+        validate_profile_release(db, release_id)
+    effective_temperature = (
+        temperature
+        if update_temperature or temperature is not None
+        else getattr(profile, "temperature", None)
+    )
+    effective_max_context_tokens = (
+        max_context_tokens
+        if update_max_context_tokens or max_context_tokens is not None
+        else getattr(profile, "max_context_tokens", None)
+    )
+    effective_system_prompt = (
+        system_prompt
+        if update_system_prompt or system_prompt is not None
+        else getattr(profile, "system_prompt", None)
+    )
+    effective_commands_denylist = (
+        commands_denylist
+        if update_commands_denylist or commands_denylist is not None
+        else getattr(profile, "commands_denylist", None)
+    )
+    effective_command_timeout_seconds = (
+        command_timeout_seconds
+        if update_command_timeout_seconds or command_timeout_seconds is not None
+        else getattr(profile, "command_timeout_seconds", None)
+    )
+    effective_harness_options = (
+        harness_options
+        if update_harness_options or harness_options is not None
+        else getattr(profile, "harness_options", None)
+    )
+    # Validate the merged result, not just the supplied fields: changing only
+    # the framework (or only the release) must not leave an unexecutable pair.
+    _validate_profile_configuration(
+        db,
+        name=name if name is not None else profile.name,
+        framework_version=(
+            framework_version if framework_version is not None else profile.framework_version
+        ),
+        release_id=release_id if update_release_id else profile.release_id,
+        tools_json=tools_json if tools_json is not None else profile.tools_json,
+        approval_policy=(
+            approval_policy if approval_policy is not None else profile.approval_policy
+        ),
+        model=model if model is not None else profile.model,
+        temperature=effective_temperature,
+        max_steps=max_steps if max_steps is not None else profile.max_steps,
+        max_context_tokens=effective_max_context_tokens,
+        system_prompt=effective_system_prompt,
+        commands_denylist=effective_commands_denylist,
+        command_timeout_seconds=effective_command_timeout_seconds,
+        harness_options=effective_harness_options,
+    )
+    if name is not None:
+        profile.name = name
+    if model is not None:
+        profile.model = model
+    if framework_version is not None:
+        profile.framework_version = framework_version
+    if tools_json is not None:
+        profile.tools_json = tools_json
+    if approval_policy is not None:
+        profile.approval_policy = approval_policy
+    if max_steps is not None:
+        profile.max_steps = max_steps
+    if update_connection_id:
+        profile.connection_id = connection_id
+    if update_release_id:
+        profile.release_id = release_id
+    if is_active is not None:
+        profile.is_active = is_active
+    if update_max_context_tokens or max_context_tokens is not None:
+        profile.max_context_tokens = max_context_tokens
+    if update_temperature or temperature is not None:
+        profile.temperature = temperature
+    if update_system_prompt or system_prompt is not None:
+        profile.system_prompt = system_prompt
+    if update_commands_denylist or commands_denylist is not None:
+        profile.commands_denylist_json = _optional_json_text(commands_denylist)
+    if update_command_timeout_seconds or command_timeout_seconds is not None:
+        profile.command_timeout_seconds = command_timeout_seconds
+    if update_harness_options or harness_options is not None:
+        profile.harness_options_json = _optional_json_text(harness_options)
+    _refresh_agent_profile_digest(profile)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def delete_agent_profile(db: Session, profile_id: uuid.UUID) -> bool:
+    """Archive a profile template (never erase a frozen study snapshot)."""
+    profile = (
+        db.query(db_schemas.AgentProfile)
+        .filter(db_schemas.AgentProfile.profile_id == profile_id)
+        .with_for_update()
+        .first()
+    )
+    if profile is None:
+        return False
+    _assert_agent_profile_editable(db, profile_id)
+    if not profile.is_active:
+        return True
+    profile.is_active = False
+    db.commit()
+    return True
+
+
+# ── Admin-managed provider connections (role + readiness) ──────────────────
+
+
+def create_provider_connection(
+    db: Session,
+    *,
+    label: str,
+    base_url: str,
+    secret_ref: str,
+    models_json: str,
+    is_active: bool = True,
+) -> db_schemas.ProviderConnection:
+    connection = db_schemas.ProviderConnection(
+        connection_id=uuid.uuid4(),
+        label=label,
+        base_url=base_url,
+        secret_ref=secret_ref,
+        models_json=models_json,
+        is_active=is_active,
+    )
+    db.add(connection)
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def get_provider_connection(
+    db: Session, connection_id: uuid.UUID
+) -> Optional[db_schemas.ProviderConnection]:
+    return db.get(db_schemas.ProviderConnection, connection_id)
+
+
+def get_provider_connection_by_label(
+    db: Session, label: str
+) -> Optional[db_schemas.ProviderConnection]:
+    return (
+        db.query(db_schemas.ProviderConnection)
+        .filter(db_schemas.ProviderConnection.label == label)
+        .first()
+    )
+
+
+def list_provider_connections(db: Session) -> List[db_schemas.ProviderConnection]:
+    return (
+        db.query(db_schemas.ProviderConnection)
+        .order_by(db_schemas.ProviderConnection.label)
+        .all()
+    )
+
+
+def update_provider_connection(
+    db: Session,
+    connection_id: uuid.UUID,
+    *,
+    label: Optional[str] = None,
+    base_url: Optional[str] = None,
+    secret_ref: Optional[str] = None,
+    models_json: Optional[str] = None,
+    is_active: Optional[bool] = None,
+) -> Optional[db_schemas.ProviderConnection]:
+    connection = db.get(db_schemas.ProviderConnection, connection_id)
+    if connection is None:
+        return None
+    if label is not None:
+        connection.label = label
+    if base_url is not None:
+        connection.base_url = base_url
+    if secret_ref is not None:
+        connection.secret_ref = secret_ref
+    if models_json is not None:
+        connection.models_json = models_json
+    if is_active is not None:
+        connection.is_active = is_active
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def delete_provider_connection(db: Session, connection_id: uuid.UUID) -> bool:
+    connection = db.get(db_schemas.ProviderConnection, connection_id)
+    if connection is None:
+        return False
+    db.delete(connection)
+    db.commit()
+    return True
+
+
+def list_model_prices(
+    db: Session, connection_id: uuid.UUID
+) -> List[db_schemas.ProviderModelPrice]:
+    """Price rows of one connection, ordered by model name."""
+    return (
+        db.query(db_schemas.ProviderModelPrice)
+        .filter(db_schemas.ProviderModelPrice.connection_id == connection_id)
+        .order_by(db_schemas.ProviderModelPrice.model)
+        .all()
+    )
+
+
+def list_model_prices_by_connection(
+    db: Session,
+) -> dict:
+    """``{connection_id: {model: price_row}}`` for every connection."""
+    result: dict = {}
+    for row in db.query(db_schemas.ProviderModelPrice).all():
+        result.setdefault(row.connection_id, {})[row.model] = row
+    return result
+
+
+def replace_model_prices(
+    db: Session,
+    connection_id: uuid.UUID,
+    prices: dict,
+    *,
+    allowed_models: Optional[List[str]] = None,
+    updated_by: Optional[str] = None,
+) -> List[db_schemas.ProviderModelPrice]:
+    """Upsert the given ``{model: {input, output, cached_input}}`` prices.
+
+    A ``None`` value deletes that model's price. Price rows for models no
+    longer in ``allowed_models`` are deleted too, so a renamed model never
+    keeps a stale price. Commits.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    existing = {row.model: row for row in list_model_prices(db, connection_id)}
+    for model, price in prices.items():
+        row = existing.get(model)
+        if price is None:
+            if row is not None:
+                db.delete(row)
+            continue
+        if row is None:
+            row = db_schemas.ProviderModelPrice(connection_id=connection_id, model=model)
+            db.add(row)
+        row.input_usd_per_million = price["input_usd_per_million"]
+        row.output_usd_per_million = price["output_usd_per_million"]
+        row.cached_input_usd_per_million = price.get("cached_input_usd_per_million")
+        row.updated_at = now
+        row.updated_by = updated_by
+    if allowed_models is not None:
+        allowed = set(allowed_models)
+        for model, row in existing.items():
+            if model not in allowed and model not in prices:
+                db.delete(row)
+    db.commit()
+    return list_model_prices(db, connection_id)
+
+
+def count_profiles_for_connection(db: Session, connection_id: uuid.UUID) -> int:
+    """Agent profiles (active or archived) that reference one connection.
+
+    Every referencing row blocks deletion: ``agent_profile.connection_id`` is a
+    ``RESTRICT`` foreign key, and archived profiles keep their reference.
+    """
+    return int(
+        db.query(func.count(db_schemas.AgentProfile.profile_id))
+        .filter(db_schemas.AgentProfile.connection_id == connection_id)
+        .scalar()
+        or 0
+    )
+
+
+def count_profiles_by_connection(db: Session) -> dict:
+    """``{connection_id: referencing profile count}`` in one grouped query."""
+    rows = (
+        db.query(
+            db_schemas.AgentProfile.connection_id,
+            func.count(db_schemas.AgentProfile.profile_id),
+        )
+        .filter(db_schemas.AgentProfile.connection_id.isnot(None))
+        .group_by(db_schemas.AgentProfile.connection_id)
+        .all()
+    )
+    return {connection_id: int(count) for connection_id, count in rows}
+
+
+def list_available_provider_connections(
+    db: Session, user_id: uuid.UUID
+) -> List[db_schemas.ProviderConnection]:
+    """Active admin-managed connections available to an authorized researcher."""
+    return (
+        db.query(db_schemas.ProviderConnection)
+        .filter(db_schemas.ProviderConnection.is_active.is_(True))
+        .order_by(db_schemas.ProviderConnection.label)
+        .all()
+    )
+
+
+def provider_connection_is_available(
+    db: Session, connection_id: uuid.UUID, user_id: uuid.UUID
+) -> bool:
+    """Whether an active admin-managed connection can be selected."""
+    return (
+        db.query(db_schemas.ProviderConnection)
+        .filter(
+            db_schemas.ProviderConnection.connection_id == connection_id,
+            db_schemas.ProviderConnection.is_active.is_(True),
+        )
+        .first()
+        is not None
+    )
+
+
+# ── Researcher enablement ────────────────────────────────────────────────────
+
+
+def set_user_can_research(
+    db: Session, user_id: uuid.UUID, enabled: bool
+) -> Optional[db_schemas.User]:
+    """Administrator toggle of the single researcher-enablement flag."""
+    user = db.get(db_schemas.User, user_id)
+    if user is None:
+        return None
+    user.can_research = enabled
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+#: Account role filters of the administrator account view.
+ACCOUNT_ROLE_FILTERS = ("all", "admin", "researcher", "participant")
+#: Account enrollment filters of the administrator account view.
+ACCOUNT_ENROLLMENT_FILTERS = ("any", "enrolled", "not_enrolled")
+
+
+def _account_enrollment_exists(*conditions):
+    """Correlated ``EXISTS`` over the account's enrollments (via its mapping)."""
+    return (
+        select(ResearchEnrollment.enrollment_id)
+        .join(
+            ResearchParticipant,
+            ResearchParticipant.participant_id == ResearchEnrollment.participant_id,
+        )
+        .where(ResearchParticipant.account_id == db_schemas.User.user_id, *conditions)
+        .exists()
+    )
+
+
+def _account_filter_criteria(
+    *,
+    q: Optional[str] = None,
+    role: str = "all",
+    enrollment: str = "any",
+    study_id: Optional[uuid.UUID] = None,
+) -> list:
+    """SQL criteria for the administrator account filters.
+
+    * ``q`` — case-insensitive substring over email and name (``%``/``_`` are
+      matched literally);
+    * ``role`` — ``admin``; ``researcher`` (``can_research`` and not admin);
+      ``participant`` (neither); ``all``;
+    * ``enrollment`` — ``enrolled`` (has an ACTIVE enrollment),
+      ``not_enrolled`` (has none), ``any``;
+    * ``study_id`` — has any enrollment (any status) in that study.
+    """
+    if role not in ACCOUNT_ROLE_FILTERS:
+        raise ValueError(f"unknown account role filter {role!r}")
+    if enrollment not in ACCOUNT_ENROLLMENT_FILTERS:
+        raise ValueError(f"unknown account enrollment filter {enrollment!r}")
+    user = db_schemas.User
+    criteria = []
+    needle = (q or "").strip()
+    if needle:
+        criteria.append(
+            or_(
+                user.email.icontains(needle, autoescape=True),
+                user.name.icontains(needle, autoescape=True),
+            )
+        )
+    is_admin = func.coalesce(user.is_admin, False)
+    can_research = func.coalesce(user.can_research, False)
+    if role == "admin":
+        criteria.append(is_admin.is_(True))
+    elif role == "researcher":
+        criteria.append(and_(can_research.is_(True), is_admin.is_(False)))
+    elif role == "participant":
+        criteria.append(and_(can_research.is_(False), is_admin.is_(False)))
+    if enrollment == "enrolled":
+        criteria.append(_account_enrollment_exists(ResearchEnrollment.status == "ACTIVE"))
+    elif enrollment == "not_enrolled":
+        criteria.append(~_account_enrollment_exists(ResearchEnrollment.status == "ACTIVE"))
+    if study_id is not None:
+        criteria.append(_account_enrollment_exists(ResearchEnrollment.study_id == study_id))
+    return criteria
+
+
+def list_accounts(
+    db: Session,
+    limit: int = 100,
+    *,
+    offset: int = 0,
+    q: Optional[str] = None,
+    role: str = "all",
+    enrollment: str = "any",
+    study_id: Optional[uuid.UUID] = None,
+) -> List[db_schemas.User]:
+    """One page of accounts, newest first, for the administrator account view.
+
+    The admin panel toggles ``can_research`` per account, so it needs the full
+    account list rather than only the already-enabled researchers. The optional
+    filters are :func:`_account_filter_criteria`; ``user_id`` breaks
+    ``joined_at`` ties so paging is stable.
+    """
+    criteria = _account_filter_criteria(
+        q=q, role=role, enrollment=enrollment, study_id=study_id
+    )
+    return (
+        db.query(db_schemas.User)
+        .filter(*criteria)
+        .order_by(db_schemas.User.joined_at.desc(), db_schemas.User.user_id.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+
+def count_accounts(
+    db: Session,
+    *,
+    q: Optional[str] = None,
+    role: str = "all",
+    enrollment: str = "any",
+    study_id: Optional[uuid.UUID] = None,
+) -> int:
+    """How many accounts match the filters (before paging)."""
+    criteria = _account_filter_criteria(
+        q=q, role=role, enrollment=enrollment, study_id=study_id
+    )
+    return int(
+        db.query(func.count(db_schemas.User.user_id)).filter(*criteria).scalar() or 0
+    )
+
+
+def list_account_enrollments(db: Session, account_ids) -> dict:
+    """``{account_id: [enrollment rows, newest first]}`` in one query.
+
+    Each row carries the enrollment id/study/status/``enrolled_at`` plus the
+    study's name and ``research_status`` (``None`` when the study row is gone).
+    The participant code and the assigned profile are deliberately not
+    selected: this administrator view must not link an account to its
+    study-local pseudonym or arm.
+    """
+    ids = list(account_ids)
+    grouped: dict = {account_id: [] for account_id in ids}
+    if not ids:
+        return grouped
+    statement = (
+        select(
+            ResearchParticipant.account_id.label("account_id"),
+            ResearchEnrollment.enrollment_id.label("enrollment_id"),
+            ResearchEnrollment.study_id.label("study_id"),
+            ResearchEnrollment.status.label("status"),
+            ResearchEnrollment.enrolled_at.label("enrolled_at"),
+            db_schemas.Study.name.label("study_name"),
+            db_schemas.Study.research_status.label("study_status"),
+        )
+        .select_from(ResearchEnrollment)
+        .join(
+            ResearchParticipant,
+            ResearchParticipant.participant_id == ResearchEnrollment.participant_id,
+        )
+        .outerjoin(
+            db_schemas.Study,
+            db_schemas.Study.study_id == ResearchEnrollment.study_id,
+        )
+        .where(ResearchParticipant.account_id.in_(ids))
+        .order_by(
+            ResearchEnrollment.enrolled_at.desc(),
+            ResearchEnrollment.enrollment_id.asc(),
+        )
+    )
+    for row in db.execute(statement).all():
+        grouped.setdefault(row.account_id, []).append(row)
+    return grouped
+
+
+# ── Agent tasks ─────────────────────────────────────────────────────────────
+
+
+def create_agent_task(
+    db: Session,
+    agent_profile: str,
+    model: str,
+    approval_policy: str,
+    tools_json: str,
+    task_description: Optional[str] = None,
+    session_id: Optional[uuid.UUID] = None,
+    task_id: Optional[uuid.UUID] = None,
+    temperature: Optional[float] = None,
+    framework_version: Optional[str] = None,
+    source: str = "plugin",
+    owner_user_id: Optional[uuid.UUID] = None,
+    funding_owner_user_id: Optional[uuid.UUID] = None,
+    owner_project_id: Optional[uuid.UUID] = None,
+    external_run_id: Optional[str] = None,
+    agent_session_id: Optional[str] = None,
+    status: str = "pending",
+    started_at: Optional[datetime] = None,
+    policy_snapshot: Optional[dict] = None,
+    study_id: Optional[uuid.UUID] = None,
+    study_assignment_id: Optional[uuid.UUID] = None,
+    profile_id: Optional[uuid.UUID] = None,
+    consent_content_storage: Optional[bool] = None,
+    research_session_id: Optional[uuid.UUID] = None,
+    enrollment_id: Optional[uuid.UUID] = None,
+) -> db_schemas.AgentTask:
+    # Dashboards join research_event.agent_run_id to external_run_id, so a task
+    # without a runtime-supplied run id still needs a stable correlation id.
+    # Otherwise its canonical events are orphaned and invisible to researchers.
+    # Callers with a real external run (ACP/managed/proxy flows) pass it
+    # explicitly and it is preserved; uuid4 can never collide with those ids.
+    task = db_schemas.AgentTask(
+        task_id=task_id or uuid.uuid4(),
+        agent_profile=agent_profile,
+        model=model,
+        temperature=temperature,
+        approval_policy=approval_policy,
+        tools_json=tools_json,
+        framework_version=framework_version,
+        status=status,
+        source=source,
+        session_id=session_id,
+        owner_user_id=owner_user_id,
+        funding_owner_user_id=funding_owner_user_id,
+        owner_project_id=owner_project_id,
+        external_run_id=external_run_id or uuid.uuid4().hex,
+        agent_session_id=agent_session_id,
+        study_id=study_id,
+        study_assignment_id=study_assignment_id,
+        profile_id=profile_id,
+        consent_content_storage=consent_content_storage,
+        research_session_id=research_session_id,
+        enrollment_id=enrollment_id,
+        started_at=started_at,
+        policy_snapshot=policy_snapshot,
+        task_description=task_description,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def get_agent_task(db: Session, task_id: uuid.UUID) -> Optional[db_schemas.AgentTask]:
+    return (
+        db.query(db_schemas.AgentTask)
+        .filter(db_schemas.AgentTask.task_id == task_id)
+        .first()
+    )
+
+
+def get_agent_task_by_external_run_id(
+    db: Session, external_run_id: str
+) -> Optional[db_schemas.AgentTask]:
+    """Look a task up by the *runtime's* own run id.
+
+    The self-reporting ``code4me2-agent`` runtime mints its own run id before it
+    ever talks to the backend, so ingestion resolves the task this way rather
+    than requiring the runtime to adopt a server-issued UUID.
+    """
+    return (
+        db.query(db_schemas.AgentTask)
+        .filter(db_schemas.AgentTask.external_run_id == external_run_id)
+        .first()
+    )
+
+
+def get_open_agent_tasks_for_session(
+    db: Session, session_id: uuid.UUID
+) -> List[db_schemas.AgentTask]:
+    """Tasks belonging to this session that haven't reached a terminal state yet."""
+    return (
+        db.query(db_schemas.AgentTask)
+        .filter(
+            db_schemas.AgentTask.session_id == session_id,
+            db_schemas.AgentTask.status.notin_(["done", "failed"]),
+        )
+        .all()
+    )
+
+
+def update_agent_task_status(
+    db: Session,
+    task_id: uuid.UUID,
+    status: str,
+    completed_at: Optional[datetime] = None,
+    total_steps: Optional[int] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    latest_event_id: Optional[uuid.UUID] = None,
+) -> bool:
+    data: dict = {"status": status}
+    if completed_at is not None:
+        data["completed_at"] = completed_at
+    if total_steps is not None:
+        data["total_steps"] = total_steps
+    if input_tokens is not None:
+        data["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        data["output_tokens"] = output_tokens
+    if latest_event_id is not None:
+        data["latest_event_id"] = latest_event_id
+    result = (
+        db.query(db_schemas.AgentTask)
+        .filter(db_schemas.AgentTask.task_id == task_id)
+        .update(data)
+    )
+    db.commit()
+    return result > 0
+
+
+def update_agent_task_tools(
+    db: Session,
+    task_id: uuid.UUID,
+    tools: List[str],
+) -> None:
+    db.query(db_schemas.AgentTask).filter(
+        db_schemas.AgentTask.task_id == task_id
+    ).update({"observed_tools_json": json.dumps(tools)})
+    db.commit()
+
+
+def set_agent_task_description(
+    db: Session, task_id: uuid.UUID, description: str
+) -> None:
+    db.query(db_schemas.AgentTask).filter(
+        db_schemas.AgentTask.task_id == task_id
+    ).update({"task_description": description})
+    db.commit()
+
+
+def set_agent_task_framework_version(
+    db: Session, task_id: uuid.UUID, framework_version: str
+) -> None:
+    db.query(db_schemas.AgentTask).filter(
+        db_schemas.AgentTask.task_id == task_id
+    ).update({"observed_framework_version": framework_version})
+    db.commit()
+
+
+# ── Agent events ────────────────────────────────────────────────────────────
+
+
+def get_agent_events_by_task(
+    db: Session,
+    task_id: uuid.UUID,
+    event_type: Optional[str] = None,
+) -> List[db_schemas.AgentEvent]:
+    q = db.query(db_schemas.AgentEvent).filter(db_schemas.AgentEvent.task_id == task_id)
+    if event_type is not None:
+        q = q.filter(db_schemas.AgentEvent.event_type == event_type)
+    return q.order_by(db_schemas.AgentEvent.event_index).all()
+
+
+def get_last_agent_event_for_session(
+    db: Session,
+    session_id: uuid.UUID,
+    event_type: Optional[str] = None,
+) -> Optional[db_schemas.AgentEvent]:
+    """Most recent event across all tasks belonging to this session — used to detect
+    chat-session boundaries that span idle-close task gaps."""
+    q = (
+        db.query(db_schemas.AgentEvent)
+        .join(
+            db_schemas.AgentTask,
+            db_schemas.AgentEvent.task_id == db_schemas.AgentTask.task_id,
+        )
+        .filter(db_schemas.AgentTask.session_id == session_id)
+    )
+    if event_type is not None:
+        q = q.filter(db_schemas.AgentEvent.event_type == event_type)
+    return q.order_by(db_schemas.AgentEvent.created_at.desc()).first()
+
+
+def reserve_agent_event_indexes(
+    db: Session, task_id: uuid.UUID, event_count: int
+) -> int:
+    """Atomically reserve ``event_count`` task-local event indexes."""
+    if event_count < 1:
+        raise ValueError("event_count must be positive")
+    first_index = db.execute(
+        text(
+            """
+            UPDATE public.agent_task
+            SET next_event_index = next_event_index + :event_count
+            WHERE task_id = :task_id
+            RETURNING next_event_index - :event_count
+            """
+        ),
+        {"event_count": event_count, "task_id": task_id},
+    ).scalar_one_or_none()
+    if first_index is None:
+        raise ValueError(f"Agent task {task_id} does not exist")
+    return int(first_index)
+
+
+def find_existing_agent_event_source_ids(
+    db: Session,
+    *,
+    task_id: uuid.UUID,
+    source: str,
+    source_event_ids: List[str],
+) -> List[str]:
+    """Return source event ids already persisted for this task and source.
+
+    This lookup is advisory only. The matching unique constraint is the
+    authoritative protection against concurrent retries.
+    """
+    if not source_event_ids:
+        return []
+    return [
+        row.source_event_id
+        for row in db.query(db_schemas.AgentEvent.source_event_id)
+        .filter(
+            db_schemas.AgentEvent.task_id == task_id,
+            db_schemas.AgentEvent.source == source,
+            db_schemas.AgentEvent.source_event_id.in_(source_event_ids),
+        )
+        .all()
+    ]
+
+
+def append_agent_event(
+    db: Session,
+    task_id: uuid.UUID,
+    event_index: int,
+    event_type: str,
+    latency_ms: Optional[int] = None,
+    source: Optional[str] = None,
+    source_event_id: Optional[str] = None,
+    schema_version: Optional[str] = None,
+    occurred_at: Optional[datetime] = None,
+    # Shared span identifiers (model_call and tool_call)
+    span_id: Optional[str] = None,
+    parent_span_id: Optional[uuid.UUID] = None,
+    request_id: Optional[str] = None,
+    chat_session_index: Optional[int] = None,
+    # model_call fields
+    model: Optional[str] = None,
+    agent_profile: Optional[str] = None,
+    streaming: Optional[bool] = None,
+    message_count: Optional[int] = None,
+    role_system_count: Optional[int] = None,
+    role_user_count: Optional[int] = None,
+    role_assistant_count: Optional[int] = None,
+    role_tool_count: Optional[int] = None,
+    tools_kept: Optional[int] = None,
+    tools_stripped: Optional[int] = None,
+    tool_names_requested: Optional[list] = None,
+    max_tokens: Optional[int] = None,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    finish_reason: Optional[str] = None,
+    upstream_status: Optional[int] = None,
+    step_index: Optional[int] = None,
+    context_window_size_bytes: Optional[int] = None,
+    active_file: Optional[str] = None,
+    first_message_hash: Optional[str] = None,
+    chat_new_session_detected: Optional[bool] = None,
+    experiment_tool_access_enabled: Optional[bool] = None,
+    experiment_approval_policy: Optional[str] = None,
+    # model_call content (only when store_agent_content resolves True)
+    first_system_message: Optional[str] = None,
+    last_user_message: Optional[str] = None,
+    response_text: Optional[str] = None,
+    # tool_call fields
+    tool_name: Optional[str] = None,
+    tool_arguments_length: Optional[int] = None,
+    tool_result_length: Optional[int] = None,
+    # tool_call content (only when store_agent_content resolves True)
+    tool_arguments: Optional[str] = None,
+    tool_result: Optional[str] = None,
+    # JSON overflow
+    extra_json: Optional[str] = None,
+    # content (only when store_agent_content resolves True)
+    payload_json: Optional[str] = None,
+    ignore_duplicate_source: bool = False,
+    commit: bool = True,
+) -> Optional[db_schemas.AgentEvent]:
+    """Append one event row.
+
+    ``commit=False`` lets a caller stage a whole batch and commit once (used by
+    the self-report ingestion path, where a partially-written batch would leave
+    gaps in ``event_index``).
+    """
+    event = db_schemas.AgentEvent(
+        event_id=uuid.uuid4(),
+        task_id=task_id,
+        event_index=event_index,
+        event_type=event_type,
+        source=source,
+        source_event_id=source_event_id,
+        schema_version=schema_version,
+        latency_ms=latency_ms,
+        occurred_at=occurred_at,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
+        request_id=request_id,
+        chat_session_index=chat_session_index,
+        model=model,
+        agent_profile=agent_profile,
+        streaming=streaming,
+        message_count=message_count,
+        role_system_count=role_system_count,
+        role_user_count=role_user_count,
+        role_assistant_count=role_assistant_count,
+        role_tool_count=role_tool_count,
+        tools_kept=tools_kept,
+        tools_stripped=tools_stripped,
+        tool_names_requested=tool_names_requested,
+        max_tokens=max_tokens,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        finish_reason=finish_reason,
+        upstream_status=upstream_status,
+        step_index=step_index,
+        context_window_size_bytes=context_window_size_bytes,
+        active_file=active_file,
+        first_message_hash=first_message_hash,
+        chat_new_session_detected=chat_new_session_detected,
+        experiment_tool_access_enabled=experiment_tool_access_enabled,
+        experiment_approval_policy=experiment_approval_policy,
+        first_system_message=first_system_message,
+        last_user_message=last_user_message,
+        response_text=response_text,
+        tool_name=tool_name,
+        tool_arguments_length=tool_arguments_length,
+        tool_result_length=tool_result_length,
+        tool_arguments=tool_arguments,
+        tool_result=tool_result,
+        extra_json=extra_json,
+        payload_json=payload_json,
+    )
+    if ignore_duplicate_source and source is not None and source_event_id is not None:
+        values = {
+            column.name: getattr(event, column.name)
+            for column in db_schemas.AgentEvent.__table__.columns
+        }
+        inserted_event_id = db.execute(
+            pg_insert(db_schemas.AgentEvent)
+            .values(**values)
+            .on_conflict_do_nothing(constraint="uq_agent_event_source_identity")
+            .returning(db_schemas.AgentEvent.event_id)
+        ).scalar_one_or_none()
+        if inserted_event_id is None:
+            return None
+        if commit:
+            db.commit()
+        return db.get(db_schemas.AgentEvent, inserted_event_id)
+    db.add(event)
+    if commit:
+        db.commit()
+        db.refresh(event)
+    else:
+        db.flush()
+    return event
+
+
+# ── Agent edits (human-in-the-loop decisions) ───────────────────────────────
+
+
+def get_agent_memory_by_session_id(
+    db: Session, session_id: str
+) -> Optional[db_schemas.AgentMemory]:
+    return (
+        db.query(db_schemas.AgentMemory)
+        .filter(db_schemas.AgentMemory.session_id == session_id)
+        .first()
+    )
+
+
+def upsert_agent_memory(
+    db: Session,
+    *,
+    session_id: str,
+    owner_user_id: str,
+    owner_project_id: str,
+    messages: List[dict],
+) -> db_schemas.AgentMemory:
+    """Replace the stored memory snapshot for one agent session.
+
+    Ownership is written from the server-derived ACP scope, never from the
+    request body, so a client cannot attach its memory to someone else's
+    session.
+    """
+    memory_json = json.dumps({"messages": messages}, sort_keys=True)
+    existing_memory = get_agent_memory_by_session_id(db, session_id)
+    now = datetime.now()
+    if existing_memory is None:
+        agent_memory = db_schemas.AgentMemory(
+            session_id=session_id,
+            owner_user_id=owner_user_id,
+            owner_project_id=owner_project_id,
+            memory_json=memory_json,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(agent_memory)
+    else:
+        existing_memory.owner_user_id = owner_user_id
+        existing_memory.owner_project_id = owner_project_id
+        existing_memory.memory_json = memory_json
+        existing_memory.updated_at = now
+        agent_memory = existing_memory
+    db.commit()
+    db.refresh(agent_memory)
+    return agent_memory
+
+
+def delete_agent_memory(db: Session, session_id: str) -> bool:
+    result = (
+        db.query(db_schemas.AgentMemory)
+        .filter(db_schemas.AgentMemory.session_id == session_id)
+        .delete()
+    )
+    db.commit()
+    return result > 0

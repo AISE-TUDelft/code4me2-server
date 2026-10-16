@@ -1,0 +1,5 @@
+# Install the project itself first so its runtime dependencies are resolved:
+#   python -m pip install . -r packaging/requirements-build.lock
+pyinstaller==6.16.0
+setuptools==80.9.0
+wheel==0.45.1

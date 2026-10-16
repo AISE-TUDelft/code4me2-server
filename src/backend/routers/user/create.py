@@ -2,17 +2,15 @@
 This module defines a FastAPI router for user account creation.
 
 Endpoints:
-- POST /: Creates a new user using either standard or OAuth registration.
+- POST /: Creates a new user with email and password.
 
 Features:
 - Conflict checking for existing email addresses.
-- Optional JWT verification for OAuth users.
 - Asynchronous email verification via Celery.
 - Structured response models and status codes.
 """
 
 import logging
-from typing import Union
 
 from fastapi import APIRouter, Depends
 
@@ -23,11 +21,9 @@ from backend.Responses import (
     CreateUserError,
     CreateUserPostResponse,
     ErrorResponse,
-    InvalidOrExpiredJWTToken,
     JsonResponseWithStatus,
     UserAlreadyExistsWithThisEmail,
 )
-from backend.utils import verify_jwt_token
 
 # Initialize the API router for user creation
 router = APIRouter()
@@ -38,7 +34,6 @@ router = APIRouter()
     response_model=CreateUserPostResponse,
     responses={
         "201": {"model": CreateUserPostResponse},
-        "401": {"model": InvalidOrExpiredJWTToken},
         "409": {"model": UserAlreadyExistsWithThisEmail},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
@@ -46,15 +41,15 @@ router = APIRouter()
     },
 )
 def create_user(
-    user_to_create: Union[Queries.CreateUser, Queries.CreateUserOauth],
+    user_to_create: Queries.CreateUser,
     app: App = Depends(App.get_instance),
 ) -> JsonResponseWithStatus:
     """
-    Create a new user in the system using standard or OAuth-based data.
+    Create a new user with email and password.
 
     Args:
-        user_to_create (Union[CreateUser, CreateUserOauth]):
-            User data from the request body (standard or OAuth-based).
+        user_to_create (CreateUser):
+            User data from the request body.
         app (App):
             Application context with access to database and services.
 
@@ -63,10 +58,9 @@ def create_user(
 
     Flow:
         1. Check if a user already exists with the given email.
-        2. If using OAuth, validate the JWT token.
-        3. Insert the new user into the database.
-        4. Send a verification email via Celery.
-        5. Return HTTP 201 with the new user ID.
+        2. Insert the new user into the database.
+        3. Send a verification email via Celery.
+        4. Return HTTP 201 with the new user ID.
     """
     db_session = app.get_db_session()
 
@@ -78,21 +72,6 @@ def create_user(
                 status_code=409,
                 content=UserAlreadyExistsWithThisEmail(),
             )
-
-        # Verify JWT token if OAuth-based registration
-        if (
-            isinstance(user_to_create, Queries.CreateUserOauth)
-            and user_to_create.token != ""
-        ):
-            verification_result = verify_jwt_token(user_to_create.token)
-            if (
-                verification_result is None
-                or verification_result.get("email") != user_to_create.email
-            ):
-                return JsonResponseWithStatus(
-                    status_code=401,
-                    content=InvalidOrExpiredJWTToken(),
-                )
 
         # Create the user in the database
         user = crud.create_user(db_session, user_to_create)

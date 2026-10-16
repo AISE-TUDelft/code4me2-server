@@ -236,13 +236,6 @@ class Code4meV2Config(BaseSettings):
         description="Frontend website port number",
     )
 
-    react_app_google_client_id: str = Field(
-        alias="REACT_APP_GOOGLE_CLIENT_ID",
-        frozen=True,
-        min_length=1,
-        description="Google OAuth client ID for React application",
-    )
-
     # -----------------------
     # Redis & Celery Configuration
     # -----------------------
@@ -252,6 +245,13 @@ class Code4meV2Config(BaseSettings):
         frozen=True,
         min_length=1,
         description="Redis server hostname or IP address",
+    )
+
+    redis_password: Optional[str] = Field(
+        alias="REDIS_PASSWORD",
+        default=None,
+        frozen=True,
+        description="Password for the session Redis (`requirepass`); empty disables AUTH",
     )
 
     redis_port: int = Field(
@@ -313,6 +313,26 @@ class Code4meV2Config(BaseSettings):
         default=True,
         frozen=True,
         description="Perform model warmup runs to optimize performance",
+    )
+
+    cookie_secure: bool = Field(
+        alias="COOKIE_SECURE",
+        default=False,
+        frozen=True,
+        description=(
+            "Set the Secure attribute on auth/session/project cookies; enable "
+            "behind HTTPS (production), leave off for plain-HTTP local stacks"
+        ),
+    )
+
+    classic_models_enabled: bool = Field(
+        alias="CLASSIC_MODELS_ENABLED",
+        default=True,
+        frozen=True,
+        description=(
+            "Serve the classic completion/chat model endpoints; when false they are "
+            "refused and no model is preloaded or loaded"
+        ),
     )
 
     # -----------------------

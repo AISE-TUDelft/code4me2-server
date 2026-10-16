@@ -144,3 +144,21 @@
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* Per-model calibration summary table. */
+.summary-section {
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 20px;
+}
+
+.summary-section h3 {
+  color: var(--text-color);
+  font-size: 16px;
+  margin: 0;
+}

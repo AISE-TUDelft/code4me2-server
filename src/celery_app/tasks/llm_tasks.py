@@ -36,7 +36,8 @@ def completion_request_task(
     # Import at runtime to avoid circular import
     from backend.routers.completion.request import request_completion
 
-    logging.log(logging.INFO, f"Processing completion request: {completion_request}")
+    # Never log the request itself: it carries the user's code.
+    logging.log(logging.INFO, f"Processing completion request for connection {connection_id}")
     app = App.get_instance()
     celery_broker = app.get_celery_broker()
 

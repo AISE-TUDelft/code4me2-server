@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import Union
 
 from fastapi import APIRouter, Cookie, Depends
@@ -17,6 +18,7 @@ from backend.Responses import (
     NoAccessToProvideFeedbackError,
 )
 from celery_app.tasks import db_tasks
+from privacy import collection
 from response_models import ResponseFeedbackResponseData
 
 router = APIRouter()
@@ -91,6 +93,20 @@ def submit_completion_feedback(
         if project_token not in session_projects:
             return JsonResponseWithStatus(
                 status_code=401, content=InvalidOrExpiredProjectToken()
+            )
+
+        # An account that opted out of data collection stores no feedback (its
+        # queries were never stored either); the client still sees success.
+        if not collection.is_collection_allowed(db_session, uuid.UUID(str(user_id))):
+            return JsonResponseWithStatus(
+                status_code=200,
+                content=CompletionFeedbackPostResponse(
+                    message="Feedback not stored: data collection is turned off.",
+                    data=ResponseFeedbackResponseData(
+                        meta_query_id=feedback.meta_query_id,
+                        model_id=feedback.model_id,
+                    ),
+                ),
             )
 
         # Retrieve the meta query and verify ownership by the current user

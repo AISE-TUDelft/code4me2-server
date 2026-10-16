@@ -1,0 +1,134 @@
+"""Closed vocabularies for the agent registry and capability contract (Issue 04).
+
+Every member is part of a persisted contract (release JSON, snapshot JSON,
+registry responses), so members are additive only: renaming or removing a
+member is a breaking change to already-stored releases and snapshots.
+
+``Fidelity`` is re-exported from :mod:`research.compatibility.enums` so the
+registry shares the exact Issue 01 fidelity vocabulary instead of inventing a
+parallel one.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+
+from research.compatibility.enums import Fidelity  # noqa: F401 - intentional re-export
+
+__all__ = [
+    "CapabilityCoverageState",
+    "DistributionMode",
+    "DistributionSourceType",
+    "Fidelity",
+    "INFERENCE_GATEWAY_FRAMEWORKS",
+    "MANAGED_RUNTIME_FRAMEWORK",
+    "METERED_FRAMEWORKS",
+    "QualificationStatus",
+    "RegistryReasonCode",
+    "SnapshotCapabilityState",
+]
+
+#: The one agent runtime the managed protocol runs (packaged, ACP-relayed).
+#: Goose and Codex are BYOA identities: the participant installs them and the
+#: plugin launches them through the research proxy. Goose is pointed at the
+#: research inference gateway (shared server-held key, per-participant
+#: budgets); Codex signs in with ChatGPT and is neither relayed nor metered.
+MANAGED_RUNTIME_FRAMEWORK = "code4me2-agent"
+
+#: BYOA runtimes whose model calls go through the research inference gateway
+#: (``/api/research/inference/v1/chat/completions``). Their releases must bind
+#: the gateway runtime fields (see ``BYOA_RUNTIME_FIELDS``).
+INFERENCE_GATEWAY_FRAMEWORKS: frozenset[str] = frozenset({"goose"})
+
+#: Runtimes whose model calls spend from the study's server-held provider key
+#: and are metered against the participant's budget: Goose (through the
+#: research inference gateway) and the managed runtime (through the ACP relay).
+#: Codex signs in with ChatGPT and is neither relayed nor metered.
+METERED_FRAMEWORKS: frozenset[str] = frozenset({"goose", MANAGED_RUNTIME_FRAMEWORK})
+
+
+class DistributionMode(str, Enum):
+    """How a release's agent reaches the participant host.
+
+    ``PACKAGED`` (the default) is the digest-pinned contract: the agent is a
+    packaged archive the plugin installs from its verified cache or the release's
+    exact ``download_url``, and the release carries a verified ``sha256`` per
+    platform. ``BYOA_EXTERNAL`` means
+    "bring your own agent": the participant installs the agent (Goose, Codex, ...)
+    and the release pins a command/package identity instead of an artifact digest.
+    The two modes are persisted on the release and embedded in every bootstrap
+    manifest so the plugin never silently mixes them.
+    """
+
+    PACKAGED = "PACKAGED"
+    BYOA_EXTERNAL = "BYOA_EXTERNAL"
+
+
+class QualificationStatus(str, Enum):
+    """Producer tests derive QUALIFIED; DISABLED is an irreversible withdrawal.
+
+    Older status values remain readable for historical records.
+    """
+
+    UNQUALIFIED = "UNQUALIFIED"
+    DRAFT = "DRAFT"
+    QUALIFIED = "QUALIFIED"
+    CONDITIONALLY_QUALIFIED = "CONDITIONALLY_QUALIFIED"
+    DISABLED = "DISABLED"
+    RETIRED = "RETIRED"
+    BLOCKED = "BLOCKED"
+
+
+class DistributionSourceType(str, Enum):
+    """Where a release's distribution metadata came from."""
+
+    EXTERNAL_REGISTRY = "EXTERNAL_REGISTRY"
+    RESEARCH_OVERLAY = "RESEARCH_OVERLAY"
+    BUNDLED = "BUNDLED"
+
+
+class SnapshotCapabilityState(str, Enum):
+    """Capability state captured in a runtime snapshot.
+
+    ``UNKNOWN``, ``DECLARED``, ``UNAVAILABLE``, ``PARTIAL`` and ``BROKEN`` are
+    deliberately distinct from ``OBSERVED``: declared intent and observed
+    behavior are separate facts, and an absent observation is never promoted to
+    a supported one.
+    """
+
+    UNKNOWN = "UNKNOWN"
+    DECLARED = "DECLARED"
+    OBSERVED = "OBSERVED"
+    UNAVAILABLE = "UNAVAILABLE"
+    PARTIAL = "PARTIAL"
+    BROKEN = "BROKEN"
+
+
+class CapabilityCoverageState(str, Enum):
+    """Aggregate observability of one capability across declared vs observed."""
+
+    OBSERVED = "OBSERVED"
+    DECLARED_ONLY = "DECLARED_ONLY"
+    UNKNOWN = "UNKNOWN"
+    UNAVAILABLE = "UNAVAILABLE"
+    PARTIAL = "PARTIAL"
+    BROKEN = "BROKEN"
+
+
+class RegistryReasonCode(str, Enum):
+    """Stable machine-readable reason a registry operation was rejected."""
+
+    DIGEST_MISMATCH = "DIGEST_MISMATCH"
+    UNSUPPORTED_PLATFORM = "UNSUPPORTED_PLATFORM"
+    NOT_QUALIFIED = "NOT_QUALIFIED"
+    WITHDRAWN = "WITHDRAWN"
+    DUPLICATE_RELEASE = "DUPLICATE_RELEASE"
+    INVALID_TRANSITION = "INVALID_TRANSITION"
+    RELEASE_NOT_FOUND = "RELEASE_NOT_FOUND"
+    ARTIFACT_MISSING = "ARTIFACT_MISSING"
+    INCOMPLETE_ARTIFACTS = "INCOMPLETE_ARTIFACTS"
+    ADAPTER_INCOMPATIBLE = "ADAPTER_INCOMPATIBLE"
+    INVALID_VERSION_RANGE = "INVALID_VERSION_RANGE"
+    SNAPSHOT_INVALID = "SNAPSHOT_INVALID"
+    # A BYOA release declares neither a command nor a package identity to resolve.
+    AGENT_NOT_FOUND = "AGENT_NOT_FOUND"

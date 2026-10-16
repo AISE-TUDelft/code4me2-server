@@ -13,7 +13,10 @@ The schema supports:
 - Session management and tracking
 """
 
-from datetime import datetime
+import json
+from datetime import datetime, timezone
+from decimal import Decimal
+from enum import Enum
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -27,11 +30,15 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     PrimaryKeyConstraint,
     String,
     Text,
+    UniqueConstraint,
+    func,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from .db import Base
@@ -42,7 +49,32 @@ DEFAULT_USER_PREFERENCE = {
     "store_context": False,  # Whether to store code context
     "store_contextual_telemetry": True,  # Whether to collect contextual data
     "store_behavioral_telemetry": True,  # Whether to collect behavioral data
+    # Whether to store agent task/event/edit *content* (message text, tool
+    # arguments/results, diffs). Structural telemetry (tokens, latency, span
+    # tree, tool names) is always stored and is not covered by this flag.
+    #
+    # Default ON: this is a research platform where study participants give
+    # informed consent through a separate process before using it, so opt-out
+    # is the right default for research data collection. The *mechanism* stays
+    # strict — enforcement is server-side only (see
+    # backend.routers.agent.consent.resolve_store_agent_content); a
+    # client-supplied flag is never trusted.
+    "store_agent_content": True,
 }
+
+# Preference key gating persistence of agent content columns.
+STORE_AGENT_CONTENT_KEY = "store_agent_content"
+# Server-side default applied when a user row predates this preference (i.e. the
+# key is absent from their stored preference JSON).
+STORE_AGENT_CONTENT_DEFAULT = True
+
+
+class ResearchStudyStatus(str, Enum):
+    """Lifecycle states for research studies on the shared ``study`` table."""
+
+    DRAFT = "DRAFT"
+    ACTIVE = "ACTIVE"
+    STUDY_STOPPED = "STUDY_STOPPED"
 
 
 class Config(Base):
@@ -79,6 +111,8 @@ class User(Base):
         Index("idx_user_config_id", "config_id"),
         # Index on admin status for efficient filtering
         Index("idx_user_is_admin", "is_admin"),
+        # Index on researcher enablement for admin/ownership lookups.
+        Index("idx_user_can_research", "can_research"),
         {"schema": "public"},
     )
 
@@ -105,6 +139,18 @@ class User(Base):
     is_admin = Column(
         Boolean, server_default="false", default=False
     )  # Admin status for access control
+    # Researcher enablement (P3): an administrator flips this on to let an
+    # account own private profiles and studies. It is the *only* researcher
+    # authority — there is no per-study role table. Never settable by the
+    # account itself (no self-promotion route).
+    can_research = Column(
+        Boolean, server_default="false", default=False, nullable=False
+    )
+    # When the account opted out of data collection (GDPR consent withdrawal);
+    # NULL while collection follows the preferences. Owned by the privacy
+    # endpoints only: the generic preference update cannot touch it, so a stale
+    # client pushing its local preferences never re-enables collection.
+    data_collection_opted_out_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationship to configuration data
     config = relationship("Config")
@@ -452,6 +498,24 @@ class MetaQuery(Base):
         Index("idx_meta_query_project_id", "project_id"),
         Index("idx_meta_query_session_id", "session_id"),
         Index("idx_meta_query_type", "query_type"),
+        Index("idx_meta_query_timestamp", "timestamp"),
+        Index("idx_meta_query_timestamp_type", "timestamp", "query_type"),
+        # Foreign keys to context/telemetry: their deletes (erasure) check here.
+        Index(
+            "idx_meta_query_context_id",
+            "context_id",
+            postgresql_where=text("context_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_meta_query_contextual_telemetry_id",
+            "contextual_telemetry_id",
+            postgresql_where=text("contextual_telemetry_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_meta_query_behavioral_telemetry_id",
+            "behavioral_telemetry_id",
+            postgresql_where=text("behavioral_telemetry_id IS NOT NULL"),
+        ),
         {"schema": "public"},
     )
 
@@ -557,6 +621,9 @@ class HadGeneration(Base):
         PrimaryKeyConstraint("meta_query_id", "model_id"),
         # Index for efficient query-model lookups
         Index("idx_had_generation_meta_query_model", "meta_query_id", "model_id"),
+        Index("idx_had_generation_confidence", "confidence"),
+        Index("idx_had_generation_model_id", "model_id"),
+        Index("idx_had_generation_was_accepted", "was_accepted"),
         {"schema": "public"},
     )
 
@@ -577,7 +644,7 @@ class HadGeneration(Base):
     was_accepted = Column(
         Boolean, nullable=False
     )  # Whether user accepted the completion
-    confidence = Column(Double, nullable=False)  # Model confidence score
+    confidence = Column(Double, nullable=True)  # Model confidence score; NULL when the model reports none
     logprobs = Column(ARRAY(Double), nullable=False)  # Log probabilities for tokens
 
 
@@ -631,36 +698,86 @@ class Documentation(Base):
     embedding = Column(
         Vector(384), nullable=True
     )  # 384 dimensions for all-MiniLM-L6-v2
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=datetime.now, server_default=func.now()
+    )
 
 
 class Study(Base):
     """
-    A/B testing and user experiment management.
-    
-    Manages user studies for configuration testing and analysis.
-    Only one study can be active at a time per server instance.
+    Shared study identity for research studies (plus pre-existing legacy rows).
+
+    Research studies set ``is_research`` True and are owner-scoped; their
+    lifecycle and fixed configuration live in the research-only columns below.
+    ``default_config_id`` is nullable and not fabricated for a research study
+    (validated in code, not by a NOT NULL column). ``is_active`` mirrors the
+    ``research_status`` lifecycle projection (``ACTIVE`` ↔ True) and is not an
+    owner-level publication slot, so an owner may hold several active research
+    studies at once. Pre-existing legacy completion rows leave those research
+    columns nullable and continue using the existing completion fields; no new
+    completion A/B studies are created.
     """
-    
+
     __tablename__ = "study"
     __table_args__ = (
         Index("idx_study_is_active", "is_active"),
         Index("idx_study_created_by", "created_by"),
         Index("idx_study_starts_at", "starts_at"),
         Index("idx_study_ends_at", "ends_at"),
+        Index("idx_study_research_status", "research_status"),
+        Index(
+            "uq_study_research_join_code",
+            "join_code",
+            unique=True,
+            postgresql_where=text("is_research AND join_code IS NOT NULL"),
+        ),
         {"schema": "public"},
     )
-    
+
     study_id = Column(UUID(as_uuid=True), primary_key=True)
     name = Column(Text, nullable=False)
     description = Column(Text)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("public.user.user_id"), nullable=False)
+    created_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
     starts_at = Column(DateTime(timezone=True), nullable=False)
     ends_at = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, server_default="false", default=False)
-    default_config_id = Column(BigInteger, ForeignKey("public.config.config_id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
-    
+    # Nullable at the DB level: required for completion studies, absent for
+    # agent research studies (enforced by request validation).
+    default_config_id = Column(
+        BigInteger, ForeignKey("public.config.config_id"), nullable=True
+    )
+    # True for researcher-authored studies; False for legacy completion studies.
+    is_research = Column(Boolean, server_default="false", default=False, nullable=False)
+    # Research-only lifecycle/configuration authority. Legacy completion rows
+    # leave these nullable and continue using their existing fields.
+    research_status = Column(String, nullable=True)
+    research_config_json = Column(JSONB, nullable=True)
+    research_config_digest = Column(String, nullable=True)
+    join_code = Column(String, nullable=True)
+    consent_locked_at = Column(DateTime(timezone=True), nullable=True)
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    stopped_by = Column(String, nullable=True)
+    # Participant inference budgets (shared provider key). Editable at any time
+    # and deliberately outside the digested ``research_config_json``. The default
+    # is 0 so an unconfigured study cannot spend (fail closed); balances for new
+    # enrollments copy this default. ``warning_fraction`` drives the participant
+    # warning surfaces only.
+    inference_budget_default_micro_usd = Column(
+        BigInteger, nullable=False, server_default="0", default=0
+    )
+    inference_budget_warning_fraction = Column(
+        Numeric(4, 3), nullable=False, server_default="0.800", default=Decimal("0.800")
+    )
+    inference_budget_updated_at = Column(DateTime(timezone=True), nullable=True)
+    inference_budget_updated_by = Column(String, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, default=datetime.now, server_default=func.now()
+    )
+
     # Relationships
     creator = relationship("User")
     default_config = relationship("Config")
@@ -682,15 +799,503 @@ class ConfigAssignmentHistory(Base):
         {"schema": "public"},
     )
     
-    user_id = Column(UUID(as_uuid=True), ForeignKey("public.user.user_id"), primary_key=True)
-    study_id = Column(UUID(as_uuid=True), ForeignKey("public.study.study_id"), primary_key=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    study_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.study.study_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
     assigned_config_id = Column(BigInteger, ForeignKey("public.config.config_id"), nullable=False)
-    assigned_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    assigned_at = Column(
+        DateTime(timezone=True), nullable=False, default=datetime.now, server_default=func.now()
+    )
     
     # Relationships
     user = relationship("User")
     study = relationship("Study")
     assigned_config = relationship("Config")
+
+
+# ── Agent tables ──────────────────────────────────────────────────────────────
+#
+# One schema serves both agent runtimes:
+#
+#   * the built-in ``code4me2-agent`` ReAct loop, which runs locally and
+#     self-reports its steps to POST /api/agent/events/ingest, and
+#   * third-party ACP agents (Goose, Codex), which are observed transparently
+#     by the plugin's local proxy relaying through POST /api/agent/inference.
+#
+# Shape: "columnar core + JSON overflow". Fields both runtimes produce get
+# first-class typed columns (span tree, token counts, latency, tool names,
+# finish reason); runtime-specific or experimental extras go into the single
+# ``extra_json`` overflow column so adding an adapter never needs a migration.
+#
+# Privacy split: structural columns (status, timings, token counts, decisions)
+# are always stored. Content columns (task_description, first_system_message,
+# last_user_message, response_text, tool_arguments, tool_result, payload_json,
+# diff_text, edit_delta_json) are nullable and only ever written when the
+# requesting user's ``store_agent_content`` preference resolves True — checked
+# server-side, never taken from a client-supplied flag.
+
+
+class ProviderConnection(Base):
+    """An administrator-maintained upstream provider endpoint.
+
+    A connection owns the provider endpoint (``base_url``) and the *name* of the
+    deployment secret that holds its key (``secret_ref`` — an environment
+    variable name, never the value). ``models_json`` is the JSON array of model
+    names the connection is allowed to serve. Researchers never see
+    ``base_url``/``secret_ref``; they select a granted connection by id and a
+    model from ``models_json``. The secret value is resolved from the
+    environment only at inference time and never persisted or returned.
+    """
+
+    __tablename__ = "provider_connection"
+    __table_args__ = (
+        Index("idx_provider_connection_is_active", "is_active"),
+        {"schema": "public"},
+    )
+
+    connection_id = Column(UUID(as_uuid=True), primary_key=True)
+    label = Column(String, nullable=False, unique=True)
+    base_url = Column(String, nullable=False)
+    # Name of the environment variable holding the upstream key — never the key.
+    secret_ref = Column(String, nullable=False)
+    # JSON array of allowed model names for this connection.
+    models_json = Column(Text, nullable=False)
+    is_active = Column(Boolean, server_default="true", default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+
+
+class ProviderModelPrice(Base):
+    """Per-model prices for one provider connection (USD per million tokens).
+
+    Prices size the worst-case hold and settle the actual charge of every
+    metered inference call. A metered model without a price row fails closed
+    (503 ``price_missing``); there is never a default price. ``usd_per_million``
+    equals micro-USD per token, so ``cost_micro_usd = ceil(tokens * price)``.
+    ``cached_input_usd_per_million`` NULL means cached prompt tokens bill at
+    the input price. Prices are not secret: researchers see them to size
+    budgets; only administrators write them.
+    """
+
+    __tablename__ = "provider_model_price"
+    __table_args__ = (
+        CheckConstraint("input_usd_per_million >= 0", name="ck_provider_model_price_input"),
+        CheckConstraint("output_usd_per_million >= 0", name="ck_provider_model_price_output"),
+        CheckConstraint(
+            "cached_input_usd_per_million IS NULL OR cached_input_usd_per_million >= 0",
+            name="ck_provider_model_price_cached_input",
+        ),
+        Index("idx_provider_model_price_connection", "connection_id"),
+        {"schema": "public"},
+    )
+
+    connection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.provider_connection.connection_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    model = Column(String, primary_key=True)
+    input_usd_per_million = Column(Numeric(14, 6), nullable=False)
+    output_usd_per_million = Column(Numeric(14, 6), nullable=False)
+    cached_input_usd_per_million = Column(Numeric(14, 6), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_by = Column(String, nullable=True)
+
+
+class AgentProfile(Base):
+    """A researcher-owned, editable agent configuration template.
+
+    A profile fixes the runtime, the provider connection/model, the selected
+    tools, the release artifact pin and the approval policy. It is a
+    researcher-owned template whose configuration digest is refreshed on edit;
+    study selections store their own immutable snapshot. ``connection_id`` names an administrator-managed
+    :class:`ProviderConnection`; the provider endpoint and secret live there,
+    never on the profile.
+    """
+
+    __tablename__ = "agent_profile"
+    __table_args__ = (
+        Index("idx_agent_profile_is_active", "is_active"),
+        Index("idx_agent_profile_owner_user_id", "owner_user_id"),
+        # Profile names are unique per researcher, never globally.
+        UniqueConstraint("owner_user_id", "name", name="uq_agent_profile_owner_name"),
+        {"schema": "public"},
+    )
+
+    profile_id = Column(UUID(as_uuid=True), primary_key=True)
+    # The researcher who owns this private profile template.
+    owner_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name = Column(String, nullable=False)
+    model = Column(String, nullable=False)
+    # Agent runtime this profile targets: code4me2-agent | goose | codex
+    framework_version = Column(
+        String, nullable=False, server_default="code4me2-agent"
+    )
+    # The exact approved artifact this profile runs (agent_release.release_id).
+    # The release row owns artifact identity; the profile only pins it.
+    release_id = Column(
+        String,
+        ForeignKey("public.agent_release.release_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    # Administrator-managed provider endpoint + secret owner.
+    connection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.provider_connection.connection_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    tools_json = Column(Text, nullable=False)  # JSON array of tool names
+    approval_policy = Column(String, nullable=False)  # suggestion_only | per_step | …
+    max_steps = Column(Integer, nullable=False)
+    # Sampling temperature injected into the upstream request, server-side, the same
+    # way `model` is overridden. NULL = don't inject; let the provider use its default.
+    temperature = Column(Double, nullable=True)
+    max_context_tokens = Column(
+        Integer, nullable=True
+    )  # per-turn rolling window; NULL = model max
+    # Researcher-authored system prompt (managed runtime only; BYOA refuses it).
+    # NULL = no prompt: the runtime keeps its built-in one. It joins the
+    # configuration digest and study snapshots only when set, so profiles
+    # without a prompt keep their existing digests.
+    system_prompt = Column(Text, nullable=True)
+    # Built-in runtime command and harness settings (decision D-01; managed
+    # runtime only, BYOA refuses them), validated by ``agents.tools``. NULL =
+    # not set: no command is blocked (a user's config row may still block
+    # some), the runtime's default command timeout and the runtime's harness
+    # defaults. Like ``system_prompt`` each joins the configuration digest and
+    # study snapshots only when set. Read the JSON columns through
+    # ``commands_denylist`` / ``harness_options``. The retired
+    # ``commands_allowlist_json`` column (revision 8a0084080b46) stays in the
+    # table, unmapped, so an older backend can still be rolled back to.
+    commands_denylist_json = Column(Text, nullable=True)  # JSON array of bare command names
+    command_timeout_seconds = Column(Integer, nullable=True)  # 1..600 seconds
+    harness_options_json = Column(Text, nullable=True)  # JSON object of switches
+    configuration_digest = Column(String, nullable=False, server_default="")
+    # Only active profiles are candidates for new study selections. Inactive
+    # profiles stay in the table for historical snapshots.
+    is_active = Column(Boolean, server_default="true", default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+    owner = relationship("User")
+    connection = relationship("ProviderConnection")
+
+    @property
+    def commands_denylist(self):
+        """The decoded ``commands_denylist_json`` (``None`` when unset)."""
+        return _decode_optional_json_text(self.commands_denylist_json)
+
+    @property
+    def harness_options(self):
+        """The decoded ``harness_options_json`` (``None`` when unset)."""
+        return _decode_optional_json_text(self.harness_options_json)
+
+
+def _decode_optional_json_text(raw):
+    """Decode an optional JSON text column.
+
+    Text that is not JSON (only possible when a row is written around the API)
+    is returned verbatim rather than read as "unset", so every validator
+    downstream refuses it instead of silently dropping an arm's setting.
+    """
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+
+
+class AgentTask(Base):
+    """One row per agent session a developer starts.
+
+    A "session" here is one run of whichever agent runtime the assigned profile
+    selects — Goose, Codex, or the built-in ``code4me2-agent`` ReAct loop.
+
+    The profile's config (model, temperature, approval_policy, tools_json) is
+    *snapshotted* onto this row at creation time, so later edits to the profile
+    never retroactively change the profile configuration a completed task ran under.
+    """
+
+    __tablename__ = "agent_task"
+    __table_args__ = (
+        Index("idx_agent_task_status", "status"),
+        Index("idx_agent_task_session_id", "session_id"),
+        Index("idx_agent_task_owner_user_id", "owner_user_id"),
+        Index("idx_agent_task_study_id", "study_id"),
+        Index("idx_agent_task_study_assignment_id", "study_assignment_id"),
+        Index("idx_agent_task_profile_id", "profile_id"),
+        Index("idx_agent_task_research_session_id", "research_session_id"),
+        Index("idx_agent_task_enrollment_id", "enrollment_id"),
+        {"schema": "public"},
+    )
+
+    task_id = Column(UUID(as_uuid=True), primary_key=True)
+    # nullable — populated when the task is minted via the authenticated plugin endpoint
+    session_id = Column(
+        UUID(as_uuid=True), ForeignKey("public.session.session_id"), nullable=True
+    )
+    # Which path created this task: "plugin" (proxy relay, third-party agents),
+    # "code4me2_agent" (self-reporting built-in runtime), or "benchmark".
+    source = Column(String, nullable=False, server_default="plugin")
+    # Owner attribution for tasks that arrive over the ACP bearer path, where
+    # there is no session cookie to resolve the user from.
+    owner_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("public.user.user_id"), nullable=True
+    )
+    # The researcher whose provider connection funds this task's inference.
+    # Distinct from owner_user_id, which is the participant who ran the task.
+    funding_owner_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.user.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    owner_project_id = Column(UUID(as_uuid=True), nullable=True)
+    # The runtime's *own* identifiers, which are not guaranteed to be UUIDs
+    # (code4me2-agent uses uuid4().hex; ACP session ids are opaque strings).
+    # Kept alongside the server-side UUID PK so self-reported batches can be
+    # matched back to their task without forcing the runtime to adopt our ids.
+    external_run_id = Column(String, unique=True, nullable=True)
+    agent_session_id = Column(String, nullable=True)
+    study_id = Column(UUID(as_uuid=True), ForeignKey("public.study.study_id"), nullable=True)
+    study_assignment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.study_assignment.assignment_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Explicit phase-05 research attribution. Resolved server-side from the
+    # authorized account + frozen assignment; NULL for ordinary non-study use
+    # (an explicit "no research context" state, never a guessed one).
+    research_session_id = Column(UUID(as_uuid=True), nullable=True)
+    enrollment_id = Column(UUID(as_uuid=True), nullable=True)
+    profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_profile.profile_id"),
+        nullable=True,
+    )
+    agent_profile = Column(String, nullable=False)
+    model = Column(String, nullable=False)
+    # Snapshotted from the assigned profile at task-creation time, like `model`, so
+    # the value is stable for the life of the task. NULL = provider default.
+    temperature = Column(Double, nullable=True)
+    approval_policy = Column(String, nullable=False)
+    tools_json = Column(Text, nullable=False)
+    # Agent runtime (e.g. "goose", "codex", "code4me2-agent") — snapshotted from
+    # the profile, but left nullable so the proxy can backfill the concrete
+    # version string it observes ("goose 1.x") on the first inference call.
+    framework_version = Column(String, nullable=True)
+    # Complete, versioned managed-runtime policy. Nullable for legacy tasks.
+    policy_snapshot = Column(JSONB, nullable=True)
+    observed_framework_version = Column(String, nullable=True)
+    observed_tools_json = Column(Text, nullable=True)
+    consent_content_storage = Column(Boolean, nullable=True)
+    next_event_index = Column(Integer, nullable=False, server_default="0")
+    status = Column(String, nullable=False)  # pending | running | done | failed
+    created_at = Column(DateTime, default=datetime.now)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    total_steps = Column(Integer, nullable=True)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    # Points at the most recent event, so a dashboard can show "where is this
+    # task now" without scanning agent_event.
+    #
+    # agent_task and agent_event reference each other, which is a deliberate
+    # cycle. `use_alter=True` tells SQLAlchemy to emit this constraint as a
+    # separate ALTER after both tables exist, so metadata.create_all() can
+    # order the DDL instead of erroring on the cycle. The Alembic migration
+    # does the same thing by hand.
+    latest_event_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "public.agent_event.event_id",
+            use_alter=True,
+            name="agent_task_latest_event_id_fkey",
+        ),
+        nullable=True,
+    )
+    # Content — written only when store_agent_content resolves True
+    task_description = Column(Text, nullable=True)
+
+    study = relationship("Study")
+    profile = relationship("AgentProfile")
+
+
+class AgentEvent(Base):
+    """One row per agent step, from either telemetry path.
+
+    ``event_type`` is the unified vocabulary both paths emit into:
+    ``model_call`` and ``tool_call`` are the two that carry typed columns;
+    ``thought`` / ``observation`` / ``run_started`` / ``run_completed`` /
+    ``decision`` are structural markers.
+
+    Rows form a span tree via ``span_id`` / ``parent_span_id`` (tool calls nest
+    under the model_call whose response requested them). Anything a specific
+    adapter reports that has no typed column lands in ``extra_json``.
+    """
+
+    __tablename__ = "agent_event"
+    __table_args__ = (
+        Index("idx_agent_event_task_id", "task_id"),
+        Index("idx_agent_event_event_type", "event_type"),
+        Index("idx_agent_event_created_at", "created_at"),
+        UniqueConstraint("task_id", "event_index", name="uq_agent_event_task_event_index"),
+        UniqueConstraint(
+            "task_id", "source", "source_event_id", name="uq_agent_event_source_identity"
+        ),
+        {"schema": "public"},
+    )
+
+    event_id = Column(UUID(as_uuid=True), primary_key=True)
+    task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_task.task_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_index = Column(Integer, nullable=False)
+    # model_call | tool_call | thought | observation | test_run | decision |
+    # run_started | run_completed | accepted | rejected
+    event_type = Column(String, nullable=False)
+    # Which telemetry path wrote this row: "proxy" (client-side relay observing
+    # a third-party agent) or "code4me2_agent" (runtime self-report).
+    source = Column(String, nullable=True)
+    source_event_id = Column(String, nullable=True)
+    # Envelope schema version reported by a self-reporting runtime, so old
+    # batches stay interpretable after the envelope evolves.
+    schema_version = Column(String, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    # Client-side event timestamp, as reported by a self-reporting runtime.
+    # Distinct from created_at, which is when the server persisted the row.
+    occurred_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Shared span identifiers (model_call and tool_call).
+    # Events are grouped by task via task_id; there is no separate trace_id column —
+    # it was always a duplicate of task_id.
+    span_id = Column(String, nullable=True)
+    parent_span_id = Column(UUID(as_uuid=True), nullable=True)
+    # Correlates every event emitted while serving one user prompt.
+    request_id = Column(String, nullable=True)
+    chat_session_index = Column(Integer, nullable=True)
+
+    # ── model_call fields — null for tool_call rows ──
+    model = Column(String, nullable=True)
+    agent_profile = Column(String, nullable=True)
+    streaming = Column(Boolean, nullable=True)
+    message_count = Column(Integer, nullable=True)
+    # Per-role message counts (the shape of the context window).
+    role_system_count = Column(Integer, nullable=True)
+    role_user_count = Column(Integer, nullable=True)
+    role_assistant_count = Column(Integer, nullable=True)
+    role_tool_count = Column(Integer, nullable=True)
+    tools_kept = Column(Integer, nullable=True)
+    tools_stripped = Column(Integer, nullable=True)
+    tool_names_requested = Column(ARRAY(String), nullable=True)
+    max_tokens = Column(Integer, nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    finish_reason = Column(String, nullable=True)
+    upstream_status = Column(Integer, nullable=True)
+    step_index = Column(Integer, nullable=True)
+    context_window_size_bytes = Column(Integer, nullable=True)
+    active_file = Column(Text, nullable=True)
+    first_message_hash = Column(String, nullable=True)
+    chat_new_session_detected = Column(Boolean, nullable=True)
+    experiment_tool_access_enabled = Column(Boolean, nullable=True)
+    experiment_approval_policy = Column(String, nullable=True)
+    # Content — written only when store_agent_content resolves True
+    first_system_message = Column(Text, nullable=True)
+    last_user_message = Column(Text, nullable=True)
+    response_text = Column(Text, nullable=True)
+
+    # ── tool_call fields — null for model_call rows ──
+    tool_name = Column(String, nullable=True)
+    tool_arguments_length = Column(Integer, nullable=True)
+    tool_result_length = Column(Integer, nullable=True)
+    # Content — written only when store_agent_content resolves True
+    tool_arguments = Column(Text, nullable=True)
+    tool_result = Column(Text, nullable=True)
+
+    # ── JSON overflow ──
+    # Adapter-specific / experimental structural metrics that don't warrant a
+    # typed column (e.g. the ReAct adapter's per-iteration counters, an
+    # adapter's own observability block). Never content — see payload_json.
+    extra_json = Column(Text, nullable=True)
+    # Free-form event payload from a self-reporting runtime. May quote user
+    # prompts, model output, or file contents, so this is Content — written only
+    # when store_agent_content resolves True.
+    payload_json = Column(Text, nullable=True)
+
+
+class AgentEdit(Base):
+    """One row per file the agent proposed changing.
+
+    The accept / reject / modified decision plus the diff is the
+    human-in-the-loop signal: it records not just what the agent suggested but
+    what the developer actually did with it.
+    """
+
+    __tablename__ = "agent_edit"
+    __table_args__ = (
+        Index("idx_agent_edit_task_id", "task_id"),
+        {"schema": "public"},
+    )
+
+    edit_id = Column(UUID(as_uuid=True), primary_key=True)
+    task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("public.agent_task.task_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    file_path = Column(Text, nullable=False)
+    was_accepted = Column(Boolean, nullable=True)  # True/False after developer decides
+    was_modified = Column(
+        Boolean, nullable=True
+    )  # True if developer edited before accepting
+    decided_at = Column(DateTime, nullable=True)
+    # Content — written only when store_agent_content resolves True
+    diff_text = Column(Text, nullable=True)
+    edit_delta_json = Column(
+        Text, nullable=True
+    )  # what developer changed before accepting
+
+
+class AgentMemory(Base):
+    """Durable per-session agent memory snapshot.
+
+    Holds the latest serialized memory window for one agent chat session, so
+    conversation state survives an IDE (or agent process) restart. Ownership is
+    server-derived from the ACP token, matching agent telemetry authorization —
+    the client cannot claim a session it doesn't own.
+    """
+
+    __tablename__ = "agent_memory"
+    __table_args__ = (
+        Index("idx_agent_memory_owner_user_id", "owner_user_id"),
+        Index("idx_agent_memory_owner_project_id", "owner_project_id"),
+        Index("idx_agent_memory_updated_at", "updated_at"),
+        {"schema": "public"},
+    )
+
+    # ACP session ids are opaque strings, not guaranteed to be UUIDs.
+    session_id = Column(String, primary_key=True)
+    owner_user_id = Column(String, nullable=False)
+    owner_project_id = Column(String, nullable=False)
+    memory_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.now)
 
 
 #
@@ -720,3 +1325,11 @@ class ConfigAssignmentHistory(Base):
 #         UniqueConstraint("session_id", "query_id", name="unique_session_query"),
 #         Index("idx_session_queries_query_id", "query_id"),
 #     )
+
+
+# ``AgentProfile.release_id`` references the research ``agent_release`` table by
+# string name. Importing the research namespace here registers its tables on the
+# shared ``Base`` metadata, so ordering/creating the operational metadata works
+# regardless of which namespace an entrypoint imports first. ``research_schemas``
+# never imports ``db_schemas``, so this is not an import cycle.
+from . import research_schemas as _research_schemas  # noqa: E402,F401  (registers research tables on Base)

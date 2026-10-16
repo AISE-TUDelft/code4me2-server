@@ -11,7 +11,6 @@ const UsageAnalytics = () => {
   const [error, setError] = useState(null);
 
   // Filter states
-  const [timeRange, setTimeRange] = useState('7d');
   const [granularity, setGranularity] = useState('1h');
   const [groupBy, setGroupBy] = useState('model');
 

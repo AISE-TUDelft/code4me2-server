@@ -1,0 +1,15 @@
+{
+  "environment": {
+    "arch": "x86_64",
+    "ide_build": "IU-000.0000.00",
+    "os": "Linux",
+    "plugin_version": "0.0.0"
+  },
+  "expected": {
+    "agent_id": "synthetic-agent",
+    "arch": "aarch64",
+    "os": "macOS",
+    "release_id": "rel-0002"
+  },
+  "reason": "host tuple does not match the pinned compatibility receipt"
+}

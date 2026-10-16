@@ -21,12 +21,22 @@ from backend.redis_manager import RedisManager
 
 class AuthenticatedUser:
     """Container for authenticated user information."""
-    
-    def __init__(self, user_id: uuid.UUID, is_admin: bool, email: str, name: str):
+
+    def __init__(
+        self,
+        user_id: uuid.UUID,
+        is_admin: bool,
+        email: str,
+        name: str,
+        can_research: bool = False,
+    ):
         self.user_id = user_id
         self.is_admin = is_admin
         self.email = email
         self.name = name
+        # Administrator-enabled researcher account (P3). There is no per-study
+        # role table; this single flag is the researcher authority.
+        self.can_research = can_research
 
 
 def get_current_user(
@@ -69,7 +79,8 @@ def get_current_user(
             user_id=user.user_id,
             is_admin=user.is_admin,
             email=user.email,
-            name=user.name
+            name=user.name,
+            can_research=bool(getattr(user, "can_research", False)),
         )
         
     except Exception as e:
@@ -144,9 +155,23 @@ def validate_time_range(start_time: Optional[str], end_time: Optional[str]) -> t
             start_time = start_dt.isoformat()
         
         # Validate format
-        datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-        datetime.fromisoformat(end_time.replace('Z', '+00:00'))
-        
+        start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+        end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+
+        # An inverted range would silently return empty results, misleading
+        # researchers into thinking no telemetry was collected. Reject it.
+        try:
+            inverted = start_dt > end_dt
+        except TypeError:
+            # Mixed naive/aware bounds: not comparable in Python; leave the
+            # range to the database instead of failing the request.
+            inverted = False
+        if inverted:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid time range: start_time must not be after end_time",
+            )
+
         return start_time, end_time
         
     except ValueError:

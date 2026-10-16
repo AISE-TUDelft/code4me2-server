@@ -16,10 +16,14 @@ from Code4meV2Config import Code4meV2Config
 
 multiprocessing.set_start_method("spawn", force=True)
 
-import torch  # noqa: E402
+try:
+    import torch  # noqa: E402
+except ImportError:
+    torch = None
 
-# Ensure torch also uses spawn method for multiprocessing compatibility
-torch.multiprocessing.set_start_method("spawn", force=True)
+# Ensure torch also uses spawn method when the optional ML stack is installed.
+if torch is not None:
+    torch.multiprocessing.set_start_method("spawn", force=True)
 
 from celery import Celery  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402

@@ -1,0 +1,119 @@
+{
+  "schema_version": "1",
+  "study_id": "11111111-1111-4111-8111-111111111111",
+  "metadata": {
+    "name": "Synthetic Approved Protocol",
+    "description": "Approved synthetic fixture for StudyProtocolV1 canonical digest tests. Contains no real identifiers.",
+    "owner": "research-ops"
+  },
+  "schedule": {
+    "kind": "ROLLING",
+    "duration_seconds": 1209600
+  },
+  "enrollment": {
+    "capacity": 200,
+    "allow_reentry": false
+  },
+  "assignment": {
+    "unit": "ENROLLMENT",
+    "strategy": "DETERMINISTIC_HASH",
+    "stratification": null
+  },
+  "conditions": [
+    {
+      "condition_id": "control",
+      "name": "Control",
+      "weight": 1.0,
+      "distribution_id": "aaaaaaaa-0000-4000-8000-000000000001",
+      "adapter_version": "0.1.0",
+      "declared_overrides": {},
+      "resolved_distribution": {
+        "distribution_id": "aaaaaaaa-0000-4000-8000-000000000001",
+        "distribution_mode": "PACKAGED",
+        "release_id": "rel-0001",
+        "agent_id": "synthetic-agent",
+        "version": "1.0.0",
+        "artifact_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "verified": true,
+        "resolved_at": "2026-06-01T12:00:00Z"
+      }
+    },
+    {
+      "condition_id": "treatment",
+      "name": "Treatment",
+      "weight": 3.0,
+      "distribution_id": "aaaaaaaa-0000-4000-8000-000000000002",
+      "adapter_version": "0.1.0",
+      "declared_overrides": {
+        "max_iterations": 12
+      },
+      "resolved_distribution": {
+        "distribution_id": "aaaaaaaa-0000-4000-8000-000000000002",
+        "distribution_mode": "PACKAGED",
+        "release_id": "rel-0002",
+        "agent_id": "synthetic-agent",
+        "version": "1.1.0",
+        "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "verified": true,
+        "resolved_at": "2026-06-01T12:00:00Z"
+      }
+    }
+  ],
+  "session_policy": {
+    "idle_timeout_seconds": 900,
+    "resume_grace_seconds": 300,
+    "heartbeat_seconds": 30
+  },
+  "telemetry_policy": {
+    "allowed_field_classes": [
+      "STRUCTURAL",
+      "METRICS"
+    ]
+  },
+  "privacy_policy": {
+    "retention_action": "RETAIN_ANONYMIZED",
+    "retention_days": 365
+  },
+  "consent": {
+    "document_id": "consent-synthetic-v1",
+    "version": "1",
+    "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "locale_refs": [
+      "en-US"
+    ]
+  },
+  "environment_requirements": {
+    "expected_protocol_version": "1",
+    "required_capabilities": [
+      {
+        "capability": "INITIALIZE",
+        "require_state": "SUPPORTED",
+        "evidence_ref": null
+      },
+      {
+        "capability": "EDIT_PROPOSAL",
+        "require_state": "SUPPORTED",
+        "evidence_ref": null
+      }
+    ],
+    "host_kind": "IntelliJ IDEA"
+  },
+  "completion": {
+    "policy": "TARGET_CAPACITY",
+    "target_enrollments": 200
+  },
+  "schema_governance": {
+    "owner": "research-ops",
+    "change_policy": "additive-only",
+    "compatible_from_schema_versions": [
+      "1"
+    ]
+  },
+  "survey_hooks": [
+    {
+      "survey_id": "exit-survey",
+      "trigger": "session_close",
+      "version": "1"
+    }
+  ]
+}

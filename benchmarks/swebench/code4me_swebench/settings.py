@@ -1,0 +1,156 @@
+"""Run settings and the agent configuration they produce."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING
+from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+# Every agent tool except ask_user: nobody answers questions in a benchmark.
+DEFAULT_TOOLS = (
+    "read_file", "create_file", "write_file", "replace_text", "edit_file",
+    "apply_patch", "delete_file", "move_file", "list_files", "glob_files",
+    "grep_files", "search_files", "run_command", "update_plan",
+)
+
+# Paths inside the task container.
+WORKSPACE = "/testbed"
+RUNTIME_MOUNT = "/opt/code4me"
+TASK_DIR = "/tmp/code4me"
+OUT_DIR = f"{TASK_DIR}/out"
+
+
+@dataclass(frozen=True)
+class RunSettings:
+    # OpenCode Go model id. V4.1 Flash (2026-09-10) has a larger Go quota than
+    # V4 Flash (2026-07-31); runs before 2026-10-09 used deepseek-v4-flash.
+    model: str = "deepseek-v4.1-flash"
+    base_url: str = "https://opencode.ai/zen/go/v1"
+    # Name of the host environment variable holding the provider key. Only the
+    # name is written to disk; the value is passed to the container at exec time.
+    api_key_env: str = "OPENCODE_GO_API_KEY"
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+    provider_timeout_s: float = 300.0
+    # Hard wall-clock limit per model request (retried like a timeout); the read
+    # timeout alone never fires while DeepSeek sends keep-alive blank lines.
+    request_deadline_s: float = 300.0
+    # The defaults below follow the SWE-rebench leaderboard's protocol (read from
+    # swe-rebench.com and its published trajectories on 2026-10-14), so results
+    # compare with its numbers for the same model and task window.
+    # Model calls per task; summarisation calls do not count. The leaderboard has
+    # had no step cap since Feb 2026 (its runs reached 492 steps): 500 is a cap
+    # that should practically never bind.
+    max_iterations: int = 500
+    # Conversation tokens kept per model request (the agent calibrates its
+    # chars/4 estimate against the provider's counts). The leaderboard caps the
+    # context at 128k; past that its scaffold fails the task, ours compacts.
+    context_tokens: int = 128_000
+    # The leaderboard's fixed per-command timeout.
+    command_timeout_s: float = 300.0
+    max_command_timeout_s: float = 300.0
+    max_command_output_bytes: int = 16_384
+    # Wall-clock limit for one task; the agent is killed and its diff kept. A
+    # guard against hangs, not a budget (the leaderboard's longest run: 2.7 h).
+    task_timeout_s: float = 14_400.0
+    # Programs the agent may not run (its commands denylist). Empty: any program
+    # in the task container can run; the container is the sandbox.
+    blocked_commands: tuple[str, ...] = ()
+    tools: tuple[str, ...] = DEFAULT_TOOLS
+    # HarnessOptions overrides (empty = the agent's shipped defaults).
+    harness_options: dict[str, object] = field(default_factory=dict)
+    platform: str = "linux/amd64"
+    # Task containers reach the model API host and nothing else (no GitHub,
+    # PyPI, git remotes): agents otherwise look up the upstream fix.
+    network: str = "model-api-only"
+    # Extra top-level request fields for the model API, sent by our agent and by
+    # the mini-swe-agent baseline alike: e.g. OpenRouter's upstream pin.
+    extra_body: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def model_name_or_path(self) -> str:
+        return f"code4me2-agent__{self.model}"
+
+    def as_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["blocked_commands"] = list(self.blocked_commands)
+        data["tools"] = list(self.tools)
+        if not self.extra_body:
+            del data["extra_body"]  # manifests of runs without it stay unchanged
+        return data
+
+
+def agent_config(settings: RunSettings, *, session_id: str) -> dict[str, object]:
+    """The agent's config-file JSON (``AgentConfig.from_file`` format)."""
+    provider: dict[str, object] = {
+        "kind": "openai",
+        "base_url": settings.base_url,
+        "model": settings.model,
+        "api_key_env": settings.api_key_env,
+        "timeout_seconds": settings.provider_timeout_s,
+        "request_deadline_seconds": settings.request_deadline_s,
+    }
+    if settings.temperature is not None:
+        provider["temperature"] = settings.temperature
+    if settings.max_output_tokens is not None:
+        provider["max_output_tokens"] = settings.max_output_tokens
+    if settings.extra_body:
+        provider["extra_body"] = dict(settings.extra_body)
+    return {
+        "workspace_root": WORKSPACE,
+        "session_id": session_id,
+        # Headless: nobody answers, so a turn that ends announcing more work is
+        # continued (at most twice). IDE sessions never do this.
+        "autonomous": True,
+        "adapter": {
+            "name": "openai_compatible_react",
+            "max_iterations": settings.max_iterations,
+            "provider": provider,
+            "memory_window": {
+                "scope": "session",
+                "strategy": "token_window",
+                "max_messages": 1_000,
+                "max_tokens": settings.context_tokens,
+            },
+        },
+        "commands": {
+            "denylist": list(settings.blocked_commands),
+            "timeout_seconds": settings.command_timeout_s,
+            "max_timeout_seconds": settings.max_command_timeout_s,
+            "max_output_bytes": settings.max_command_output_bytes,
+        },
+        "harness_options": dict(settings.harness_options),
+        "telemetry": {
+            "trace_path": f"{OUT_DIR}/trace.jsonl",
+            "raw_capture_enabled": True,
+        },
+    }
+
+
+OPENROUTER_HOST = "openrouter.ai"
+
+
+def is_openrouter(base_url: str) -> bool:
+    host = (urlparse(base_url).hostname or "").lower()
+    return host == OPENROUTER_HOST or host.endswith("." + OPENROUTER_HOST)
+
+
+def openrouter_routing(upstreams: Sequence[str]) -> dict[str, object]:
+    """OpenRouter fields that pin the upstream: each request is served by one of
+    ``upstreams`` or fails, never by another host or quantisation of the model."""
+    return {"provider": {"only": list(upstreams), "allow_fallbacks": False, "require_parameters": True}}
+
+
+def pinned_upstreams(extra_body: Mapping[str, object]) -> list[str]:
+    """The upstreams an OpenRouter routing block restricts requests to ([] = any)."""
+    provider = extra_body.get("provider") if extra_body else None
+    if not isinstance(provider, dict):
+        return []
+    if provider.get("only"):
+        return [str(slug) for slug in provider["only"]]
+    if provider.get("order") and provider.get("allow_fallbacks") is False:
+        return [str(slug) for slug in provider["order"]]
+    return []

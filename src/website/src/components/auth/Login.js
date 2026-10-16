@@ -1,11 +1,9 @@
 import React, { useState } from "react";
 import "./Auth.css";
 import Modal from "../common/Modal";
-import { initGoogleOAuth } from "../../utils/auth";
 import { authenticateUser } from "../../utils/api";
-import { GoogleLogin } from "@react-oauth/google";
 
-const Login = ({ onSwitchToSignup, onLogin, onGoogleAuth }) => {
+const Login = ({ onSwitchToSignup, onLogin }) => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -111,20 +109,6 @@ const Login = ({ onSwitchToSignup, onLogin, onGoogleAuth }) => {
         </button>
       </div>
 
-      <div className="oauth-section">
-        <p>Or login with:</p>
-        <GoogleLogin
-          onSuccess={async (credentialResponse) => {
-            const user = await initGoogleOAuth(credentialResponse);
-            console.log("Google login successful:", user);
-            onGoogleAuth(user);
-          }}
-          onError={() => {
-            console.log("Google login failed");
-            setError("Google login failed. Please try again.");
-          }}
-        />
-      </div>
     </div>
   );
 };

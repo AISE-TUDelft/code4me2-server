@@ -21,12 +21,18 @@ from backend.Responses import (
     JsonResponseWithStatus,
 )
 from database import crud
+from privacy import collection
 from response_models import (
     CompletionErrorItem,
     ResponseCompletionItem,
     ResponseCompletionResponseData,
 )
 from utils import create_uuid, extract_secrets, redact_secrets
+
+
+def _wire_confidence(value):
+    """A number for the plugin's generated client; NULL is stored, not sent."""
+    return float(value) if value is not None else 0.0
 
 router = APIRouter()
 
@@ -107,6 +113,10 @@ def request_completion(
             return JsonResponseWithStatus(
                 status_code=401, content=InvalidOrExpiredProjectToken()
             )
+
+        # An account that opted out of data collection still gets its answer,
+        # but nothing about the request is stored, whatever its store_* flags say.
+        collect = collection.is_collection_allowed(db_auth, uuid.UUID(str(user_id)))
 
         t1 = time.perf_counter()
         logging.info(f"Auth check took {(t1 - t0) * 1000:.2f}ms")
@@ -207,16 +217,24 @@ def request_completion(
             if completion_model is None:
                 return CompletionErrorItem(model_name=str(model.model_name))
             local_t2 = time.perf_counter()
-            # Invoke the model with redacted prefix and suffix
-            completion_result = completion_model.invoke(
-                {
-                    "prefix": completion_request.context.prefix,
-                    "suffix": completion_request.context.suffix,
-                    "multi_file_context": multi_file_contexts,
-                    "file_name": completion_request.context.file_name,
-                },
-                stop_sequences=completion_request.stop_sequences,
-            )
+            # Invoke the model with redacted prefix and suffix. A provider
+            # outage costs this model's item, not the whole request.
+            try:
+                completion_result = completion_model.invoke(
+                    {
+                        "prefix": completion_request.context.prefix,
+                        "suffix": completion_request.context.suffix,
+                        "multi_file_context": multi_file_contexts,
+                        "file_name": completion_request.context.file_name,
+                    },
+                    stop_sequences=completion_request.stop_sequences,
+                )
+            except Exception as error:
+                logging.warning(
+                    f"Completion model {model_id} ({model.model_name}) failed: {error}",
+                    exc_info=True,
+                )
+                return CompletionErrorItem(model_name=str(model.model_name))
             local_t3 = time.perf_counter()
 
             logging.info(
@@ -255,7 +273,9 @@ def request_completion(
                 model_name=str(model.model_name),
                 completion=completion_result["completion"],
                 generation_time=completion_result["generation_time"],
-                confidence=completion_result["confidence"],
+                # The plugin client reads a number; the stored value stays
+                # NULL for provider models so analytics leave it out.
+                confidence=_wire_confidence(completion_result["confidence"]),
             )
 
         # Execute completion calls concurrently using thread pool
@@ -310,12 +330,18 @@ def request_completion(
             )
         )
 
-        # Chain Celery tasks: store context/telemetry -> add query -> add generations
-        chain(
-            group(*pre_query_tasks) if pre_query_tasks else None,
-            add_query_task,
-            group(*add_generation_tasks),
-        ).apply_async(queue="db")
+        # Chain Celery tasks: store context/telemetry -> add query -> add generations.
+        # Any stage may be absent (all store_* flags off, or every model
+        # errored): chain only the present stages, since chain(None, ...)
+        # raises TypeError and would 500 an otherwise successful request.
+        chain_steps = []
+        if pre_query_tasks:
+            chain_steps.append(group(*pre_query_tasks))
+        chain_steps.append(add_query_task)
+        if add_generation_tasks:
+            chain_steps.append(group(*add_generation_tasks))
+        if collect:
+            chain(*chain_steps).apply_async(queue="db")
 
         t6 = time.perf_counter()
         logging.info(f"Celery task prep and queuing took {(t6 - t5) * 1000:.2f}ms")

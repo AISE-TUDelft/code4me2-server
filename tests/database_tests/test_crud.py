@@ -47,8 +47,11 @@ def db_session():
     except Exception:
         pass  # Schema might not exist
 
-    # Initialize using migration system
+    # Initialize using migration system, then apply migrations so the schema
+    # matches the ORM (init_test.sql only describes the pre-Alembic baseline).
+    os.environ.setdefault("TEST_MODE", "true")
     migration_manager.init_migrations()
+    migration_manager.migrate()
 
     # Create session
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -256,26 +259,6 @@ def test_create_and_get_user_by_email(db_session, test_config):
     assert retrieved_user is not None
     assert retrieved_user.email == user_email
     assert retrieved_user.user_id == created_user.user_id
-
-
-def test_create_user_with_oauth(db_session, test_config):
-    """Test creating a user with OAuth authentication"""
-    user_email = "oauth_user@example.com"
-    user_data = Queries.CreateUserOauth(
-        email=user_email,
-        name="OAuth User",
-        password="SecurePassword456",
-        config_id=test_config.config_id,
-        token="mock_oauth_token",
-        provider=Queries.Provider.google,
-    )
-
-    created_user = crud.create_user(db_session, user_data)
-
-    assert created_user.email == user_email
-    assert created_user.name == "OAuth User"
-    assert created_user.is_oauth_signup is True
-    assert created_user.verified is False
 
 
 def test_update_user(db_session, test_user):

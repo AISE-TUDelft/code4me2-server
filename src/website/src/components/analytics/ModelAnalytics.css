@@ -560,3 +560,19 @@
   display: table-cell;
   vertical-align: middle;
 }
+
+/* Empty state shown when the time range has no generations. */
+.model-analytics .empty-message {
+  background-color: var(--card-background);
+  border: 1px dashed var(--border-color);
+  border-radius: 12px;
+  color: var(--text-secondary);
+  padding: 32px 20px;
+  text-align: center;
+}
+
+.model-analytics .empty-message h3 {
+  color: var(--text-color);
+  font-size: 16px;
+  margin: 0 0 6px;
+}

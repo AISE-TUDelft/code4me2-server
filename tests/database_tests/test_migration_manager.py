@@ -9,13 +9,9 @@ project_root = current_dir.parent.parent
 src_dir = project_root / "src"
 sys.path.insert(0, str(src_dir))
 
-# Mock the alembic imports at module level
-sys.modules["alembic"] = MagicMock()
-sys.modules["alembic.command"] = MagicMock()
-sys.modules["alembic.config"] = MagicMock()
-sys.modules["sqlalchemy"] = MagicMock()
-
-# Now import after mocking
+# Import the real module, then patch its collaborators within individual tests.
+# Replacing sqlalchemy or alembic in sys.modules here corrupts every database
+# test collected in the same pytest process.
 from database.migration.migration_manager import MigrationManager
 
 
@@ -201,13 +197,37 @@ class TestMigrationManager:
             result = manager.setup_migration_tracking()
             assert result
 
+    def test_setup_migration_tracking_stamps_base_without_new_revision(self):
+        """Tracking setup must stamp "base" and NOT generate a revision file.
+
+        Generating a revision here would put a fresh database on a parallel
+        dead-end branch, so the subsequent `upgrade head` would skip every real
+        migration — including the one that creates the agent tables. Asserting
+        on the absence of the `revision` call is what keeps that regression
+        from coming back silently.
+        """
+        with patch("database.migration.migration_manager.Path") as mock_path, patch(
+            "database.migration.migration_manager.Config"
+        ), patch("database.migration.migration_manager.command") as mock_command:
+            mock_path.return_value.exists.return_value = True
+
+            manager = MigrationManager()
+            result = manager.setup_migration_tracking()
+
+            assert result
+            mock_command.stamp.assert_called_once()
+            assert mock_command.stamp.call_args[0][1] == "base"
+            mock_command.revision.assert_not_called()
+
     def test_setup_migration_tracking_failure(self):
         """Test failed migration tracking setup."""
         with patch("database.migration.migration_manager.Path") as mock_path, patch(
             "database.migration.migration_manager.Config"
         ), patch("database.migration.migration_manager.command") as mock_command:
             mock_path.return_value.exists.return_value = True
-            mock_command.revision.side_effect = Exception("Command failed")
+            # `stamp` is the alembic call the setup now makes (it no longer
+            # generates a revision), so that's what has to fail here.
+            mock_command.stamp.side_effect = Exception("Command failed")
 
             manager = MigrationManager()
             result = manager.setup_migration_tracking()

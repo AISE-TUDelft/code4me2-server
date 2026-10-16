@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code4me-swebench"
+version = "0.1.0"
+description = "Run the packaged Code4Me agent on SWE-bench tasks and collect its telemetry"
+requires-python = ">=3.11"
+dependencies = [
+    # Official evaluation harness (instance images, grading). The agent itself
+    # is not a host dependency: it runs inside each task container.
+    "swebench==5.0.2",
+]
+
+[project.optional-dependencies]
+# The agent from this checkout, so tests can drive driver.py end to end.
+test = ["pytest>=8", "code4me2-agent"]
+
+[tool.uv.sources]
+code4me2-agent = { path = "../..", editable = true }
+
+[project.scripts]
+code4me-swebench = "code4me_swebench.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["code4me_swebench*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
