@@ -1,6 +1,5 @@
 import logging
 import uuid
-from typing import Union
 
 from fastapi import APIRouter, Cookie, Depends
 
@@ -11,10 +10,7 @@ from backend.Responses import (
     DeactivateSessionPostResponse,
     ErrorResponse,
     InvalidOrExpiredAuthToken,
-    InvalidOrExpiredSessionToken,
     JsonResponseWithStatus,
-    SessionNotFoundError,
-    UserNotFoundError,
 )
 from database import crud
 
@@ -27,8 +23,7 @@ router = APIRouter()
     response_model=None,
     responses={
         "200": {"model": DeactivateSessionPostResponse},
-        "401": {"model": InvalidOrExpiredSessionToken},
-        "404": {"model": Union[UserNotFoundError, SessionNotFoundError]},
+        "401": {"model": InvalidOrExpiredAuthToken},
         "422": {"model": ErrorResponse},
         "429": {"model": ErrorResponse},
         "500": {"model": DeactivateSessionError},
@@ -64,52 +59,27 @@ def deactivate_session(
             )
 
         user_id = auth_info["user_id"]
-        if crud.get_user_by_id(db_session, uuid.UUID(user_id)) is None:
-            return JsonResponseWithStatus(
-                status_code=404,
-                content=UserNotFoundError(),
-            )
-
         user_info = redis_manager.get("user_token", user_id)
-        if user_info is None or not user_info.get("session_token"):
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
-
-        session_token = user_info.get("session_token")
-        if crud.get_session_by_id(db_session, uuid.UUID(session_token)) is None:
-            return JsonResponseWithStatus(
-                status_code=404,
-                content=SessionNotFoundError(),
-            )
-        # Retrieve session info from Redis
-        session_info = redis_manager.get("session_token", session_token)
-        # Validate session token presence and validity
-        if session_info is None:
-            return JsonResponseWithStatus(
-                status_code=401,
-                content=InvalidOrExpiredSessionToken(),
-            )
+        session_token = (user_info or {}).get("session_token")
         # Close any agent tasks this session left open before tearing it down.
         # The plugin closes the *previous* task on startup, but it can't detect
         # logout, so without this a task ends its life stuck in 'running' with
         # no aggregated totals. Failures here are logged and ignored: telemetry
         # bookkeeping must not block the user from logging out.
-        for task in crud.get_open_agent_tasks_for_session(
-            db_session, uuid.UUID(session_token)
-        ):
-            try:
-                lifecycle.finalize_agent_task(db_session, task.task_id)
-            except Exception as e:
-                logging.warning(
-                    f"[Session/deactivate] failed to finalize agent task "
-                    f"{task.task_id}: {e}"
-                )
+        if session_token:
+            session_id = uuid.UUID(session_token)
+            if crud.get_session_by_id(db_session, session_id) is not None:
+                for task in crud.get_open_agent_tasks_for_session(db_session, session_id):
+                    try:
+                        lifecycle.finalize_agent_task(db_session, task.task_id)
+                    except Exception as e:
+                        logging.warning(
+                            f"[Session/deactivate] failed to finalize agent task "
+                            f"{task.task_id}: {e}"
+                        )
 
-        # Step 3: Delete the session from Redis and clear cookies
-        redis_manager.delete("user_token", user_id, db_session)
-        redis_manager.delete("session_token", session_token, db_session)
+        # Auth is the login credential; its Redis deletion also removes any
+        # linked session, but logout must work when no session was acquired.
         redis_manager.delete("auth_token", auth_token, db_session)
         
         # Create response and clear cookies

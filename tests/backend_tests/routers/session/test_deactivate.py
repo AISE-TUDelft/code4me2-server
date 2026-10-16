@@ -9,7 +9,6 @@ from backend.Responses import (
     DeactivateSessionError,
     DeactivateSessionPostResponse,
     InvalidOrExpiredAuthToken,
-    InvalidOrExpiredSessionToken,
 )
 from main import app
 
@@ -73,25 +72,27 @@ class TestDeactivateSession:
         assert response.status_code == 401
         assert response.json() == InvalidOrExpiredAuthToken()
 
-    def test_deactivate_session_invalid_session_token(self, client):
-        auth_token = str(uuid.uuid4())
-        session_token = str(uuid.uuid4())
+    def test_deactivate_session_succeeds_without_session_token(self, client):
+        auth_token = "valid_auth"
         user_id = str(uuid.uuid4())
 
         mock_redis_manager = MagicMock()
         mock_redis_manager.get.side_effect = lambda namespace, key: (
-            {"user_id": user_id, "session_token": session_token}
-            if namespace == "auth_token"
-            else None  # No session info found
+            {"user_id": user_id}
+            if namespace == "auth_token" and key == auth_token
+            else None
         )
-
         client.mock_app.get_redis_manager.return_value = mock_redis_manager
         client.mock_app.get_db_session.return_value = MagicMock()
 
         response = client.put("/api/session/deactivate")
 
-        assert response.status_code == 401
-        assert response.json() == InvalidOrExpiredSessionToken()
+        assert response.status_code == 200
+        assert not response.history
+        assert response.json() == DeactivateSessionPostResponse()
+        mock_redis_manager.delete.assert_called_once_with(
+            "auth_token", "valid_auth", client.mock_app.get_db_session.return_value
+        )
 
     def test_deactivate_session_internal_error(self, client):
         mock_redis_manager = MagicMock()
